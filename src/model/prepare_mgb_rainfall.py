@@ -16,7 +16,7 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.paths import history_db_path, logs_dir as default_logs_dir
+from common.paths import history_db_path, logs_dir as default_logs_dir, mgb_input_dir, resolve_workspace_path
 from common.settings import load_settings
 from common.time_utils import TIMEZONE, resolve_reference_time
 from ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
@@ -28,8 +28,8 @@ from model.prepare_mgb_meta import (
 )
 
 DEFAULT_HISTORY_DB = history_db_path()
-DEFAULT_MINI_GTP = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "MINI.gtp"
-DEFAULT_OUTPUT_PATH = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "chuvabin.hig"
+DEFAULT_MINI_GTP = mgb_input_dir() / "MINI.gtp"
+DEFAULT_OUTPUT_PATH = mgb_input_dir() / "chuvabin.hig"
 DEFAULT_CHUNK_HOURS = 720
 LOGGER_NAME = "floodqc.model.prepare_mgb_rainfall"
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
@@ -266,14 +266,16 @@ def build_hourly_station_matrix(
     return station_meta, station_matrix
 
 
-def _resolve_repo_path(raw_path: str) -> Path:
-    path = Path(raw_path)
-    if path.is_absolute():
-        return path
-    return REPO_ROOT / path
+def _resolve_workspace_asset_path(raw_path: str, *, workspace: str | Path | None = None) -> Path:
+    return resolve_workspace_path(raw_path, workspace)
 
 
-def load_latest_ecmwf_asset_path(connection: sqlite3.Connection, *, reference_time: datetime) -> Path:
+def load_latest_ecmwf_asset_path(
+    connection: sqlite3.Connection,
+    *,
+    reference_time: datetime,
+    workspace: str | Path | None = None,
+) -> Path:
     row = connection.execute(
         """
         SELECT relative_path
@@ -299,7 +301,7 @@ def load_latest_ecmwf_asset_path(connection: sqlite3.Connection, *, reference_ti
             "Run src/ingest/forecast_grid.py first."
         )
 
-    asset_path = _resolve_repo_path(str(row["relative_path"]))
+    asset_path = _resolve_workspace_asset_path(str(row["relative_path"]), workspace=workspace)
     if not asset_path.exists():
         raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
     return asset_path
@@ -516,6 +518,7 @@ def prepare_mgb_rainfall(
     power: float,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     logs_dir: Path = default_logs_dir(),
+    workspace: str | Path | None = None,
 ) -> RainfallPreparationSummary:
     if not history_db.exists():
         raise FileNotFoundError(f"History database not found: {history_db}")
@@ -530,7 +533,7 @@ def prepare_mgb_rainfall(
     if dt_seconds != 3600:
         raise ValueError(f"Only hourly rainfall input is currently supported; PARHIG DT={dt_seconds}.")
 
-    settings = load_settings()
+    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
     mgb_settings = settings["mgb"]
     window = build_mgb_window(
@@ -582,7 +585,11 @@ def prepare_mgb_rainfall(
             query_end_exclusive=observed_end_exclusive,
         )
         forecast_asset_path = (
-            load_latest_ecmwf_asset_path(connection, reference_time=window.forecast_start_time)
+            load_latest_ecmwf_asset_path(
+                connection,
+                reference_time=window.forecast_start_time,
+                workspace=workspace,
+            )
             if use_forecast_data and window.forecast_nt > 0
             else None
         )

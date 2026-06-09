@@ -10,7 +10,7 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from common.paths import history_db_path, interim_dir
+from common.paths import history_db_path, interim_dir, mgb_input_dir, mgb_output_dir, resolve_workspace_path
 from common.settings import load_settings
 from common.time_utils import resolve_reference_time
 from model.export_mgb_outputs import (
@@ -25,10 +25,9 @@ from model.export_mgb_outputs import (
 
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 ACCUM_RASTER_PATTERN = re.compile(r"^accum_(\d+)h\.tif$", re.IGNORECASE)
-LEGACY_RIVERS_GEOJSON_PATH = Path("data/legacy/app_layers/rios_mini.geojson")
-REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_MGB_INPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Input"
-DEFAULT_MGB_OUTPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Output"
+LEGACY_RIVERS_GEOJSON_PATH = resolve_workspace_path("data/legacy/app_layers/rios_mini.geojson")
+DEFAULT_MGB_INPUT_DIR = mgb_input_dir()
+DEFAULT_MGB_OUTPUT_DIR = mgb_output_dir()
 DEFAULT_MGB_PARHIG_PATH = DEFAULT_MGB_INPUT_DIR / "PARHIG.hig"
 DEFAULT_MGB_MINI_GTP_PATH = DEFAULT_MGB_INPUT_DIR / "MINI.gtp"
 MGB_VARIABLE_METADATA = {
@@ -234,7 +233,10 @@ def load_station_catalog(
             }
         )
 
-    metrics = pd.DataFrame(metrics_rows)
+    metrics = pd.DataFrame(
+        metrics_rows,
+        columns=["station_uid", "status", "status_reason", "rows_recent", "rain_mean_mm_h", "rain_acc_24h_mm", "rain_p90_mm_h"],
+    )
     merged = stations.merge(coverage[["station_uid", "kind"]], on="station_uid", how="left")
     merged = merged.merge(metrics, on="station_uid", how="left")
     merged["kind"] = merged["kind"].fillna("sem_dados")

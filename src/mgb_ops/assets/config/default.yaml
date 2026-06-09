@@ -1,0 +1,22 @@
+run:
+  reference_time: "yesterday"
+
+ingest:
+  request_days: 90
+  timeout_seconds: 15
+
+summaries:
+  forecast_days: [1, 3, 7, 14]
+  accum_hours: [24, 72, 240, 720]
+  selected_mini_ids: []
+
+mgb:
+  input_days_before: 56
+  output_days_before: 28
+  forecast_horizon_days: 14
+  use_forecast_data: true
+
+rainfall_interpolation:
+  nearest_stations: 5
+  power: 2.0
+

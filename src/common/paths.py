@@ -1,54 +1,190 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import os
+from dataclasses import dataclass
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_DIR = REPO_ROOT / "config"
-DATA_DIR = REPO_ROOT / "data"
-SQL_DIR = REPO_ROOT / "sql"
-LOGS_DIR = REPO_ROOT / "logs"
+try:
+    import mgb_ops.assets as _mgb_ops_assets
+
+    ASSETS_DIR = Path(_mgb_ops_assets.__file__).resolve().parent
+except ModuleNotFoundError:
+    ASSETS_DIR = REPO_ROOT
+
+CONFIG_DIR = ASSETS_DIR / "config"
+SQL_DIR = ASSETS_DIR / "sql"
+MGB_OPS_WORKSPACE_ENV = "MGB_OPS_WORKSPACE"
+MGB_REMOTE_WORKSPACE_ENV = "MGB_OPS_REMOTE_WORKSPACE"
+DEFAULT_MGB_EXECUTABLE_NAME = "MGB_Inercial_PrevRS_FORTRAN.exe"
+DEFAULT_REMOTE_WORKSPACE = Path("C:/mgb-hora")
+
+_WORKSPACE_ROOT: Path | None = None
 
 
-def history_db_path() -> Path:
-    return DATA_DIR / "history.sqlite"
+@dataclass(frozen=True, slots=True)
+class RuntimePaths:
+    workspace: Path
+
+    @property
+    def config_dir(self) -> Path:
+        return self.workspace / "config"
+
+    @property
+    def data_dir(self) -> Path:
+        return self.workspace / "data"
+
+    @property
+    def history_db(self) -> Path:
+        return self.data_dir / "history.sqlite"
+
+    @property
+    def runs_dir(self) -> Path:
+        return self.data_dir / "runs"
+
+    @property
+    def interim_dir(self) -> Path:
+        return self.data_dir / "interim"
+
+    @property
+    def timeseries_dir(self) -> Path:
+        return self.data_dir / "timeseries"
+
+    @property
+    def spatial_dir(self) -> Path:
+        return self.data_dir / "spatial"
+
+    @property
+    def logs_dir(self) -> Path:
+        return self.workspace / "logs"
+
+    @property
+    def mgb_runner_dir(self) -> Path:
+        return self.workspace / "mgb_runner"
+
+    @property
+    def mgb_input_dir(self) -> Path:
+        return self.mgb_runner_dir / "Input"
+
+    @property
+    def mgb_output_dir(self) -> Path:
+        return self.mgb_runner_dir / "Output"
+
+    @property
+    def mgb_executable_path(self) -> Path:
+        return self.mgb_runner_dir / DEFAULT_MGB_EXECUTABLE_NAME
+
+    @property
+    def remote_workspace_root(self) -> Path:
+        return Path(os.getenv(MGB_REMOTE_WORKSPACE_ENV, str(DEFAULT_REMOTE_WORKSPACE)))
 
 
-def runs_dir() -> Path:
-    return DATA_DIR / "runs"
+def resolve_workspace(workspace: str | Path | None = None) -> Path:
+    if workspace is not None:
+        return Path(workspace).expanduser().resolve()
+    env_workspace = os.getenv(MGB_OPS_WORKSPACE_ENV, "").strip()
+    if env_workspace:
+        return Path(env_workspace).expanduser().resolve()
+    return Path.cwd().resolve()
 
 
-def interim_dir() -> Path:
-    return DATA_DIR / "interim"
+def set_workspace(workspace: str | Path | None) -> Path:
+    global _WORKSPACE_ROOT
+    _WORKSPACE_ROOT = resolve_workspace(workspace)
+    return _WORKSPACE_ROOT
 
 
-def logs_dir() -> Path:
-    return LOGS_DIR
+def clear_workspace() -> None:
+    global _WORKSPACE_ROOT
+    _WORKSPACE_ROOT = None
 
 
-def history_station_inventory_csv_path() -> Path:
-    return interim_dir() / "history_station_inventory.csv"
+def get_workspace() -> Path:
+    return _WORKSPACE_ROOT or resolve_workspace()
 
 
-def timeseries_dir() -> Path:
-    return DATA_DIR / "timeseries"
+def runtime_paths(workspace: str | Path | None = None) -> RuntimePaths:
+    return RuntimePaths(resolve_workspace(workspace) if workspace is not None else get_workspace())
 
 
-def spatial_dir() -> Path:
-    return DATA_DIR / "spatial"
+def history_db_path(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).history_db
 
 
-def build_run_db_path(run_id: str) -> Path:
-    return runs_dir() / f"{run_id}.sqlite"
+def runs_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).runs_dir
 
 
-def ensure_standard_dirs() -> None:
-    for path in (interim_dir(), timeseries_dir(), spatial_dir(), runs_dir()):
+def interim_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).interim_dir
+
+
+def logs_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).logs_dir
+
+
+def history_station_inventory_csv_path(workspace: str | Path | None = None) -> Path:
+    return interim_dir(workspace) / "history_station_inventory.csv"
+
+
+def timeseries_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).timeseries_dir
+
+
+def spatial_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).spatial_dir
+
+
+def mgb_runner_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).mgb_runner_dir
+
+
+def mgb_input_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).mgb_input_dir
+
+
+def mgb_output_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).mgb_output_dir
+
+
+def mgb_executable_path(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).mgb_executable_path
+
+
+def mgb_remote_workspace_root(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).remote_workspace_root
+
+
+def build_run_db_path(run_id: str, workspace: str | Path | None = None) -> Path:
+    return runs_dir(workspace) / f"{run_id}.sqlite"
+
+
+def ensure_standard_dirs(workspace: str | Path | None = None) -> None:
+    for path in (
+        interim_dir(workspace),
+        timeseries_dir(workspace),
+        spatial_dir(workspace),
+        runs_dir(workspace),
+        logs_dir(workspace),
+    ):
         path.mkdir(parents=True, exist_ok=True)
 
 
 def relative_to_repo(path: Path) -> str:
+    path = Path(path)
+    try:
+        return path.resolve().relative_to(get_workspace().resolve()).as_posix()
+    except ValueError:
+        pass
     try:
         return path.resolve().relative_to(REPO_ROOT.resolve()).as_posix()
     except ValueError:
         return path.as_posix()
+
+
+def resolve_workspace_path(relative_or_absolute: str | Path, workspace: str | Path | None = None) -> Path:
+    candidate = Path(relative_or_absolute)
+    if candidate.is_absolute():
+        return candidate
+    return runtime_paths(workspace).workspace / candidate

@@ -11,7 +11,7 @@ import folium.plugins
 import numpy as np
 import pandas as pd
 
-from common.paths import REPO_ROOT, history_db_path
+from common.paths import history_db_path, resolve_workspace_path
 from common.time_utils import TIMEZONE
 from ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
 from qc.ecmwf_forecast_correction import ForecastCorrectionInstruction, apply_correction_sequence
@@ -86,7 +86,7 @@ def _resolve_repo_path(relative_or_absolute: str) -> Path:
     candidate = Path(relative_or_absolute)
     if candidate.is_absolute():
         return candidate
-    return REPO_ROOT / candidate
+    return resolve_workspace_path(candidate)
 
 
 def _read_asset_row(asset_id: str, *, database_path: Path | None = None) -> dict[str, object]:

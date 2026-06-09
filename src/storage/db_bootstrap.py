@@ -198,7 +198,7 @@ def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Inicializa bancos SQLite do repositorio.")
-    parser.add_argument("--history", action="store_true", help="Inicializa `data/history.sqlite`.")
+    parser.add_argument("--history", action="store_true", help="Inicializa `<workspace>/data/history.sqlite`.")
     parser.add_argument("--history-path", type=Path, default=None, help="Path alternativo para o banco historico.")
     parser.add_argument(
         "--inventory-csv",

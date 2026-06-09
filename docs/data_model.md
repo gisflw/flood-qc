@@ -4,8 +4,8 @@
 
 O modelo canonico continua dividido entre:
 
-- historico persistente em `data/history.sqlite`;
-- run por arquivo em `data/runs/<run_id>.sqlite`.
+- historico persistente em `<workspace>/data/history.sqlite`;
+- run por arquivo em `<workspace>/data/runs/<run_id>.sqlite`.
 
 Hoje o historico esta em uso real por ANA, ECMWF, dashboard e correcoes manuais de forecast. O schema de run ja existe, mas sua materializacao operacional ainda nao esta completa.
 
@@ -27,7 +27,7 @@ Catalogo das variaveis canonicas. Nesta fase, o historico trabalha com:
 
 Cadastro operacional unificado das estacoes. A identidade logica continua sendo `provider_code + station_code`.
 
-O inventario inicial vem de `data/interim/history_station_inventory.csv`. O bootstrap calcula `station_uid` por provider, incluindo codigos alfanumericos do INMET.
+O inventario inicial vem de `<workspace>/data/interim/history_station_inventory.csv`. O bootstrap calcula `station_uid` por provider, incluindo codigos alfanumericos do INMET.
 
 ### `observed_series`
 
@@ -83,13 +83,13 @@ Esse contrato permanece valido, mas a camada de repositorio e montagem do run ai
 
 O output completo do MGB continua fora do SQLite, nos binarios canonicos do runner:
 
-- `apps/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
-- `apps/mgb_runner/Output/YTUDO.MGB`
+- `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
+- `<workspace>/mgb_runner/Output/YTUDO.MGB`
 
 O dashboard le esses binarios diretamente com apoio de:
 
-- `apps/mgb_runner/Input/PARHIG.hig`
-- `apps/mgb_runner/Input/MINI.gtp`
+- `<workspace>/mgb_runner/Input/PARHIG.hig`
+- `<workspace>/mgb_runner/Input/MINI.gtp`
 
 Esse comportamento ja esta implementado e e o caminho operacional atual para visualizacao do modelo.
 
@@ -100,14 +100,14 @@ O contrato segue sendo:
 - rasters e vetores ficam fora do SQLite;
 - o banco guarda apenas metadados e paths relativos.
 
-`data/spatial/` continua sendo o destino canonico dos assets espaciais tratados, mas o mapa do dashboard ainda depende de material legado em `data/legacy/app_layers/`.
+`<workspace>/data/spatial/` continua sendo o destino canonico dos assets espaciais tratados, mas o mapa do dashboard ainda depende de material legado em `<workspace>/data/legacy/app_layers/`.
 
 ## Configuracao
 
 A configuracao operacional do repositorio continua em:
 
 - `config/default.yaml`
-- `config/custom.yaml`
+- `<workspace>/config/custom.yaml` quando existir
 
 A possivel migracao para `.toml` segue em avaliacao e ainda nao altera o modelo de dados nem o contrato de runtime desta fase.
 

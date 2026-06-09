@@ -379,7 +379,7 @@ def ingest_forecast_grids(
 def collect_forecast_grids(run: RunMetadata) -> list[RasterAsset]:
     reference_time = resolve_reference_time(run.reference_time)
     summary = ingest_forecast_grids(
-        DEFAULT_HISTORY_DB,
+        history_db_path(),
         reference_time=reference_time,
         interim_dir=default_interim_dir(),
         logs_dir=default_logs_dir(),

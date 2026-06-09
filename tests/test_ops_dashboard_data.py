@@ -209,6 +209,24 @@ def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -
     )
 
 
+def test_load_station_catalog_handles_all_stations_without_recent_values(tmp_path) -> None:
+    db_path = initialize_history_db(tmp_path / "history.sqlite")
+    now = datetime(2026, 3, 17, 12, 0, 0)
+
+    with sqlite3.connect(db_path) as connection:
+        insert_station(connection, station_uid=1001, station_code="1001", station_name="NODATA")
+        insert_observed_series(connection, series_id="1001.rain.raw", station_uid=1001, variable_code="rain", state="raw")
+        insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
+        connection.commit()
+
+    catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
+
+    assert catalog["station_uid"].tolist() == [1001]
+    assert catalog["kind"].tolist() == ["chuva"]
+    assert catalog["status"].tolist() == ["no_data"]
+    assert catalog["rows_recent"].tolist() == [0]
+
+
 def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path) -> None:
     db_path = initialize_history_db(tmp_path / "history.sqlite")
     now = datetime(2026, 3, 17, 12, 0, 0)

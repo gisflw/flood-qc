@@ -16,14 +16,14 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.paths import SQL_DIR, interim_dir, logs_dir as default_logs_dir
+from common.paths import SQL_DIR, interim_dir, logs_dir as default_logs_dir, mgb_input_dir, mgb_output_dir
 from common.settings import load_settings
 from common.time_utils import resolve_reference_time
 
 
-DEFAULT_PARHIG = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "PARHIG.hig"
-DEFAULT_MINI_GTP = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "MINI.gtp"
-DEFAULT_OUTPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Output"
+DEFAULT_PARHIG = mgb_input_dir() / "PARHIG.hig"
+DEFAULT_MINI_GTP = mgb_input_dir() / "MINI.gtp"
+DEFAULT_OUTPUT_DIR = mgb_output_dir()
 DEFAULT_OUTPUT_DB = interim_dir() / "model_outputs.sqlite"
 DEFAULT_SCHEMA_PATH = SQL_DIR / "model_outputs_schema.sql"
 DEFAULT_CHUNK_HOURS = 720
@@ -355,14 +355,14 @@ def iter_value_rows(
             yield (series_ids_by_mini[mini_id], dt_value, value)
 
 
-def load_output_window_from_settings() -> tuple[int, int]:
-    settings = load_settings()
+def load_output_window_from_settings(*, workspace: str | Path | None = None) -> tuple[int, int]:
+    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
     mgb_settings = settings["mgb"]
     return int(mgb_settings["output_days_before"]), int(mgb_settings["forecast_horizon_days"])
 
 
-def load_simulation_reference_time_from_settings() -> datetime:
-    settings = load_settings()
+def load_simulation_reference_time_from_settings(*, workspace: str | Path | None = None) -> datetime:
+    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
     return resolve_reference_time(settings["run"]["reference_time"])
 
 
@@ -570,8 +570,10 @@ def export_mgb_outputs(
     output_days_before: int | None = None,
     forecast_horizon_days: int | None = None,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
+    logs_dir: Path | None = None,
+    workspace: str | Path | None = None,
 ) -> ExportSummary:
-    logger = configure_run_logger(default_logs_dir() / script_stem() / f"{build_execution_id()}.log")
+    logger = configure_run_logger((logs_dir or default_logs_dir()) / script_stem() / f"{build_execution_id()}.log")
     logger.info(
         "export_start parhig=%s mini_gtp=%s output_dir=%s output_db=%s schema=%s chunk_hours=%s",
         parhig_path,
@@ -585,7 +587,7 @@ def export_mgb_outputs(
         raise ValueError(f"chunk_hours must be > 0, got {chunk_hours}")
 
     if output_days_before is None or forecast_horizon_days is None:
-        default_before, default_after = load_output_window_from_settings()
+        default_before, default_after = load_output_window_from_settings(workspace=workspace)
         if output_days_before is None:
             output_days_before = default_before
         if forecast_horizon_days is None:
@@ -596,7 +598,7 @@ def export_mgb_outputs(
 
     nc = read_nc_from_parhig(parhig_path)
     start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
-    reference_time = load_simulation_reference_time_from_settings()
+    reference_time = load_simulation_reference_time_from_settings(workspace=workspace)
     mini_ids = read_mini_ids(mini_gtp_path, nc=nc)
     logger.info(
         "inputs_loaded nc=%s start_time=%s dt_seconds=%s mini_count=%s reference_time=%s",

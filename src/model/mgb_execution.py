@@ -13,13 +13,20 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from common.models import CommandPlan, ModelOutput, RunMetadata
-from common.paths import logs_dir as default_logs_dir, relative_to_repo
+from common.paths import (
+    logs_dir as default_logs_dir,
+    mgb_executable_path as default_mgb_executable_path,
+    mgb_input_dir as default_mgb_input_dir,
+    mgb_output_dir as default_mgb_output_dir,
+    mgb_remote_workspace_root,
+    relative_to_repo,
+)
 
 LOGGER_NAME = "floodqc.model.mgb_execution"
-MGB_EXECUTABLE_PATH = REPO_ROOT / "apps" / "mgb_runner" / "MGB_Inercial_PrevRS_FORTRAN.exe"
-LOCAL_INPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Input"
-LOCAL_OUTPUT_DIR = REPO_ROOT / "apps" / "mgb_runner" / "Output"
-MGB_WORKSPACE_ROOT = Path("C:/mgb-hora")
+MGB_EXECUTABLE_PATH = default_mgb_executable_path()
+LOCAL_INPUT_DIR = default_mgb_input_dir()
+LOCAL_OUTPUT_DIR = default_mgb_output_dir()
+MGB_WORKSPACE_ROOT = mgb_remote_workspace_root()
 
 
 def script_stem() -> str:
@@ -147,33 +154,40 @@ def prepare_mgb_execution(
     run: RunMetadata,
     executable_path: str | None = None,
     workdir: str | None = None,
+    input_dir: str | None = None,
+    output_dir: str | None = None,
+    workspace_root: str | None = None,
 ) -> CommandPlan:
     """Prepara o plano real de execucao do MGB em Windows."""
-    del executable_path, workdir
+    del workdir
 
-    _require_existing_file(MGB_EXECUTABLE_PATH, label="Executavel do MGB")
-    _require_existing_directory(LOCAL_INPUT_DIR, label="Diretorio local Input do MGB")
-    workspace_root = MGB_WORKSPACE_ROOT
-    remote_input_dir = workspace_root / "Input"
-    remote_output_dir = workspace_root / "Output"
+    local_executable_path = Path(executable_path) if executable_path is not None else MGB_EXECUTABLE_PATH
+    local_input_dir = Path(input_dir) if input_dir is not None else LOCAL_INPUT_DIR
+    local_output_dir = Path(output_dir) if output_dir is not None else LOCAL_OUTPUT_DIR
+    remote_workspace_root = Path(workspace_root) if workspace_root is not None else MGB_WORKSPACE_ROOT
+    remote_input_dir = remote_workspace_root / "Input"
+    remote_output_dir = remote_workspace_root / "Output"
+
+    _require_existing_file(local_executable_path, label="Executavel do MGB")
+    _require_existing_directory(local_input_dir, label="Diretorio local Input do MGB")
 
     return CommandPlan(
-        command=[str(MGB_EXECUTABLE_PATH)],
-        working_directory=str(workspace_root),
+        command=[str(local_executable_path)],
+        working_directory=str(remote_workspace_root),
         metadata={
             "run_id": run.run_id,
             "reference_time": run.reference_time,
-            "workspace_root": str(workspace_root),
-            "local_executable_path": str(MGB_EXECUTABLE_PATH),
-            "local_input_dir": str(LOCAL_INPUT_DIR),
-            "local_output_dir": str(LOCAL_OUTPUT_DIR),
+            "workspace_root": str(remote_workspace_root),
+            "local_executable_path": str(local_executable_path),
+            "local_input_dir": str(local_input_dir),
+            "local_output_dir": str(local_output_dir),
             "remote_input_dir": str(remote_input_dir),
             "remote_output_dir": str(remote_output_dir),
         },
     )
 
 
-def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False) -> ModelOutput:
+def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path | None = None) -> ModelOutput:
     """Executa o runner real do MGB ou retorna apenas o plano em dry-run."""
     if dry_run:
         plan.metadata["status"] = "dry_run"
@@ -184,7 +198,8 @@ def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False) -> ModelOutput
         )
 
     execution_id = build_execution_id()
-    log_path = default_logs_dir() / script_stem() / f"{execution_id}.log"
+    log_root = logs_dir or default_logs_dir()
+    log_path = log_root / script_stem() / f"{execution_id}.log"
     logger = configure_run_logger(log_path)
     plan.metadata["log_path"] = str(log_path)
 

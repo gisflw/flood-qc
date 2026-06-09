@@ -7,7 +7,7 @@ from typing import Any
 
 import yaml
 
-from common.paths import CONFIG_DIR
+from common.paths import CONFIG_DIR, runtime_paths
 
 
 def _load_yaml(path: Path) -> dict[str, Any]:
@@ -131,7 +131,24 @@ def _validate_settings(settings: dict[str, Any]) -> None:
     _validate_section(_require_mapping(settings, "config"), schema, "config")
 
 
-def load_settings() -> dict[str, Any]:
-    settings = _deep_merge(_load_yaml(CONFIG_DIR / "default.yaml"), _load_yaml(CONFIG_DIR / "custom.yaml"))
+def load_settings(
+    *,
+    config_dir: Path | None = None,
+    workspace: str | Path | None = None,
+    require_custom: bool | None = None,
+) -> dict[str, Any]:
+    if config_dir is not None:
+        default_path = config_dir / "default.yaml"
+        custom_path = config_dir / "custom.yaml"
+        custom_required = False if require_custom is None else require_custom
+    else:
+        default_path = CONFIG_DIR / "default.yaml"
+        workspace_custom_path = runtime_paths(workspace).config_dir / "custom.yaml"
+        custom_path = workspace_custom_path if workspace_custom_path.exists() else CONFIG_DIR / "custom.yaml"
+        custom_required = False if require_custom is None else require_custom
+
+    settings = _load_yaml(default_path)
+    if custom_path.exists() or custom_required:
+        settings = _deep_merge(settings, _load_yaml(custom_path))
     _validate_settings(settings)
     return settings

@@ -24,11 +24,24 @@ except ModuleNotFoundError as exc:
         "pip install streamlit plotly folium streamlit-folium branca rasterio"
     ) from exc
 
-from common.paths import history_db_path
+from common.paths import history_db_path, set_workspace
+
+
+def _configure_workspace_from_argv(argv: list[str]) -> None:
+    if "--workspace" not in argv:
+        set_workspace(None)
+        return
+    idx = argv.index("--workspace")
+    if idx + 1 >= len(argv):
+        raise SystemExit("--workspace requires a path")
+    set_workspace(argv[idx + 1])
+
+
+_configure_workspace_from_argv(sys.argv[1:])
+
 from qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
 from reporting import ops_dashboard_data, ops_dashboard_forecast, ops_dashboard_map
 from storage.history_repository import HistoryRepository
-
 
 DAYS_WINDOW = 30
 MGB_COLORS = {"q": "#1864ab", "y": "#0b7285"}
@@ -819,7 +832,7 @@ def render_monitoring_tab(
         if map_warning:
             st.warning(map_warning)
         if rivers_geojson is None:
-            st.warning("Camada de rios nao encontrada em data/legacy/app_layers/rios_mini.geojson.")
+            st.warning("Camada de rios nao encontrada em <workspace>/data/legacy/app_layers/rios_mini.geojson.")
         render_map_fragment(map_artifacts)
 
     lower_left, lower_right = st.columns(2)
@@ -1080,7 +1093,7 @@ def render_forecast_tab() -> None:
         "e clique em Carregar mapas para atualizar o preview sincronizado."
     )
     if assets_df.empty:
-        st.info("Nenhum asset ECMWF canonicamente registrado foi encontrado em data/history.sqlite.")
+        st.info("Nenhum asset ECMWF canonicamente registrado foi encontrado em <workspace>/data/history.sqlite.")
         return
 
     asset_options = assets_df["asset_id"].tolist()
@@ -1092,7 +1105,11 @@ def render_forecast_tab() -> None:
         key="forecast_asset_id",
     )
 
-    steps_df = get_forecast_steps(selected_asset_id)
+    try:
+        steps_df = get_forecast_steps(selected_asset_id)
+    except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
+        st.warning(str(exc))
+        return
     if steps_df.empty:
         st.warning("O asset selecionado nao possui mensagens de forecast legiveis.")
         return
@@ -1163,17 +1180,21 @@ def render_forecast_tab() -> None:
     if current_request is None:
         st.info("Ajuste os parametros e clique em `Carregar mapas` para montar o preview deste ciclo ECMWF.")
     else:
-        preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
-        map_artifacts = get_forecast_map_artifacts(
-            current_request.asset_id,
-            int(current_request.t0_step),
-            int(current_request.t1_step),
-            float(current_request.shift_lat),
-            float(current_request.shift_lon),
-            float(current_request.rotation_deg),
-            float(current_request.multiplication_factor),
-            float(current_request.opacity),
-        )
+        try:
+            preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
+            map_artifacts = get_forecast_map_artifacts(
+                current_request.asset_id,
+                int(current_request.t0_step),
+                int(current_request.t1_step),
+                float(current_request.shift_lat),
+                float(current_request.shift_lon),
+                float(current_request.rotation_deg),
+                float(current_request.multiplication_factor),
+                float(current_request.opacity),
+            )
+        except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
+            st.warning(str(exc))
+            return
 
         selected_steps = [int(current_request.t0_step), int(current_request.t1_step)]
         selected_rows = steps_df.loc[steps_df["step_hours"].isin(selected_steps), ["step_hours", "valid_time"]].rename(
@@ -1227,6 +1248,12 @@ def render_forecast_tab() -> None:
 
 def main() -> None:
     initialize_session_state()
+
+    history_path = history_db_path()
+    if not history_path.exists():
+        st.error(f"Banco historico nao encontrado: {history_path}")
+        st.info("Defina MGB_OPS_WORKSPACE ou execute o dashboard com `-- --workspace <workspace>`.")
+        return
 
     stations_df = get_station_catalog(DAYS_WINDOW)
     rivers_geojson = get_rivers_geojson()

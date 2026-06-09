@@ -12,11 +12,11 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from common.paths import logs_dir as default_logs_dir
+from common.paths import logs_dir as default_logs_dir, mgb_input_dir
 from common.settings import load_settings
 from common.time_utils import resolve_reference_time
 
-DEFAULT_PARHIG = REPO_ROOT / "apps" / "mgb_runner" / "Input" / "PARHIG.hig"
+DEFAULT_PARHIG = mgb_input_dir() / "PARHIG.hig"
 DEFAULT_DT_SECONDS = 3600
 LOGGER_NAME = "floodqc.model.prepare_mgb_meta"
 
@@ -187,8 +187,9 @@ def rewrite_mgb_meta_from_config(
     *,
     parhig_path: Path = DEFAULT_PARHIG,
     logs_dir: Path = default_logs_dir(),
+    workspace: str | Path | None = None,
 ) -> MgbMetaUpdateSummary:
-    settings = load_settings()
+    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
     input_days_before = int(settings["mgb"]["input_days_before"])
     forecast_horizon_days = int(settings["mgb"]["forecast_horizon_days"])

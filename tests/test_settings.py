@@ -143,11 +143,19 @@ rainfall_interpolation:
     assert settings["run"]["reference_time"] == "yesterday"
 
 
+def test_load_settings_accepts_missing_custom_yaml(tmp_path, monkeypatch) -> None:
+    write_config(tmp_path, custom_text=None)
+    monkeypatch.setattr(settings_module, "CONFIG_DIR", tmp_path)
+
+    settings = settings_module.load_settings()
+
+    assert settings["run"]["reference_time"] == "2026-03-11T00:00:00"
+
+
 @pytest.mark.parametrize(
     ("default_text", "custom_text", "expected_error"),
     [
         (None, EMPTY_CUSTOM, "Arquivo de config nao encontrado"),
-        (DEFAULT_CONFIG, None, "Arquivo de config nao encontrado"),
         (
             """\
 run:

@@ -23,9 +23,9 @@ class FakeProcess:
 
 
 def configure_paths(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path]:
-    executable_path = tmp_path / "apps" / "mgb_runner" / "MGB_Inercial_PrevRS_FORTRAN.exe"
-    local_input_dir = tmp_path / "apps" / "mgb_runner" / "Input"
-    local_output_dir = tmp_path / "apps" / "mgb_runner" / "Output"
+    executable_path = tmp_path / "mgb_runner" / "MGB_Inercial_PrevRS_FORTRAN.exe"
+    local_input_dir = tmp_path / "mgb_runner" / "Input"
+    local_output_dir = tmp_path / "mgb_runner" / "Output"
     workspace_root = tmp_path / "remote" / "mgb-hora"
 
     executable_path.parent.mkdir(parents=True, exist_ok=True)
@@ -130,15 +130,15 @@ def test_execute_mgb_plan_runs_process_logs_and_copies_output(monkeypatch, tmp_p
     log_path = tmp_path / "logs" / "mgb_execution" / "20260325T120000.log"
 
     assert result.output_name == "mgb_output"
-    assert "apps/mgb_runner/Output/QTUDO01.MGB" in result.asset_refs[0]
+    assert "mgb_runner/Output/QTUDO01.MGB" in result.asset_refs[0]
     assert plan.metadata["status"] == "success"
     assert plan.metadata["return_code"] == 0
     assert "linha 1" in captured.out
     assert "linha 2" in captured.out
     assert log_path.exists()
     assert "mgb_execution_finished" in log_path.read_text(encoding="utf-8")
-    assert (tmp_path / "apps" / "mgb_runner" / "Output" / "QTUDO01.MGB").read_text(encoding="utf-8") == "binary-output"
-    assert not (tmp_path / "apps" / "mgb_runner" / "Output" / "stale.txt").exists()
+    assert (tmp_path / "mgb_runner" / "Output" / "QTUDO01.MGB").read_text(encoding="utf-8") == "binary-output"
+    assert not (tmp_path / "mgb_runner" / "Output" / "stale.txt").exists()
 
 
 def test_execute_mgb_plan_fails_on_nonzero_exit(monkeypatch, tmp_path) -> None:
@@ -173,8 +173,8 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
         working_directory="C:/mgb-hora",
         metadata={
             "workspace_root": "C:/mgb-hora",
-            "local_input_dir": "apps/mgb_runner/Input",
-            "local_output_dir": "apps/mgb_runner/Output",
+            "local_input_dir": "mgb_runner/Input",
+            "local_output_dir": "mgb_runner/Output",
             "remote_output_dir": "C:/mgb-hora/Output",
             "status": "success",
             "log_path": "logs/mgb_execution/20260325T120000.log",
@@ -191,7 +191,7 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
         return mgb_execution.ModelOutput(
             output_name="mgb_output",
             description="Execucao real do MGB concluida com sucesso.",
-            asset_refs=["apps/mgb_runner/Output/QTUDO01.MGB"],
+            asset_refs=["mgb_runner/Output/QTUDO01.MGB"],
         )
 
     monkeypatch.setattr(run_mgb, "build_run_id", lambda: "20260325T120000")
