@@ -50,5 +50,6 @@ CLAUDE.md
 # Reference code
 from_Erik/*
 src/legacy/*
+examples/*
 .omx/
 .codex
