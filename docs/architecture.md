@@ -11,11 +11,12 @@ The base is local-first, file-oriented, and organized around reproducible artifa
 
 Components are separated by domain:
 
-- `src/ingest/`: collection and registration of observations and forecasts;
-- `src/model/`: preparation of inputs and MGB execution;
-- `src/storage/`: SQLite bootstrap and contracts;
-- `src/reporting/`: dashboard support and query products;
-- `src/qc/`: QC and review rules, still incomplete in this phase.
+- `src/mgb_ops/ingest/`: collection and registration of observations and forecasts;
+- `src/mgb_ops/model/`: preparation of inputs and MGB execution;
+- `src/mgb_ops/storage/`: SQLite bootstrap and contracts;
+- `src/mgb_ops/reporting/`: dashboard support and query products with no Streamlit dependency;
+- `src/mgb_ops/qc/`: QC and review rules, still incomplete in this phase;
+- `apps/ops_dashboard/`: Streamlit UI and UI-only adapters.
 
 ## Implemented Status
 
@@ -74,7 +75,7 @@ QGIS remains a complementary client for generated artifacts. The canonical layou
 
 ### Isolated MGB Runner
 
-The MGB executable and artifacts remain isolated in `<workspace>/mgb_runner`, under the responsibility of the user/region, while runner and preparation logic lives in `src/model/` and is invoked by the `mgb-ops` CLI.
+The MGB executable and artifacts remain isolated in `<workspace>/mgb_runner`, under the responsibility of the user/region, while runner and preparation logic lives in `src/mgb_ops/model/` and is invoked by the `mgb-ops` CLI.
 
 ## Target Architecture vs Current State
 

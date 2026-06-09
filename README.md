@@ -35,23 +35,25 @@ Still pending in this phase:
 
 ```text
 .
-|-- config/
+|-- apps/
+|   `-- ops_dashboard/
 |-- docs/
 |-- examples/
 |   `-- rs_hydro/
 |       |-- data/
 |       |-- logs/
 |       `-- mgb_runner/
-|-- sql/
 |-- src/
-|   |-- mgb_ops/
-|   |-- ops_dashboard/
-|   |-- common/
-|   |-- ingest/
-|   |-- model/
-|   |-- qc/
-|   |-- reporting/
-|   `-- storage/
+|   `-- mgb_ops/
+|       |-- assets/
+|       |   `-- sql/
+|       |-- cli/
+|       |-- common/
+|       |-- ingest/
+|       |-- model/
+|       |-- qc/
+|       |-- reporting/
+|       `-- storage/
 `-- tests/
 ```
 
@@ -61,9 +63,8 @@ Important: the user is responsible for providing a regional workspace containing
 
 - Official runtime contract: `Python >= 3.11`
 - Canonical configuration in this phase:
-  - `config/default.yaml` as the packaged default;
-  - `<workspace>/config/custom.yaml` as an optional regional override;
-  - `config/custom.yaml` remains supported for local compatibility.
+  - module-owned in-code defaults;
+  - `<workspace>/config/custom.yaml` as the only editable regional override.
 - If `--workspace` is not provided, the CLI uses `MGB_OPS_WORKSPACE` and then the current directory.
 - The evaluation of migrating configuration to `.toml` remains open, with no contract change for now.
 
@@ -105,16 +106,14 @@ To run INMET ingestion, set `INMET_API_KEY` in the environment or fill `.env` fr
 
 ## Main Components
 
-- `src/ops_dashboard/`
+- `apps/ops_dashboard/`
   Operational Streamlit dashboard for monitoring, observed series, MGB series, and ECMWF forecast preview/correction.
 - `<workspace>/mgb_runner/`
-  Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user. Runner code lives in `src/model/`.
+  Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user. Runner code lives in `src/mgb_ops/model/`.
 - `src/mgb_ops/`
-  `mgb-ops` CLI that runs headless commands and starts/prints the dashboard.
-- `src/`
-  Domain modules split across ingestion, QC, model, storage, reporting, and common utilities.
-- `sql/`
-  Explicit schemas for `history.sqlite` and `run.sqlite`.
+  Installable package containing the CLI plus ingestion, QC, model, storage, reporting, and common utilities.
+- `src/mgb_ops/assets/sql/`
+  Explicit schemas for `history.sqlite`, run databases, and model output exports.
 - `docs/`
   Architecture, data model, operations, and workflows.
 

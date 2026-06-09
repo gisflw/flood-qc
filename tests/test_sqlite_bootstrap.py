@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from storage.db_bootstrap import initialize_history_db, initialize_run_db
+from mgb_ops.storage.db_bootstrap import initialize_history_db, initialize_run_db
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

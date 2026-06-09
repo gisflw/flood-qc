@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from common.paths import (
+from mgb_ops.common.paths import (
     MGB_OPS_WORKSPACE_ENV,
     build_run_db_path,
     clear_workspace,

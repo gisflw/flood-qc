@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from reporting import ops_dashboard_data
-from storage.db_bootstrap import apply_schema
+from mgb_ops.reporting import ops_dashboard_data
+from mgb_ops.storage.db_bootstrap import apply_schema
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HISTORY_SCHEMA_PATH = REPO_ROOT / "sql" / "history_schema.sql"
-MODEL_OUTPUTS_SCHEMA_PATH = REPO_ROOT / "sql" / "model_outputs_schema.sql"
+HISTORY_SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "history_schema.sql"
+MODEL_OUTPUTS_SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "model_outputs_schema.sql"
 
 
 def initialize_history_db(path: Path) -> Path:
@@ -107,7 +107,7 @@ def patch_mgb_runtime(monkeypatch, dataset: dict[str, object], *, reference_time
     monkeypatch.setattr(
         ops_dashboard_data,
         "load_settings",
-        lambda: {
+        lambda **_: {
             "run": {"reference_time": reference_time},
             "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
         },

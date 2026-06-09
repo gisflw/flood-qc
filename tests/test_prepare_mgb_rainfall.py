@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from ingest.forecast_grid import TpGribMessage
-from model.prepare_mgb_rainfall import (
+from mgb_ops.ingest.forecast_grid import TpGribMessage
+from mgb_ops.model.prepare_mgb_rainfall import (
     build_hourly_forecast_grid_series,
     extend_station_matrix_with_forecast,
     prepare_mgb_rainfall,
@@ -74,8 +74,8 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
     history_db.write_bytes(b"sqlite placeholder")
 
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.load_settings",
-        lambda: {
+        "mgb_ops.model.prepare_mgb_rainfall.load_settings",
+        lambda **_: {
             "run": {"reference_time": "2026-03-11"},
             "ingest": {"request_days": 7, "timeout_seconds": 15},
             "summaries": {"forecast_days": [1], "accum_hours": [24], "selected_mini_ids": []},
@@ -88,8 +88,8 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
             "rainfall_interpolation": {"nearest_stations": 1, "power": 2.0},
         },
     )
-    monkeypatch.setattr("model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
-    monkeypatch.setattr("model.prepare_mgb_rainfall.default_logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.default_logs_dir", lambda: tmp_path / "logs")
 
     class FakeConnection:
         def __enter__(self):
@@ -98,9 +98,9 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
         def __exit__(self, exc_type, exc, tb):
             return None
 
-    monkeypatch.setattr("model.prepare_mgb_rainfall._connect_history_read_only", lambda _: FakeConnection())
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall._connect_history_read_only", lambda _: FakeConnection())
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.load_preferred_rain_stations",
+        "mgb_ops.model.prepare_mgb_rainfall.load_preferred_rain_stations",
         lambda _: pd.DataFrame(
             {
                 "series_id": ["s1"],
@@ -113,7 +113,7 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
         ),
     )
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.load_rain_values",
+        "mgb_ops.model.prepare_mgb_rainfall.load_rain_values",
         lambda *args, **kwargs: pd.DataFrame(
             {
                 "station_uid": [1, 1, 1],
@@ -133,7 +133,7 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
         captured["matrix"] = mini_matrix.copy()
         np.asarray(mini_matrix, dtype=np.float32).tofile(output_path)
 
-    monkeypatch.setattr("model.prepare_mgb_rainfall.write_mini_rainfall_atomic", fake_write_mini_rainfall_atomic)
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.write_mini_rainfall_atomic", fake_write_mini_rainfall_atomic)
 
     summary = prepare_mgb_rainfall(
         history_db=history_db,
@@ -169,8 +169,8 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
     forecast_grib.write_bytes(b"grib placeholder")
 
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.load_settings",
-        lambda: {
+        "mgb_ops.model.prepare_mgb_rainfall.load_settings",
+        lambda **_: {
             "run": {"reference_time": "2026-03-11"},
             "ingest": {"request_days": 7, "timeout_seconds": 15},
             "summaries": {"forecast_days": [1], "accum_hours": [24], "selected_mini_ids": []},
@@ -183,8 +183,8 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
             "rainfall_interpolation": {"nearest_stations": 1, "power": 2.0},
         },
     )
-    monkeypatch.setattr("model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
-    monkeypatch.setattr("model.prepare_mgb_rainfall.default_logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.default_logs_dir", lambda: tmp_path / "logs")
 
     class FakeConnection:
         def __enter__(self):
@@ -193,9 +193,9 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         def __exit__(self, exc_type, exc, tb):
             return None
 
-    monkeypatch.setattr("model.prepare_mgb_rainfall._connect_history_read_only", lambda _: FakeConnection())
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall._connect_history_read_only", lambda _: FakeConnection())
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.load_preferred_rain_stations",
+        "mgb_ops.model.prepare_mgb_rainfall.load_preferred_rain_stations",
         lambda _: pd.DataFrame(
             {
                 "series_id": ["s1"],
@@ -208,7 +208,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         ),
     )
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.load_rain_values",
+        "mgb_ops.model.prepare_mgb_rainfall.load_rain_values",
         lambda *args, **kwargs: pd.DataFrame(
             {
                 "station_uid": [1, 1, 1],
@@ -221,14 +221,14 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
             }
         ),
     )
-    monkeypatch.setattr("model.prepare_mgb_rainfall.load_latest_ecmwf_asset_path", lambda *args, **kwargs: forecast_grib)
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.load_latest_ecmwf_asset_path", lambda *args, **kwargs: forecast_grib)
 
     forecast_nt = 49
     hourly_grids = np.zeros((forecast_nt, 2, 2), dtype=np.float64)
     hourly_grids[:, 0, 0] = 10.0
     hourly_grids[:, 1, 1] = 20.0
     monkeypatch.setattr(
-        "model.prepare_mgb_rainfall.build_hourly_forecast_grid_series",
+        "mgb_ops.model.prepare_mgb_rainfall.build_hourly_forecast_grid_series",
         lambda *args, **kwargs: (
             np.array([-29.5, -30.5], dtype=np.float64),
             np.array([-51.5, -52.5], dtype=np.float64),
@@ -242,7 +242,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         captured["matrix"] = mini_matrix.copy()
         np.asarray(mini_matrix, dtype=np.float32).tofile(output_path)
 
-    monkeypatch.setattr("model.prepare_mgb_rainfall.write_mini_rainfall_atomic", fake_write_mini_rainfall_atomic)
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.write_mini_rainfall_atomic", fake_write_mini_rainfall_atomic)
 
     summary = prepare_mgb_rainfall(
         history_db=history_db,
@@ -283,7 +283,7 @@ def test_build_hourly_forecast_grid_series_converts_grib_valid_times_from_utc_to
         ),
     ]
 
-    monkeypatch.setattr("model.prepare_mgb_rainfall.read_tp_grib_messages", lambda _: messages)
+    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.read_tp_grib_messages", lambda _: messages)
 
     latitudes, longitudes, hourly_grids = build_hourly_forecast_grid_series(
         Path("unused.grib2"),

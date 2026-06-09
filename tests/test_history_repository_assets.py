@@ -4,8 +4,8 @@ from datetime import datetime
 
 import pytest
 
-from storage.db_bootstrap import initialize_history_db
-from storage.history_repository import HistoryRepository
+from mgb_ops.storage.db_bootstrap import initialize_history_db
+from mgb_ops.storage.history_repository import HistoryRepository
 
 
 def test_history_repository_upserts_and_finds_ecmwf_asset(tmp_path) -> None:

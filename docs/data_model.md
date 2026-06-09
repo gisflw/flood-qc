@@ -106,7 +106,7 @@ The contract remains:
 
 The repository's operational configuration remains in:
 
-- `config/default.yaml`
+- module-owned in-code defaults
 - `<workspace>/config/custom.yaml` when present
 
 The possible migration to `.toml` remains under evaluation and does not yet change the data model or the runtime contract for this phase.
@@ -115,5 +115,5 @@ The possible migration to `.toml` remains under evaluation and does not yet chan
 
 The implemented canonical schemas live in:
 
-- `sql/history_schema.sql`
-- `sql/run_schema.sql`
+- `src/mgb_ops/assets/sql/history_schema.sql`
+- `src/mgb_ops/assets/sql/run_schema.sql`

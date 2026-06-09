@@ -5,9 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from common.models import RunMetadata
-from model import mgb_execution
-from model import run_mgb
+from mgb_ops.common.models import RunMetadata
+from mgb_ops.model import mgb_execution
+from mgb_ops.model import run_mgb
 
 
 class FakeProcess:

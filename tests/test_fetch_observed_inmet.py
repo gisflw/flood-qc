@@ -8,8 +8,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from ingest import fetch_observed_inmet
-from storage.db_bootstrap import initialize_history_db
+from mgb_ops.ingest import fetch_observed_inmet
+from mgb_ops.storage.db_bootstrap import initialize_history_db
 
 
 SAMPLE_INMET_PAYLOAD = {

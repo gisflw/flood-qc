@@ -1,26 +1,26 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-from common.paths import (
+from mgb_ops.common.paths import (
     SQL_DIR,
     ensure_standard_dirs,
     runtime_paths,
     set_workspace,
 )
-from common.settings import load_settings
-from common.time_utils import resolve_reference_time
+from mgb_ops.common.settings import load_settings
+from mgb_ops.common.time_utils import resolve_reference_time
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
 RAINFALL_DEFAULT_CHUNK_HOURS = 720
 EXPORT_DEFAULT_CHUNK_HOURS = 720
+APP_ROOT = Path(__file__).resolve().parents[3] / "apps"
 
 
 def _print_json(value: object) -> None:
@@ -32,7 +32,7 @@ def _settings(args: argparse.Namespace) -> dict[str, object]:
 
 
 def cmd_bootstrap_history(args: argparse.Namespace) -> int:
-    from storage.db_bootstrap import initialize_history_db
+    from mgb_ops.storage.db_bootstrap import initialize_history_db
 
     paths = runtime_paths(args.workspace)
     ensure_standard_dirs(args.workspace)
@@ -43,7 +43,7 @@ def cmd_bootstrap_history(args: argparse.Namespace) -> int:
 
 
 def cmd_bootstrap_run(args: argparse.Namespace) -> int:
-    from storage.db_bootstrap import initialize_run_db
+    from mgb_ops.storage.db_bootstrap import initialize_run_db
 
     ensure_standard_dirs(args.workspace)
     print(initialize_run_db(args.run_id, args.run_path))
@@ -51,7 +51,7 @@ def cmd_bootstrap_run(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_ana(args: argparse.Namespace) -> int:
-    from ingest.fetch_observed_ana import ingest_observed_ana
+    from mgb_ops.ingest.fetch_observed_ana import ingest_observed_ana
 
     paths = runtime_paths(args.workspace)
     settings = _settings(args)
@@ -72,7 +72,7 @@ def cmd_ingest_ana(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_inmet(args: argparse.Namespace) -> int:
-    from ingest.fetch_observed_inmet import ingest_observed_inmet
+    from mgb_ops.ingest.fetch_observed_inmet import ingest_observed_inmet
 
     paths = runtime_paths(args.workspace)
     settings = _settings(args)
@@ -93,7 +93,7 @@ def cmd_ingest_inmet(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_forecast_grid(args: argparse.Namespace) -> int:
-    from ingest.forecast_grid import ingest_forecast_grids
+    from mgb_ops.ingest.forecast_grid import ingest_forecast_grids
 
     paths = runtime_paths(args.workspace)
     settings = _settings(args)
@@ -109,7 +109,7 @@ def cmd_ingest_forecast_grid(args: argparse.Namespace) -> int:
 
 
 def cmd_model_prepare_meta(args: argparse.Namespace) -> int:
-    from model.prepare_mgb_meta import rewrite_mgb_meta_from_config
+    from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta_from_config
 
     paths = runtime_paths(args.workspace)
     summary = rewrite_mgb_meta_from_config(
@@ -122,7 +122,7 @@ def cmd_model_prepare_meta(args: argparse.Namespace) -> int:
 
 
 def cmd_model_prepare_rainfall(args: argparse.Namespace) -> int:
-    from model.prepare_mgb_rainfall import prepare_mgb_rainfall
+    from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
 
     paths = runtime_paths(args.workspace)
     settings = _settings(args)
@@ -143,8 +143,8 @@ def cmd_model_prepare_rainfall(args: argparse.Namespace) -> int:
 
 
 def cmd_model_run(args: argparse.Namespace) -> int:
-    from model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
-    from model.run_mgb import build_run_metadata, build_summary
+    from mgb_ops.model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
+    from mgb_ops.model.run_mgb import build_run_metadata, build_summary
 
     paths = runtime_paths(args.workspace)
     metadata = build_run_metadata()
@@ -161,7 +161,7 @@ def cmd_model_run(args: argparse.Namespace) -> int:
 
 
 def cmd_model_export_outputs(args: argparse.Namespace) -> int:
-    from model.export_mgb_outputs import export_mgb_outputs
+    from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 
     paths = runtime_paths(args.workspace)
     summary = export_mgb_outputs(
@@ -179,10 +179,9 @@ def cmd_model_export_outputs(args: argparse.Namespace) -> int:
 
 
 def cmd_dashboard(args: argparse.Namespace) -> int:
-    app_spec = importlib.util.find_spec("ops_dashboard.app")
-    if app_spec is None or app_spec.origin is None:
-        raise RuntimeError("Could not locate ops_dashboard.app in the installed environment.")
-    app_path = Path(app_spec.origin)
+    app_path = APP_ROOT / "ops_dashboard" / "app.py"
+    if not app_path.exists():
+        raise RuntimeError(f"Could not locate ops dashboard app at {app_path}.")
     command = ["streamlit", "run", str(app_path), "--", "--workspace", str(runtime_paths(args.workspace).workspace)]
     if not args.launch:
         print(" ".join(command))
@@ -190,6 +189,25 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     env = os.environ.copy()
     env["MGB_OPS_WORKSPACE"] = str(runtime_paths(args.workspace).workspace)
     return subprocess.call(command, env=env)
+
+
+def cmd_report_build(args: argparse.Namespace) -> int:
+    from mgb_ops.common.models import RunMetadata, RunKind, RunStatus
+    from mgb_ops.reporting.reports import build_run_reports
+
+    run = RunMetadata(
+        run_id=args.run_id,
+        reference_time=str(args.run_id),
+        run_kind=RunKind.AUTOMATIC,
+        status=RunStatus.DRAFT,
+    )
+    try:
+        reports = build_run_reports(run)
+    except NotImplementedError as exc:
+        print(f"Report generation is not implemented yet: {exc}", file=sys.stderr)
+        return 2
+    _print_json([report.__dict__ for report in reports])
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -265,6 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard = subparsers.add_parser("dashboard", help="Show or launch the Streamlit dashboard.")
     dashboard.add_argument("--launch", action="store_true", help="Launch Streamlit instead of printing the command.")
     dashboard.set_defaults(func=cmd_dashboard)
+
+    report = subparsers.add_parser("report", help="Build operational reports.")
+    report_sub = report.add_subparsers(dest="report_command", required=True)
+    report_build = report_sub.add_parser("build", help="Build reports for a run.")
+    report_build.add_argument("--run-id", required=True)
+    report_build.set_defaults(func=cmd_report_build)
     return parser
 
 

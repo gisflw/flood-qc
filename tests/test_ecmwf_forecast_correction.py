@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ingest.forecast_grid import TpGribMessage
-from qc import ecmwf_forecast_correction
+from mgb_ops.ingest.forecast_grid import TpGribMessage
+from mgb_ops.qc import ecmwf_forecast_correction
 
 
 def _message(step_hours: int, value: float) -> TpGribMessage:

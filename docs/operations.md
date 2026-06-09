@@ -4,8 +4,7 @@
 
 1. Create a virtual environment with `Python 3.11+`.
 2. Install dependencies with `pip install -e .[dev,data,geo,ui]`.
-3. Adjust `config/default.yaml` when operational defaults need to change.
-4. Use `<workspace>/config/custom.yaml` for optional regional overrides.
+3. Use `<workspace>/config/custom.yaml` for optional regional overrides.
 
 Typical Linux/macOS setup:
 
@@ -27,9 +26,8 @@ pip install -e .[dev,data,geo,ui]
 
 The runtime reads:
 
-- `config/default.yaml` as the packaged default;
-- `<workspace>/config/custom.yaml` when present;
-- `config/custom.yaml` as a local compatibility fallback.
+- module-owned in-code defaults;
+- `<workspace>/config/custom.yaml` when present.
 
 The regional workspace is provided through `mgb-ops --workspace PATH`, `MGB_OPS_WORKSPACE`, or the current directory. Each workspace must contain `data/`, `logs/`, and `mgb_runner/`. The possible migration to `.toml` remains under evaluation.
 

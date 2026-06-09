@@ -10,7 +10,7 @@
 
 ### 2. ANA Observation Ingestion
 
-1. Read `config/default.yaml` and the optional override in `<workspace>/config/custom.yaml`.
+1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
 2. Fetch hydrometeorological data by station and day.
 3. Save raw XML in `<workspace>/data/interim/ana/`.
 4. Persist observations in `observed_series` and `observed_value`.
@@ -18,7 +18,7 @@
 
 ### 2b. INMET Rainfall Ingestion
 
-1. Read `config/default.yaml` and the optional override in `<workspace>/config/custom.yaml`.
+1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
 2. Read the local key from `INMET_API_KEY` or `.env`.
 3. Query the operational rainfall API by station and day.
 4. Save raw payloads in `<workspace>/data/interim/inmet/`.

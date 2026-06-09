@@ -4,14 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from common.models import DataState, RunKind, RunMetadata, RunStatus, TimeSeriesRecord
-from ingest import forecast_grid as forecast_grid_module
-from ingest.forecast_grid import collect_forecast_grids
-from ingest.observed import collect_observed_timeseries
-from model.run_builder import assemble_model_inputs
-from qc.automatic import apply_automatic_qc
-from qc.review import register_manual_review
-from reporting.reports import build_run_reports
+from mgb_ops.common.models import DataState, RunKind, RunMetadata, RunStatus, TimeSeriesRecord
+from mgb_ops.ingest import forecast_grid as forecast_grid_module
+from mgb_ops.ingest.forecast_grid import collect_forecast_grids
+from mgb_ops.ingest.observed import collect_observed_timeseries
+from mgb_ops.model.run_builder import assemble_model_inputs
+from mgb_ops.qc.automatic import apply_automatic_qc
+from mgb_ops.qc.review import register_manual_review
+from mgb_ops.reporting.reports import build_run_reports
 
 
 @pytest.fixture

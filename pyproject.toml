@@ -40,7 +40,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-"mgb_ops.assets" = ["config/*.yaml", "sql/*.sql"]
+"mgb_ops.assets" = ["sql/*.sql"]
 
 [project.scripts]
 mgb-ops = "mgb_ops.cli.main:main"

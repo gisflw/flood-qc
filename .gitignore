@@ -14,12 +14,6 @@ venv/
 .idea/
 .DS_Store
 
-# Apps
-apps/*
-!apps/*.md
-!apps/*.py
-!apps/.gitkeep
-
 # Data
 data/*
 !data/README.md
