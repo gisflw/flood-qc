@@ -181,7 +181,7 @@ def cmd_model_export_outputs(args: argparse.Namespace) -> int:
 def cmd_dashboard(args: argparse.Namespace) -> int:
     app_spec = importlib.util.find_spec("ops_dashboard.app")
     if app_spec is None or app_spec.origin is None:
-        raise RuntimeError("Nao foi possivel localizar ops_dashboard.app no ambiente instalado.")
+        raise RuntimeError("Could not locate ops_dashboard.app in the installed environment.")
     app_path = Path(app_spec.origin)
     command = ["streamlit", "run", str(app_path), "--", "--workspace", str(runtime_paths(args.workspace).workspace)]
     if not args.launch:

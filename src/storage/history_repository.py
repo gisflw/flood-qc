@@ -39,10 +39,10 @@ class HistoryRepository:
         }
         if found_columns != expected_columns:
             raise RuntimeError(
-                f"Banco historico incompativel com o schema atual de {table_name}. "
-                f"Esperado {sorted(expected_columns)}, encontrado {sorted(found_columns)}. "
-                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
-                "para recriar o banco."
+                f"History database is incompatible with the current schema for {table_name}. "
+                f"Expected {sorted(expected_columns)}, found {sorted(found_columns)}. "
+                f"Delete {self.database_path} and run `python src/storage/db_bootstrap.py --history` "
+                "to recreate the database."
             )
 
     def _validate_expected_schema(self) -> None:
@@ -96,10 +96,10 @@ class HistoryRepository:
         expected_variables = {"rain", "level", "flow"}
         if not expected_variables.issubset(variable_codes):
             raise RuntimeError(
-                "Banco historico incompativel com o catalogo atual de variaveis. "
-                f"Esperado pelo menos {sorted(expected_variables)}, encontrado {sorted(variable_codes)}. "
-                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
-                "para recriar o banco."
+                "History database is incompatible with the current variable catalog. "
+                f"Expected at least {sorted(expected_variables)}, found {sorted(variable_codes)}. "
+                f"Delete {self.database_path} and run `python src/storage/db_bootstrap.py --history` "
+                "to recreate the database."
             )
 
         provider_codes = {
@@ -109,10 +109,10 @@ class HistoryRepository:
         expected_providers = {"ana", "inmet", "ecmwf"}
         if not expected_providers.issubset(provider_codes):
             raise RuntimeError(
-                "Banco historico incompativel com o catalogo atual de providers. "
-                f"Esperado pelo menos {sorted(expected_providers)}, encontrado {sorted(provider_codes)}. "
-                f"Apague o arquivo {self.database_path} e rode `python src/storage/db_bootstrap.py --history` "
-                "para recriar o banco."
+                "History database is incompatible with the current provider catalog. "
+                f"Expected at least {sorted(expected_providers)}, found {sorted(provider_codes)}. "
+                f"Delete {self.database_path} and run `python src/storage/db_bootstrap.py --history` "
+                "to recreate the database."
             )
 
     def get_provider_stations(self, provider_code: str) -> list[dict[str, Any]]:
@@ -162,7 +162,7 @@ class HistoryRepository:
         ensured_series_id = self._get_observed_series_id(station_uid, variable_code, state)
         if ensured_series_id is None:
             raise RuntimeError(
-                "Falha ao garantir observed_series "
+                "Failed to ensure observed_series "
                 f"station_uid={station_uid} variable_code={variable_code} state={state}."
             )
         return ensured_series_id
@@ -345,16 +345,16 @@ class HistoryRepository:
 
     def _normalize_forecast_manual_edit_row(self, asset_id: str, row: dict[str, Any], row_number: int) -> dict[str, Any]:
         if row.get("asset_id") not in (None, "", asset_id):
-            raise ValueError(f"Linha {row_number}: asset_id divergente do asset selecionado.")
+            raise ValueError(f"Row {row_number}: asset_id differs from the selected asset.")
 
         try:
             t0_step = int(row["t0_step"])
             t1_step = int(row["t1_step"])
         except (KeyError, TypeError, ValueError) as exc:
-            raise ValueError(f"Linha {row_number}: t0_step/t1_step invalidos.") from exc
+            raise ValueError(f"Row {row_number}: invalid t0_step/t1_step.") from exc
 
         if t1_step < t0_step:
-            raise ValueError(f"Linha {row_number}: t1_step deve ser >= t0_step.")
+            raise ValueError(f"Row {row_number}: t1_step must be >= t0_step.")
 
         try:
             shift_lat = float(row.get("shift_lat", 0.0))
@@ -362,14 +362,14 @@ class HistoryRepository:
             rotation_deg = float(row.get("rotation_deg", 0.0))
             multiplication_factor = float(row.get("multiplication_factor", 1.0))
         except (TypeError, ValueError) as exc:
-            raise ValueError(f"Linha {row_number}: parametros numericos invalidos.") from exc
+            raise ValueError(f"Row {row_number}: invalid numeric parameters.") from exc
 
         if multiplication_factor <= 0:
-            raise ValueError(f"Linha {row_number}: multiplication_factor deve ser > 0.")
+            raise ValueError(f"Row {row_number}: multiplication_factor must be > 0.")
 
         reason = str(row.get("reason", "") or "").strip()
         if not reason:
-            raise ValueError(f"Linha {row_number}: reason obrigatorio.")
+            raise ValueError(f"Row {row_number}: reason is required.")
 
         editor_raw = row.get("editor")
         if editor_raw is None:
@@ -386,11 +386,11 @@ class HistoryRepository:
                 try:
                     metadata_raw = json.loads(metadata_json_raw)
                 except json.JSONDecodeError as exc:
-                    raise ValueError(f"Linha {row_number}: metadata_json invalido.") from exc
+                    raise ValueError(f"Row {row_number}: invalid metadata_json.") from exc
             elif isinstance(metadata_json_raw, dict):
                 metadata_raw = metadata_json_raw
             else:
-                raise ValueError(f"Linha {row_number}: metadata_json invalido.")
+                raise ValueError(f"Row {row_number}: invalid metadata_json.")
         metadata = serialize_metadata_payload(metadata_raw)
 
         return {

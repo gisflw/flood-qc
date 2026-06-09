@@ -1,23 +1,23 @@
-# Modelo conceitual de dados
+# Conceptual Data Model
 
-## Estado atual
+## Current Status
 
-O modelo canonico continua dividido entre:
+The canonical model remains split between:
 
-- historico persistente em `<workspace>/data/history.sqlite`;
-- run por arquivo em `<workspace>/data/runs/<run_id>.sqlite`.
+- persistent history in `<workspace>/data/history.sqlite`;
+- one file per run in `<workspace>/data/runs/<run_id>.sqlite`.
 
-Hoje o historico esta em uso real por ANA, ECMWF, dashboard e correcoes manuais de forecast. O schema de run ja existe, mas sua materializacao operacional ainda nao esta completa.
+Today the history database is used operationally by ANA, ECMWF, the dashboard, and manual forecast corrections. The run schema already exists, but its operational materialization is not complete yet.
 
-## Entidades principais do historico
+## Main History Entities
 
 ### `provider`
 
-Catalogo das origens operacionais, incluindo pelo menos `ana`, `inmet` e `ecmwf`.
+Catalog of operational sources, including at least `ana`, `inmet`, and `ecmwf`.
 
 ### `variable`
 
-Catalogo das variaveis canonicas. Nesta fase, o historico trabalha com:
+Catalog of canonical variables. In this phase, the history database works with:
 
 - `rain`
 - `level`
@@ -25,95 +25,95 @@ Catalogo das variaveis canonicas. Nesta fase, o historico trabalha com:
 
 ### `station`
 
-Cadastro operacional unificado das estacoes. A identidade logica continua sendo `provider_code + station_code`.
+Unified operational station registry. The logical identity remains `provider_code + station_code`.
 
-O inventario inicial vem de `<workspace>/data/interim/history_station_inventory.csv`. O bootstrap calcula `station_uid` por provider, incluindo codigos alfanumericos do INMET.
+The initial inventory comes from `<workspace>/data/interim/history_station_inventory.csv`. Bootstrap computes `station_uid` by provider, including alphanumeric INMET codes.
 
 ### `observed_series`
 
-Define uma serie observada por combinacao de:
+Defines an observed series by combination of:
 
 - `station_uid`
 - `variable_code`
 - `state`
 
-Os estados canonicos continuam sendo:
+The canonical states remain:
 
 - `raw`
 - `curated`
 - `approved`
 
-No estado atual do repositorio, o historico em uso ainda esta predominantemente em `raw`.
+In the repository's current state, the history database in active use is still mostly `raw`.
 
 ### `observed_value`
 
-Tabela temporal em formato long, com um valor por `series_id + observed_at`.
+Long-format time table, with one value per `series_id + observed_at`.
 
 ### `asset`
 
-Registro generico de arquivos externos. Hoje ele ja e usado de forma operacional para assets ECMWF.
+Generic registry of external files. It is already used operationally for ECMWF assets.
 
 ### `qc_flag`
 
-Estrutura canonica para flags de qualidade sem sobrescrever o dado original. O schema esta implementado, mas o QC automatico ainda nao popula essa tabela de forma operacional.
+Canonical structure for quality flags without overwriting the original data. The schema is implemented, but automatic QC does not yet populate this table operationally.
 
 ### `manual_edit`
 
-No historico atual, esta tabela esta sendo usada para correcoes manuais de forecast ECMWF por asset e janela temporal. Ainda nao existe contrato equivalente implementado para correcao manual de chuva observada.
+In the current history database, this table is used for manual ECMWF forecast corrections by asset and time window. There is no equivalent implemented contract yet for manual correction of observed rainfall.
 
 ### `run_catalog`
 
-Indice de runs publicados ou disponiveis. O schema existe, mas o catalogo ainda nao esta sendo alimentado no fluxo atual.
+Index of published or available runs. The schema exists, but the current flow does not populate the catalog yet.
 
-## Entidades principais do run
+## Main Run Entities
 
-O banco de run continua modelado para guardar:
+The run database is still modeled to store:
 
-- cabecalho do run em `run`;
-- copia local de inputs em `run_input_series` e `run_input_value`;
-- assets do run em `run_asset`;
-- derivados operacionais em `derived_series` e `derived_value`;
-- execucao do modelo em `model_execution`;
-- subset operacional dos outputs do MGB em `mgb_output_series` e `mgb_output_value`;
-- flags, edicoes e relatorios locais.
+- run header in `run`;
+- local input copy in `run_input_series` and `run_input_value`;
+- run assets in `run_asset`;
+- operational derivatives in `derived_series` and `derived_value`;
+- model execution in `model_execution`;
+- operational subset of MGB outputs in `mgb_output_series` and `mgb_output_value`;
+- local flags, edits, and reports.
 
-Esse contrato permanece valido, mas a camada de repositorio e montagem do run ainda esta incompleta nesta fase.
+This contract remains valid, but the repository layer and run assembly are still incomplete in this phase.
 
-## Separacao entre historico e outputs completos
+## Separation Between History and Complete Outputs
 
-O output completo do MGB continua fora do SQLite, nos binarios canonicos do runner:
+Complete MGB output remains outside SQLite, in the canonical runner binaries:
 
 - `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
 - `<workspace>/mgb_runner/Output/YTUDO.MGB`
 
-O dashboard le esses binarios diretamente com apoio de:
+The dashboard reads these binaries directly with support from:
 
 - `<workspace>/mgb_runner/Input/PARHIG.hig`
 - `<workspace>/mgb_runner/Input/MINI.gtp`
 
-Esse comportamento ja esta implementado e e o caminho operacional atual para visualizacao do modelo.
+This behavior is implemented and is the current operational path for model visualization.
 
-## Assets espaciais e raster
+## Spatial Assets and Rasters
 
-O contrato segue sendo:
+The contract remains:
 
-- rasters e vetores ficam fora do SQLite;
-- o banco guarda apenas metadados e paths relativos.
+- rasters and vectors live outside SQLite;
+- the database stores only metadata and relative paths.
 
-`<workspace>/data/spatial/` continua sendo o destino canonico dos assets espaciais tratados, mas o mapa do dashboard ainda depende de material legado em `<workspace>/data/legacy/app_layers/`.
+`<workspace>/data/spatial/` remains the canonical destination for processed spatial assets, but the dashboard map still depends on legacy material in `<workspace>/data/legacy/app_layers/`.
 
-## Configuracao
+## Configuration
 
-A configuracao operacional do repositorio continua em:
+The repository's operational configuration remains in:
 
 - `config/default.yaml`
-- `<workspace>/config/custom.yaml` quando existir
+- `<workspace>/config/custom.yaml` when present
 
-A possivel migracao para `.toml` segue em avaliacao e ainda nao altera o modelo de dados nem o contrato de runtime desta fase.
+The possible migration to `.toml` remains under evaluation and does not yet change the data model or the runtime contract for this phase.
 
-## Schemas canonicos
+## Canonical Schemas
 
-Os schemas canonicos implementados seguem em:
+The implemented canonical schemas live in:
 
 - `sql/history_schema.sql`
 - `sql/run_schema.sql`

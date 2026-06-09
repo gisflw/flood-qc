@@ -207,9 +207,9 @@ def ingest_observed_ana(
     logs_dir: Path,
 ) -> dict[str, object]:
     if request_days < 1:
-        raise ValueError("request_days deve ser >= 1.")
+        raise ValueError("request_days must be >= 1.")
     if not Path(database_path).exists():
-        raise FileNotFoundError(f"Banco historico nao encontrado: {database_path}")
+        raise FileNotFoundError(f"History database not found: {database_path}")
 
     run_id = build_run_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{run_id}.log")
@@ -222,7 +222,7 @@ def ingest_observed_ana(
             allowed_codes = {normalize_ana_station_code(code) for code in station_codes}
             stations = [station for station in stations if station["station_code"] in allowed_codes]
         if not stations:
-            raise ValueError("Nenhuma estacao ANA encontrada para ingestao.")
+            raise ValueError("No ANA station found for ingestion.")
 
         summary = {
             "run_id": run_id,

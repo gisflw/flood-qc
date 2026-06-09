@@ -243,7 +243,7 @@ def test_ingest_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypa
     monkeypatch.setenv(fetch_observed_inmet.INMET_API_KEY_ENV, "secret")
     monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", tmp_path / ".env")
 
-    with pytest.raises(ValueError, match="Nenhuma estacao INMET encontrada"):
+    with pytest.raises(ValueError, match="No INMET station found"):
         fetch_observed_inmet.ingest_observed_inmet(
             db_path,
             reference_time=datetime(2026, 3, 11, 13, 45, 0),

@@ -1,4 +1,4 @@
-"""QC automatico e revisao manual."""
+"""Automatic QC and manual review."""
 
 from qc.ecmwf_forecast_correction import (
     CorrectedGribSummary,

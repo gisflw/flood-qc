@@ -4,11 +4,11 @@ from common.models import RunMetadata, TimeSeriesRecord
 
 
 def collect_observed_timeseries(run: RunMetadata) -> list[TimeSeriesRecord]:
-    """Coleta series observadas para o run informado.
+    """Collect observed series for the given run.
 
     TODO:
-    - implementar conectores reais de ANA, INMET e outras fontes;
-    - persistir os arquivos brutos em `data/interim/`;
-    - registrar metadados e lineage no banco historico.
+    - implement real connectors for ANA, INMET, and other sources;
+    - persist raw files in `data/interim/`;
+    - register metadata and lineage in the history database.
     """
-    raise NotImplementedError("Coleta de observados ainda nao implementada.")
+    raise NotImplementedError("Observation collection is not implemented yet.")

@@ -4,12 +4,12 @@ from common.models import ManualEdit, RunMetadata
 
 
 def register_manual_review(run: RunMetadata, edits: list[ManualEdit]) -> None:
-    """Registra revisoes manuais sobre um run ja executado e materializado.
+    """Register manual reviews for an already executed and materialized run.
 
     TODO:
-    - persistir o log append-only no banco do run derivado;
-    - impedir alteracao em lugar do run automatico de origem;
-    - opcionalmente propagar aprovacoes para o historico;
-    - validar autoria, motivo e timestamps.
+    - persist the append-only log in the derived run database;
+    - prevent in-place changes to the original automatic run;
+    - optionally propagate approvals to history;
+    - validate author, reason, and timestamps.
     """
-    raise NotImplementedError("Revisao manual ainda nao implementada.")
+    raise NotImplementedError("Manual review is not implemented yet.")

@@ -4,11 +4,11 @@ from common.models import ReportArtifact, RunMetadata
 
 
 def build_run_reports(run: RunMetadata) -> list[ReportArtifact]:
-    """Gera os artefatos de relatorio do run.
+    """Generate report artifacts for the run.
 
     TODO:
-    - consolidar sumarios operacionais;
-    - gerar saídas em formatos acordados;
-    - registrar relatorios no banco do run.
+    - consolidate operational summaries;
+    - generate outputs in agreed formats;
+    - register reports in the run database.
     """
-    raise NotImplementedError("Geracao de relatorios ainda nao implementada.")
+    raise NotImplementedError("Report generation is not implemented yet.")

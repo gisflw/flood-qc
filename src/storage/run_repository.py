@@ -4,16 +4,16 @@ from pathlib import Path
 
 
 class RunRepository:
-    """Acesso futuro ao arquivo SQLite de um run.
+    """Future access layer for a run SQLite file.
 
     TODO:
-    - registrar lineage do run;
-    - persistir inputs, outputs, flags e edicoes;
-    - registrar assets e relatorios associados.
+    - register run lineage;
+    - persist inputs, outputs, flags, and edits;
+    - register associated assets and reports.
     """
 
     def __init__(self, database_path: Path) -> None:
         self.database_path = database_path
 
     def connect(self) -> None:
-        raise NotImplementedError("Repositorio de run ainda nao implementado.")
+        raise NotImplementedError("Run repository is not implemented yet.")

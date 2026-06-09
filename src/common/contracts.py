@@ -16,42 +16,42 @@ from common.models import (
 
 
 class ObservationCollector(Protocol):
-    """Contrato para coletores de series observadas."""
+    """Contract for observed series collectors."""
 
     def collect(self, run: RunMetadata) -> Iterable[TimeSeriesRecord]:
         ...
 
 
 class ForecastGridCollector(Protocol):
-    """Contrato para coletores de previsao em grade."""
+    """Contract for gridded forecast collectors."""
 
     def collect(self, run: RunMetadata) -> Iterable[RasterAsset]:
         ...
 
 
 class AutomaticQcProcessor(Protocol):
-    """Contrato para avaliacao automatica de qualidade antes da execucao do modelo."""
+    """Contract for automatic quality assessment before model execution."""
 
     def run(self, run: RunMetadata) -> Iterable[QcFlag]:
         ...
 
 
 class ManualReviewService(Protocol):
-    """Contrato para registrar ajustes manuais sobre um run ja materializado."""
+    """Contract for registering manual adjustments on an already materialized run."""
 
     def apply(self, run: RunMetadata, edits: Iterable[ManualEdit]) -> None:
         ...
 
 
 class RunAssembler(Protocol):
-    """Contrato para materializar o run operacional a partir dos insumos e outputs selecionados."""
+    """Contract for materializing the operational run from selected inputs and outputs."""
 
     def build(self, run: RunMetadata) -> Iterable[ModelInput]:
         ...
 
 
 class ModelExecutor(Protocol):
-    """Contrato para preparar e executar o modelo externo a partir dos arquivos de input."""
+    """Contract for preparing and executing the external model from input files."""
 
     def prepare(self, run: RunMetadata) -> CommandPlan:
         ...
@@ -61,14 +61,14 @@ class ModelExecutor(Protocol):
 
 
 class PostProcessor(Protocol):
-    """Contrato para exportar o output completo e preparar o subset operacional do run."""
+    """Contract for exporting complete output and preparing the operational run subset."""
 
     def process(self, run: RunMetadata) -> Iterable[ModelOutput]:
         ...
 
 
 class ReportBuilder(Protocol):
-    """Contrato para geracao de artefatos de relatorio."""
+    """Contract for report artifact generation."""
 
     def build(self, run: RunMetadata) -> Iterable[ReportArtifact]:
         ...

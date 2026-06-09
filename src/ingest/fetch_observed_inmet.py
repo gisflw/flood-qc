@@ -99,8 +99,8 @@ def require_api_key(env_var_name: str = INMET_API_KEY_ENV) -> str:
         api_key = load_local_env().get(env_var_name, "").strip()
     if not api_key:
         raise RuntimeError(
-            f"Chave da API do INMET/BNDMET ausente. Defina a variavel de ambiente {env_var_name} "
-            f"ou preencha {LOCAL_ENV_PATH.name} a partir de .env.example com uma chave obtida localmente antes de rodar a ingestao."
+            f"Missing INMET/BNDMET API key. Set the {env_var_name} environment variable "
+            f"or fill {LOCAL_ENV_PATH.name} from .env.example with a locally obtained key before running ingestion."
         )
     return api_key
 
@@ -273,7 +273,7 @@ def parse_payload(payload: Any, *, station_code: str):
 
     normalized_station_code = normalize_inmet_station_code(station_code)
     if normalized_station_code is None:
-        raise ValueError("station_code INMET invalido.")
+        raise ValueError("Invalid INMET station_code.")
 
     records: list[dict[str, Any]] = []
     for row in _extract_data_rows(payload):
@@ -353,9 +353,9 @@ def ingest_observed_inmet(
     base_url: str = DEFAULT_INMET_BASE_URL,
 ) -> dict[str, object]:
     if request_days < 1:
-        raise ValueError("request_days deve ser >= 1.")
+        raise ValueError("request_days must be >= 1.")
     if not Path(database_path).exists():
-        raise FileNotFoundError(f"Banco historico nao encontrado: {database_path}")
+        raise FileNotFoundError(f"History database not found: {database_path}")
 
     api_key = require_api_key()
     run_id = build_run_id(reference_time)
@@ -369,7 +369,7 @@ def ingest_observed_inmet(
             allowed_codes = {normalize_inmet_station_code(code) for code in station_codes}
             stations = [station for station in stations if station["station_code"] in allowed_codes]
         if not stations:
-            raise ValueError("Nenhuma estacao INMET encontrada para ingestao.")
+            raise ValueError("No INMET station found for ingestion.")
 
         summary = {
             "run_id": run_id,

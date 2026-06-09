@@ -72,7 +72,7 @@ def test_history_repository_replaces_forecast_manual_edits(tmp_path) -> None:
                     "rotation_deg": 5.0,
                     "multiplication_factor": 1.2,
                     "editor": "tester",
-                    "reason": "ajuste operacional",
+                    "reason": "operational adjustment",
                     "metadata": {"mode_label": "acumulado_nativo"},
                 }
             ],
@@ -88,7 +88,7 @@ def test_history_repository_replaces_forecast_manual_edits(tmp_path) -> None:
                     "rotation_deg": 1.0,
                     "multiplication_factor": 1.1,
                     "editor": "tester",
-                    "reason": "ajuste atualizado",
+                    "reason": "updated adjustment",
                     "metadata": {"mode_label": "acumulado_nativo"},
                 },
                 {
@@ -109,7 +109,7 @@ def test_history_repository_replaces_forecast_manual_edits(tmp_path) -> None:
     assert len(replaced) == 2
     assert replaced[0]["t0_step"] == 0
     assert replaced[0]["shift_lat"] == 3.0
-    assert replaced[0]["reason"] == "ajuste atualizado"
+    assert replaced[0]["reason"] == "updated adjustment"
     assert replaced[1]["t0_step"] == 24
     assert replaced[1]["reason"] == "segunda janela"
 

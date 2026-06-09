@@ -155,7 +155,7 @@ def test_load_settings_accepts_missing_custom_yaml(tmp_path, monkeypatch) -> Non
 @pytest.mark.parametrize(
     ("default_text", "custom_text", "expected_error"),
     [
-        (None, EMPTY_CUSTOM, "Arquivo de config nao encontrado"),
+        (None, EMPTY_CUSTOM, "Config file not found"),
         (
             """\
 run:
@@ -180,7 +180,7 @@ rainfall_interpolation:
   power: 2.0
 """,
             EMPTY_CUSTOM,
-            "chaves obrigatorias",
+            "missing required keys",
         ),
         (
             """\
@@ -208,7 +208,7 @@ rainfall_interpolation:
   power: 2.0
 """,
             EMPTY_CUSTOM,
-            "chaves nao suportadas",
+            "contains unsupported keys",
         ),
         (
             """\
@@ -235,7 +235,7 @@ rainfall_interpolation:
   power: 2.0
 """,
             EMPTY_CUSTOM,
-            "nao pode ser vazio",
+            "cannot be empty",
         ),
         (
             """\
@@ -317,7 +317,7 @@ rainfall_interpolation:
   power: 2.0
 """,
             EMPTY_CUSTOM,
-            "chaves nao suportadas",
+            "contains unsupported keys",
         ),
         (
             """\

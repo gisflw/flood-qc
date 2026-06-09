@@ -1,1 +1,1 @@
-"""Geracao de relatorios e sumarios operacionais."""
+"""Operational report and summary generation."""

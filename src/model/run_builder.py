@@ -4,12 +4,12 @@ from common.models import ModelInput, RunMetadata
 
 
 def assemble_model_inputs(run: RunMetadata) -> list[ModelInput]:
-    """Materializa o run operacional a partir dos insumos aprovados e do subset selecionado.
+    """Materialize the operational run from approved inputs and the selected subset.
 
     TODO:
-    - consolidar series aprovadas efetivamente usadas na execucao;
-    - apontar rasters, vetores e artefatos auxiliares necessarios;
-    - selecionar o subset operacional dos outputs completos do modelo;
-    - validar completude antes da revisao/publicacao do run.
+    - consolidate approved series actually used in execution;
+    - point to required rasters, vectors, and auxiliary artifacts;
+    - select the operational subset of complete model outputs;
+    - validate completeness before run review/publication.
     """
-    raise NotImplementedError("Montagem de inputs do modelo ainda nao implementada.")
+    raise NotImplementedError("Model input assembly is not implemented yet.")

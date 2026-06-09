@@ -45,12 +45,12 @@ def _normalize_station_name(name: str) -> str:
 def _normalize_station_code(provider_code: str, station_code: str) -> str:
     normalized = station_code.strip()
     if not normalized:
-        raise ValueError("station_code vazio nao e suportado.")
+        raise ValueError("Empty station_code is not supported.")
     if provider_code == "ana":
         return normalized.lstrip("0") or "0"
     if provider_code == "inmet":
         return normalized.upper()
-    raise ValueError(f"provider_code nao suportado para station_code: {provider_code!r}")
+    raise ValueError(f"Unsupported provider_code for station_code: {provider_code!r}")
 
 
 def _parse_nullable_int(value: str) -> int | None:
@@ -76,9 +76,9 @@ def _station_code_to_int(station_code: str) -> int:
         elif "A" <= char <= "Z":
             pieces.append(str(ord(char) - ord("A") + 1))
         else:
-            raise ValueError(f"Caractere invalido em station_code: {station_code!r}")
+            raise ValueError(f"Invalid character in station_code: {station_code!r}")
     if not pieces:
-        raise ValueError("station_code vazio nao e suportado.")
+        raise ValueError("Empty station_code is not supported.")
     return int("".join(pieces))
 
 
@@ -86,7 +86,7 @@ def build_station_uid(provider_code: str, station_code: str) -> int:
     try:
         provider_base = PROVIDER_UID_BASES[provider_code]
     except KeyError as exc:
-        raise ValueError(f"provider_code nao suportado para station_uid: {provider_code!r}") from exc
+        raise ValueError(f"Unsupported provider_code for station_uid: {provider_code!r}") from exc
     return provider_base + _station_code_to_int(station_code)
 
 
@@ -96,7 +96,7 @@ def load_history_station_inventory(
 ) -> int:
     inventory_path = inventory_csv_path or history_station_inventory_csv_path()
     if not inventory_path.exists():
-        raise FileNotFoundError(f"CSV de inventario nao encontrado: {inventory_path}")
+        raise FileNotFoundError(f"Inventory CSV not found: {inventory_path}")
 
     required_columns = {
         "provider_code",
@@ -115,7 +115,7 @@ def load_history_station_inventory(
         missing_columns = required_columns.difference(reader.fieldnames or [])
         if missing_columns:
             raise ValueError(
-                f"CSV de inventario invalido em {inventory_path}: faltam colunas {sorted(missing_columns)}"
+                f"Invalid inventory CSV at {inventory_path}: missing columns {sorted(missing_columns)}"
             )
 
         for raw_row in reader:
@@ -128,12 +128,12 @@ def load_history_station_inventory(
 
             row_key = (provider_code, station_code)
             if row_key in seen_keys:
-                raise ValueError(f"Estacao duplicada no CSV de inventario: {row_key}")
+                raise ValueError(f"Duplicate station in inventory CSV: {row_key}")
             seen_keys.add(row_key)
 
             station_uid = build_station_uid(provider_code, station_code)
             if station_uid in seen_uids:
-                raise ValueError(f"station_uid duplicado calculado para {row_key}: {station_uid}")
+                raise ValueError(f"Duplicate calculated station_uid for {row_key}: {station_uid}")
             seen_uids.add(station_uid)
 
             rows_to_insert.append(
@@ -197,17 +197,17 @@ def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Inicializa bancos SQLite do repositorio.")
-    parser.add_argument("--history", action="store_true", help="Inicializa `<workspace>/data/history.sqlite`.")
-    parser.add_argument("--history-path", type=Path, default=None, help="Path alternativo para o banco historico.")
+    parser = argparse.ArgumentParser(description="Initialize repository SQLite databases.")
+    parser.add_argument("--history", action="store_true", help="Initialize `<workspace>/data/history.sqlite`.")
+    parser.add_argument("--history-path", type=Path, default=None, help="Alternative path for the history database.")
     parser.add_argument(
         "--inventory-csv",
         type=Path,
         default=None,
-        help="CSV do inventario de estacoes a ser carregado no banco historico.",
+        help="Station inventory CSV to load into the history database.",
     )
-    parser.add_argument("--run-id", type=str, default=None, help="Identificador do run a ser criado.")
-    parser.add_argument("--run-path", type=Path, default=None, help="Path alternativo para o banco do run.")
+    parser.add_argument("--run-id", type=str, default=None, help="Identifier of the run to create.")
+    parser.add_argument("--run-path", type=Path, default=None, help="Alternative path for the run database.")
     return parser
 
 
@@ -224,7 +224,7 @@ def main() -> int:
         print(path)
 
     if not args.history and not args.run_id:
-        parser.error("Informe --history e/ou --run-id.")
+        parser.error("Provide --history and/or --run-id.")
 
     return 0
 

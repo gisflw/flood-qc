@@ -172,10 +172,10 @@ def test_select_preferred_series_rows_uses_state_precedence() -> None:
 
 
 def test_derive_station_kind_from_variable_coverage() -> None:
-    assert ops_dashboard_data.derive_station_kind(["rain"]) == "chuva"
-    assert ops_dashboard_data.derive_station_kind(["level"]) == "nivel"
-    assert ops_dashboard_data.derive_station_kind(["flow"]) == "nivel"
-    assert ops_dashboard_data.derive_station_kind(["rain", "flow"]) == "misto"
+    assert ops_dashboard_data.derive_station_kind(["rain"]) == "rain"
+    assert ops_dashboard_data.derive_station_kind(["level"]) == "level"
+    assert ops_dashboard_data.derive_station_kind(["flow"]) == "level"
+    assert ops_dashboard_data.derive_station_kind(["rain", "flow"]) == "mixed"
 
 
 def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -> None:
@@ -222,7 +222,7 @@ def test_load_station_catalog_handles_all_stations_without_recent_values(tmp_pat
     catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
 
     assert catalog["station_uid"].tolist() == [1001]
-    assert catalog["kind"].tolist() == ["chuva"]
+    assert catalog["kind"].tolist() == ["rain"]
     assert catalog["status"].tolist() == ["no_data"]
     assert catalog["rows_recent"].tolist() == [0]
 

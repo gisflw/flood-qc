@@ -1,1 +1,1 @@
-"""Tipos, contratos, configuracao e utilitarios compartilhados."""
+"""Shared types, contracts, configuration, and utilities."""

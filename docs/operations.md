@@ -1,13 +1,13 @@
-# Operacao e convencoes
+# Operations and Conventions
 
-## Setup local
+## Local Setup
 
-1. Criar ambiente virtual com `Python 3.11+`.
-2. Instalar dependencias com `pip install -e .[dev,data,geo,ui]`.
-3. Ajustar `config/default.yaml` quando necessario para defaults operacionais.
-4. Usar `<workspace>/config/custom.yaml` para overrides regionais opcionais.
+1. Create a virtual environment with `Python 3.11+`.
+2. Install dependencies with `pip install -e .[dev,data,geo,ui]`.
+3. Adjust `config/default.yaml` when operational defaults need to change.
+4. Use `<workspace>/config/custom.yaml` for optional regional overrides.
 
-Setup tipico em Linux/macOS:
+Typical Linux/macOS setup:
 
 ```bash
 python -m venv .venv
@@ -15,7 +15,7 @@ source .venv/bin/activate
 pip install -e .[dev,data,geo,ui]
 ```
 
-Setup tipico em Windows PowerShell:
+Typical Windows PowerShell setup:
 
 ```powershell
 python -m venv .venv
@@ -23,17 +23,17 @@ python -m venv .venv
 pip install -e .[dev,data,geo,ui]
 ```
 
-## Configuracao operacional
+## Operational Configuration
 
-O runtime le:
+The runtime reads:
 
-- `config/default.yaml` como default empacotado;
-- `<workspace>/config/custom.yaml` quando existir;
-- `config/custom.yaml` como fallback de compatibilidade local.
+- `config/default.yaml` as the packaged default;
+- `<workspace>/config/custom.yaml` when present;
+- `config/custom.yaml` as a local compatibility fallback.
 
-O workspace regional e informado por `mgb-ops --workspace PATH`, por `MGB_OPS_WORKSPACE`, ou pelo diretorio atual. Cada workspace deve conter `data/`, `logs/` e `mgb_runner/`. A eventual migracao para `.toml` segue em avaliacao.
+The regional workspace is provided through `mgb-ops --workspace PATH`, `MGB_OPS_WORKSPACE`, or the current directory. Each workspace must contain `data/`, `logs/`, and `mgb_runner/`. The possible migration to `.toml` remains under evaluation.
 
-## Entry points usuais
+## Common Entry Points
 
 ```bash
 mgb-ops --workspace examples/rs_hydro bootstrap history
@@ -47,50 +47,50 @@ mgb-ops --workspace examples/rs_hydro model export-outputs
 mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-`mgb-ops ingest inmet` requer `INMET_API_KEY` no ambiente local ou em `.env`.
+`mgb-ops ingest inmet` requires `INMET_API_KEY` in the local environment or in `.env`.
 
-## Convencoes de nomes
+## Naming Conventions
 
-- `run_id`: preferencialmente `YYYYMMDDTHHMMSS`
-- `history.sqlite`: banco historico unico
-- `<workspace>/data/runs/<run_id>.sqlite`: um arquivo por run
-- assets externos com paths relativos sempre que possivel
+- `run_id`: preferably `YYYYMMDDTHHMMSS`
+- `history.sqlite`: single history database
+- `<workspace>/data/runs/<run_id>.sqlite`: one file per run
+- external assets with relative paths whenever possible
 
-## Estados de maturidade
+## Maturity States
 
-- `raw`: dado ingerido sem revisao completa
-- `curated`: dado tratado por regras automaticas ou pre-processamento
-- `approved`: dado liberado para uso operacional
+- `raw`: data ingested without complete review
+- `curated`: data processed by automatic rules or preprocessing
+- `approved`: data released for operational use
 
-O schema e o consumo do dashboard ja respeitam essa convencao, embora o fluxo automatico de promocao entre estados ainda esteja pendente.
+The schema and dashboard consumption already respect this convention, although the automatic promotion flow between states is still pending.
 
-## Artefato completo vs run
+## Complete Artifact vs Run
 
-O fluxo operacional atual usa diretamente os artefatos completos do runner:
+The current operational flow directly uses complete runner artifacts:
 
 - `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
 - `<workspace>/mgb_runner/Output/YTUDO.MGB`
 - `<workspace>/mgb_runner/Input/PARHIG.hig`
 - `<workspace>/mgb_runner/Input/MINI.gtp`
 
-O schema de run continua previsto para guardar o subset operacional e o contexto fechado do ciclo, mas essa etapa ainda nao esta completa no pipeline atual.
+The run schema is still expected to store the operational subset and the closed context of the cycle, but that step is not complete in the current pipeline.
 
-## Paths de raster e vetores
+## Raster and Vector Paths
 
-- guardar path relativo no banco sempre que possivel
-- nao armazenar raster como blob em SQLite
-- preservar `data/spatial/` como destino canonico de camadas tratadas, mesmo que parte do consumo atual ainda use artefatos legados
+- store relative paths in the database whenever possible
+- do not store rasters as SQLite blobs
+- preserve `data/spatial/` as the canonical destination for processed layers, even if part of current consumption still uses legacy artifacts
 
-## Edicao destrutiva e auditoria
+## Destructive Editing and Audit
 
-- nao sobrescrever dado de origem
-- registrar flags e edicoes de forma append-only quando aplicavel
-- criar run manual derivado em vez de alterar um run automatico em lugar
+- do not overwrite source data
+- register flags and edits in append-only form when applicable
+- create a derived manual run instead of modifying an automatic run in place
 
-Toda transformacao relevante deve explicitar:
+Every relevant transformation must make explicit:
 
-- origem do dado ou asset
-- momento da alteracao
-- operador ou servico responsavel
-- motivo da alteracao
-- relacao com o run impactado, quando houver
+- data or asset origin
+- time of change
+- responsible operator or service
+- reason for the change
+- relationship with the impacted run, when applicable

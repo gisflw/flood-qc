@@ -250,15 +250,15 @@ def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
                 description TEXT
             );
             INSERT INTO variable (variable_code, variable_name, default_unit, description) VALUES
-                ('rain', 'Precipitacao observada', 'mm', ''),
-                ('level', 'Nivel observado', 'cm', '');
+                ('rain', 'Observed precipitation', 'mm', ''),
+                ('level', 'Observed level', 'cm', '');
             """
         )
 
     try:
         HistoryRepository(db_path)
     except RuntimeError as exc:
-        assert "Banco historico incompat" in str(exc)
+        assert "History database is incompatible" in str(exc)
         assert "db_bootstrap.py --history" in str(exc)
     else:
-        raise AssertionError("Era esperado erro para schema antigo de observed_series.")
+        raise AssertionError("Expected an error for the old observed_series schema.")

@@ -16,8 +16,8 @@ from model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Runner windows-only do MGB.")
-    parser.add_argument("--dry-run", action="store_true", help="Nao executa o binario real.")
+    parser = argparse.ArgumentParser(description="Windows-only MGB runner.")
+    parser.add_argument("--dry-run", action="store_true", help="Do not execute the real binary.")
     return parser
 
 

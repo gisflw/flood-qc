@@ -36,9 +36,9 @@ NO_DATA_COLOR = "#e64980"
 DATA_ISSUE_COLOR = "#f08c00"
 MGB_COLORS = {"QTUDO": "#1864ab", "YTUDO": "#2b8a3e"}
 CLICK_TOKEN_PATTERN = re.compile(r"(POSTO\|[^\s]+|MINI\|\d+)")
-KIND_COLORS = {"nível": "#0b7285", "chuva": "#364fc7"}
+KIND_COLORS = {"level": "#0b7285", "rain": "#364fc7"}
 
-# Paleta fixa Blues (claro→escuro)
+# Fixed Blues palette (light to dark)
 BLUES = np.array(
     [
         (239, 243, 255),
@@ -54,8 +54,8 @@ BLUES = np.array(
 ) / 255.0
 
 
-# ---------- Estilos ----------
-st.set_page_config(page_title="Explorador de Estações RS", layout="wide")
+# ---------- Styles ----------
+st.set_page_config(page_title="RS Station Explorer", layout="wide")
 st.markdown(
     """
     <style>
@@ -76,11 +76,11 @@ st.markdown(
 )
 
 
-# ---------- Utilidades de leitura ----------
+# ---------- Read utilities ----------
 @st.cache_data(show_spinner=False)
 def load_stations() -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
-    for csv_name, kind in [("estacoes_nivel.csv", "nível"), ("estacoes_pluv.csv", "chuva")]:
+    for csv_name, kind in [("estacoes_nivel.csv", "level"), ("estacoes_pluv.csv", "rain")]:
         path = DATA_DIR / csv_name
         if not path.exists():
             continue
@@ -139,9 +139,9 @@ def list_rasters() -> list[dict]:
 @st.cache_data(show_spinner=False)
 def load_raster_data(path: Path, max_size: int = 600) -> tuple[np.ndarray, tuple[float, float, float, float]]:
     """
-    Lê raster e devolve array float32 e bounds (west, south, east, north).
-    Downsample automático para no máx. max_size pixels em cada dimensão.
-    Mascara valores <= 0 como NaN (chuva zero não deve aparecer).
+    Read a raster and return a float32 array plus bounds (west, south, east, north).
+    Automatically downsample to at most max_size pixels in each dimension.
+    Mask values <= 0 as NaN because zero rainfall should not be displayed.
     """
     with rasterio.open(path) as src:
         scale = min(max_size / src.height, max_size / src.width, 1.0)
@@ -153,10 +153,10 @@ def load_raster_data(path: Path, max_size: int = 600) -> tuple[np.ndarray, tuple
             resampling=Resampling.bilinear,
         )
         data = data.astype("float32")
-        data[data <= 0] = np.nan  # mascara chuva zero/negativa
-        data[data <= -1e20] = np.nan  # tolera nodata
+        data[data <= 0] = np.nan  # mask zero/negative rainfall
+        data[data <= -1e20] = np.nan  # tolerate nodata
 
-        # Ajusta transform para o raster reamostrado
+        # Adjust transform for the resampled raster
         scale_x = src.width / out_w
         scale_y = src.height / out_h
         new_transform = src.transform * Affine.scale(scale_x, scale_y)
@@ -255,7 +255,7 @@ def load_mgb_series(mini_id: int, variable: str, days_window: int) -> pd.DataFra
     out = pd.concat([current_df, forecast_df], ignore_index=True)
     if out.empty:
         return pd.DataFrame(columns=["dt", "prev", "value"])
-    out["segment"] = np.where(out["prev"] == 1, "previsao", "atual")
+    out["segment"] = np.where(out["prev"] == 1, "forecast", "current")
     return out.sort_values("dt")
 
 
@@ -281,7 +281,7 @@ def load_station_health(station_ids: tuple[str, ...], days: int = 30) -> pd.Data
                 {
                     "station_id": station_id,
                     "status": "no_data",
-                    "status_reason": "arquivo ausente",
+                    "status_reason": "missing file",
                     "rows_recent": 0,
                     "rain_mean_mm_h": np.nan,
                     "rain_acc_24h_mm": np.nan,
@@ -297,7 +297,7 @@ def load_station_health(station_ids: tuple[str, ...], days: int = 30) -> pd.Data
                 {
                     "station_id": station_id,
                     "status": "data_issue",
-                    "status_reason": "erro de leitura",
+                    "status_reason": "read error",
                     "rows_recent": 0,
                     "rain_mean_mm_h": np.nan,
                     "rain_acc_24h_mm": np.nan,
@@ -311,7 +311,7 @@ def load_station_health(station_ids: tuple[str, ...], days: int = 30) -> pd.Data
                 {
                     "station_id": station_id,
                     "status": "no_data",
-                    "status_reason": "arquivo vazio",
+                    "status_reason": "empty file",
                     "rows_recent": 0,
                     "rain_mean_mm_h": np.nan,
                     "rain_acc_24h_mm": np.nan,
@@ -331,7 +331,7 @@ def load_station_health(station_ids: tuple[str, ...], days: int = 30) -> pd.Data
                 {
                     "station_id": station_id,
                     "status": "no_data",
-                    "status_reason": f"sem registros nos últimos {days} dias",
+                    "status_reason": f"no records in the last {days} days",
                     "rows_recent": 0,
                     "rain_mean_mm_h": np.nan,
                     "rain_acc_24h_mm": np.nan,
@@ -353,13 +353,13 @@ def load_station_health(station_ids: tuple[str, ...], days: int = 30) -> pd.Data
 
         issues = []
         if invalid_dt > 0:
-            issues.append("datetime inválido")
+            issues.append("invalid datetime")
         if (invalid_dt / max(total_rows, 1)) > 0.2:
-            issues.append("muitos datetime inválidos")
+            issues.append("too many invalid datetimes")
         if duplicate_ratio > 0.2:
-            issues.append("muitos horários repetidos com chuva > 0")
+            issues.append("too many repeated timestamps with rain > 0")
         if rain_valid.empty and level_valid.empty and flow_valid.empty:
-            issues.append("sem variáveis válidas")
+            issues.append("no valid variables")
 
         latest_time = recent["datetime"].max()
         rain_24h = recent.loc[
@@ -436,12 +436,12 @@ def network_summary(stations: pd.DataFrame) -> dict[str, float]:
 def render_network_summary(stations: pd.DataFrame) -> None:
     summary = network_summary(stations)
     cols = st.columns(7)
-    cols[0].metric("Postos totais", f"{int(summary['total'])}")
-    cols[1].metric("Com dados", f"{int(summary['with_data'])}")
-    cols[2].metric("Sem dados", f"{int(summary['no_data'])}")
-    cols[3].metric("Falha de dados", f"{int(summary['data_issue'])}")
-    cols[4].metric("Média chuva 24h", format_mm(summary["rain_mean_24h"]))
-    cols[5].metric("P90 chuva 24h", format_mm(summary["rain_p90_24h"]))
+    cols[0].metric("Total stations", f"{int(summary['total'])}")
+    cols[1].metric("With data", f"{int(summary['with_data'])}")
+    cols[2].metric("No data", f"{int(summary['no_data'])}")
+    cols[3].metric("Data issue", f"{int(summary['data_issue'])}")
+    cols[4].metric("Mean rainfall 24h", format_mm(summary["rain_mean_24h"]))
+    cols[5].metric("P90 rainfall 24h", format_mm(summary["rain_p90_24h"]))
 
 
 def color_ramp_factory(vmin: float, vmax: float, alpha: float):
@@ -461,12 +461,12 @@ def color_ramp_factory(vmin: float, vmax: float, alpha: float):
     return cmap
 
 
-# ---------- Componentes de UI ----------
+# ---------- UI components ----------
 def add_legend(fmap: folium.Map, vmin: float, vmax: float, *, horizon_label: Optional[str]) -> None:
     colors_hex = ["#{:02x}{:02x}{:02x}".format(int(r*255), int(g*255), int(b*255)) for r, g, b in BLUES]
     colormap = cm.LinearColormap(colors=colors_hex, vmin=float(vmin), vmax=float(vmax))
-    horizon_text = horizon_label or "período selecionado"
-    colormap.caption = f"Chuva acumulada das últimas {horizon_text}"
+    horizon_text = horizon_label or "selected period"
+    colormap.caption = f"Accumulated rainfall over the last {horizon_text}"
     colormap.add_to(fmap)
 
 
@@ -481,23 +481,23 @@ def extract_horizon_label(layer_name: Optional[str]) -> Optional[str]:
 
 def render_selected_station_context(row: Optional[pd.Series], station_id: str) -> None:
     if row is None:
-        st.markdown(f"### Posto selecionado: {station_id}")
+        st.markdown(f"### Selected station: {station_id}")
         return
 
     status_labels = {
         "ok": "ok",
-        "data_issue": "falha de dados",
-        "no_data": "sem dados",
+        "data_issue": "data issue",
+        "no_data": "no data",
     }
-    station_name = str(row.get("name", "")).strip() or "sem nome"
-    status = status_labels.get(str(row.get("status", "no_data")), "sem dados")
+    station_name = str(row.get("name", "")).strip() or "unnamed"
+    status = status_labels.get(str(row.get("status", "no_data")), "no data")
     kind = str(row.get("kind", "—"))
     reason = str(row.get("status_reason", "")).strip()
 
-    st.markdown(f"### Posto selecionado: {station_name}")
-    st.caption(f"Código: {station_id} | Tipo: {kind} | Status: {status}")
+    st.markdown(f"### Selected station: {station_name}")
+    st.caption(f"Code: {station_id} | Type: {kind} | Status: {status}")
     if reason:
-        st.caption(f"Obs: {reason}")
+        st.caption(f"Note: {reason}")
 
 
 class RasterClickPopup(MacroElement):
@@ -582,7 +582,7 @@ def build_map(
                     mercator_project=False,
                     colormap=color_ramp_factory(vmin, vmax, opacity),
                 )
-                raster_group = folium.FeatureGroup(name="Chuva interpolada", show=True)
+                raster_group = folium.FeatureGroup(name="Interpolated rainfall", show=True)
                 overlay.add_to(raster_group)
                 raster_group.add_to(fmap)
                 add_legend(
@@ -594,7 +594,7 @@ def build_map(
                 RasterClickPopup(data, (west, south, east, north), selected_layer).add_to(fmap)
 
     if rivers_geojson and rivers_geojson.get("features"):
-        rios_layer = folium.FeatureGroup(name="Rios MGB", show=True)
+        rios_layer = folium.FeatureGroup(name="MGB rivers", show=True)
         folium.GeoJson(
             rivers_geojson,
             style_function=lambda _: {"color": "#1971c2", "weight": 1.2, "opacity": 0.45},
@@ -605,14 +605,14 @@ def build_map(
                 labels=False,
                 sticky=False,
             ),
-            name="Rios MGB",
+            name="MGB rivers",
         ).add_to(rios_layer)
         rios_layer.add_to(fmap)
 
-    station_layer = folium.FeatureGroup(name="Postos com dados", show=True)
-    no_data_layer = folium.FeatureGroup(name="Postos sem dados", show=True)
+    station_layer = folium.FeatureGroup(name="Stations with data", show=True)
+    no_data_layer = folium.FeatureGroup(name="Stations without data", show=True)
     for row in stations.itertuples():
-        station_name = row.name if row.name else "sem nome"
+        station_name = row.name if row.name else "unnamed"
         tooltip = f"POSTO|{row.station_id} — {station_name}"
         status = getattr(row, "status", "no_data")
 
@@ -654,7 +654,7 @@ def build_map(
 
 def time_series_chart(df: pd.DataFrame, station_id: str, days: int):
     if df.empty:
-        st.info("Sem dados para esta estação/intervalo.")
+        st.info("No data for this station/interval.")
         return
 
     fig = make_subplots(
@@ -668,7 +668,7 @@ def time_series_chart(df: pd.DataFrame, station_id: str, days: int):
     fig.add_bar(
         x=df["datetime"],
         y=df["rain"],
-        name="Chuva (mm)",
+        name="Rainfall (mm)",
         marker_color="#4dabf7",
         opacity=0.9,
         row=1,
@@ -677,7 +677,7 @@ def time_series_chart(df: pd.DataFrame, station_id: str, days: int):
     fig.add_scatter(
         x=df["datetime"],
         y=df["level"],
-        name="Nível (cm)",
+        name="Level (cm)",
         mode="lines+markers",
         line=dict(color="#0b7285", width=2),
         marker=dict(size=4),
@@ -692,48 +692,48 @@ def time_series_chart(df: pd.DataFrame, station_id: str, days: int):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         hovermode="x unified",
         xaxis=dict(title=""),
-        xaxis2=dict(title="Data/hora (UTC)"),
+        xaxis2=dict(title="Date/time (UTC)"),
     )
     st.plotly_chart(fig, use_container_width=True, key=f"chart-{station_id}-{days}")
 
 
 def render_selected_mini_context(mini_id: Optional[int], variable: str, days_window: int) -> None:
     if mini_id is None:
-        st.markdown("### Mini selecionada: â€”")
-        st.caption("Clique em uma geometria de rio no mapa para carregar a série do modelo.")
+        st.markdown("### Selected mini: -")
+        st.caption("Click a river geometry on the map to load the model series.")
         return
-    st.markdown(f"### Mini selecionada: {mini_id}")
-    st.caption(f"Variavel: {variable} | Janela: ultimos {days_window} dias + previsao")
-    st.caption("Fonte: MGB-Hora")
+    st.markdown(f"### Selected mini: {mini_id}")
+    st.caption(f"Variable: {variable} | Window: last {days_window} days + forecast")
+    st.caption("Source: MGB-Hora")
 
 
 def mgb_metric_cards(df: pd.DataFrame, variable: str) -> None:
     if df.empty:
-        st.info("Sem dados do modelo para a mini selecionada.")
+        st.info("No model data for the selected mini.")
         return
 
     current_df = df[df["prev"] == 0].copy()
     forecast_df = df[df["prev"] == 1].copy()
 
     col1, col2 = st.columns(2)
-    col1.metric("Pontos atuais", f"{len(current_df)}")
-    col2.metric("Pontos previsão", f"{len(forecast_df)}")
+    col1.metric("Current points", f"{len(current_df)}")
+    col2.metric("Forecast points", f"{len(forecast_df)}")
 
     if not current_df.empty:
         last_current = current_df.sort_values("dt").tail(1).iloc[0]
         st.caption(
-            f"Último atual: {last_current['dt']:%d/%m/%Y %H:%M} | {variable}={last_current['value']:.3f}"
+            f"Latest current: {last_current['dt']:%d/%m/%Y %H:%M} | {variable}={last_current['value']:.3f}"
         )
     if not forecast_df.empty:
         first_forecast = forecast_df.sort_values("dt").head(1).iloc[0]
         st.caption(
-            f"Início previsão: {first_forecast['dt']:%d/%m/%Y %H:%M} | {variable}={first_forecast['value']:.3f}"
+            f"Forecast start: {first_forecast['dt']:%d/%m/%Y %H:%M} | {variable}={first_forecast['value']:.3f}"
         )
 
 
 def mgb_time_series_chart(df: pd.DataFrame, mini_id: int, variable: str, days_window: int) -> None:
     if df.empty:
-        st.info("Sem série do modelo para a mini selecionada.")
+        st.info("No model series for the selected mini.")
         return
 
     current_df = df[df["prev"] == 0]
@@ -749,7 +749,7 @@ def mgb_time_series_chart(df: pd.DataFrame, mini_id: int, variable: str, days_wi
                 x=current_df["dt"],
                 y=current_df["value"],
                 mode="lines",
-                name=f"{variable} atual",
+                name=f"{variable} current",
                 line=dict(color=base_color, width=2),
             )
         )
@@ -759,7 +759,7 @@ def mgb_time_series_chart(df: pd.DataFrame, mini_id: int, variable: str, days_wi
                 x=forecast_df["dt"],
                 y=forecast_df["value"],
                 mode="lines",
-                name=f"{variable} previsão",
+                name=f"{variable} forecast",
                 line=dict(color=forecast_color, width=2, dash="dash"),
             )
         )
@@ -770,7 +770,7 @@ def mgb_time_series_chart(df: pd.DataFrame, mini_id: int, variable: str, days_wi
         margin=dict(t=30, r=20, l=10, b=30),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        xaxis=dict(title="Data/hora"),
+        xaxis=dict(title="Date/time"),
         yaxis=dict(title=variable),
     )
     st.plotly_chart(fig, use_container_width=True, key=f"mgb-chart-{variable}-{mini_id}-{days_window}")
@@ -778,11 +778,11 @@ def mgb_time_series_chart(df: pd.DataFrame, mini_id: int, variable: str, days_wi
 
 def metric_cards(df: pd.DataFrame):
     if df.empty:
-        st.write("Nenhum dado recente.")
+        st.write("No recent data.")
         return
     recent = df.dropna(subset=["datetime"]).sort_values("datetime")
     if recent.empty:
-        st.write("Nenhum dado recente.")
+        st.write("No recent data.")
         return
 
     last = recent.tail(1).iloc[0]
@@ -790,12 +790,12 @@ def metric_cards(df: pd.DataFrame):
     rain_12h = recent[recent["datetime"] >= latest_time - timedelta(hours=12)]["rain"].sum(min_count=1)
     rain_24h = recent[recent["datetime"] >= latest_time - timedelta(hours=24)]["rain"].sum(min_count=1)
     rain_72h = recent[recent["datetime"] >= latest_time - timedelta(hours=72)]["rain"].sum(min_count=1)
-    st.markdown(f"**Última leitura:** {last['datetime']:%d/%m %H:%M}")
+    st.markdown(f"**Latest reading:** {last['datetime']:%d/%m %H:%M}")
 
-    st.markdown("**Chuvas acumuladas**")
+    st.markdown("**Accumulated rainfall**")
     rains_table = pd.DataFrame(
         {
-            "Valor": [
+            "Value": [
                 f"{rain_12h:.1f} mm" if pd.notna(rain_12h) else "—",
                 f"{rain_24h:.1f} mm" if pd.notna(rain_24h) else "—",
                 f"{rain_72h:.1f} mm" if pd.notna(rain_72h) else "—",
@@ -806,10 +806,10 @@ def metric_cards(df: pd.DataFrame):
     st.table(rains_table)
 
     level_txt = f"{last['level']:.1f} cm" if pd.notna(last.get("level")) else "—"
-    st.markdown("**Estado do nível**")
+    st.markdown("**Level status**")
     level_table = pd.DataFrame(
-        {"Valor": [level_txt, ""]},
-        index=["atual", "alerta"],
+        {"Value": [level_txt, ""]},
+        index=["current", "alert"],
     )
     st.table(level_table)
 
@@ -819,24 +819,24 @@ stations_context_df = merge_station_context(stations_df, days=DAYS_WINDOW)
 rivers_geojson = load_rivers_layer_geojson()
 mgb_meta = load_mgb_meta()
 
-st.title("Sistema de Alerta de Cheias RS - Explorer")
+st.title("RS Flood Alert System - Explorer")
 render_network_summary(stations_context_df)
 st.caption(
-    "Clique em um posto para dados observados (ANA) ou em uma geometria de rio para series do modelo MGB."
+    "Click a station for observed data (ANA) or a river geometry for MGB model series."
 )
 
 with st.sidebar:
-    st.subheader("Controles")
+    st.subheader("Controls")
     available_rasters = [r["name"] for r in list_rasters()]
     selected_layer = st.selectbox(
-        "Raster interpolado",
-        options=["(nenhum)"] + available_rasters,
+        "Interpolated raster",
+        options=["(none)"] + available_rasters,
         index=1 if available_rasters else 0,
     )
-    selected_layer = None if selected_layer == "(nenhum)" else selected_layer
-    opacity = st.slider("Transparencia raster", min_value=0.0, max_value=1.0, value=0.6, step=0.05)
+    selected_layer = None if selected_layer == "(none)" else selected_layer
+    opacity = st.slider("Raster transparency", min_value=0.0, max_value=1.0, value=0.6, step=0.05)
     st.markdown(
-        "**Camadas:** postos e rios MGB estao sobrepostos no mapa; o clique define qual serie carregar."
+        "**Layers:** stations and MGB rivers are overlaid on the map; the click defines which series to load."
     )
 
 base_map = build_map(selected_layer, opacity, stations_context_df, rivers_geojson=rivers_geojson)
@@ -887,41 +887,41 @@ if station_id and not stations_context_df.empty:
     if not selected.empty:
         selected_station_row = selected.iloc[0]
 
-st.subheader("Dados observados (ANA)")
+st.subheader("Observed Data (ANA)")
 left, right = st.columns([0.45, 0.55])
 with left:
     if station_id:
         render_selected_station_context(selected_station_row, station_id)
     else:
-        st.markdown("### Estacao selecionada: -")
+        st.markdown("### Selected station: -")
     if station_id:
         metric_cards(station_series)
     else:
-        st.info("Selecione um posto no mapa.")
+        st.info("Select a station on the map.")
 
 with right:
     if station_id:
         time_series_chart(station_series, station_id, DAYS_WINDOW)
     else:
-        st.info("Sem posto selecionado.")
+        st.info("No station selected.")
 
 st.markdown("---")
-st.subheader("Outputs MGB")
+st.subheader("MGB Outputs")
 
 if rivers_geojson is None:
     st.warning(
-        "Camada de rios nao encontrada em data/app_layers/rios_mini.geojson. "
-        "Rode: python src/build_app_layers_mgb.py"
+        "River layer not found at data/app_layers/rios_mini.geojson. "
+        "Run: python src/build_app_layers_mgb.py"
     )
 
 available_mgb_vars = [var for var in ("QTUDO", "YTUDO") if var in mgb_meta]
 if not available_mgb_vars:
     st.warning(
-        "Metadados MGB nao encontrados em data/mgb-hora/processed/q_meta.json e y_meta.json."
+        "MGB metadata not found at data/mgb-hora/processed/q_meta.json and y_meta.json."
     )
 
 selected_mgb_variable = (
-    st.selectbox("Variavel MGB", options=available_mgb_vars, index=0, key="mgb_variable")
+    st.selectbox("MGB variable", options=available_mgb_vars, index=0, key="mgb_variable")
     if available_mgb_vars
     else "QTUDO"
 )
@@ -940,14 +940,14 @@ with mgb_left:
     if model_error:
         st.error(model_error)
     elif mini_id is None:
-        st.info("Clique em uma geometria de rio para carregar a serie do modelo.")
+        st.info("Click a river geometry to load the model series.")
     else:
         mgb_metric_cards(model_series, selected_mgb_variable)
 
 with mgb_right:
     if model_error:
-        st.info("Nao foi possivel renderizar o grafico do modelo.")
+        st.info("Could not render the model chart.")
     elif mini_id is None:
-        st.info("Sem mini selecionada.")
+        st.info("No mini selected.")
     else:
         mgb_time_series_chart(model_series, mini_id, selected_mgb_variable, DAYS_WINDOW)

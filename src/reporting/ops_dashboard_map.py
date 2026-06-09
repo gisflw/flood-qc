@@ -21,7 +21,7 @@ from reporting import ops_dashboard_data
 
 NO_DATA_COLOR = "#e64980"
 DATA_ISSUE_COLOR = "#f08c00"
-KIND_COLORS = {"nivel": "#0b7285", "chuva": "#364fc7", "misto": "#2b8a3e", "sem_dados": "#868e96"}
+KIND_COLORS = {"level": "#0b7285", "rain": "#364fc7", "mixed": "#2b8a3e", "no_data": "#868e96"}
 CLICK_TOKEN_PATTERN = re.compile(r"(POSTO\|\d+|MINI\|\d+)")
 MAP_RETURNED_OBJECTS = ("last_object_clicked_tooltip",)
 BLUES = np.array(
@@ -135,8 +135,8 @@ def color_ramp_factory(vmin: float, vmax: float, alpha: float):
 def add_legend(fmap: folium.Map, vmin: float, vmax: float, *, horizon_label: Optional[str]) -> None:
     colors_hex = ["#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255)) for r, g, b in BLUES]
     colormap = branca.colormap.LinearColormap(colors=colors_hex, vmin=float(vmin), vmax=float(vmax))
-    horizon_text = horizon_label or "periodo selecionado"
-    colormap.caption = f"Chuva acumulada das ultimas {horizon_text}"
+    horizon_text = horizon_label or "selected period"
+    colormap.caption = f"Accumulated rainfall over the last {horizon_text}"
     colormap.add_to(fmap)
 
 
@@ -277,23 +277,23 @@ def build_ops_map(
                 layer_name=f"Raster {meta['horizon_label']}",
                 opacity=opacity,
                 horizon_label=str(meta["horizon_label"]),
-                feature_group_name="Chuva acumulada",
+                feature_group_name="Accumulated rainfall",
                 show=True,
             )
 
     if rivers_geojson and rivers_geojson.get("features"):
-        rivers_layer = folium.FeatureGroup(name="Rios MGB", show=True)
+        rivers_layer = folium.FeatureGroup(name="MGB rivers", show=True)
         folium.GeoJson(
             rivers_geojson,
             style_function=lambda _: {"color": "#1971c2", "weight": 1.2, "opacity": 0.45},
             highlight_function=lambda _: {"color": "#0b7285", "weight": 2.2, "opacity": 0.9},
             tooltip=folium.GeoJsonTooltip(fields=["click_id"], aliases=[""], labels=False, sticky=False),
-            name="Rios MGB",
+            name="MGB rivers",
         ).add_to(rivers_layer)
         rivers_layer.add_to(fmap)
 
-    station_layer = folium.FeatureGroup(name="Postos com dados", show=True)
-    no_data_layer = folium.FeatureGroup(name="Postos sem dados", show=True)
+    station_layer = folium.FeatureGroup(name="Stations with data", show=True)
+    no_data_layer = folium.FeatureGroup(name="Stations without data", show=True)
 
     for row in stations.itertuples():
         tooltip = f"POSTO|{row.station_uid} - {row.station_name} ({str(row.provider_code).upper()} {row.station_code})"
@@ -313,7 +313,7 @@ def build_ops_map(
             ).add_to(no_data_layer)
             continue
 
-        marker_color = KIND_COLORS.get(getattr(row, "kind", "sem_dados"), "#364fc7")
+        marker_color = KIND_COLORS.get(getattr(row, "kind", "no_data"), "#364fc7")
         if status == "data_issue":
             marker_color = DATA_ISSUE_COLOR
 

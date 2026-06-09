@@ -72,7 +72,7 @@ def test_execute_mgb_plan_dry_run_has_no_side_effects(monkeypatch, tmp_path) -> 
     plan = build_plan(monkeypatch, tmp_path)
 
     def fail_popen(*args, **kwargs):
-        raise AssertionError("subprocess nao deveria ser chamado em dry-run")
+        raise AssertionError("subprocess should not be called in dry-run")
 
     monkeypatch.setattr(mgb_execution.subprocess, "Popen", fail_popen)
 

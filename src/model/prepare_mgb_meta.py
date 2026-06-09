@@ -232,8 +232,8 @@ def rewrite_mgb_meta_from_config(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Reescreve PARHIG.hig a partir da configuracao do run.")
-    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="Arquivo PARHIG.hig a reescrever.")
+    parser = argparse.ArgumentParser(description="Rewrite PARHIG.hig from the run configuration.")
+    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="PARHIG.hig file to rewrite.")
     return parser
 
 

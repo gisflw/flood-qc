@@ -1,1 +1,1 @@
-"""Coleta de observados e previsoes em grade."""
+"""Collection of observations and gridded forecasts."""

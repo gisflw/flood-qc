@@ -12,11 +12,11 @@ from common.paths import CONFIG_DIR, runtime_paths
 
 def _load_yaml(path: Path) -> dict[str, Any]:
     if not path.exists():
-        raise FileNotFoundError(f"Arquivo de config nao encontrado: {path}")
+        raise FileNotFoundError(f"Config file not found: {path}")
     with path.open("r", encoding="utf-8") as handle:
         data = yaml.safe_load(handle) or {}
     if not isinstance(data, dict):
-        raise ValueError(f"Config invalido em {path}: esperado um objeto YAML.")
+        raise ValueError(f"Invalid config at {path}: expected a YAML object.")
     return data
 
 
@@ -33,16 +33,16 @@ def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any
 
 def _require_mapping(value: Any, context: str) -> dict[str, Any]:
     if not isinstance(value, dict):
-        raise ValueError(f"{context} deve ser um objeto YAML.")
+        raise ValueError(f"{context} must be a YAML object.")
     return value
 
 
 def _validate_reference_time(value: Any, context: str) -> None:
     if not isinstance(value, str):
-        raise ValueError(f"{context} deve ser string ISO, 'now' ou 'yesterday'.")
+        raise ValueError(f"{context} must be an ISO string, 'now', or 'yesterday'.")
     normalized = value.strip()
     if not normalized:
-        raise ValueError(f"{context} nao pode ser vazio.")
+        raise ValueError(f"{context} cannot be empty.")
     if normalized in {"now", "yesterday"}:
         return
     if normalized.endswith("Z"):
@@ -50,49 +50,49 @@ def _validate_reference_time(value: Any, context: str) -> None:
     try:
         datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise ValueError(f"{context} deve ser string ISO valida, 'now' ou 'yesterday'.") from exc
+        raise ValueError(f"{context} must be a valid ISO string, 'now', or 'yesterday'.") from exc
 
 
 def _validate_positive_int(value: Any, context: str) -> None:
     if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-        raise ValueError(f"{context} deve ser inteiro >= 1.")
+        raise ValueError(f"{context} must be an integer >= 1.")
 
 
 def _validate_positive_number(value: Any, context: str) -> None:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
-        raise ValueError(f"{context} deve ser numero > 0.")
+        raise ValueError(f"{context} must be a number > 0.")
 
 
 def _validate_bool(value: Any, context: str) -> None:
     if not isinstance(value, bool):
-        raise ValueError(f"{context} deve ser booleano.")
+        raise ValueError(f"{context} must be boolean.")
 
 
 def _validate_positive_int_list(value: Any, context: str) -> None:
     if not isinstance(value, list):
-        raise ValueError(f"{context} deve ser lista de inteiros >= 1.")
+        raise ValueError(f"{context} must be a list of integers >= 1.")
     for item in value:
         if not isinstance(item, int) or isinstance(item, bool) or item < 1:
-            raise ValueError(f"{context} deve conter apenas inteiros >= 1.")
+            raise ValueError(f"{context} must contain only integers >= 1.")
 
 
 def _validate_selected_mini_ids(value: Any, context: str) -> None:
     if not isinstance(value, list):
-        raise ValueError(f"{context} deve ser lista.")
+        raise ValueError(f"{context} must be a list.")
     for item in value:
         if not isinstance(item, (str, int)) or isinstance(item, bool):
-            raise ValueError(f"{context} deve conter apenas strings ou inteiros.")
+            raise ValueError(f"{context} must contain only strings or integers.")
         if not str(item).strip():
-            raise ValueError(f"{context} nao pode conter valores vazios.")
+            raise ValueError(f"{context} cannot contain empty values.")
 
 
 def _validate_section(config: dict[str, Any], schema: dict[str, Any], context: str) -> None:
     extra_keys = sorted(set(config) - set(schema))
     missing_keys = sorted(set(schema) - set(config))
     if extra_keys:
-        raise ValueError(f"{context} contem chaves nao suportadas: {extra_keys}")
+        raise ValueError(f"{context} contains unsupported keys: {extra_keys}")
     if missing_keys:
-        raise ValueError(f"{context} nao contem chaves obrigatorias: {missing_keys}")
+        raise ValueError(f"{context} is missing required keys: {missing_keys}")
 
     for key, validator in schema.items():
         value = config[key]

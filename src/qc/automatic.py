@@ -4,12 +4,12 @@ from common.models import QcFlag, RunMetadata
 
 
 def apply_automatic_qc(run: RunMetadata) -> list[QcFlag]:
-    """Executa regras automaticas de QC antes da execucao do modelo.
+    """Run automatic QC rules before model execution.
 
     TODO:
-    - implementar verificacoes por variavel;
-    - registrar flags no historico e, quando fizer sentido, no contexto operacional do run;
-    - promover dados entre `raw`, `curated` e `approved`;
-    - diferenciar severidades e criterios de bloqueio para liberar insumos ao modelo.
+    - implement checks by variable;
+    - register flags in history and, when useful, in the operational run context;
+    - promote data between `raw`, `curated`, and `approved`;
+    - distinguish severities and blocking criteria before releasing model inputs.
     """
-    raise NotImplementedError("QC automatico ainda nao implementado.")
+    raise NotImplementedError("Automatic QC is not implemented yet.")

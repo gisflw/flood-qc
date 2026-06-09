@@ -52,4 +52,5 @@ from_Erik/*
 src/legacy/*
 examples/*
 .omx/
-.codex
+.codex/
+.agents/

@@ -89,7 +89,7 @@ def _require_opendata_client():
         from ecmwf.opendata import Client
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            "Dependencia ausente para ingestao ECMWF: instale `ecmwf-opendata` no ambiente operacional."
+            "Missing dependency for ECMWF ingestion: install `ecmwf-opendata` in the operational environment."
         ) from exc
     return Client
 
@@ -99,7 +99,7 @@ def _require_eccodes():
         import eccodes
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            "Dependencia ausente para leitura/escrita GRIB2: instale `eccodes` no ambiente operacional."
+            "Missing dependency for GRIB2 reading/writing: install `eccodes` in the operational environment."
         ) from exc
     return eccodes
 
@@ -123,9 +123,9 @@ def build_rs_bbox_with_buffer(*, buffer_fraction: float = BUFFER_FRACTION) -> tu
 
 
 def build_ecmwf_cycle(reference_time: datetime) -> datetime:
-    # `reference_time` chega em horario local (America/Sao_Paulo) como limite das medicoes.
-    # O forecast do MGB comeca na hora seguinte, entao o ciclo ECMWF deve ser resolvido
-    # a partir desse inicio de forecast convertido para UTC.
+    # `reference_time` arrives in local time (America/Sao_Paulo) as the measurement cutoff.
+    # The MGB forecast starts on the next hour, so resolve the ECMWF cycle from that
+    # forecast start converted to UTC.
     forecast_start_local = reference_time + timedelta(hours=1)
     forecast_start_utc = forecast_start_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
     return datetime(forecast_start_utc.year, forecast_start_utc.month, forecast_start_utc.day, 0, 0, 0)
@@ -314,7 +314,7 @@ def ingest_forecast_grids(
     logs_dir: Path,
 ) -> ForecastGridSummary:
     if not Path(database_path).exists():
-        raise FileNotFoundError(f"Banco historico nao encontrado: {database_path}")
+        raise FileNotFoundError(f"History database not found: {database_path}")
 
     execution_id = build_execution_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
@@ -396,8 +396,8 @@ def collect_forecast_grids(run: RunMetadata) -> list[RasterAsset]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Baixa e recorta a grade ECMWF operacional para o RS.")
-    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="Banco historico SQLite.")
+    parser = argparse.ArgumentParser(description="Download and clip the operational ECMWF grid for RS.")
+    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="SQLite history database.")
     args = parser.parse_args()
 
     settings = load_settings()

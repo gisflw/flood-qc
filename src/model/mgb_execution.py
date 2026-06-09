@@ -60,16 +60,16 @@ def configure_run_logger(log_file: Path) -> logging.Logger:
 
 def _require_existing_file(path: Path, *, label: str) -> None:
     if not path.exists():
-        raise FileNotFoundError(f"{label} nao encontrado: {path}")
+        raise FileNotFoundError(f"{label} not found: {path}")
     if not path.is_file():
-        raise ValueError(f"{label} deve ser arquivo: {path}")
+        raise ValueError(f"{label} must be a file: {path}")
 
 
 def _require_existing_directory(path: Path, *, label: str) -> None:
     if not path.exists():
-        raise FileNotFoundError(f"{label} nao encontrado: {path}")
+        raise FileNotFoundError(f"{label} not found: {path}")
     if not path.is_dir():
-        raise ValueError(f"{label} deve ser diretorio: {path}")
+        raise ValueError(f"{label} must be a directory: {path}")
 
 
 def _ensure_directory(path: Path) -> None:
@@ -158,7 +158,7 @@ def prepare_mgb_execution(
     output_dir: str | None = None,
     workspace_root: str | None = None,
 ) -> CommandPlan:
-    """Prepara o plano real de execucao do MGB em Windows."""
+    """Prepare the real MGB execution plan on Windows."""
     del workdir
 
     local_executable_path = Path(executable_path) if executable_path is not None else MGB_EXECUTABLE_PATH
@@ -168,8 +168,8 @@ def prepare_mgb_execution(
     remote_input_dir = remote_workspace_root / "Input"
     remote_output_dir = remote_workspace_root / "Output"
 
-    _require_existing_file(local_executable_path, label="Executavel do MGB")
-    _require_existing_directory(local_input_dir, label="Diretorio local Input do MGB")
+    _require_existing_file(local_executable_path, label="MGB executable")
+    _require_existing_directory(local_input_dir, label="Local MGB Input directory")
 
     return CommandPlan(
         command=[str(local_executable_path)],
@@ -188,12 +188,12 @@ def prepare_mgb_execution(
 
 
 def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path | None = None) -> ModelOutput:
-    """Executa o runner real do MGB ou retorna apenas o plano em dry-run."""
+    """Run the real MGB runner or return only the plan in dry-run mode."""
     if dry_run:
         plan.metadata["status"] = "dry_run"
         return ModelOutput(
             output_name="mgb_dry_run",
-            description="Dry-run do modelo MGB; nenhuma simulacao foi executada.",
+            description="MGB model dry-run; no simulation was executed.",
             asset_refs=[],
         )
 

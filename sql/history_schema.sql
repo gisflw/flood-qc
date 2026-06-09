@@ -132,11 +132,11 @@ CREATE INDEX IF NOT EXISTS idx_manual_edit_asset_step ON manual_edit(asset_id, t
 CREATE INDEX IF NOT EXISTS idx_run_catalog_status ON run_catalog(status);
 
 INSERT OR IGNORE INTO provider (provider_code, provider_name, provider_type) VALUES
-    ('ana', 'Agencia Nacional de Aguas e Saneamento Basico', 'observed'),
-    ('inmet', 'Instituto Nacional de Meteorologia', 'observed'),
+    ('ana', 'National Water and Basic Sanitation Agency', 'observed'),
+    ('inmet', 'National Institute of Meteorology', 'observed'),
     ('ecmwf', 'European Centre for Medium-Range Weather Forecasts', 'forecast');
 
 INSERT OR IGNORE INTO variable (variable_code, variable_name, default_unit, description) VALUES
-    ('rain', 'Precipitacao observada', 'mm', 'Valor observado no timestamp original'),
-    ('level', 'Nivel observado', 'cm', 'Nivel hidrometrico observado'),
-    ('flow', 'Vazao observada', 'm3/s', 'Vazao observada no timestamp original');
+    ('rain', 'Observed precipitation', 'mm', 'Observed value at the original timestamp'),
+    ('level', 'Observed level', 'cm', 'Observed hydrometric level'),
+    ('flow', 'Observed flow', 'm3/s', 'Observed flow at the original timestamp');

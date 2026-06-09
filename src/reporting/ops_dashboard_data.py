@@ -79,12 +79,12 @@ def derive_station_kind(variable_codes: Iterable[str]) -> str:
     has_stage = bool({"level", "flow"} & codes)
 
     if has_rain and has_stage:
-        return "misto"
+        return "mixed"
     if has_rain:
-        return "chuva"
+        return "rain"
     if has_stage:
-        return "nivel"
-    return "sem_dados"
+        return "level"
+    return "no_data"
 
 
 def summarize_station_status(values_df: pd.DataFrame, *, days: int) -> dict[str, object]:
@@ -239,7 +239,7 @@ def load_station_catalog(
     )
     merged = stations.merge(coverage[["station_uid", "kind"]], on="station_uid", how="left")
     merged = merged.merge(metrics, on="station_uid", how="left")
-    merged["kind"] = merged["kind"].fillna("sem_dados")
+    merged["kind"] = merged["kind"].fillna("no_data")
     merged["status"] = merged["status"].fillna("no_data")
     merged["status_reason"] = merged["status_reason"].fillna(f"sem registros nos ultimos {days} dias")
     merged["rows_recent"] = merged["rows_recent"].fillna(0).astype(int)
@@ -392,7 +392,7 @@ def _load_mgb_runtime_settings() -> tuple[datetime, int, int]:
 
 
 def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
-    """Carrega metadados dos outputs MGB diretamente dos binarios canonicos."""
+    """Load MGB output metadata directly from canonical binaries."""
     del database_path
     available_paths = [DEFAULT_MGB_OUTPUT_DIR / str(meta["source_filename"]) for meta in MGB_VARIABLE_METADATA.values()]
     if not DEFAULT_MGB_PARHIG_PATH.exists() or not DEFAULT_MGB_MINI_GTP_PATH.exists() or not any(
@@ -438,7 +438,7 @@ def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
 
 
 def list_model_variables(database_path: Path | None = None) -> pd.DataFrame:
-    """Lista as variaveis MGB suportadas pelo dashboard."""
+    """List MGB variables supported by the dashboard."""
     del database_path
     return pd.DataFrame(
         [
@@ -459,7 +459,7 @@ def load_mgb_series(
     *,
     days_window: int = 30,
 ) -> pd.DataFrame:
-    """Le uma serie MGB diretamente dos binarios canonicos do runner."""
+    """Read an MGB series directly from canonical runner binaries."""
     del database_path
     canonical = _canonical_variable_code(variable_code)
     metadata = MGB_VARIABLE_METADATA.get(canonical)

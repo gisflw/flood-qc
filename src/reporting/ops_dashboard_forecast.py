@@ -111,7 +111,7 @@ def _read_asset_row(asset_id: str, *, database_path: Path | None = None) -> dict
             (asset_id,),
         ).fetchone()
     if row is None:
-        raise ValueError(f"Asset ECMWF {asset_id!r} nao encontrado no history.sqlite.")
+        raise ValueError(f"ECMWF asset {asset_id!r} not found in history.sqlite.")
     return dict(row)
 
 
@@ -122,7 +122,7 @@ def _to_local_time(raw_value: datetime) -> datetime:
 def _load_local_messages(asset_id: str, *, database_path: Path | None = None) -> tuple[dict[str, object], list[TpGribMessage]]:
     asset_row = _read_asset_row(asset_id, database_path=database_path)
     if str(asset_row["asset_kind"]) != ECMWF_ASSET_KIND:
-        raise ValueError(f"Asset {asset_id!r} nao e do tipo {ECMWF_ASSET_KIND!r}.")
+        raise ValueError(f"Asset {asset_id!r} is not of type {ECMWF_ASSET_KIND!r}.")
 
     source_path = _resolve_repo_path(str(asset_row["relative_path"]))
     messages = read_tp_grib_messages(source_path)
@@ -197,13 +197,13 @@ def build_forecast_preview(
 ) -> ForecastPreview:
     asset_row, messages = _load_local_messages(asset_id, database_path=database_path)
     if not messages:
-        raise ValueError(f"Asset ECMWF {asset_id!r} nao possui mensagens tp.")
+        raise ValueError(f"ECMWF asset {asset_id!r} has no tp messages.")
 
     message_by_step = {int(message.step_hours): message for message in messages}
     if t0_step not in message_by_step:
-        raise ValueError(f"t0_step={t0_step} nao existe no GRIB selecionado.")
+        raise ValueError(f"t0_step={t0_step} does not exist in the selected GRIB.")
     if t1_step not in message_by_step:
-        raise ValueError(f"t1_step={t1_step} nao existe no GRIB selecionado.")
+        raise ValueError(f"t1_step={t1_step} does not exist in the selected GRIB.")
     if t1_step < t0_step:
         raise ValueError("t1_step must be >= t0_step.")
 
@@ -394,7 +394,7 @@ def build_forecast_map_artifacts(
         legend_html = (
             ops_dashboard_map.build_raster_legend_html(legend_spec)
             if legend_spec is not None
-            else "<div style=\"font-size:0.85rem;color:#868e96;\">Sem dados validos para legenda.</div>"
+            else "<div style=\"font-size:0.85rem;color:#868e96;\">No valid data for the legend.</div>"
         )
         return ForecastMapPanelArtifacts(
             title=panel_preview.title,

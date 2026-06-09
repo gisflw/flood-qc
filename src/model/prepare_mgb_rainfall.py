@@ -673,12 +673,12 @@ def prepare_mgb_rainfall(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Interpola chuva observada para as minibacias do MGB e escreve chuvabin.hig.")
-    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="Banco historico SQLite.")
-    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="Arquivo PARHIG.hig.")
-    parser.add_argument("--mini-gtp", type=Path, default=DEFAULT_MINI_GTP, help="Arquivo MINI.gtp.")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Arquivo binario chuvabin.hig.")
-    parser.add_argument("--chunk-hours", type=int, default=DEFAULT_CHUNK_HOURS, help="Horas por chunk de interpolacao/escrita.")
+    parser = argparse.ArgumentParser(description="Interpolate observed rainfall to MGB minis and write chuvabin.hig.")
+    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="SQLite history database.")
+    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="PARHIG.hig file.")
+    parser.add_argument("--mini-gtp", type=Path, default=DEFAULT_MINI_GTP, help="MINI.gtp file.")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Binary chuvabin.hig file.")
+    parser.add_argument("--chunk-hours", type=int, default=DEFAULT_CHUNK_HOURS, help="Hours per interpolation/write chunk.")
     return parser
 
 
