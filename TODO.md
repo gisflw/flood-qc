@@ -1,6 +1,8 @@
-- Implement INMET data queries
 - Summaries for selected regions/basins
-- GeoPackage with all static spatial data and symbology
 - Build the report-ready artifact
 - QC for observed data
 - QC for the forecast
+
+- Observed data to csv before ingestion to DB
+- Spatial in SQLite
+- Model config artifact (minis, params, info, station_to_mini...)
