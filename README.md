@@ -1,6 +1,10 @@
-# Operational Hydrology and Forecasting System
+﻿# Operational Hydrology and Forecasting Library
 
-Local-first operational base for hydrology, rainfall, and forecasting, organized around regional workspaces, SQLite, and an installable CLI.
+Local-first Python package for hydrology, rainfall, quality control, and MGB
+forecasting workflows. The primary interface is the installable `mgb_ops`
+library: users should be able to import modules and functions from notebooks,
+scripts, and data-flow style orchestration. The CLI and Streamlit dashboard are
+thin operational layers over those library functions.
 
 ## Current Status
 
@@ -11,11 +15,11 @@ The repository already provides a functional base for:
 - ingesting ECMWF grids and registering the canonical GRIB in the history database;
 - preparing metadata and hourly rainfall inputs for MGB;
 - running the real MGB runner or a dry-run;
-- a Streamlit dashboard for monitoring, MGB series, and ECMWF forecast preview/manual correction.
+- using a Streamlit dashboard for monitoring, MGB series, and ECMWF forecast preview/manual correction.
 
 Still pending in this phase:
 
-- operational INMET rainfall ingestion;
+- operational INMET rainfall ingestion hardening;
 - automatic QC for observations;
 - manual correction of observed rainfall;
 - complete materialization of operational runs in `<workspace>/data/runs/`;
@@ -23,12 +27,14 @@ Still pending in this phase:
 
 ## Principles
 
+- Python library first;
+- CLI and GUI as thin wrappers over library modules;
 - local artifacts first;
 - SQLite as the operational baseline;
 - one persistent history database at `<workspace>/data/history.sqlite`;
 - one SQLite file per run in `<workspace>/data/runs/`;
 - rasters and vectors outside the database, with relative paths and metadata;
-- Streamlit as the main interface;
+- Streamlit as an operational dashboard, not the core architecture;
 - QGIS as a complementary client for generated artifacts.
 
 ## Main Layout
@@ -38,11 +44,6 @@ Still pending in this phase:
 |-- apps/
 |   `-- ops_dashboard/
 |-- docs/
-|-- examples/
-|   `-- rs_hydro/
-|       |-- data/
-|       |-- logs/
-|       `-- mgb_runner/
 |-- src/
 |   `-- mgb_ops/
 |       |-- assets/
@@ -57,7 +58,23 @@ Still pending in this phase:
 `-- tests/
 ```
 
-Important: the user is responsible for providing a regional workspace containing `data/`, `logs/`, and `mgb_runner/`. The repository includes `examples/rs_hydro/` as a test workspace with RS artifacts.
+Important: the user is responsible for providing a regional workspace containing
+`data/`, `logs/`, and `mgb_runner/`.
+
+## Layer Model
+
+- `src/mgb_ops/common/`, `storage/`, `ingest/`, `qc/`, and `model/`
+  Core library modules for notebook and data-flow use.
+- `src/mgb_ops/cli/`
+  Thin command-line wrapper that resolves arguments/settings and calls library
+  functions.
+- `apps/ops_dashboard/`
+  Streamlit dashboard layer for operational monitoring and manual forecast
+  correction.
+- `src/mgb_ops/reporting/`
+  Transitional area. `reports.py` is the future operational reporting library
+  surface, while the current `ops_dashboard_*` modules are dashboard support
+  code with no Streamlit dependency.
 
 ## Runtime and Configuration
 
@@ -65,10 +82,8 @@ Important: the user is responsible for providing a regional workspace containing
 - Canonical configuration in this phase:
   - module-owned in-code defaults;
   - `<workspace>/config/custom.yaml` as the only editable regional override.
-- If `--workspace` is not provided, the CLI uses `MGB_OPS_WORKSPACE` and then the current directory.
+- Library calls should prefer explicit workspace, database, path, and time inputs when available.
 - The evaluation of migrating configuration to `.toml` remains open, with no contract change for now.
-
-The initial station inventory lives at `<workspace>/data/interim/history_station_inventory.csv`. During history bootstrap, the system computes `station_uid` as `1000000000 + code` for ANA and `2000000000 + code` for INMET, converting letters in the code to numbers (`A=1`, `B=2`, etc.).
 
 ## Local Setup
 
@@ -88,7 +103,43 @@ python -m venv .venv
 pip install -e .[dev,data,geo,ui]
 ```
 
-## Canonical Entry Points
+## Library Usage
+
+```python
+from pathlib import Path
+
+from mgb_ops.ingest.fetch_observed_ana import ingest_observed_ana
+from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta_from_config
+from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
+from mgb_ops.common.paths import runtime_paths
+
+workspace = Path("examples/rs_hydro")
+paths = runtime_paths(workspace)
+
+rewrite_mgb_meta_from_config(
+    parhig_path=paths.mgb_input_dir / "PARHIG.hig",
+    logs_dir=paths.logs_dir,
+    workspace=workspace,
+)
+
+prepare_mgb_rainfall(
+    history_db=paths.history_db,
+    parhig_path=paths.mgb_input_dir / "PARHIG.hig",
+    mini_gtp_path=paths.mgb_input_dir / "MINI.gtp",
+    output_path=paths.mgb_input_dir / "chuvabin.hig",
+    logs_dir=paths.logs_dir,
+    workspace=workspace,
+)
+```
+
+The exact callable surface is still maturing. When adding new operational
+behavior, prefer a reusable library function first, then expose it through the
+CLI or dashboard only as needed.
+
+## CLI Wrapper
+
+The CLI remains useful for repeatable local operations, but it is a wrapper over
+the Python modules:
 
 ```bash
 mgb-ops --workspace examples/rs_hydro bootstrap history
@@ -102,16 +153,19 @@ mgb-ops --workspace examples/rs_hydro model export-outputs
 mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-To run INMET ingestion, set `INMET_API_KEY` in the environment or fill `.env` from `.env.example`.
+To run INMET ingestion, set `INMET_API_KEY` in the environment or fill `.env`
+from `.env.example`.
 
 ## Main Components
 
-- `apps/ops_dashboard/`
-  Operational Streamlit dashboard for monitoring, observed series, MGB series, and ECMWF forecast preview/correction.
-- `<workspace>/mgb_runner/`
-  Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user. Runner code lives in `src/mgb_ops/model/`.
 - `src/mgb_ops/`
-  Installable package containing the CLI plus ingestion, QC, model, storage, reporting, and common utilities.
+  Installable package containing the core library and CLI wrapper.
+- `apps/ops_dashboard/`
+  Operational Streamlit dashboard for monitoring, observed series, MGB series,
+  and ECMWF forecast preview/correction.
+- `<workspace>/mgb_runner/`
+  Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user.
+  Runner code lives in `src/mgb_ops/model/`.
 - `src/mgb_ops/assets/sql/`
   Explicit schemas for `history.sqlite`, run databases, and model output exports.
 - `docs/`
@@ -124,4 +178,5 @@ To run INMET ingestion, set `INMET_API_KEY` in the environment or fill `.env` fr
 - `<workspace>/data/runs/<run_id>.sqlite`
   Stores the closed state of a specific run.
 
-The run schema exists and bootstrap is implemented, but complete operational run assembly is not finished in this phase.
+The run schema exists and bootstrap is implemented, but complete operational run
+assembly is not finished in this phase.

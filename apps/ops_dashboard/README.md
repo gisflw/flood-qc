@@ -1,6 +1,9 @@
 # Ops Dashboard
 
-Main entry point for the operational Streamlit interface.
+Streamlit interface layer for operational monitoring and manual ECMWF forecast
+correction. The dashboard should stay thin: Streamlit rendering and session
+state live here, while reusable data access, model, ingestion, and correction
+logic should live in `mgb_ops` library modules.
 
 Expected usage:
 
@@ -20,3 +23,6 @@ Additional behavior:
 
 - Streamlit theme in `.streamlit/config.toml`;
 - manual refresh through the `Refresh data` button in the sidebar to clear caches and reload operational artifacts.
+
+The current `mgb_ops.reporting.ops_dashboard_*` modules are dashboard support
+helpers, not the future public reporting interface.

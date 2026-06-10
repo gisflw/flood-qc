@@ -7,7 +7,11 @@ The canonical model remains split between:
 - persistent history in `<workspace>/data/history.sqlite`;
 - one file per run in `<workspace>/data/runs/<run_id>.sqlite`.
 
-Today the history database is used operationally by ANA, ECMWF, the dashboard, and manual forecast corrections. The run schema already exists, but its operational materialization is not complete yet.
+Today the history database is used operationally by ANA, ECMWF, the dashboard,
+and manual forecast corrections. These stores should be accessed through
+library functions where possible; the CLI and dashboard are consumers of the
+same data model. The run schema already exists, but its operational
+materialization is not complete yet.
 
 ## Main History Entities
 
@@ -75,7 +79,7 @@ The run database is still modeled to store:
 - operational derivatives in `derived_series` and `derived_value`;
 - model execution in `model_execution`;
 - operational subset of MGB outputs in `mgb_output_series` and `mgb_output_value`;
-- local flags, edits, and reports.
+- local flags, edits, and report artifacts.
 
 This contract remains valid, but the repository layer and run assembly are still incomplete in this phase.
 
@@ -109,7 +113,10 @@ The repository's operational configuration remains in:
 - module-owned in-code defaults
 - `<workspace>/config/custom.yaml` when present
 
-The possible migration to `.toml` remains under evaluation and does not yet change the data model or the runtime contract for this phase.
+The possible migration to `.toml` remains under evaluation and does not yet
+change the data model or the runtime contract for this phase. Library functions
+should prefer explicit path/config inputs where practical so notebooks, scripts,
+CLI commands, and dashboard flows can share the same model.
 
 ## Canonical Schemas
 
