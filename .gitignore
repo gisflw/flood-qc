@@ -14,22 +14,14 @@ venv/
 .idea/
 .DS_Store
 
-# Data
-data/*
-!data/README.md
-!data/interim/.gitkeep
-!data/interim/history_station_inventory.csv
-!data/timeseries/.gitkeep
-!data/runs/.gitkeep
-logs/*
-
 # Tests / tooling
+scratch/
 .pytest_cache/
 .mypy_cache/
 .coverage
 htmlcov/
 
-# Notebooks (nao usamos, mas evita restos)
+# Notebooks
 .ipynb_checkpoints/
 
 # Builds
@@ -38,13 +30,9 @@ dist/
 *.egg-info/
 
 # LLM agents
-AGENTS.md
-CLAUDE.md
-
-# Reference code
-from_Erik/*
-src/legacy/*
-examples/*
 .omx/
 .codex/
 .agents/
+AGENTS.md
+CLAUDE.md
+
