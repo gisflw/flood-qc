@@ -1,90 +1,90 @@
-# Workflows operacionais
+# Operational Workflows
 
-## Fluxo implementado hoje
+## Workflow Implemented Today
 
-### 1. Bootstrap do historico
+### 1. History Bootstrap
 
-1. Inicializar `data/history.sqlite`.
-2. Carregar o inventario de estacoes em `station`.
-3. Garantir catalogos basicos de `provider` e `variable`.
+1. Initialize `<workspace>/data/history.sqlite`.
+2. Load the station inventory into `station`.
+3. Ensure the basic `provider` and `variable` catalogs.
 
-### 2. Ingest de observados ANA
+### 2. ANA Observation Ingestion
 
-1. Ler `config/default.yaml` e `config/custom.yaml`.
-2. Buscar dados hidrometeorologicos por estacao e dia.
-3. Salvar XML bruto em `data/interim/ana/`.
-4. Persistir observados em `observed_series` e `observed_value`.
-5. Registrar logs em `logs/fetch_observed_ana/`.
+1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
+2. Fetch hydrometeorological data by station and day.
+3. Save raw XML in `<workspace>/data/interim/ana/`.
+4. Persist observations in `observed_series` and `observed_value`.
+5. Register logs in `logs/fetch_observed_ana/`.
 
-### 2b. Ingest de chuva INMET
+### 2b. INMET Rainfall Ingestion
 
-1. Ler `config/default.yaml` e `config/custom.yaml`.
-2. Ler a chave local em `INMET_API_KEY` ou em `.env`.
-3. Consultar a API operacional de chuva por estacao e dia.
-4. Salvar payload bruto em `data/interim/inmet/`.
-5. Persistir chuva em `observed_series` e `observed_value`.
-6. Registrar logs em `logs/fetch_observed_inmet/`.
+1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
+2. Read the local key from `INMET_API_KEY` or `.env`.
+3. Query the operational rainfall API by station and day.
+4. Save raw payloads in `<workspace>/data/interim/inmet/`.
+5. Persist rainfall in `observed_series` and `observed_value`.
+6. Register logs in `logs/fetch_observed_inmet/`.
 
-### 3. Ingest de forecast ECMWF
+### 3. ECMWF Forecast Ingestion
 
-1. Resolver o ciclo a partir do `reference_time`.
-2. Baixar o GRIB do ECMWF.
-3. Recortar a grade para o bbox operacional.
-4. Registrar o asset canonico em `data/history.sqlite`.
-5. Registrar logs em `logs/forecast_grid/`.
+1. Resolve the cycle from `reference_time`.
+2. Download the ECMWF GRIB.
+3. Clip the grid to the operational bounding box.
+4. Register the canonical asset in `<workspace>/data/history.sqlite`.
+5. Register logs in `logs/forecast_grid/`.
 
-### 4. Preparacao do MGB
+### 4. MGB Preparation
 
-1. Reescrever `PARHIG.hig` a partir da configuracao atual.
-2. Carregar chuva observada do historico.
-3. Normalizar chuva para grade horaria e interpolar para as minis.
-4. Quando habilitado, incorporar a chuva horaria do ECMWF no bloco de forecast.
-5. Escrever `apps/mgb_runner/Input/chuvabin.hig`.
+1. Rewrite `PARHIG.hig` from the current configuration.
+2. Load observed rainfall from the history database.
+3. Normalize rainfall to the hourly grid and interpolate it to the minis.
+4. When enabled, incorporate hourly ECMWF rainfall into the forecast block.
+5. Write `<workspace>/mgb_runner/Input/chuvabin.hig`.
 
-### 5. Execucao e consumo do modelo
+### 5. Model Execution and Consumption
 
-1. Preparar workspace do runner.
-2. Executar o binario do MGB ou rodar em dry-run.
-3. Espelhar o output de volta para `apps/mgb_runner/Output`.
-4. Ler binarios do MGB diretamente no dashboard para visualizacao.
+1. Prepare the runner workspace.
+2. Run the MGB binary or dry-run.
+3. Mirror output back to `<workspace>/mgb_runner/Output`.
+4. Read MGB binaries directly in the dashboard for visualization.
 
 ### 6. Dashboard
 
-1. Ler `data/history.sqlite` para cadastro e observados.
-2. Ler binarios MGB do runner para series de mini.
-3. Ler rasters acumulados em `data/interim/`.
-4. Permitir preview e persistencia de correcoes manuais de forecast ECMWF.
+1. Read `<workspace>/data/history.sqlite` for registry and observations.
+2. Read MGB runner binaries for mini series.
+3. Read accumulated rasters in `<workspace>/data/interim/`.
+4. Allow preview and persistence of manual ECMWF forecast corrections.
 
-## Fluxos ainda incompletos
+## Incomplete Flows
 
-### QC automatico
+### Automatic QC
 
-O schema e os estados existem, mas o fluxo de:
+The schema and states exist, but the flow to:
 
-- gerar flags em `qc_flag`
-- promover `raw -> curated -> approved`
-- liberar automaticamente insumos aprovados
+- generate flags in `qc_flag`
+- promote `raw -> curated -> approved`
+- automatically release approved inputs
 
-ainda nao esta operacional.
+is not operational yet.
 
-### Run operacional materializado
+### Materialized Operational Run
 
-O schema de run existe, mas o fluxo que copia inputs, outputs, derivados, flags e lineage para `data/runs/<run_id>.sqlite` ainda nao esta fechado.
+The run schema exists, but the flow that copies inputs, outputs, derivatives, flags, and lineage to `<workspace>/data/runs/<run_id>.sqlite` is not closed yet.
 
-### Revisao manual de observados
+### Manual Review of Observations
 
-Hoje existe correcao manual para forecast ECMWF no historico. A revisao manual de chuva observada ainda nao esta implementada.
+Manual correction for ECMWF forecasts currently exists in the history database. Manual review of observed rainfall is not implemented yet.
 
-### Relatorios
+### Reports
 
-A geracao de `report_artifact` e a publicacao no `run_catalog` seguem pendentes.
+Generation of `report_artifact` and publication to `run_catalog` remain pending.
 
-## Direcao arquitetural mantida
+## Maintained Architectural Direction
 
-Mesmo com lacunas na implementacao, a direcao canonica continua sendo:
+Even with implementation gaps, the canonical direction remains:
 
-- historico persistente em SQLite;
-- um arquivo SQLite por run;
-- assets espaciais tratados em `data/spatial/`;
-- series tratadas em `data/timeseries/`;
-- configuracao atual em YAML, com `.toml` ainda em avaliacao.
+- persistent history in SQLite;
+- one SQLite file per run;
+- processed spatial assets in `data/spatial/`;
+- processed series in `data/timeseries/`;
+- current configuration in YAML, with `.toml` still under evaluation.

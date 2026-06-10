@@ -8,13 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from reporting import ops_dashboard_data
-from storage.db_bootstrap import apply_schema
+from mgb_ops.reporting import ops_dashboard_data
+from mgb_ops.storage.db_bootstrap import apply_schema
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HISTORY_SCHEMA_PATH = REPO_ROOT / "sql" / "history_schema.sql"
-MODEL_OUTPUTS_SCHEMA_PATH = REPO_ROOT / "sql" / "model_outputs_schema.sql"
+HISTORY_SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "history_schema.sql"
+MODEL_OUTPUTS_SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "model_outputs_schema.sql"
 
 
 def initialize_history_db(path: Path) -> Path:
@@ -107,7 +107,7 @@ def patch_mgb_runtime(monkeypatch, dataset: dict[str, object], *, reference_time
     monkeypatch.setattr(
         ops_dashboard_data,
         "load_settings",
-        lambda: {
+        lambda **_: {
             "run": {"reference_time": reference_time},
             "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
         },
@@ -172,10 +172,10 @@ def test_select_preferred_series_rows_uses_state_precedence() -> None:
 
 
 def test_derive_station_kind_from_variable_coverage() -> None:
-    assert ops_dashboard_data.derive_station_kind(["rain"]) == "chuva"
-    assert ops_dashboard_data.derive_station_kind(["level"]) == "nivel"
-    assert ops_dashboard_data.derive_station_kind(["flow"]) == "nivel"
-    assert ops_dashboard_data.derive_station_kind(["rain", "flow"]) == "misto"
+    assert ops_dashboard_data.derive_station_kind(["rain"]) == "rain"
+    assert ops_dashboard_data.derive_station_kind(["level"]) == "level"
+    assert ops_dashboard_data.derive_station_kind(["flow"]) == "level"
+    assert ops_dashboard_data.derive_station_kind(["rain", "flow"]) == "mixed"
 
 
 def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -> None:
@@ -207,6 +207,24 @@ def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -
     assert set(catalog.columns).issuperset(
         {"station_uid", "station_code", "provider_code", "station_name", "lat", "lon", "kind", "status", "status_reason"}
     )
+
+
+def test_load_station_catalog_handles_all_stations_without_recent_values(tmp_path) -> None:
+    db_path = initialize_history_db(tmp_path / "history.sqlite")
+    now = datetime(2026, 3, 17, 12, 0, 0)
+
+    with sqlite3.connect(db_path) as connection:
+        insert_station(connection, station_uid=1001, station_code="1001", station_name="NODATA")
+        insert_observed_series(connection, series_id="1001.rain.raw", station_uid=1001, variable_code="rain", state="raw")
+        insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
+        connection.commit()
+
+    catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
+
+    assert catalog["station_uid"].tolist() == [1001]
+    assert catalog["kind"].tolist() == ["rain"]
+    assert catalog["status"].tolist() == ["no_data"]
+    assert catalog["rows_recent"].tolist() == [0]
 
 
 def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path) -> None:

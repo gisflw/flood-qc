@@ -20,19 +20,33 @@ try:
     import streamlit as st
 except ModuleNotFoundError as exc:
     raise SystemExit(
-        "Dependencias de UI nao encontradas. Instale com: "
+        "UI dependencies not found. Install them with: "
         "pip install streamlit plotly folium streamlit-folium branca rasterio"
     ) from exc
 
-from common.paths import history_db_path
-from qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
-from reporting import ops_dashboard_data, ops_dashboard_forecast, ops_dashboard_map
-from storage.history_repository import HistoryRepository
+from mgb_ops.common.paths import history_db_path, set_workspace
 
+
+def _configure_workspace_from_argv(argv: list[str]) -> None:
+    if "--workspace" not in argv:
+        set_workspace(None)
+        return
+    idx = argv.index("--workspace")
+    if idx + 1 >= len(argv):
+        raise SystemExit("--workspace requires a path")
+    set_workspace(argv[idx + 1])
+
+
+_configure_workspace_from_argv(sys.argv[1:])
+
+from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
+from mgb_ops.reporting import ops_dashboard_data, ops_dashboard_forecast, ops_dashboard_map
+from mgb_ops.storage.history_repository import HistoryRepository
+import map_component
 
 DAYS_WINDOW = 30
 MGB_COLORS = {"q": "#1864ab", "y": "#0b7285"}
-NO_LAYER_OPTION = "(nenhum)"
+NO_LAYER_OPTION = "(none)"
 REFRESH_TS_FORMAT = "%d/%m/%Y %H:%M:%S"
 FORECAST_EDIT_COLUMNS = [
     "manual_edit_id",
@@ -53,7 +67,7 @@ FORECAST_EDIT_NUMERIC_COLUMNS = ["t0_step", "t1_step", "shift_lat", "shift_lon",
 
 
 st.set_page_config(
-    page_title="Hidrologia operacional",
+    page_title="Operational Hydrology",
     page_icon=":material/water_drop:",
     layout="wide",
 )
@@ -160,7 +174,7 @@ def get_map_artifacts(
     map_cache_key: str,
     selected_layer_name: Optional[str],
     opacity: float,
-) -> ops_dashboard_map.MapRenderArtifacts:
+) -> map_component.MapRenderArtifacts:
     del map_cache_key
     stations_df = ops_dashboard_data.load_station_catalog(days=DAYS_WINDOW)
     rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson()
@@ -172,7 +186,7 @@ def get_map_artifacts(
         rivers_geojson,
         raster_catalog,
     )
-    return ops_dashboard_map.build_map_render_artifacts(base_map)
+    return map_component.build_map_render_artifacts(base_map)
 
 
 def initialize_session_state() -> None:
@@ -332,28 +346,28 @@ def validate_forecast_edit_draft(asset_id: str, frame: pd.DataFrame) -> list[dic
 
     for row_index, row in enumerate(active.itertuples(index=False), start=1):
         if pd.isna(row.t0_step) or pd.isna(row.t1_step):
-            raise ValueError(f"Linha {row_index}: t0_step e t1_step sao obrigatorios.")
+            raise ValueError(f"Row {row_index}: t0_step and t1_step are required.")
         if pd.isna(row.multiplication_factor):
-            raise ValueError(f"Linha {row_index}: multiplication_factor e obrigatorio.")
+            raise ValueError(f"Row {row_index}: multiplication_factor is required.")
 
         t0_step = int(row.t0_step)
         t1_step = int(row.t1_step)
         if t1_step < t0_step:
-            raise ValueError(f"Linha {row_index}: t1_step deve ser >= t0_step.")
+            raise ValueError(f"Row {row_index}: t1_step must be >= t0_step.")
 
         multiplication_factor = float(row.multiplication_factor)
         if multiplication_factor <= 0:
-            raise ValueError(f"Linha {row_index}: multiplication_factor deve ser > 0.")
+            raise ValueError(f"Row {row_index}: multiplication_factor must be > 0.")
 
         reason = str(row.reason or "").strip()
         if not reason:
-            raise ValueError(f"Linha {row_index}: motivo da correcao obrigatorio.")
+            raise ValueError(f"Row {row_index}: correction reason is required.")
 
         metadata_json = str(row.metadata_json or "{}").strip() or "{}"
         try:
             metadata = json.loads(metadata_json)
         except json.JSONDecodeError as exc:
-            raise ValueError(f"Linha {row_index}: metadata_json invalido.") from exc
+            raise ValueError(f"Row {row_index}: invalid metadata_json.") from exc
 
         rows_to_persist.append(
             {
@@ -374,7 +388,7 @@ def validate_forecast_edit_draft(asset_id: str, frame: pd.DataFrame) -> list[dic
     for previous, current in zip(ordered, ordered[1:]):
         if int(current["t0_step"]) < int(previous["t1_step"]):
             raise ValueError(
-                "Sobreposicao de correcoes na grade: "
+                "Overlapping grid corrections: "
                 f"[{previous['t0_step']}, {previous['t1_step']}] x [{current['t0_step']}, {current['t1_step']}]."
             )
 
@@ -383,19 +397,19 @@ def validate_forecast_edit_draft(asset_id: str, frame: pd.DataFrame) -> list[dic
 
 def format_mm(value: float | int | None) -> str:
     if value is None or pd.isna(value):
-        return "indisponivel"
+        return "unavailable"
     return f"{float(value):.1f} mm"
 
 
 def format_value(value: float | int | None, unit: str) -> str:
     if value is None or pd.isna(value):
-        return "indisponivel"
+        return "unavailable"
     return f"{float(value):.2f} {unit}"
 
 
 def format_timestamp(value: object | None, *, include_year: bool = False) -> str:
     if value is None or pd.isna(value):
-        return "indisponivel"
+        return "unavailable"
     timestamp = pd.Timestamp(value)
     fmt = "%d/%m/%Y %H:%M" if include_year else "%d/%m %H:%M"
     return timestamp.strftime(fmt)
@@ -435,21 +449,21 @@ def render_compact_summary_item(column, label: str, value: str) -> None:
 def render_header_and_summary(stations: pd.DataFrame) -> None:
     summary = network_summary(stations)
 
-    st.title("Sistema de alerta de cheias RS")
+    st.title("RS Flood Alert System")
     st.caption(
-        "Explorer operacional para postos observados, raster de chuva acumulada, series do MGB e previsao ECMWF. "
-        "A aba ECMWF permite inspecao por passo e pre-visualizacao imediata de correcoes parametricas."
+        "Operational explorer for observed stations, accumulated rainfall rasters, MGB series, and ECMWF forecasts. "
+        "The ECMWF tab supports step-by-step inspection and immediate preview of parametric corrections."
     )
 
     with st.container(border=True):
-        st.subheader("Resumo da rede")
+        st.subheader("Network Summary")
         items = [
-            ("Postos totais", f"{int(summary['total'])}"),
-            ("Com dados", f"{int(summary['with_data'])}"),
-            ("Sem dados", f"{int(summary['no_data'])}"),
-            ("Falha de dados", f"{int(summary['data_issue'])}"),
-            ("Media chuva 24h", format_mm(summary["rain_mean_24h"])),
-            ("P90 chuva 24h", format_mm(summary["rain_p90_24h"])),
+            ("Total stations", f"{int(summary['total'])}"),
+            ("With data", f"{int(summary['with_data'])}"),
+            ("No data", f"{int(summary['no_data'])}"),
+            ("Data issue", f"{int(summary['data_issue'])}"),
+            ("Mean rainfall 24h", format_mm(summary["rain_mean_24h"])),
+            ("P90 rainfall 24h", format_mm(summary["rain_p90_24h"])),
         ]
         cols = st.columns(len(items))
         for col, (label, value) in zip(cols, items):
@@ -458,31 +472,31 @@ def render_header_and_summary(stations: pd.DataFrame) -> None:
 
 def render_station_summary_panel(row: Optional[pd.Series], observed_df: pd.DataFrame) -> None:
     with st.container(border=True):
-        st.subheader("Resumo do posto")
+        st.subheader("Station Summary")
         if row is None:
-            st.caption("Clique em um posto no mapa para carregar os dados observados.")
+            st.caption("Click a station on the map to load observed data.")
             return
 
-        station_name = str(row["station_name"]).strip() or "sem nome"
+        station_name = str(row["station_name"]).strip() or "unnamed"
         provider = str(row["provider_code"]).upper()
         station_code = str(row["station_code"])
         st.markdown(f"**{station_name}**")
 
         if observed_df.empty:
-            st.info("Sem dados observados para esta estacao na janela selecionada.")
+            st.info("No observed data for this station in the selected window.")
             return
 
         metrics = ops_dashboard_data.compute_observed_metrics(observed_df)
         st.caption(f"{provider}:{station_code}")
         st.markdown(
-            "Ultima leitura: {latest} | Chuva 12h: {rain_12h} | Chuva 24h: {rain_24h}".format(
+            "Latest reading: {latest} | Rainfall 12h: {rain_12h} | Rainfall 24h: {rain_24h}".format(
                 latest=format_timestamp(metrics["latest_time"]),
                 rain_12h=format_mm(metrics["rain_12h"]),
                 rain_24h=format_mm(metrics["rain_24h"]),
             )
         )
         st.markdown(
-            "Chuva 72h: {rain_72h} | Nivel atual: {level} | Vazao atual: {flow}".format(
+            "Rainfall 72h: {rain_72h} | Current level: {level} | Current flow: {flow}".format(
                 rain_72h=format_mm(metrics["rain_72h"]),
                 level=format_value(metrics["level_current"], "cm"),
                 flow=format_value(metrics["flow_current"], "m3/s"),
@@ -532,33 +546,33 @@ def render_mini_summary_panel(
     summary_days: int,
 ) -> int:
     with st.container(border=True):
-        st.subheader("Resumo da mini")
+        st.subheader("Mini Summary")
         if mini_id is None:
-            st.caption("Clique em uma geometria de rio no mapa para carregar a serie do modelo.")
+            st.caption("Click a river geometry on the map to load the model series.")
             return summary_days
 
         st.markdown(f"**Mini {mini_id}**")
         summary_days = st.selectbox(
-            "Janela do resumo (dias)",
+            "Summary window (days)",
             options=[3, 5, 7, 10, 15, 30],
             index=[3, 5, 7, 10, 15, 30].index(summary_days),
             key="mini_summary_days",
         )
 
         if y_series.empty:
-            st.info("Sem serie de nivel para a mini selecionada.")
+            st.info("No level series for the selected mini.")
             return summary_days
 
         summary = compute_mini_level_summary(y_series, summary_days)
         st.markdown(
-            "Nivel atual: {current_level} | Maior nivel ultimos {days} dias: {recent_peak}".format(
+            "Current level: {current_level} | Highest level in last {days} days: {recent_peak}".format(
                 current_level=format_value(summary["current_level"], "m"),
                 days=summary_days,
                 recent_peak=format_value(summary["recent_peak"], "m"),
             )
         )
         st.markdown(
-            "Maior nivel proximos {days} dias: {forecast_peak} | Referencia atual: {current_time}".format(
+            "Highest level in next {days} days: {forecast_peak} | Current reference: {current_time}".format(
                 days=summary_days,
                 forecast_peak=format_value(summary["forecast_peak"], "m"),
                 current_time=format_timestamp(summary["current_time"], include_year=True),
@@ -581,7 +595,7 @@ def lookup_variable_metadata(model_variables: pd.DataFrame, variable_code: Optio
 
 def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
     if df.empty:
-        st.info("Sem dados para esta estacao/intervalo.")
+        st.info("No data for this station/interval.")
         return
 
     fig = make_subplots(
@@ -600,20 +614,20 @@ def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
         fig.add_bar(
             x=rain_df["datetime"],
             y=rain_df["value"],
-            name="Chuva (mm)",
+            name="Rainfall (mm)",
             marker_color="#4c6ef5",
             opacity=0.9,
             row=1,
             col=1,
         )
     else:
-        fig.add_annotation(text="Chuva indisponivel", xref="paper", yref="paper", x=0.5, y=0.88, showarrow=False)
+        fig.add_annotation(text="Rainfall unavailable", xref="paper", yref="paper", x=0.5, y=0.88, showarrow=False)
 
     if not level_df.empty:
         fig.add_scatter(
             x=level_df["datetime"],
             y=level_df["value"],
-            name="Nivel (cm)",
+            name="Level (cm)",
             mode="lines+markers",
             line=dict(color="#0b7285", width=2),
             marker=dict(size=4),
@@ -624,7 +638,7 @@ def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
         fig.add_scatter(
             x=flow_df["datetime"],
             y=flow_df["value"],
-            name="Vazao (m3/s)",
+            name="Flow (m3/s)",
             mode="lines",
             line=dict(color="#f08c00", width=2),
             row=2,
@@ -632,7 +646,7 @@ def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
         )
     if level_df.empty and flow_df.empty:
         fig.add_annotation(
-            text="Nivel e vazao indisponiveis",
+            text="Level and flow unavailable",
             xref="paper",
             yref="paper",
             x=0.5,
@@ -647,7 +661,7 @@ def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
         hovermode="x unified",
         xaxis=dict(title=""),
-        xaxis2=dict(title="Data/hora"),
+        xaxis2=dict(title="Date/time"),
     )
     st.plotly_chart(fig, use_container_width=True, key=f"chart-{station_uid}-{days}")
 
@@ -663,7 +677,7 @@ def mgb_time_series_chart(
     height: int = 420,
 ) -> None:
     if df.empty:
-        st.info("Sem serie do modelo para a mini selecionada.")
+        st.info("No model series for the selected mini.")
         return
 
     current_df = df[df["prev_flag"] == 0]
@@ -679,7 +693,7 @@ def mgb_time_series_chart(
                 x=current_df["dt"],
                 y=current_df["value"],
                 mode="lines",
-                name=f"{variable_display} atual",
+                name=f"{variable_display} current",
                 line=dict(color=base_color, width=2),
             )
         )
@@ -689,7 +703,7 @@ def mgb_time_series_chart(
                 x=forecast_df["dt"],
                 y=forecast_df["value"],
                 mode="lines",
-                name=f"{variable_display} previsao",
+                name=f"{variable_display} forecast",
                 line=dict(color=forecast_color, width=2, dash="dash"),
             )
         )
@@ -700,7 +714,7 @@ def mgb_time_series_chart(
         margin=dict(t=30, r=20, l=10, b=30),
         hovermode="x unified",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0),
-        xaxis=dict(title="Data/hora"),
+        xaxis=dict(title="Date/time"),
         yaxis=dict(title=f"{variable_display} ({unit})"),
     )
     st.plotly_chart(fig, use_container_width=True, key=f"mgb-chart-{variable_code}-{mini_id}-{days_window}")
@@ -727,8 +741,8 @@ def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) ->
 
 
 @st.fragment
-def render_map_fragment(map_artifacts: ops_dashboard_map.MapRenderArtifacts) -> None:
-    map_state = ops_dashboard_map.render_map_component(
+def render_map_fragment(map_artifacts: map_component.MapRenderArtifacts) -> None:
+    map_state = map_component.render_map_component(
         map_artifacts,
         height=620,
         use_container_width=True,
@@ -760,26 +774,26 @@ def render_sidebar_controls(
     layer_options = [NO_LAYER_OPTION] + [str(item["name"]) for item in accumulation_rasters]
 
     with st.sidebar:
-        st.subheader("Controles")
-        if st.button("Atualizar dados", use_container_width=True):
+        st.subheader("Controls")
+        if st.button("Refresh data", use_container_width=True):
             trigger_manual_refresh()
 
         last_refresh = st.session_state.get("last_refresh_at")
         if last_refresh:
-            st.caption(f"Ultima atualizacao manual: {last_refresh}")
+            st.caption(f"Last manual refresh: {last_refresh}")
         else:
-            st.caption("Ultima atualizacao manual: nenhuma nesta sessao.")
+            st.caption("Last manual refresh: none in this session.")
 
         selected_layer_option = st.radio(
-            "Raster de chuva acumulada",
+            "Accumulated rainfall raster",
             options=layer_options,
             format_func=lambda option: format_layer_option(option, raster_catalog),
             index=1 if accumulation_rasters else 0,
             key="selected_raster_layer_radio",
         )
 
-        opacity = st.slider("Transparencia raster", min_value=0.0, max_value=1.0, value=0.6, step=0.05)
-        st.caption("Camadas visiveis: postos, rios MGB e raster de chuva acumulada sobrepostos no mapa.")
+        opacity = st.slider("Raster transparency", min_value=0.0, max_value=1.0, value=0.6, step=0.05)
+        st.caption("Visible layers: stations, MGB rivers, and accumulated rainfall raster overlaid on the map.")
 
     selected_layer_name = None if selected_layer_option == NO_LAYER_OPTION else selected_layer_option
     return selected_layer_name, opacity
@@ -814,12 +828,12 @@ def render_monitoring_tab(
             selected_station_row = selected.iloc[0]
 
     with st.container(border=True):
-        st.subheader("Mapa operacional")
-        st.caption("Clique em um posto para dados observados ou em um trecho de rio para series do MGB.")
+        st.subheader("Operational Map")
+        st.caption("Click a station for observed data or a river segment for MGB series.")
         if map_warning:
             st.warning(map_warning)
         if rivers_geojson is None:
-            st.warning("Camada de rios nao encontrada em data/legacy/app_layers/rios_mini.geojson.")
+            st.warning("River layer not found at <workspace>/data/legacy/app_layers/rios_mini.geojson.")
         render_map_fragment(map_artifacts)
 
     lower_left, lower_right = st.columns(2)
@@ -837,11 +851,11 @@ def render_monitoring_tab(
     )
 
     with lower_left:
-        st.subheader("Dados de postos")
+        st.subheader("Station Data")
         render_station_summary_panel(selected_station_row, observed_series)
 
     with lower_right:
-        st.subheader("Dados das minis")
+        st.subheader("Mini Data")
         render_mini_summary_panel(
             mini_id,
             y_series,
@@ -851,17 +865,17 @@ def render_monitoring_tab(
     chart_left, chart_right = st.columns(2)
     with chart_left:
         with st.container(border=True):
-            st.subheader("Grafico do posto")
+            st.subheader("Station Chart")
             if station_uid is None:
-                st.info("Selecione um posto no mapa.")
+                st.info("Select a station on the map.")
             else:
                 time_series_chart(observed_series, station_uid, DAYS_WINDOW)
 
     with chart_right:
         with st.container(border=True):
-            st.subheader("Graficos da mini")
+            st.subheader("Mini Charts")
             if mini_id is None:
-                st.info("Selecione uma mini no mapa.")
+                st.info("Select a mini on the map.")
             else:
                 mgb_time_series_chart(
                     y_series,
@@ -885,8 +899,12 @@ def render_monitoring_tab(
 
 @st.fragment
 def render_forecast_map_fragment(map_artifacts: ops_dashboard_forecast.ForecastMapComparisonArtifacts) -> None:
-    ops_dashboard_map.render_map_component(
-        map_artifacts.map_artifacts,
+    render_artifacts = map_component.build_map_render_artifacts(
+        map_artifacts.map_figure,
+        component_key="forecast-preview-map",
+    )
+    map_component.render_map_component(
+        render_artifacts,
         height=520,
         use_container_width=True,
     )
@@ -900,7 +918,7 @@ def render_forecast_map_fragment(map_artifacts: ops_dashboard_forecast.ForecastM
         st.caption("Original")
         st.markdown(map_artifacts.original.legend_html, unsafe_allow_html=True)
     with corrected_col:
-        st.caption("Corrigido")
+        st.caption("Corrected")
         st.markdown(map_artifacts.corrected.legend_html, unsafe_allow_html=True)
 
 
@@ -923,7 +941,7 @@ def render_forecast_corrections_fragment(
     if message:
         getattr(st, message_kind if message_kind in {"success", "warning", "error", "info"} else "info")(message)
 
-    st.caption("Edite as linhas abaixo, marque `remove` para excluir e use `Salvar alteracoes` para persistir o conjunto final.")
+    st.caption("Edit the rows below, check `remove` to delete, and use `Save changes` to persist the final set.")
     draft = normalize_forecast_edit_frame(st.session_state.get("forecast_edit_draft"))
     edited_draft = st.data_editor(
         draft,
@@ -961,7 +979,7 @@ def render_forecast_corrections_fragment(
                 format="%.2f",
             ),
             "editor": st.column_config.TextColumn("Editor"),
-            "reason": st.column_config.TextColumn("Motivo da correcao", width="large"),
+            "reason": st.column_config.TextColumn("Correction reason", width="large"),
             "created_at": st.column_config.TextColumn("created_at", width="medium"),
             "remove": st.column_config.CheckboxColumn("remove"),
         },
@@ -970,7 +988,7 @@ def render_forecast_corrections_fragment(
     edited_draft["asset_id"] = selected_asset_id
     st.session_state["forecast_edit_draft"] = edited_draft
 
-    st.markdown("**Nova correcao**")
+    st.markdown("**New Correction**")
     with st.form(f"forecast_add_form__{selected_asset_id}"):
         add_left, add_right = st.columns([1.1, 0.9])
         with add_left:
@@ -987,15 +1005,15 @@ def render_forecast_corrections_fragment(
                 key="forecast_add_multiplication_factor",
             )
             add_editor = st.text_input("Editor", key="forecast_add_editor")
-            add_reason = st.text_input("Motivo da correcao", key="forecast_add_reason")
-        add_clicked = st.form_submit_button("Adicionar correcao", use_container_width=True)
+            add_reason = st.text_input("Correction reason", key="forecast_add_reason")
+        add_clicked = st.form_submit_button("Add correction", use_container_width=True)
 
     if add_clicked:
         try:
             if int(add_t1_step) < int(add_t0_step):
-                raise ValueError("Nova correcao: t1_step deve ser >= t0_step.")
+                raise ValueError("New correction: t1_step must be >= t0_step.")
             if float(add_multiplication_factor) <= 0:
-                raise ValueError("Nova correcao: multiplication_factor deve ser > 0.")
+                raise ValueError("New correction: multiplication_factor must be > 0.")
             preview_metadata = json.loads(preview_metadata_json or "{}")
             new_row = build_forecast_edit_row(
                 asset_id=selected_asset_id,
@@ -1012,7 +1030,7 @@ def render_forecast_corrections_fragment(
             next_draft = pd.concat([edited_draft, pd.DataFrame([new_row])], ignore_index=True)
             st.session_state["forecast_edit_draft"] = normalize_forecast_edit_frame(next_draft)
             st.session_state["forecast_last_editor"] = str(add_editor or "").strip()
-            set_forecast_edit_message("Correcao adicionada ao draft.", kind="success")
+            set_forecast_edit_message("Correction added to draft.", kind="success")
             st.rerun(scope="fragment")
         except ValueError as exc:
             set_forecast_edit_message(str(exc), kind="warning")
@@ -1020,9 +1038,9 @@ def render_forecast_corrections_fragment(
 
     save_col, info_col = st.columns([0.35, 0.65], vertical_alignment="center")
     with save_col:
-        save_clicked = st.button("Salvar alteracoes", use_container_width=True, type="primary")
+        save_clicked = st.button("Save changes", use_container_width=True, type="primary")
     with info_col:
-        st.caption("O save substitui todas as correcoes do asset atual em uma unica transacao curta.")
+        st.caption("Save replaces all corrections for the current asset in one short transaction.")
 
     if save_clicked:
         try:
@@ -1036,13 +1054,13 @@ def render_forecast_corrections_fragment(
                 last_editor = rows_to_persist[-1].get("editor")
                 if last_editor:
                     st.session_state["forecast_last_editor"] = str(last_editor)
-            set_forecast_edit_message("Correcoes persistidas no history.sqlite.", kind="success")
+            set_forecast_edit_message("Corrections persisted to history.sqlite.", kind="success")
             st.rerun(scope="fragment")
         except ValueError as exc:
             set_forecast_edit_message(str(exc), kind="warning")
             st.rerun(scope="fragment")
         except sqlite3.IntegrityError as exc:
-            set_forecast_edit_message(f"Conflito no banco: {exc}", kind="error")
+            set_forecast_edit_message(f"Database conflict: {exc}", kind="error")
             st.rerun(scope="fragment")
 
 
@@ -1074,27 +1092,31 @@ def resolve_default_forecast_window(
 
 def render_forecast_tab() -> None:
     assets_df = get_forecast_assets()
-    st.subheader("Chuva prevista ECMWF")
+    st.subheader("ECMWF Forecast Rainfall")
     st.caption(
-        "Selecione um ciclo ECMWF canonico, ajuste a janela temporal e os parametros de correcao, "
-        "e clique em Carregar mapas para atualizar o preview sincronizado."
+        "Select a canonical ECMWF cycle, adjust the time window and correction parameters, "
+        "then click Load maps to update the synchronized preview."
     )
     if assets_df.empty:
-        st.info("Nenhum asset ECMWF canonicamente registrado foi encontrado em data/history.sqlite.")
+        st.info("No canonical ECMWF asset was found in <workspace>/data/history.sqlite.")
         return
 
     asset_options = assets_df["asset_id"].tolist()
     asset_lookup = dict(zip(assets_df["asset_id"], assets_df["display_label"]))
     selected_asset_id = st.selectbox(
-        "Ciclo ECMWF",
+        "ECMWF cycle",
         options=asset_options,
         format_func=lambda asset_id: asset_lookup.get(asset_id, asset_id),
         key="forecast_asset_id",
     )
 
-    steps_df = get_forecast_steps(selected_asset_id)
+    try:
+        steps_df = get_forecast_steps(selected_asset_id)
+    except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
+        st.warning(str(exc))
+        return
     if steps_df.empty:
-        st.warning("O asset selecionado nao possui mensagens de forecast legiveis.")
+        st.warning("The selected asset has no readable forecast messages.")
         return
 
     step_options = steps_df["step_hours"].astype(int).tolist()
@@ -1107,9 +1129,9 @@ def render_forecast_tab() -> None:
     with st.form("forecast_preview_form"):
         controls_left, controls_right = st.columns([1.15, 0.85])
         with controls_left:
-            st.markdown("**Parametros do preview**")
+            st.markdown("**Preview Parameters**")
             selected_window = st.select_slider(
-                "Janela temporal",
+                "Time window",
                 options=step_options,
                 value=default_window,
                 format_func=lambda step: step_labels.get(int(step), str(step)),
@@ -1126,7 +1148,7 @@ def render_forecast_tab() -> None:
                 key="forecast_draft_multiplication_factor",
             )
             opacity = st.slider(
-                "Transparencia do mapa",
+                "Map transparency",
                 min_value=0.1,
                 max_value=1.0,
                 value=0.75,
@@ -1134,7 +1156,7 @@ def render_forecast_tab() -> None:
                 key="forecast_draft_opacity",
             )
         with controls_right:
-            st.markdown("**Passos disponiveis**")
+            st.markdown("**Available Steps**")
             st.dataframe(
                 steps_df[["step_hours", "valid_time"]].rename(
                     columns={"step_hours": "t", "valid_time": "valid_time_local"}
@@ -1142,7 +1164,7 @@ def render_forecast_tab() -> None:
                 hide_index=True,
                 use_container_width=True,
             )
-        load_preview = st.form_submit_button("Carregar mapas", use_container_width=True)
+        load_preview = st.form_submit_button("Load maps", use_container_width=True)
 
     if load_preview:
         st.session_state["forecast_applied_request"] = ops_dashboard_forecast.ForecastPreviewRequest(
@@ -1161,38 +1183,42 @@ def render_forecast_tab() -> None:
     preview: ops_dashboard_forecast.ForecastPreview | None = None
 
     if current_request is None:
-        st.info("Ajuste os parametros e clique em `Carregar mapas` para montar o preview deste ciclo ECMWF.")
+        st.info("Adjust the parameters and click `Load maps` to build the preview for this ECMWF cycle.")
     else:
-        preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
-        map_artifacts = get_forecast_map_artifacts(
-            current_request.asset_id,
-            int(current_request.t0_step),
-            int(current_request.t1_step),
-            float(current_request.shift_lat),
-            float(current_request.shift_lon),
-            float(current_request.rotation_deg),
-            float(current_request.multiplication_factor),
-            float(current_request.opacity),
-        )
+        try:
+            preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
+            map_artifacts = get_forecast_map_artifacts(
+                current_request.asset_id,
+                int(current_request.t0_step),
+                int(current_request.t1_step),
+                float(current_request.shift_lat),
+                float(current_request.shift_lon),
+                float(current_request.rotation_deg),
+                float(current_request.multiplication_factor),
+                float(current_request.opacity),
+            )
+        except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
+            st.warning(str(exc))
+            return
 
         selected_steps = [int(current_request.t0_step), int(current_request.t1_step)]
         selected_rows = steps_df.loc[steps_df["step_hours"].isin(selected_steps), ["step_hours", "valid_time"]].rename(
             columns={"step_hours": "t", "valid_time": "valid_time_local"}
         )
         with st.container(border=True):
-            st.markdown("**Janela carregada**")
+            st.markdown("**Loaded Window**")
             st.caption(preview.title)
             st.dataframe(selected_rows, hide_index=True, use_container_width=True)
 
         with st.container(border=True):
             if current_request.has_correction:
-                st.caption("Mapa original e corrigido sincronizados. Clique no raster para inspecionar os valores.")
+                st.caption("Original and corrected maps are synchronized. Click the raster to inspect values.")
             else:
-                st.caption("Mapa do forecast. Clique no raster para inspecionar os valores.")
+                st.caption("Forecast map. Click the raster to inspect values.")
             render_forecast_map_fragment(map_artifacts)
 
         instruction = build_forecast_instruction_from_request(current_request)
-        st.markdown("**Instrucao carregada**")
+        st.markdown("**Loaded Instruction**")
         st.dataframe(
             pd.DataFrame(
                 [
@@ -1211,7 +1237,7 @@ def render_forecast_tab() -> None:
             use_container_width=True,
         )
 
-    st.markdown("**Correcoes ECMWF**")
+    st.markdown("**ECMWF Corrections**")
     preview_metadata_json = json.dumps(
         {"mode_label": preview.mode_label, "relative_path": preview.relative_path} if preview is not None else {},
         sort_keys=True,
@@ -1228,6 +1254,12 @@ def render_forecast_tab() -> None:
 def main() -> None:
     initialize_session_state()
 
+    history_path = history_db_path()
+    if not history_path.exists():
+        st.error(f"History database not found: {history_path}")
+        st.info("Set MGB_OPS_WORKSPACE or run the dashboard with `-- --workspace <workspace>`.")
+        return
+
     stations_df = get_station_catalog(DAYS_WINDOW)
     rivers_geojson = get_rivers_geojson()
     model_variables = get_model_variables()
@@ -1238,7 +1270,7 @@ def main() -> None:
     render_header_and_summary(stations_df)
     selected_layer_name, opacity = render_sidebar_controls(accumulation_rasters, raster_catalog)
 
-    monitoring_tab, forecast_tab = st.tabs(["Monitoramento", "Chuva Prevista ECMWF"])
+    monitoring_tab, forecast_tab = st.tabs(["Monitoring", "ECMWF Forecast Rainfall"])
     with monitoring_tab:
         render_monitoring_tab(
             stations_df,

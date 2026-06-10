@@ -1,88 +1,89 @@
-# Arquitetura
+# Architecture
 
-## Visao geral
+## Overview
 
-A base e local-first, orientada por arquivos e organizada em torno de artefatos reproduziveis em disco. O fluxo principal hoje depende de:
+The base is local-first, file-oriented, and organized around reproducible artifacts on disk. The main flow currently depends on:
 
-- `data/history.sqlite` como banco historico persistente;
-- `apps/mgb_runner/Input` e `apps/mgb_runner/Output` como espelho local do runner do MGB;
-- `data/interim/` para artefatos coletados ou intermediarios;
-- `apps/ops_dashboard/app.py` como interface operacional principal.
+- `<workspace>/data/history.sqlite` as the persistent history database;
+- `<workspace>/mgb_runner/Input` and `<workspace>/mgb_runner/Output` as the local mirror of the MGB runner;
+- `<workspace>/data/interim/` for collected or intermediate artifacts;
+- `mgb-ops dashboard` as the operational interface entry point.
 
-Os componentes seguem separados por dominio:
+Components are separated by domain:
 
-- `src/ingest/`: coleta e registro de observados e forecast;
-- `src/model/`: preparacao de insumos e execucao do MGB;
-- `src/storage/`: bootstrap e contratos SQLite;
-- `src/reporting/`: suporte ao dashboard e produtos de consulta;
-- `src/qc/`: regras de QC e revisao, ainda incompletas nesta fase.
+- `src/mgb_ops/ingest/`: collection and registration of observations and forecasts;
+- `src/mgb_ops/model/`: preparation of inputs and MGB execution;
+- `src/mgb_ops/storage/`: SQLite bootstrap and contracts;
+- `src/mgb_ops/reporting/`: dashboard support and query products with no Streamlit dependency;
+- `src/mgb_ops/qc/`: QC and review rules, still incomplete in this phase;
+- `apps/ops_dashboard/`: Streamlit UI and UI-only adapters.
 
-## Estado atual implementado
+## Implemented Status
 
-Hoje o repositorio ja entrega:
+The repository currently provides:
 
-- bootstrap do historico e do schema de run;
-- ingest operacional de observados ANA;
-- ingest de grade ECMWF, recorte espacial e registro do GRIB no historico;
-- preparacao da chuva horaria para o MGB a partir de observados e forecast ECMWF;
-- execucao real ou dry-run do runner MGB via `src/model/run_mgb.py`;
-- dashboard Streamlit para observados, series MGB e preview/correcao manual de forecast ECMWF.
+- history and run schema bootstrap;
+- operational ingestion of ANA observations;
+- ECMWF grid ingestion, spatial clipping, and GRIB registration in the history database;
+- hourly rainfall preparation for MGB from observations and ECMWF forecasts;
+- real or dry-run MGB runner execution through `mgb-ops model run`;
+- Streamlit dashboard for observations, MGB series, and ECMWF forecast preview/manual correction.
 
-Ainda nao entrega ponta a ponta:
+It does not yet provide the full end-to-end workflow for:
 
-- ingest operacional de INMET;
-- QC automatico de observados;
-- correcao manual de chuva observada;
-- montagem completa de runs em `data/runs/<run_id>.sqlite`;
-- relatorios operacionais.
+- operational INMET ingestion;
+- automatic QC for observations;
+- manual correction of observed rainfall;
+- complete run assembly in `<workspace>/data/runs/<run_id>.sqlite`;
+- operational reports.
 
-## Decisoes arquiteturais
+## Architectural Decisions
 
-### SQLite como baseline
+### SQLite as the Baseline
 
-SQLite e o baseline operacional para reduzir dependencia externa, manter backup simples e preservar auditabilidade local. O historico e o schema de run ficam explicitos em SQL.
+SQLite is the operational baseline to reduce external dependencies, keep backup simple, and preserve local auditability. The history and run schemas remain explicit in SQL.
 
-### Historico + run por arquivo
+### History + One File Per Run
 
-O contrato continua sendo:
+The contract remains:
 
-- `data/history.sqlite` para historico persistente;
-- `data/runs/<run_id>.sqlite` para contexto fechado de um run.
+- `<workspace>/data/history.sqlite` for persistent history;
+- `<workspace>/data/runs/<run_id>.sqlite` for the closed context of a run.
 
-O bootstrap desse modelo esta implementado. A materializacao operacional completa do run ainda nao esta fechada.
+Bootstrap for this model is implemented. Complete operational run materialization is not finalized yet.
 
-### Observados em formato long
+### Observations in Long Format
 
-Observados entram em formato long, com uma serie por combinacao relevante de estacao, variavel e estado. Esse desenho ja esta em uso no historico e no dashboard.
+Observations are stored in long format, with one series per relevant combination of station, variable, and state. This design is already in use in the history database and dashboard.
 
-### Assets externos fora do banco
+### External Assets Outside the Database
 
-Rasters, vetores e binarios MGB permanecem fora do SQLite. O banco guarda metadados e paths relativos. Isso vale tanto para GRIB ECMWF quanto para outputs completos do MGB.
+Rasters, vectors, and MGB binaries remain outside SQLite. The database stores metadata and relative paths. This applies to both ECMWF GRIB files and complete MGB outputs.
 
-### Streamlit como UI principal
+### Streamlit as the Main UI
 
-O Streamlit segue como interface principal para triagem operacional. Hoje ele consome diretamente:
+Streamlit remains the main interface for operational triage. Today it reads directly from:
 
-- `data/history.sqlite`;
-- binarios MGB do runner;
-- rasters acumulados em `data/interim/`;
-- artefatos espaciais legados ainda usados pelo mapa.
+- `<workspace>/data/history.sqlite`;
+- MGB runner binaries;
+- accumulated rasters in `<workspace>/data/interim/`;
+- legacy spatial artifacts still used by the map.
 
-### QGIS como complementar
+### QGIS as a Complement
 
-QGIS continua como cliente complementar sobre artefatos gerados. O layout canonico reserva `data/spatial/` para camadas tratadas estaveis, embora essa consolidacao ainda esteja incompleta.
+QGIS remains a complementary client for generated artifacts. The canonical layout reserves `data/spatial/` for stable processed layers, although that consolidation is still incomplete.
 
-### Runner MGB isolado
+### Isolated MGB Runner
 
-O executavel e os artefatos do MGB permanecem isolados em `apps/mgb_runner`, enquanto a logica do runner e dos preparos fica em `src/model/`.
+The MGB executable and artifacts remain isolated in `<workspace>/mgb_runner`, under the responsibility of the user/region, while runner and preparation logic lives in `src/mgb_ops/model/` and is invoked by the `mgb-ops` CLI.
 
-## Arquitetura alvo vs estado real
+## Target Architecture vs Current State
 
-Algumas decisoes seguem como alvo canonico, mas ainda nao estao totalmente materializadas:
+Some decisions remain canonical targets but are not fully materialized yet:
 
-- `data/spatial/` como local dos assets espaciais tratados;
-- `data/timeseries/` como local de series tratadas operacionais;
-- `data/runs/` como artefato efetivamente usado no ciclo operacional diario;
-- `.toml` como possivel formato futuro de config, ainda em avaliacao.
+- `data/spatial/` as the location for processed spatial assets;
+- `data/timeseries/` as the location for processed operational series;
+- `<workspace>/data/runs/` as an artifact actively used in the daily operational cycle;
+- `.toml` as a possible future configuration format, still under evaluation.
 
-Enquanto isso, o sistema ainda preserva e consome alguns artefatos legados, especialmente no dominio espacial.
+In the meantime, the system still preserves and consumes some legacy artifacts, especially in the spatial domain.

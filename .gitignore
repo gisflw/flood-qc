@@ -14,12 +14,6 @@ venv/
 .idea/
 .DS_Store
 
-# Apps
-apps/*
-!apps/*.md
-!apps/*.py
-!apps/.gitkeep
-
 # Data
 data/*
 !data/README.md
@@ -50,5 +44,7 @@ CLAUDE.md
 # Reference code
 from_Erik/*
 src/legacy/*
+examples/*
 .omx/
-.codex
+.codex/
+.agents/

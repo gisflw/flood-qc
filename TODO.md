@@ -1,6 +1,8 @@
-- Implementar consulta aos dados do INMET
-- Resumos para regiões/bacias selecionadas
-- GeoPackage com todos os dados espaciais estáticos, com simbology
-- Construção do artefato report-ready
-- QC para dados observados
-- QC para o forecast
+- Summaries for selected regions/basins
+- Build the report-ready artifact
+- QC for observed data
+- QC for the forecast
+
+- Observed data to csv before ingestion to DB
+- Spatial in SQLite
+- Model config artifact (minis, params, info, station_to_mini...)

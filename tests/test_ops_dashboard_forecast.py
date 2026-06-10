@@ -6,11 +6,11 @@ import folium
 import folium.plugins
 import numpy as np
 
-from ingest.forecast_grid import TpGribMessage
-from qc import ecmwf_forecast_correction
-from reporting import ops_dashboard_forecast
-from storage.db_bootstrap import initialize_history_db
-from storage.history_repository import HistoryRepository
+from mgb_ops.ingest.forecast_grid import TpGribMessage
+from mgb_ops.qc import ecmwf_forecast_correction
+from mgb_ops.reporting import ops_dashboard_forecast
+from mgb_ops.storage.db_bootstrap import initialize_history_db
+from mgb_ops.storage.history_repository import HistoryRepository
 
 
 def _message(step_hours: int, value: float) -> TpGribMessage:

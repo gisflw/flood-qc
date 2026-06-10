@@ -1,1 +1,0 @@
-"""Coleta de observados e previsoes em grade."""

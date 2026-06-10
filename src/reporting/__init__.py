@@ -1,1 +1,0 @@
-"""Geracao de relatorios e sumarios operacionais."""

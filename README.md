@@ -1,78 +1,78 @@
-﻿# Sistema Operacional de Hidrologia e Previsao
+# Operational Hydrology and Forecasting System
 
-Base operacional local-first para hidrologia, chuva e previsao no RS, orientada por artefatos locais, SQLite e scripts diretos em Python.
+Local-first operational base for hydrology, rainfall, and forecasting, organized around regional workspaces, SQLite, and an installable CLI.
 
-## Estado atual
+## Current Status
 
-O repositorio ja possui base funcional para:
+The repository already provides a functional base for:
 
-- bootstrap de `data/history.sqlite` e `data/runs/<run_id>.sqlite`;
-- ingest de observados ANA para `rain`, `level` e `flow`;
-- ingest de grade ECMWF e registro do GRIB canonico no historico;
-- preparacao de metadados e chuva horaria para o MGB;
-- execucao real ou dry-run do runner do MGB;
-- dashboard Streamlit para monitoramento, series MGB e preview/correcao manual de forecast ECMWF.
+- bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/runs/<run_id>.sqlite`;
+- ingesting ANA observations for `rain`, `level`, and `flow`;
+- ingesting ECMWF grids and registering the canonical GRIB in the history database;
+- preparing metadata and hourly rainfall inputs for MGB;
+- running the real MGB runner or a dry-run;
+- a Streamlit dashboard for monitoring, MGB series, and ECMWF forecast preview/manual correction.
 
-Ainda estao pendentes nesta fase:
+Still pending in this phase:
 
-- ingest operacional de chuva do INMET;
-- QC automatico de observados;
-- correcao manual de chuva observada;
-- materializacao completa de runs operacionais em `data/runs/`;
-- geracao de relatorios operacionais.
+- operational INMET rainfall ingestion;
+- automatic QC for observations;
+- manual correction of observed rainfall;
+- complete materialization of operational runs in `<workspace>/data/runs/`;
+- generation of operational reports.
 
-## Principios
+## Principles
 
-- artefatos locais primeiro;
-- SQLite como baseline operacional;
-- um banco historico persistente em `data/history.sqlite`;
-- um arquivo SQLite por run em `data/runs/`;
-- rasters e vetores fora do banco, com paths relativos e metadados;
-- Streamlit como interface principal;
-- QGIS como cliente complementar sobre artefatos gerados.
+- local artifacts first;
+- SQLite as the operational baseline;
+- one persistent history database at `<workspace>/data/history.sqlite`;
+- one SQLite file per run in `<workspace>/data/runs/`;
+- rasters and vectors outside the database, with relative paths and metadata;
+- Streamlit as the main interface;
+- QGIS as a complementary client for generated artifacts.
 
-## Layout principal
+## Main Layout
 
 ```text
 .
 |-- apps/
-|   |-- mgb_runner/
-|   |-- ops_dashboard/
-|   `-- qgis_project/
-|-- config/
-|-- data/
-|   |-- interim/
-|   |-- runs/
-|   |-- spatial/
-|   `-- timeseries/
+|   `-- ops_dashboard/
 |-- docs/
-|-- sql/
+|-- examples/
+|   `-- rs_hydro/
+|       |-- data/
+|       |-- logs/
+|       `-- mgb_runner/
 |-- src/
-|   |-- common/
-|   |-- ingest/
-|   |-- legacy/
-|   |-- model/
-|   |-- qc/
-|   |-- reporting/
-|   `-- storage/
+|   `-- mgb_ops/
+|       |-- assets/
+|       |   `-- sql/
+|       |-- cli/
+|       |-- common/
+|       |-- ingest/
+|       |-- model/
+|       |-- qc/
+|       |-- reporting/
+|       `-- storage/
 `-- tests/
 ```
 
-Importante: `data/spatial/`, `data/timeseries/` e `data/runs/` sao o layout alvo canonico. O repositorio ainda preserva artefatos legados fora dessa convencao.
+Important: the user is responsible for providing a regional workspace containing `data/`, `logs/`, and `mgb_runner/`. The repository includes `examples/rs_hydro/` as a test workspace with RS artifacts.
 
-## Runtime e configuracao
+## Runtime and Configuration
 
-- Contrato oficial de runtime: `Python >= 3.11`
-- Configuracao canonica nesta fase:
-  - `config/default.yaml`
-  - `config/custom.yaml`
-- A avaliacao de migracao da configuracao para `.toml` segue em aberto, sem mudanca de contrato por enquanto.
+- Official runtime contract: `Python >= 3.11`
+- Canonical configuration in this phase:
+  - module-owned in-code defaults;
+  - `<workspace>/config/custom.yaml` as the only editable regional override.
+- If `--workspace` is not provided, the CLI uses `MGB_OPS_WORKSPACE` and then the current directory.
+- The evaluation of migrating configuration to `.toml` remains open, with no contract change for now.
 
-O inventario inicial de estacoes fica em `data/interim/history_station_inventory.csv`. Durante o bootstrap do historico, o sistema calcula `station_uid` como `1000000000 + codigo` para ANA e `2000000000 + codigo` para INMET, convertendo letras do codigo para numeros (`A=1`, `B=2`, etc.).
+The initial station inventory lives at `<workspace>/data/interim/history_station_inventory.csv`. During history bootstrap, the system computes `station_uid` as `1000000000 + code` for ANA and `2000000000 + code` for INMET, converting letters in the code to numbers (`A=1`, `B=2`, etc.).
 
-## Setup local
+## Local Setup
 
-Crie um ambiente virtual e instale as dependencias para uso completo local:
+Create a virtual environment and install dependencies for full local use:
 
 ```bash
 python -m venv .venv
@@ -80,7 +80,7 @@ source .venv/bin/activate
 pip install -e .[dev,data,geo,ui]
 ```
 
-No Windows PowerShell:
+On Windows PowerShell:
 
 ```powershell
 python -m venv .venv
@@ -88,41 +88,40 @@ python -m venv .venv
 pip install -e .[dev,data,geo,ui]
 ```
 
-## Entry points canonicos
+## Canonical Entry Points
 
 ```bash
-python src/storage/db_bootstrap.py --history
-python src/ingest/fetch_observed_ana.py
-python src/ingest/fetch_observed_inmet.py
-python src/ingest/forecast_grid.py
-python src/model/prepare_mgb_meta.py
-python src/model/prepare_mgb_rainfall.py
-python src/model/run_mgb.py --dry-run
-streamlit run apps/ops_dashboard/app.py
+mgb-ops --workspace examples/rs_hydro bootstrap history
+mgb-ops --workspace examples/rs_hydro ingest ana
+mgb-ops --workspace examples/rs_hydro ingest inmet
+mgb-ops --workspace examples/rs_hydro ingest forecast-grid
+mgb-ops --workspace examples/rs_hydro model prepare-meta
+mgb-ops --workspace examples/rs_hydro model prepare-rainfall
+mgb-ops --workspace examples/rs_hydro model run --dry-run
+mgb-ops --workspace examples/rs_hydro model export-outputs
+mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-Para rodar a ingestao INMET, defina `INMET_API_KEY` no ambiente ou preencha `.env` a partir de `.env.example`.
+To run INMET ingestion, set `INMET_API_KEY` in the environment or fill `.env` from `.env.example`.
 
-## Componentes principais
+## Main Components
 
 - `apps/ops_dashboard/`
-  Dashboard operacional em Streamlit para monitoramento, series observadas, series MGB e preview/correcao de forecast ECMWF.
-- `apps/mgb_runner/`
-  Artefatos locais do MGB (`Input`, `Output` e `.exe`). O codigo do runner fica em `src/model/`.
-- `apps/qgis_project/`
-  Material de apoio para consumo espacial complementar.
-- `src/`
-  Modulos por dominio, separados entre ingestao, QC, modelo, storage, reporting e utilitarios comuns.
-- `sql/`
-  Schemas explicitos de `history.sqlite` e `run.sqlite`.
+  Operational Streamlit dashboard for monitoring, observed series, MGB series, and ECMWF forecast preview/correction.
+- `<workspace>/mgb_runner/`
+  Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user. Runner code lives in `src/mgb_ops/model/`.
+- `src/mgb_ops/`
+  Installable package containing the CLI plus ingestion, QC, model, storage, reporting, and common utilities.
+- `src/mgb_ops/assets/sql/`
+  Explicit schemas for `history.sqlite`, run databases, and model output exports.
 - `docs/`
-  Arquitetura, modelo de dados, operacao e workflows.
+  Architecture, data model, operations, and workflows.
 
-## Banco historico vs banco de run
+## History Database vs Run Database
 
-- `data/history.sqlite`
-  Guarda metadados de estacoes, observados, flags, edicoes e catalogo de runs.
-- `data/runs/<run_id>.sqlite`
-  Guarda o estado fechado de um run especifico.
+- `<workspace>/data/history.sqlite`
+  Stores station metadata, observations, flags, edits, and the run catalog.
+- `<workspace>/data/runs/<run_id>.sqlite`
+  Stores the closed state of a specific run.
 
-O schema de run existe e o bootstrap esta implementado, mas a montagem operacional completa do run ainda nao esta concluida nesta fase.
+The run schema exists and bootstrap is implemented, but complete operational run assembly is not finished in this phase.

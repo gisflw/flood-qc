@@ -7,8 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from ingest import forecast_grid
-from storage.db_bootstrap import initialize_history_db
+from mgb_ops.ingest import forecast_grid
+from mgb_ops.storage.db_bootstrap import initialize_history_db
 
 
 class FakeTemporaryDirectory:

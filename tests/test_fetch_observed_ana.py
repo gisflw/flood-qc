@@ -4,10 +4,10 @@ import shutil
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from common import time_utils
-from ingest import fetch_observed_ana
-from storage.db_bootstrap import initialize_history_db
-from storage.history_repository import HistoryRepository, build_observed_series_id
+from mgb_ops.common import time_utils
+from mgb_ops.ingest import fetch_observed_ana
+from mgb_ops.storage.db_bootstrap import initialize_history_db
+from mgb_ops.storage.history_repository import HistoryRepository, build_observed_series_id
 
 
 SAMPLE_ANA_XML = """\
@@ -121,7 +121,7 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
         requested_params.append(params)
         return FakeResponse(SAMPLE_ANA_XML)
 
-    monkeypatch.setattr("ingest.fetch_observed_ana.requests.get", fake_get)
+    monkeypatch.setattr("mgb_ops.ingest.fetch_observed_ana.requests.get", fake_get)
 
     stale_root = tmp_path / "interim" / "ana"
     stale_station_dir = stale_root / "99999999"
@@ -250,15 +250,15 @@ def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
                 description TEXT
             );
             INSERT INTO variable (variable_code, variable_name, default_unit, description) VALUES
-                ('rain', 'Precipitacao observada', 'mm', ''),
-                ('level', 'Nivel observado', 'cm', '');
+                ('rain', 'Observed precipitation', 'mm', ''),
+                ('level', 'Observed level', 'cm', '');
             """
         )
 
     try:
         HistoryRepository(db_path)
     except RuntimeError as exc:
-        assert "Banco historico incompat" in str(exc)
-        assert "db_bootstrap.py --history" in str(exc)
+        assert "History database is incompatible" in str(exc)
+        assert "mgb-ops bootstrap history" in str(exc)
     else:
-        raise AssertionError("Era esperado erro para schema antigo de observed_series.")
+        raise AssertionError("Expected an error for the old observed_series schema.")

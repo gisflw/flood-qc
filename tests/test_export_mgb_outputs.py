@@ -7,23 +7,23 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from model.export_mgb_outputs import export_mgb_outputs
+from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCHEMA_PATH = REPO_ROOT / "sql" / "model_outputs_schema.sql"
+SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "model_outputs_schema.sql"
 
 
 def configure_export_logging(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setattr("model.export_mgb_outputs.default_logs_dir", lambda: tmp_path / "logs")
-    monkeypatch.setattr("model.export_mgb_outputs.build_execution_id", lambda: "20260101T120000")
+    monkeypatch.setattr("mgb_ops.model.export_mgb_outputs.default_logs_dir", lambda: tmp_path / "logs")
+    monkeypatch.setattr("mgb_ops.model.export_mgb_outputs.build_execution_id", lambda: "20260101T120000")
     return tmp_path / "logs" / "export_mgb_outputs" / "20260101T120000.log"
 
 
 def patch_settings(monkeypatch, reference_time: str) -> None:
     monkeypatch.setattr(
-        "model.export_mgb_outputs.load_settings",
-        lambda: {
+        "mgb_ops.model.export_mgb_outputs.load_settings",
+        lambda **_: {
             "run": {"reference_time": reference_time},
             "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
         },
@@ -228,7 +228,7 @@ def test_export_mgb_outputs_resolves_date_only_reference_time(tmp_path, monkeypa
 
 
 def test_build_output_series_id_zero_pads_mini_id() -> None:
-    from model.export_mgb_outputs import build_output_series_id
+    from mgb_ops.model.export_mgb_outputs import build_output_series_id
 
     assert build_output_series_id(539, "q", 0) == "0539.q.sim"
     assert build_output_series_id(539, "q", 1) == "0539.q.for"

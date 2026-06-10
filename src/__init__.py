@@ -1,1 +1,0 @@
-"""Codigo-fonte organizado por dominio para o sistema operacional de hidrologia."""
