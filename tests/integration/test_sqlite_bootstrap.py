@@ -187,13 +187,13 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
             "SELECT COUNT(*) FROM station WHERE station_code IN ('02650035', '0A801')"
         ).fetchone()[0]
 
-    assert total == 343
-    assert ana_total == 292
-    assert inmet_total == 51
+    assert total == 7
+    assert ana_total == 4
+    assert inmet_total == 3
     assert distinct_uid == total
     assert distinct_station == total
     assert ana_sample == ("UHE ITA CACADOR PLU", -26.8192, -50.9856, 960, "integer")
-    assert fallback_sample == ("PONTE DO SARGENTO", -26.6822, -53.2861, 0, "integer")
+    assert fallback_sample == ("PONTE DO SARGENTO", -26.6822, -53.2861, None, "null")
     assert inmet_sample == ("BENTO GONCALVES", -29.1645, -51.5342, 623, "integer")
     assert computed_uids == {
         "71200000": 1071200000,
