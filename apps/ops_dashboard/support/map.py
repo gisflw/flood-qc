@@ -15,7 +15,7 @@ import numpy as np
 import pandas as pd
 from folium.raster_layers import ImageOverlay
 
-from mgb_ops.reporting import ops_dashboard_data
+from apps.ops_dashboard.support import data as ops_dashboard_data
 
 
 NO_DATA_COLOR = "#e64980"

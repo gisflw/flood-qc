@@ -15,7 +15,8 @@ from mgb_ops.common.paths import history_db_path, resolve_workspace_path
 from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
 from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction, apply_correction_sequence
-from mgb_ops.reporting import ops_dashboard_data, ops_dashboard_map
+from apps.ops_dashboard.support import data as ops_dashboard_data
+from apps.ops_dashboard.support import map as ops_dashboard_map
 
 
 @dataclass(frozen=True, slots=True)

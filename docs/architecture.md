@@ -41,19 +41,11 @@ instead of depending on `argparse`, Streamlit session state, or console output.
   call package functions rather than becoming the place where core workflow
   behavior lives.
 
-### Transitional Dashboard Support
+### Dashboard Support
 
-`src/mgb_ops/reporting/` is mixed today:
-
-- `reports.py` is the placeholder for future operational report generation;
-- `ops_dashboard_data.py`, `ops_dashboard_forecast.py`, and
-  `ops_dashboard_map.py` are dashboard support modules with no Streamlit import.
-
-Those `ops_dashboard_*` modules are useful because they keep heavy dashboard
-logic out of `apps/ops_dashboard/app.py`, but they should not be treated as the
-future public reporting interface. Future reporting work should create library
-functions for operational publications and keep dashboard-specific behavior
-separate.
+Dashboard-specific support code lives under `apps/ops_dashboard/support/`. These
+helpers keep querying, map assembly, and forecast preview logic out of
+`apps/ops_dashboard/app.py`, but they remain owned by the dashboard layer.
 
 ## Implemented Status
 

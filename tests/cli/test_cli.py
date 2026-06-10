@@ -42,12 +42,3 @@ def test_cli_dashboard_prints_streamlit_command(tmp_path, capsys) -> None:
     assert "apps/ops_dashboard/app.py" in captured.out
     assert f"--workspace {workspace.resolve()}" in captured.out
 
-
-def test_cli_report_build_returns_clear_not_implemented(tmp_path, capsys) -> None:
-    workspace = build_workspace(tmp_path)
-
-    result = cli_main.main(["--workspace", str(workspace), "report", "build", "--run-id", "20260311T000000"])
-    captured = capsys.readouterr()
-
-    assert result == 2
-    assert "Report generation is not implemented yet" in captured.err

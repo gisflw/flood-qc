@@ -7,7 +7,7 @@ import pytest
 
 from mgb_ops.storage.db_bootstrap import initialize_history_db, initialize_run_db
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def _list_tables(database_path) -> set[str]:

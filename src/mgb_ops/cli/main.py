@@ -191,25 +191,6 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     return subprocess.call(command, env=env)
 
 
-def cmd_report_build(args: argparse.Namespace) -> int:
-    from mgb_ops.common.models import RunMetadata, RunKind, RunStatus
-    from mgb_ops.reporting.reports import build_run_reports
-
-    run = RunMetadata(
-        run_id=args.run_id,
-        reference_time=str(args.run_id),
-        run_kind=RunKind.AUTOMATIC,
-        status=RunStatus.DRAFT,
-    )
-    try:
-        reports = build_run_reports(run)
-    except NotImplementedError as exc:
-        print(f"Report generation is not implemented yet: {exc}", file=sys.stderr)
-        return 2
-    _print_json([report.__dict__ for report in reports])
-    return 0
-
-
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mgb-ops", description="MGB operational CLI.")
     parser.add_argument(
@@ -284,11 +265,6 @@ def build_parser() -> argparse.ArgumentParser:
     dashboard.add_argument("--launch", action="store_true", help="Launch Streamlit instead of printing the command.")
     dashboard.set_defaults(func=cmd_dashboard)
 
-    report = subparsers.add_parser("report", help="Build operational reports.")
-    report_sub = report.add_subparsers(dest="report_command", required=True)
-    report_build = report_sub.add_parser("build", help="Build reports for a run.")
-    report_build.add_argument("--run-id", required=True)
-    report_build.set_defaults(func=cmd_report_build)
     return parser
 
 

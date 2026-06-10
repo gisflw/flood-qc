@@ -53,7 +53,6 @@ Still pending in this phase:
 |       |-- ingest/
 |       |-- model/
 |       |-- qc/
-|       |-- reporting/
 |       `-- storage/
 `-- tests/
 ```
@@ -70,11 +69,11 @@ Important: the user is responsible for providing a regional workspace containing
   functions.
 - `apps/ops_dashboard/`
   Streamlit dashboard layer for operational monitoring and manual forecast
-  correction.
-- `src/mgb_ops/reporting/`
-  Transitional area. `reports.py` is the future operational reporting library
-  surface, while the current `ops_dashboard_*` modules are dashboard support
-  code with no Streamlit dependency.
+  correction. Dashboard-owned support helpers live under
+  `apps/ops_dashboard/support/`.
+
+There is no `mgb_ops.reporting` package yet. Future operational reporting should
+be added as a library capability only when the reporting workflow is designed.
 
 ## Runtime and Configuration
 

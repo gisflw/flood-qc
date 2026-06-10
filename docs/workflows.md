@@ -117,9 +117,9 @@ Interface layer: `apps/ops_dashboard`
 
 Support modules:
 
-- `mgb_ops.reporting.ops_dashboard_data`
-- `mgb_ops.reporting.ops_dashboard_forecast`
-- `mgb_ops.reporting.ops_dashboard_map`
+- `apps.ops_dashboard.support.data`
+- `apps.ops_dashboard.support.forecast`
+- `apps.ops_dashboard.support.map`
 
 1. Read `<workspace>/data/history.sqlite` for registry and observations.
 2. Read MGB runner binaries for mini series.
@@ -132,9 +132,8 @@ CLI wrapper:
 mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-The dashboard support modules are transitional app-layer helpers. They keep
-querying, map assembly, and forecast preview logic out of the Streamlit app, but
-they are not the final operational reporting interface.
+The dashboard support modules are app-layer helpers. They keep querying, map
+assembly, and forecast preview logic out of the Streamlit app.
 
 ## Incomplete Flows
 
@@ -161,8 +160,8 @@ Manual review of observed rainfall is not implemented yet.
 ### Reports
 
 Generation of `report_artifact` and publication to `run_catalog` remain pending.
-Future reporting should be implemented as library functionality first, then
-exposed through CLI or dashboard controls as needed.
+There is no `mgb_ops.reporting` package yet. Future reporting should be
+implemented.
 
 ## Maintained Architectural Direction
 

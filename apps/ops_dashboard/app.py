@@ -11,6 +11,8 @@ import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SRC_DIR = REPO_ROOT / "src"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
@@ -39,9 +41,11 @@ def _configure_workspace_from_argv(argv: list[str]) -> None:
 
 _configure_workspace_from_argv(sys.argv[1:])
 
-from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
-from mgb_ops.reporting import ops_dashboard_data, ops_dashboard_forecast, ops_dashboard_map
 from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
+from apps.ops_dashboard.support import data as ops_dashboard_data
+from apps.ops_dashboard.support import forecast as ops_dashboard_forecast
+from apps.ops_dashboard.support import map as ops_dashboard_map
 import map_component
 
 DAYS_WINDOW = 30

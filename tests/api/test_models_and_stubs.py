@@ -11,7 +11,6 @@ from mgb_ops.ingest.observed import collect_observed_timeseries
 from mgb_ops.model.run_builder import assemble_model_inputs
 from mgb_ops.qc.automatic import apply_automatic_qc
 from mgb_ops.qc.review import register_manual_review
-from mgb_ops.reporting.reports import build_run_reports
 
 
 @pytest.fixture
@@ -64,5 +63,3 @@ def test_stubs_raise_not_implemented(run_metadata: RunMetadata) -> None:
         register_manual_review(run_metadata, [])
     with pytest.raises(NotImplementedError):
         assemble_model_inputs(run_metadata)
-    with pytest.raises(NotImplementedError):
-        build_run_reports(run_metadata)

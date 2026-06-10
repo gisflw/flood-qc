@@ -8,7 +8,7 @@ import numpy as np
 
 from mgb_ops.ingest.forecast_grid import TpGribMessage
 from mgb_ops.qc import ecmwf_forecast_correction
-from mgb_ops.reporting import ops_dashboard_forecast
+from apps.ops_dashboard.support import forecast as ops_dashboard_forecast
 from mgb_ops.storage.db_bootstrap import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository
 

@@ -10,7 +10,7 @@ import folium.plugins
 from streamlit_folium import _component_func
 from streamlit_folium import _get_header, _get_html, _get_map_string, generate_js_hash, get_full_id
 
-from mgb_ops.reporting.ops_dashboard_map import MAP_RETURNED_OBJECTS
+from apps.ops_dashboard.support.map import MAP_RETURNED_OBJECTS
 
 
 @dataclass(frozen=True, slots=True)

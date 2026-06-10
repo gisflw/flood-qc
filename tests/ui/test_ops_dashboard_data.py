@@ -8,11 +8,11 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mgb_ops.reporting import ops_dashboard_data
+from apps.ops_dashboard.support import data as ops_dashboard_data
 from mgb_ops.storage.db_bootstrap import apply_schema
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 HISTORY_SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "history_schema.sql"
 MODEL_OUTPUTS_SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "model_outputs_schema.sql"
 

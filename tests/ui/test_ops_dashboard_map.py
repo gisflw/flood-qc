@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mgb_ops.reporting import ops_dashboard_map
+from apps.ops_dashboard.support import map as ops_dashboard_map
 
 
 def test_build_map_cache_key_ignores_series_selection() -> None:

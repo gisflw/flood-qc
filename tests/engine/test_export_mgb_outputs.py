@@ -10,7 +10,7 @@ import pytest
 from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "model_outputs_schema.sql"
 
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_only_ops_dashboard_app_imports_streamlit() -> None:
@@ -19,3 +19,7 @@ def test_only_ops_dashboard_app_imports_streamlit() -> None:
 def test_root_sql_and_config_directories_are_not_present() -> None:
     assert not (REPO_ROOT / "sql").exists()
     assert not (REPO_ROOT / "config").exists()
+
+
+def test_library_has_no_reporting_package_yet() -> None:
+    assert not (REPO_ROOT / "src" / "mgb_ops" / "reporting").exists()

@@ -24,5 +24,4 @@ Additional behavior:
 - Streamlit theme in `.streamlit/config.toml`;
 - manual refresh through the `Refresh data` button in the sidebar to clear caches and reload operational artifacts.
 
-The current `mgb_ops.reporting.ops_dashboard_*` modules are dashboard support
-helpers, not the future public reporting interface.
+Dashboard support helpers live in `apps/ops_dashboard/support/`.
