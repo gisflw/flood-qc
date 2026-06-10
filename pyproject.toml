@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flood-qc-ops"
+name = "mgb-ops"
 version = "0.1.0"
-description = "Base operacional local-first para hidrologia e previsao."
+description = "Operational base for setting and evaluating MGB hydrological model."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
