@@ -6,17 +6,15 @@
   },
   "workspaceFolder": "/workspace",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
-
   "customizations": {
     "vscode": {
       "extensions": [
         "openai.chatgpt",
         "ms-python.python",
         "ms-toolsai.jupyter",
-        "qwtel.sqlite-viewer"
+        "alexcvzz.vscode-sqlite"
       ]
     }
   },
-
-  "postCreateCommand": "python -m pip install -e .[dev,data,geo,ui]"
+  "postCreateCommand": "python -m pip install -e ."
 }
