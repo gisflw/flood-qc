@@ -1,4 +1,4 @@
-FROM geodev:py312
+FROM gisflw/pygeodev:py312
 
 USER geodev
 WORKDIR /workspace
