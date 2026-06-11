@@ -1,14 +1,4 @@
-FROM python:3.12-bookworm
+FROM geodev:py312
 
-RUN apt-get update && apt-get install -y \
-    git curl ca-certificates build-essential \
-    nodejs npm \
-    gdal-bin libgdal-dev sqlite3 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN npm install -g @openai/codex
-
-RUN useradd -m -s /bin/bash vscode
-USER vscode
-
+USER geodev
 WORKDIR /workspace

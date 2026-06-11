@@ -2,7 +2,21 @@
   "name": "mgb-ops",
   "build": {
     "dockerfile": "Dockerfile",
-    "context": "."
+    "context": ".."
   },
-  "postCreateCommand": "python -m pip install -U pip && pip install -e .[dev,data,geo,ui]"
+  "workspaceFolder": "/workspace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "openai.chatgpt",
+        "ms-python.python",
+        "ms-toolsai.jupyter",
+        "qwtel.sqlite-viewer"
+      ]
+    }
+  },
+
+  "postCreateCommand": "python -m pip install -e .[dev,data,geo,ui]"
 }
