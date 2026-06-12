@@ -185,10 +185,10 @@ def load_history_station_inventory(
 
 
 def initialize_history_db(
-    database_path: Path | None = None,
+    database_path: Path,
     inventory_csv_path: Path | None = None,
 ) -> Path:
-    target = database_path or history_db_path()
+    target = database_path
     apply_schema(target, SQL_DIR / "history_schema.sql")
     load_history_station_inventory(target, inventory_csv_path)
     return target

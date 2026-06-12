@@ -10,9 +10,6 @@ from typing import Iterable
 import numpy as np
 import pandas as pd
 
-from mgb_ops.common.paths import history_db_path, interim_dir, mgb_input_dir, mgb_output_dir, resolve_workspace_path
-from mgb_ops.common.settings import load_settings
-from mgb_ops.common.time_utils import resolve_reference_time
 from mgb_ops.model.export_mgb_outputs import (
     build_export_window,
     compute_nt_current,
@@ -25,11 +22,6 @@ from mgb_ops.model.export_mgb_outputs import (
 
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 ACCUM_RASTER_PATTERN = re.compile(r"^accum_(\d+)h\.tif$", re.IGNORECASE)
-LEGACY_RIVERS_GEOJSON_PATH = resolve_workspace_path("data/legacy/app_layers/rios_mini.geojson")
-DEFAULT_MGB_INPUT_DIR = mgb_input_dir()
-DEFAULT_MGB_OUTPUT_DIR = mgb_output_dir()
-DEFAULT_MGB_PARHIG_PATH = DEFAULT_MGB_INPUT_DIR / "PARHIG.hig"
-DEFAULT_MGB_MINI_GTP_PATH = DEFAULT_MGB_INPUT_DIR / "MINI.gtp"
 MGB_VARIABLE_METADATA = {
     "q": {
         "display_name": "QTUDO",
@@ -138,12 +130,12 @@ def compute_rain_summary(rain_df: pd.DataFrame) -> dict[str, float]:
 
 
 def load_station_catalog(
-    database_path: Path | None = None,
+    database_path: Path,
     *,
     days: int = 30,
     now: datetime | None = None,
 ) -> pd.DataFrame:
-    history_path = database_path or history_db_path()
+    history_path = database_path
     cutoff = (now or datetime.utcnow()) - timedelta(days=days)
     cutoff_text = cutoff.strftime("%Y-%m-%d %H:%M:%S")
 
@@ -253,12 +245,12 @@ def load_station_catalog(
 
 def load_observed_series(
     station_uid: int,
-    database_path: Path | None = None,
+    database_path: Path,
     *,
     days: int = 30,
     now: datetime | None = None,
 ) -> pd.DataFrame:
-    history_path = database_path or history_db_path()
+    history_path = database_path
     cutoff = (now or datetime.utcnow()) - timedelta(days=days)
 
     with _connect(history_path) as connection:
@@ -358,12 +350,12 @@ def _canonical_variable_code(variable_code: str) -> str:
     return str(variable_code).strip().lower()
 
 
-def _resolve_mgb_output_path(variable_code: str) -> Path:
+def _resolve_mgb_output_path(variable_code: str, *, output_dir: Path) -> Path:
     canonical = _canonical_variable_code(variable_code)
     metadata = MGB_VARIABLE_METADATA.get(canonical)
     if metadata is None:
         raise ValueError(f"Unsupported MGB variable_code={variable_code!r}. Expected one of {sorted(MGB_VARIABLE_METADATA)}.")
-    return DEFAULT_MGB_OUTPUT_DIR / str(metadata["source_filename"])
+    return output_dir / str(metadata["source_filename"])
 
 
 def _build_mgb_mini_index(*, mini_gtp_path: Path, nc: int) -> dict[int, int]:
@@ -371,10 +363,14 @@ def _build_mgb_mini_index(*, mini_gtp_path: Path, nc: int) -> dict[int, int]:
     return {int(mini_id): row_index for row_index, mini_id in enumerate(mini_ids)}
 
 
-def _require_mgb_paths(variable_code: str) -> tuple[Path, Path, Path]:
-    parhig_path = DEFAULT_MGB_PARHIG_PATH
-    mini_gtp_path = DEFAULT_MGB_MINI_GTP_PATH
-    output_path = _resolve_mgb_output_path(variable_code)
+def _require_mgb_paths(
+    variable_code: str,
+    *,
+    parhig_path: Path,
+    mini_gtp_path: Path,
+    output_dir: Path,
+) -> tuple[Path, Path, Path]:
+    output_path = _resolve_mgb_output_path(variable_code, output_dir=output_dir)
     missing = [path for path in (parhig_path, mini_gtp_path, output_path) if not path.exists()]
     if missing:
         missing_text = ", ".join(str(path) for path in missing)
@@ -382,30 +378,26 @@ def _require_mgb_paths(variable_code: str) -> tuple[Path, Path, Path]:
     return parhig_path, mini_gtp_path, output_path
 
 
-def _load_mgb_runtime_settings() -> tuple[datetime, int, int]:
-    settings = load_settings()
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
-    mgb_settings = settings["mgb"]
-    output_days_before = int(mgb_settings["output_days_before"])
-    forecast_horizon_days = int(mgb_settings["forecast_horizon_days"])
-    return reference_time, output_days_before, forecast_horizon_days
-
-
-def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
+def load_model_metadata(
+    *,
+    parhig_path: Path,
+    mini_gtp_path: Path,
+    output_dir: Path,
+    reference_time: datetime,
+    output_days_before: int,
+    forecast_horizon_days: int,
+) -> dict[str, object]:
     """Load MGB output metadata directly from canonical binaries."""
-    del database_path
-    available_paths = [DEFAULT_MGB_OUTPUT_DIR / str(meta["source_filename"]) for meta in MGB_VARIABLE_METADATA.values()]
-    if not DEFAULT_MGB_PARHIG_PATH.exists() or not DEFAULT_MGB_MINI_GTP_PATH.exists() or not any(
-        path.exists() for path in available_paths
-    ):
+    available_paths = [output_dir / str(meta["source_filename"]) for meta in MGB_VARIABLE_METADATA.values()]
+    if not parhig_path.exists() or not mini_gtp_path.exists() or not any(path.exists() for path in available_paths):
         return {}
 
-    nc = read_nc_from_parhig(DEFAULT_MGB_PARHIG_PATH)
-    start_time, dt_seconds = read_time_settings_from_parhig(DEFAULT_MGB_PARHIG_PATH)
+    nc = read_nc_from_parhig(parhig_path)
+    start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
     nt_values = {
         variable_code: infer_nt_from_binary(path, nc=nc)
         for variable_code, meta in MGB_VARIABLE_METADATA.items()
-        for path in [DEFAULT_MGB_OUTPUT_DIR / str(meta["source_filename"])]
+        for path in [output_dir / str(meta["source_filename"])]
         if path.exists()
     }
     nt_set = set(nt_values.values())
@@ -413,7 +405,6 @@ def load_model_metadata(database_path: Path | None = None) -> dict[str, object]:
         raise ValueError(f"Inconsistent NT across MGB binary outputs: {nt_values}")
 
     nt_total = nt_set.pop()
-    reference_time, output_days_before, forecast_horizon_days = _load_mgb_runtime_settings()
     nt_current, nt_forecast = compute_nt_current(
         start_time=start_time,
         dt_seconds=dt_seconds,
@@ -455,18 +446,25 @@ def list_model_variables(database_path: Path | None = None) -> pd.DataFrame:
 def load_mgb_series(
     mini_id: int,
     variable_code: str,
-    database_path: Path | None = None,
     *,
+    parhig_path: Path,
+    mini_gtp_path: Path,
+    output_dir: Path,
+    reference_time: datetime,
     days_window: int = 30,
 ) -> pd.DataFrame:
     """Read an MGB series directly from canonical runner binaries."""
-    del database_path
     canonical = _canonical_variable_code(variable_code)
     metadata = MGB_VARIABLE_METADATA.get(canonical)
     if metadata is None:
         return pd.DataFrame(columns=["dt", "prev_flag", "value", "variable_code", "display_name", "unit"])
 
-    parhig_path, mini_gtp_path, output_path = _require_mgb_paths(canonical)
+    parhig_path, mini_gtp_path, output_path = _require_mgb_paths(
+        canonical,
+        parhig_path=parhig_path,
+        mini_gtp_path=mini_gtp_path,
+        output_dir=output_dir,
+    )
     nc = read_nc_from_parhig(parhig_path)
     start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
     row_lookup = _build_mgb_mini_index(mini_gtp_path=mini_gtp_path, nc=nc)
@@ -475,7 +473,6 @@ def load_mgb_series(
         raise ValueError(f"Mini {mini_id} was not found in {mini_gtp_path}.")
 
     nt_total = infer_nt_from_binary(output_path, nc=nc)
-    reference_time, _, _ = _load_mgb_runtime_settings()
     nt_current, nt_forecast = compute_nt_current(
         start_time=start_time,
         dt_seconds=dt_seconds,
@@ -518,8 +515,8 @@ def load_mgb_series(
     return out.sort_values("dt").reset_index(drop=True)
 
 
-def list_accumulation_rasters(base_dir: Path | None = None) -> list[dict[str, object]]:
-    search_dir = base_dir or interim_dir()
+def list_accumulation_rasters(base_dir: Path) -> list[dict[str, object]]:
+    search_dir = base_dir
     rasters: list[dict[str, object]] = []
     for path in sorted(search_dir.glob("accum_*h.tif")):
         match = ACCUM_RASTER_PATTERN.match(path.name)
@@ -561,8 +558,8 @@ def load_raster_data(path: Path, *, max_size: int = 600) -> tuple[np.ndarray, tu
     return data, (bounds.left, bounds.bottom, bounds.right, bounds.top)
 
 
-def load_rivers_layer_geojson(path: Path | None = None) -> dict | None:
-    target_path = path or LEGACY_RIVERS_GEOJSON_PATH
+def load_rivers_layer_geojson(path: Path) -> dict | None:
+    target_path = path
     if not target_path.exists():
         return None
     payload = json.loads(target_path.read_text(encoding="utf-8"))

@@ -39,26 +39,33 @@ def configure_paths(monkeypatch, tmp_path: Path) -> tuple[Path, Path, Path, Path
     local_output_dir.mkdir(parents=True, exist_ok=True)
     (local_output_dir / "stale.txt").write_text("old", encoding="utf-8")
 
-    monkeypatch.setattr(mgb_execution, "MGB_EXECUTABLE_PATH", executable_path)
-    monkeypatch.setattr(mgb_execution, "LOCAL_INPUT_DIR", local_input_dir)
-    monkeypatch.setattr(mgb_execution, "LOCAL_OUTPUT_DIR", local_output_dir)
-    monkeypatch.setattr(mgb_execution, "MGB_WORKSPACE_ROOT", workspace_root)
-    monkeypatch.setattr(mgb_execution, "default_logs_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr(mgb_execution, "build_execution_id", lambda: "20260325T120000")
     return executable_path, local_input_dir, local_output_dir, workspace_root
 
 
 def build_plan(monkeypatch, tmp_path: Path):
-    configure_paths(monkeypatch, tmp_path)
     run = RunMetadata(run_id="20260325T120000", reference_time="2026-03-25T12:00:00")
-    return mgb_execution.prepare_mgb_execution(run)
+    executable_path, local_input_dir, local_output_dir, workspace_root = configure_paths(monkeypatch, tmp_path)
+    return mgb_execution.prepare_mgb_execution(
+        run,
+        executable_path=str(executable_path),
+        input_dir=local_input_dir,
+        output_dir=local_output_dir,
+        workspace_root=workspace_root,
+    )
 
 
 def test_prepare_mgb_execution_uses_fixed_paths(monkeypatch, tmp_path) -> None:
     executable_path, local_input_dir, local_output_dir, workspace_root = configure_paths(monkeypatch, tmp_path)
     run = RunMetadata(run_id="20260325T120000", reference_time="2026-03-25T12:00:00")
 
-    plan = mgb_execution.prepare_mgb_execution(run)
+    plan = mgb_execution.prepare_mgb_execution(
+        run,
+        executable_path=str(executable_path),
+        input_dir=local_input_dir,
+        output_dir=local_output_dir,
+        workspace_root=workspace_root,
+    )
 
     assert plan.command == [str(executable_path)]
     assert plan.working_directory == str(workspace_root)
@@ -125,7 +132,7 @@ def test_execute_mgb_plan_runs_process_logs_and_copies_output(monkeypatch, tmp_p
 
     monkeypatch.setattr(mgb_execution.subprocess, "Popen", fake_popen)
 
-    result = mgb_execution.execute_mgb_plan(plan)
+    result = mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs")
     captured = capsys.readouterr()
     log_path = tmp_path / "logs" / "mgb_execution" / "20260325T120000.log"
 
@@ -151,7 +158,7 @@ def test_execute_mgb_plan_fails_on_nonzero_exit(monkeypatch, tmp_path) -> None:
     )
 
     with pytest.raises(RuntimeError, match="exit code 7"):
-        mgb_execution.execute_mgb_plan(plan)
+        mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs")
 
 
 def test_execute_mgb_plan_fails_when_output_is_empty(monkeypatch, tmp_path) -> None:
@@ -164,7 +171,7 @@ def test_execute_mgb_plan_fails_when_output_is_empty(monkeypatch, tmp_path) -> N
     )
 
     with pytest.raises(RuntimeError, match="sem arquivos em Output"):
-        mgb_execution.execute_mgb_plan(plan)
+        mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs")
 
 
 def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_path, capsys) -> None:
@@ -181,13 +188,18 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
         },
     )
 
-    def fake_prepare(metadata):
+    def fake_prepare(metadata, *, executable_path, input_dir, output_dir, workspace_root):
         assert metadata.run_id == "20260325T120000"
+        assert executable_path == "fake.exe"
+        assert str(input_dir) == "mgb_runner/Input"
+        assert str(output_dir) == "mgb_runner/Output"
+        assert str(workspace_root) == "C:/mgb-hora"
         return plan
 
-    def fake_execute(received_plan, *, dry_run=False):
+    def fake_execute(received_plan, *, dry_run=False, logs_dir=None):
         assert received_plan is plan
         assert dry_run is False
+        assert str(logs_dir) == "logs"
         return mgb_execution.ModelOutput(
             output_name="mgb_output",
             description="Execucao real do MGB concluida com sucesso.",
@@ -198,7 +210,18 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
     monkeypatch.setattr(run_mgb, "prepare_mgb_execution", fake_prepare)
     monkeypatch.setattr(run_mgb, "execute_mgb_plan", fake_execute)
 
-    result = run_mgb.main([])
+    result = run_mgb.main([
+        "--executable",
+        "fake.exe",
+        "--input-dir",
+        "mgb_runner/Input",
+        "--output-dir",
+        "mgb_runner/Output",
+        "--workspace-root",
+        "C:/mgb-hora",
+        "--logs-dir",
+        "logs",
+    ])
     captured = capsys.readouterr()
 
     assert result == 0

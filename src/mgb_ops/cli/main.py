@@ -72,17 +72,21 @@ def cmd_ingest_ana(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_inmet(args: argparse.Namespace) -> int:
-    from mgb_ops.ingest.fetch_observed_inmet import ingest_observed_inmet
+    from mgb_ops.ingest.fetch_observed_inmet import INMET_API_KEY_ENV, ingest_observed_inmet
 
     paths = runtime_paths(args.workspace)
     settings = _settings(args)
     ingest_settings = settings["ingest"]
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    api_key = os.getenv(INMET_API_KEY_ENV, "").strip()
+    if not api_key:
+        raise RuntimeError(f"Missing INMET/BNDMET API key. Set {INMET_API_KEY_ENV} before running ingestion.")
     summary = ingest_observed_inmet(
-        args.history_db or paths.history_db,
+        args.history_db if args.history_db is not None else paths.history_db,
         reference_time=reference_time,
-        request_days=int(args.request_days or ingest_settings["request_days"]),
-        timeout_seconds=float(args.timeout_seconds or ingest_settings["timeout_seconds"]),
+        request_days=int(args.request_days if args.request_days is not None else ingest_settings["request_days"]),
+        timeout_seconds=float(args.timeout_seconds if args.timeout_seconds is not None else ingest_settings["timeout_seconds"]),
+        api_key=api_key,
         station_codes=args.station_code,
         interim_dir=paths.interim_dir,
         logs_dir=paths.logs_dir,
@@ -109,34 +113,65 @@ def cmd_ingest_forecast_grid(args: argparse.Namespace) -> int:
 
 
 def cmd_model_prepare_meta(args: argparse.Namespace) -> int:
-    from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta_from_config
+    from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
     paths = runtime_paths(args.workspace)
-    summary = rewrite_mgb_meta_from_config(
-        parhig_path=args.parhig or paths.mgb_input_dir / "PARHIG.hig",
+    settings = _settings(args)
+    mgb_settings = settings["mgb"]
+    reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    summary = rewrite_mgb_meta(
+        parhig_path=args.parhig if args.parhig is not None else paths.mgb_input_dir / "PARHIG.hig",
+        reference_time=reference_time,
+        input_days_before=int(mgb_settings["input_days_before"]),
+        forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
         logs_dir=paths.logs_dir,
-        workspace=args.workspace,
     )
     _print_json(summary.__dict__)
     return 0
 
 
 def cmd_model_prepare_rainfall(args: argparse.Namespace) -> int:
-    from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
+    from mgb_ops.model.prepare_mgb_meta import build_mgb_window
+    from mgb_ops.model.prepare_mgb_rainfall import (
+        _connect_history_read_only,
+        load_latest_ecmwf_asset_path,
+        prepare_mgb_rainfall,
+    )
 
     paths = runtime_paths(args.workspace)
     settings = _settings(args)
+    mgb_settings = settings["mgb"]
     rainfall_settings = settings["rainfall_interpolation"]
+    reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    history_db = args.history_db if args.history_db is not None else paths.history_db
+    use_forecast_data = bool(mgb_settings["use_forecast_data"])
+    forecast_asset_path = None
+    if use_forecast_data:
+        window = build_mgb_window(
+            reference_time,
+            input_days_before=int(mgb_settings["input_days_before"]),
+            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        )
+        with _connect_history_read_only(history_db) as connection:
+            forecast_asset_path = load_latest_ecmwf_asset_path(
+                connection,
+                reference_time=window.forecast_start_time,
+                asset_base_dir=paths.workspace,
+            )
     summary = prepare_mgb_rainfall(
-        history_db=args.history_db or paths.history_db,
-        parhig_path=args.parhig or paths.mgb_input_dir / "PARHIG.hig",
-        mini_gtp_path=args.mini_gtp or paths.mgb_input_dir / "MINI.gtp",
-        output_path=args.output or paths.mgb_input_dir / "chuvabin.hig",
-        nearest_stations=int(args.nearest_stations or rainfall_settings["nearest_stations"]),
-        power=float(args.power or rainfall_settings["power"]),
+        history_db=history_db,
+        parhig_path=args.parhig if args.parhig is not None else paths.mgb_input_dir / "PARHIG.hig",
+        mini_gtp_path=args.mini_gtp if args.mini_gtp is not None else paths.mgb_input_dir / "MINI.gtp",
+        output_path=args.output if args.output is not None else paths.mgb_input_dir / "chuvabin.hig",
+        reference_time=reference_time,
+        input_days_before=int(mgb_settings["input_days_before"]),
+        forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        use_forecast_data=use_forecast_data,
+        forecast_asset_path=forecast_asset_path,
+        nearest_stations=int(args.nearest_stations if args.nearest_stations is not None else rainfall_settings["nearest_stations"]),
+        power=float(args.power if args.power is not None else rainfall_settings["power"]),
         chunk_hours=int(args.chunk_hours),
         logs_dir=paths.logs_dir,
-        workspace=args.workspace,
     )
     _print_json(summary.__dict__)
     return 0
@@ -164,15 +199,20 @@ def cmd_model_export_outputs(args: argparse.Namespace) -> int:
     from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 
     paths = runtime_paths(args.workspace)
+    settings = _settings(args)
+    mgb_settings = settings["mgb"]
+    reference_time = resolve_reference_time(settings["run"]["reference_time"])
     summary = export_mgb_outputs(
-        parhig_path=args.parhig or paths.mgb_input_dir / "PARHIG.hig",
-        mini_gtp_path=args.mini_gtp or paths.mgb_input_dir / "MINI.gtp",
-        output_dir=args.output_dir or paths.mgb_output_dir,
-        output_db_path=args.output_db or paths.interim_dir / "model_outputs.sqlite",
+        reference_time=reference_time,
+        output_days_before=int(mgb_settings["output_days_before"]),
+        forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        parhig_path=args.parhig if args.parhig is not None else paths.mgb_input_dir / "PARHIG.hig",
+        mini_gtp_path=args.mini_gtp if args.mini_gtp is not None else paths.mgb_input_dir / "MINI.gtp",
+        output_dir=args.output_dir if args.output_dir is not None else paths.mgb_output_dir,
+        output_db_path=args.output_db if args.output_db is not None else paths.interim_dir / "model_outputs.sqlite",
         schema_path=SQL_DIR / "model_outputs_schema.sql",
         chunk_hours=args.chunk_hours,
         logs_dir=paths.logs_dir,
-        workspace=args.workspace,
     )
     _print_json(summary.__dict__)
     return 0

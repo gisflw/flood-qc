@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import shutil
 import sys
 import time
@@ -17,15 +16,12 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from mgb_ops.common.paths import history_db_path, interim_dir as default_interim_dir, logs_dir as default_logs_dir
-from mgb_ops.common.settings import load_settings
-from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
+from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.storage.history_repository import HistoryRepository
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
 DEFAULT_INMET_RAIN_PRODUCT = "I175"
 INMET_API_KEY_ENV = "INMET_API_KEY"
-LOCAL_ENV_PATH = REPO_ROOT / ".env"
 OBSERVED_VARIABLES = ("rain",)
 RETRY_ATTEMPTS = 5
 RETRY_SLEEP_SECONDS = 5.0
@@ -68,41 +64,6 @@ def normalize_inmet_station_code(station_code: str | None) -> str | None:
         return None
     return normalized
 
-
-def load_local_env(path: Path = LOCAL_ENV_PATH) -> dict[str, str]:
-    if not path.exists():
-        return {}
-
-    values: dict[str, str] = {}
-    for raw_line in path.read_text(encoding="utf-8").splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[7:].strip()
-        if "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        key = key.strip()
-        value = value.strip()
-        if not key:
-            continue
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        values[key] = value
-    return values
-
-
-def require_api_key(env_var_name: str = INMET_API_KEY_ENV) -> str:
-    api_key = os.getenv(env_var_name, "").strip()
-    if not api_key:
-        api_key = load_local_env(LOCAL_ENV_PATH).get(env_var_name, "").strip()
-    if not api_key:
-        raise RuntimeError(
-            f"Missing INMET/BNDMET API key. Set the {env_var_name} environment variable "
-            f"or fill {LOCAL_ENV_PATH.name} from .env.example with a locally obtained key before running ingestion."
-        )
-    return api_key
 
 
 def iter_request_dates(reference_time: datetime, request_days: int):
@@ -347,6 +308,7 @@ def ingest_observed_inmet(
     reference_time: datetime,
     request_days: int,
     timeout_seconds: float,
+    api_key: str,
     station_codes: list[str] | None = None,
     interim_dir: Path,
     logs_dir: Path,
@@ -357,7 +319,10 @@ def ingest_observed_inmet(
     if not Path(database_path).exists():
         raise FileNotFoundError(f"History database not found: {database_path}")
 
-    api_key = require_api_key()
+    api_key = api_key.strip()
+    if not api_key:
+        raise ValueError("api_key is required for INMET ingestion.")
+
     run_id = build_run_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{run_id}.log")
     inmet_root_dir = interim_dir / "inmet"
@@ -448,20 +413,7 @@ def ingest_observed_inmet(
 
 
 def main() -> int:
-    settings = load_settings()
-    ingest_settings = settings["ingest"]
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
-
-    ingest_observed_inmet(
-        history_db_path(),
-        reference_time=reference_time,
-        request_days=int(ingest_settings["request_days"]),
-        timeout_seconds=float(ingest_settings["timeout_seconds"]),
-        station_codes=None,
-        interim_dir=default_interim_dir(),
-        logs_dir=default_logs_dir(),
-    )
-    return 0
+    raise SystemExit("Use the mgb-ops CLI wrapper or call ingest_observed_inmet() with explicit paths, settings, and api_key.")
 
 
 if __name__ == "__main__":

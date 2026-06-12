@@ -13,20 +13,9 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from mgb_ops.common.models import CommandPlan, ModelOutput, RunMetadata
-from mgb_ops.common.paths import (
-    logs_dir as default_logs_dir,
-    mgb_executable_path as default_mgb_executable_path,
-    mgb_input_dir as default_mgb_input_dir,
-    mgb_output_dir as default_mgb_output_dir,
-    mgb_remote_workspace_root,
-    relative_to_repo,
-)
+from mgb_ops.common.paths import relative_to_repo
 
 LOGGER_NAME = "floodqc.model.mgb_execution"
-MGB_EXECUTABLE_PATH = default_mgb_executable_path()
-LOCAL_INPUT_DIR = default_mgb_input_dir()
-LOCAL_OUTPUT_DIR = default_mgb_output_dir()
-MGB_WORKSPACE_ROOT = mgb_remote_workspace_root()
 
 
 def script_stem() -> str:
@@ -152,19 +141,19 @@ def _stream_process_output(process: subprocess.Popen[str], logger: logging.Logge
 
 def prepare_mgb_execution(
     run: RunMetadata,
-    executable_path: str | None = None,
+    executable_path: str,
+    input_dir: str | Path,
+    output_dir: str | Path,
+    workspace_root: str | Path,
     workdir: str | None = None,
-    input_dir: str | None = None,
-    output_dir: str | None = None,
-    workspace_root: str | None = None,
 ) -> CommandPlan:
     """Prepare the real MGB execution plan on Windows."""
     del workdir
 
-    local_executable_path = Path(executable_path) if executable_path is not None else MGB_EXECUTABLE_PATH
-    local_input_dir = Path(input_dir) if input_dir is not None else LOCAL_INPUT_DIR
-    local_output_dir = Path(output_dir) if output_dir is not None else LOCAL_OUTPUT_DIR
-    remote_workspace_root = Path(workspace_root) if workspace_root is not None else MGB_WORKSPACE_ROOT
+    local_executable_path = Path(executable_path)
+    local_input_dir = Path(input_dir)
+    local_output_dir = Path(output_dir)
+    remote_workspace_root = Path(workspace_root)
     remote_input_dir = remote_workspace_root / "Input"
     remote_output_dir = remote_workspace_root / "Output"
 
@@ -198,7 +187,9 @@ def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path
         )
 
     execution_id = build_execution_id()
-    log_root = logs_dir or default_logs_dir()
+    if logs_dir is None:
+        raise ValueError("logs_dir is required when executing an MGB plan.")
+    log_root = logs_dir
     log_path = log_root / script_stem() / f"{execution_id}.log"
     logger = configure_run_logger(log_path)
     plan.metadata["log_path"] = str(log_path)

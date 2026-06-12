@@ -34,7 +34,12 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
         ),
     )
 
-    assets = collect_forecast_grids(run_metadata)
+    assets = collect_forecast_grids(
+        run_metadata,
+        history_db=Path("/tmp/history.sqlite"),
+        interim_dir=Path("/tmp/interim"),
+        logs_dir=Path("/tmp/logs"),
+    )
 
     assert len(assets) == 1
     assert assets[0].format == "GRIB2"

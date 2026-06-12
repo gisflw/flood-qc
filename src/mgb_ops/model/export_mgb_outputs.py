@@ -16,15 +16,9 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from mgb_ops.common.paths import SQL_DIR, interim_dir, logs_dir as default_logs_dir, mgb_input_dir, mgb_output_dir
-from mgb_ops.common.settings import load_settings
-from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.common.paths import SQL_DIR
 
 
-DEFAULT_PARHIG = mgb_input_dir() / "PARHIG.hig"
-DEFAULT_MINI_GTP = mgb_input_dir() / "MINI.gtp"
-DEFAULT_OUTPUT_DIR = mgb_output_dir()
-DEFAULT_OUTPUT_DB = interim_dir() / "model_outputs.sqlite"
 DEFAULT_SCHEMA_PATH = SQL_DIR / "model_outputs_schema.sql"
 DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -355,16 +349,6 @@ def iter_value_rows(
             yield (series_ids_by_mini[mini_id], dt_value, value)
 
 
-def load_output_window_from_settings(*, workspace: str | Path | None = None) -> tuple[int, int]:
-    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
-    mgb_settings = settings["mgb"]
-    return int(mgb_settings["output_days_before"]), int(mgb_settings["forecast_horizon_days"])
-
-
-def load_simulation_reference_time_from_settings(*, workspace: str | Path | None = None) -> datetime:
-    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
-    return resolve_reference_time(settings["run"]["reference_time"])
-
 
 def compute_nt_current(
     *,
@@ -562,19 +546,24 @@ def write_output_database(
 
 def export_mgb_outputs(
     *,
-    parhig_path: Path = DEFAULT_PARHIG,
-    mini_gtp_path: Path = DEFAULT_MINI_GTP,
-    output_dir: Path = DEFAULT_OUTPUT_DIR,
-    output_db_path: Path = DEFAULT_OUTPUT_DB,
+    reference_time: datetime,
+    output_days_before: int,
+    forecast_horizon_days: int,
+    parhig_path: Path,
+    mini_gtp_path: Path,
+    output_dir: Path,
+    output_db_path: Path,
     schema_path: Path = DEFAULT_SCHEMA_PATH,
-    output_days_before: int | None = None,
-    forecast_horizon_days: int | None = None,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     logs_dir: Path | None = None,
-    workspace: str | Path | None = None,
+    logger: logging.Logger | None = None,
 ) -> ExportSummary:
-    logger = configure_run_logger((logs_dir or default_logs_dir()) / script_stem() / f"{build_execution_id()}.log")
-    logger.info(
+    run_logger = logger
+    if run_logger is None and logs_dir is not None:
+        run_logger = configure_run_logger(logs_dir / script_stem() / f"{build_execution_id()}.log")
+    if run_logger is None:
+        run_logger = logging.getLogger(LOGGER_NAME)
+    run_logger.info(
         "export_start parhig=%s mini_gtp=%s output_dir=%s output_db=%s schema=%s chunk_hours=%s",
         parhig_path,
         mini_gtp_path,
@@ -586,21 +575,13 @@ def export_mgb_outputs(
     if chunk_hours <= 0:
         raise ValueError(f"chunk_hours must be > 0, got {chunk_hours}")
 
-    if output_days_before is None or forecast_horizon_days is None:
-        default_before, default_after = load_output_window_from_settings(workspace=workspace)
-        if output_days_before is None:
-            output_days_before = default_before
-        if forecast_horizon_days is None:
-            forecast_horizon_days = default_after
-
     if output_days_before < 0 or forecast_horizon_days < 0:
         raise ValueError("output_days_before and forecast_horizon_days must be >= 0.")
 
     nc = read_nc_from_parhig(parhig_path)
     start_time, dt_seconds = read_time_settings_from_parhig(parhig_path)
-    reference_time = load_simulation_reference_time_from_settings(workspace=workspace)
     mini_ids = read_mini_ids(mini_gtp_path, nc=nc)
-    logger.info(
+    run_logger.info(
         "inputs_loaded nc=%s start_time=%s dt_seconds=%s mini_count=%s reference_time=%s",
         nc,
         _isoformat_seconds(start_time),
@@ -616,14 +597,14 @@ def export_mgb_outputs(
         reference_time=reference_time,
         nt_total=nt_total,
     )
-    logger.info("nt_resolved nt_total=%s nt_current=%s nt_forecast=%s", nt_total, nt_current, nt_forecast)
+    run_logger.info("nt_resolved nt_total=%s nt_current=%s nt_forecast=%s", nt_total, nt_current, nt_forecast)
 
     export_window = build_export_window(
         reference_time,
         output_days_before=output_days_before,
         forecast_horizon_days=forecast_horizon_days,
     )
-    logger.info(
+    run_logger.info(
         "export_window reference_time=%s window_start=%s window_end_exclusive=%s",
         _isoformat_seconds(reference_time),
         _isoformat_seconds(export_window.window_start),
@@ -632,7 +613,7 @@ def export_mgb_outputs(
 
     output_db_path.parent.mkdir(parents=True, exist_ok=True)
     temp_db_path = output_db_path.with_name(f"{output_db_path.stem}.{uuid4().hex[:8]}.tmp{output_db_path.suffix}")
-    logger.info("database_temp_path path=%s", temp_db_path)
+    run_logger.info("database_temp_path path=%s", temp_db_path)
 
     try:
         summary = write_output_database(
@@ -648,11 +629,11 @@ def export_mgb_outputs(
             chunk_hours=chunk_hours,
         )
         temp_db_path.replace(output_db_path)
-        logger.info("database_finalized path=%s", output_db_path)
+        run_logger.info("database_finalized path=%s", output_db_path)
     except Exception:
         if temp_db_path.exists():
             temp_db_path.unlink()
-        logger.exception("export_failed")
+        run_logger.exception("export_failed")
         raise
 
     final_summary = ExportSummary(
@@ -666,7 +647,7 @@ def export_mgb_outputs(
         series_count=summary.series_count,
         value_count=summary.value_count,
     )
-    logger.info(
+    run_logger.info(
         "export_done database=%s reference_time=%s window_start=%s window_end_exclusive=%s series_count=%s value_count=%s",
         final_summary.database_path,
         _isoformat_seconds(final_summary.reference_time),
@@ -679,11 +660,7 @@ def export_mgb_outputs(
 
 
 def main() -> int:
-    try:
-        export_mgb_outputs()
-        return 0
-    except Exception:
-        return 1
+    raise SystemExit("Use the mgb-ops CLI wrapper or call export_mgb_outputs() with explicit paths and settings.")
 
 
 if __name__ == "__main__":

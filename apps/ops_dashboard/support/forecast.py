@@ -11,7 +11,7 @@ import folium.plugins
 import numpy as np
 import pandas as pd
 
-from mgb_ops.common.paths import history_db_path, resolve_workspace_path
+from mgb_ops.common.paths import history_db_path, resolve_workspace_path, runtime_paths
 from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
 from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction, apply_correction_sequence
@@ -315,7 +315,7 @@ def export_preview_raster(preview: ForecastPreview, target_path: Path) -> Path:
 
 
 def _add_rivers_layer(fmap: folium.Map) -> None:
-    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson()
+    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
     if rivers_geojson and rivers_geojson.get("features"):
         folium.GeoJson(
             rivers_geojson,

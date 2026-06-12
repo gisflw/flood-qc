@@ -91,22 +91,6 @@ def test_parse_payload_accepts_dict_rows() -> None:
     assert frame["rain"].tolist() == [1.5, 2.5]
 
 
-def test_require_api_key_raises_clear_error_when_missing(monkeypatch) -> None:
-    monkeypatch.delenv(fetch_observed_inmet.INMET_API_KEY_ENV, raising=False)
-    monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", Path("/nonexistent/.env"))
-
-    with pytest.raises(RuntimeError, match=fetch_observed_inmet.INMET_API_KEY_ENV):
-        fetch_observed_inmet.require_api_key()
-
-
-def test_require_api_key_reads_local_env_file(tmp_path, monkeypatch) -> None:
-    env_path = tmp_path / ".env"
-    env_path.write_text('INMET_API_KEY="secret-from-file"\n', encoding="utf-8")
-    monkeypatch.delenv(fetch_observed_inmet.INMET_API_KEY_ENV, raising=False)
-    monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", env_path)
-
-    assert fetch_observed_inmet.require_api_key() == "secret-from-file"
-
 
 def test_fetch_station_payload_retries_and_preserves_headers(monkeypatch) -> None:
     session = FakeSession(
@@ -133,13 +117,29 @@ def test_fetch_station_payload_retries_and_preserves_headers(monkeypatch) -> Non
     assert session.requests[0]["params"] == {"dataInicio": "2026-03-11", "dataFinal": "2026-03-11"}
 
 
+
+def test_ingest_observed_inmet_requires_explicit_api_key(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+
+    with pytest.raises(ValueError, match="api_key"):
+        fetch_observed_inmet.ingest_observed_inmet(
+            db_path,
+            reference_time=datetime(2026, 3, 11, 13, 45, 0),
+            request_days=1,
+            timeout_seconds=5,
+            api_key="",
+            station_codes=["A801"],
+            interim_dir=tmp_path / "interim",
+            logs_dir=tmp_path / "logs",
+            base_url="https://example.test/v1",
+        )
+
 def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     session = FakeSession(responses=[FakeResponse(SAMPLE_INMET_PAYLOAD)])
-    monkeypatch.setenv(fetch_observed_inmet.INMET_API_KEY_ENV, "secret")
-    monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(fetch_observed_inmet.requests, "Session", lambda: session)
 
     summary = fetch_observed_inmet.ingest_observed_inmet(
@@ -147,6 +147,7 @@ def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -
         reference_time=datetime(2026, 3, 11, 13, 45, 0),
         request_days=1,
         timeout_seconds=5,
+        api_key="secret",
         station_codes=["a801"],
         interim_dir=tmp_path / "interim",
         logs_dir=tmp_path / "logs",
@@ -186,8 +187,6 @@ def test_ingest_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, mo
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
-    monkeypatch.setenv(fetch_observed_inmet.INMET_API_KEY_ENV, "secret")
-    monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(
         fetch_observed_inmet.requests,
         "Session",
@@ -199,6 +198,7 @@ def test_ingest_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, mo
         reference_time=datetime(2026, 3, 11, 13, 45, 0),
         request_days=1,
         timeout_seconds=5,
+        api_key="secret",
         station_codes=["A801"],
         interim_dir=tmp_path / "interim",
         logs_dir=tmp_path / "logs",
@@ -213,8 +213,6 @@ def test_ingest_observed_inmet_marks_station_error_after_final_failure(tmp_path,
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
-    monkeypatch.setenv(fetch_observed_inmet.INMET_API_KEY_ENV, "secret")
-    monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", tmp_path / ".env")
     monkeypatch.setattr(fetch_observed_inmet.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
         fetch_observed_inmet.requests,
@@ -227,6 +225,7 @@ def test_ingest_observed_inmet_marks_station_error_after_final_failure(tmp_path,
         reference_time=datetime(2026, 3, 11, 13, 45, 0),
         request_days=1,
         timeout_seconds=5,
+        api_key="secret",
         station_codes=["A801"],
         interim_dir=tmp_path / "interim",
         logs_dir=tmp_path / "logs",
@@ -240,8 +239,6 @@ def test_ingest_observed_inmet_marks_station_error_after_final_failure(tmp_path,
 def test_ingest_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
-    monkeypatch.setenv(fetch_observed_inmet.INMET_API_KEY_ENV, "secret")
-    monkeypatch.setattr(fetch_observed_inmet, "LOCAL_ENV_PATH", tmp_path / ".env")
 
     with pytest.raises(ValueError, match="No INMET station found"):
         fetch_observed_inmet.ingest_observed_inmet(
@@ -249,54 +246,10 @@ def test_ingest_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypa
             reference_time=datetime(2026, 3, 11, 13, 45, 0),
             request_days=1,
             timeout_seconds=5,
+            api_key="secret",
             station_codes=["A999"],
             interim_dir=tmp_path / "interim",
             logs_dir=tmp_path / "logs",
             base_url="https://example.test/v1",
         )
 
-
-def test_fetch_observed_inmet_main_uses_config_only(tmp_path, monkeypatch) -> None:
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(
-        fetch_observed_inmet,
-        "load_settings",
-        lambda: {
-            "run": {"reference_time": "2026-03-11T00:00:00"},
-            "ingest": {"request_days": 3, "timeout_seconds": 20},
-            "summaries": {
-                "forecast_days": [1, 3],
-                "accum_hours": [24, 72],
-                "selected_mini_ids": ["7601"],
-            },
-            "mgb": {
-                "input_days_before": 56,
-                "output_days_before": 28,
-                "forecast_horizon_days": 14,
-                "use_forecast_data": True,
-            },
-            "rainfall_interpolation": {"nearest_stations": 5, "power": 2.0},
-        },
-    )
-    monkeypatch.setattr(fetch_observed_inmet, "history_db_path", lambda: tmp_path / "history.sqlite")
-    monkeypatch.setattr(fetch_observed_inmet, "default_interim_dir", lambda: tmp_path / "interim")
-    monkeypatch.setattr(fetch_observed_inmet, "default_logs_dir", lambda: tmp_path / "logs")
-
-    def fake_ingest(database_path, **kwargs):
-        captured["database_path"] = database_path
-        captured.update(kwargs)
-        return {"run_id": "20260311T000000"}
-
-    monkeypatch.setattr(fetch_observed_inmet, "ingest_observed_inmet", fake_ingest)
-
-    result = fetch_observed_inmet.main()
-
-    assert result == 0
-    assert captured["database_path"] == tmp_path / "history.sqlite"
-    assert captured["reference_time"] == datetime(2026, 3, 11, 0, 0, 0)
-    assert captured["request_days"] == 3
-    assert captured["timeout_seconds"] == 20.0
-    assert captured["station_codes"] is None
-    assert captured["interim_dir"] == tmp_path / "interim"
-    assert captured["logs_dir"] == tmp_path / "logs"

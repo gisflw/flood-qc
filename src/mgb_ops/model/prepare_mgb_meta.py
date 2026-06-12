@@ -12,11 +12,8 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from mgb_ops.common.paths import logs_dir as default_logs_dir, mgb_input_dir
-from mgb_ops.common.settings import load_settings
 from mgb_ops.common.time_utils import resolve_reference_time
 
-DEFAULT_PARHIG = mgb_input_dir() / "PARHIG.hig"
 DEFAULT_DT_SECONDS = 3600
 LOGGER_NAME = "floodqc.model.prepare_mgb_meta"
 
@@ -183,23 +180,24 @@ def read_time_settings_from_parhig(parhig_path: Path) -> tuple[datetime, int, in
     return start_time, nt, dt_seconds
 
 
-def rewrite_mgb_meta_from_config(
+def rewrite_mgb_meta(
     *,
-    parhig_path: Path = DEFAULT_PARHIG,
-    logs_dir: Path = default_logs_dir(),
-    workspace: str | Path | None = None,
+    parhig_path: Path,
+    reference_time: datetime,
+    input_days_before: int,
+    forecast_horizon_days: int,
+    logs_dir: Path | None = None,
+    logger: logging.Logger | None = None,
 ) -> MgbMetaUpdateSummary:
-    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
-    input_days_before = int(settings["mgb"]["input_days_before"])
-    forecast_horizon_days = int(settings["mgb"]["forecast_horizon_days"])
     window = build_mgb_window(
         reference_time,
         input_days_before=input_days_before,
         forecast_horizon_days=forecast_horizon_days,
     )
-    execution_id = build_execution_id()
-    logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
+    run_logger = logger
+    if run_logger is None and logs_dir is not None:
+        execution_id = build_execution_id()
+        run_logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
 
     original_parhig_text = parhig_path.read_text(encoding="latin-1")
     updated_parhig_text = update_parhig_text(
@@ -210,16 +208,17 @@ def rewrite_mgb_meta_from_config(
     )
     parhig_path.write_text(updated_parhig_text, encoding="latin-1")
 
-    logger.info(
-        "mgb_meta_updated parhig=%s reference_time=%s start_time=%s nt=%s dt_seconds=%s input_days_before=%s forecast_horizon_days=%s",
-        parhig_path,
-        window.reference_time.isoformat(timespec="seconds"),
-        window.start_time.isoformat(timespec="seconds"),
-        window.nt,
-        window.dt_seconds,
-        input_days_before,
-        forecast_horizon_days,
-    )
+    if run_logger is not None:
+        run_logger.info(
+            "mgb_meta_updated parhig=%s reference_time=%s start_time=%s nt=%s dt_seconds=%s input_days_before=%s forecast_horizon_days=%s",
+            parhig_path,
+            window.reference_time.isoformat(timespec="seconds"),
+            window.start_time.isoformat(timespec="seconds"),
+            window.nt,
+            window.dt_seconds,
+            input_days_before,
+            forecast_horizon_days,
+        )
     return MgbMetaUpdateSummary(
         parhig_path=parhig_path,
         reference_time=window.reference_time,
@@ -232,15 +231,23 @@ def rewrite_mgb_meta_from_config(
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Rewrite PARHIG.hig from the run configuration.")
-    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="PARHIG.hig file to rewrite.")
+    parser = argparse.ArgumentParser(description="Rewrite PARHIG.hig timing metadata.")
+    parser.add_argument("--parhig", type=Path, required=True, help="PARHIG.hig file to rewrite.")
+    parser.add_argument("--reference-time", required=True, help="Reference time for the MGB window.")
+    parser.add_argument("--input-days-before", type=int, required=True)
+    parser.add_argument("--forecast-horizon-days", type=int, required=True)
+    parser.add_argument("--logs-dir", type=Path, default=None)
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    summary = rewrite_mgb_meta_from_config(
+    summary = rewrite_mgb_meta(
         parhig_path=args.parhig,
+        reference_time=resolve_reference_time(args.reference_time),
+        input_days_before=args.input_days_before,
+        forecast_horizon_days=args.forecast_horizon_days,
+        logs_dir=args.logs_dir,
     )
     print(
         "mgb_meta_ready "

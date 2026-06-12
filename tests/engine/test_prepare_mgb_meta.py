@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from mgb_ops.model.prepare_mgb_meta import build_mgb_window, rewrite_mgb_meta_from_config
+from mgb_ops.model.prepare_mgb_meta import build_mgb_window, rewrite_mgb_meta
 
 
 PARHIG_TEMPLATE = """\
@@ -33,30 +33,16 @@ def test_build_mgb_window_includes_forecast_horizon() -> None:
     assert window.nt == 121
 
 
-def test_rewrite_mgb_meta_from_config_updates_parhig(tmp_path, monkeypatch) -> None:
+def test_rewrite_mgb_meta_updates_parhig(tmp_path, monkeypatch) -> None:
     parhig_path = tmp_path / "PARHIG.hig"
     parhig_path.write_text(PARHIG_TEMPLATE, encoding="latin-1")
 
-    monkeypatch.setattr(
-        "mgb_ops.model.prepare_mgb_meta.load_settings",
-        lambda **_: {
-            "run": {"reference_time": "2026-03-11"},
-            "ingest": {"request_days": 7, "timeout_seconds": 15},
-            "summaries": {"forecast_days": [1], "accum_hours": [24], "selected_mini_ids": []},
-            "mgb": {
-                "input_days_before": 2,
-                "output_days_before": 30,
-                "forecast_horizon_days": 2,
-                "use_forecast_data": False,
-            },
-            "rainfall_interpolation": {"nearest_stations": 5, "power": 2.0},
-        },
-    )
     monkeypatch.setattr("mgb_ops.model.prepare_mgb_meta.build_execution_id", lambda: "20260311T230000")
-    monkeypatch.setattr("mgb_ops.model.prepare_mgb_meta.default_logs_dir", lambda: tmp_path / "logs")
-
-    summary = rewrite_mgb_meta_from_config(
+    summary = rewrite_mgb_meta(
         parhig_path=parhig_path,
+        reference_time=datetime(2026, 3, 11, 23, 0, 0),
+        input_days_before=2,
+        forecast_horizon_days=2,
         logs_dir=tmp_path / "logs",
     )
 

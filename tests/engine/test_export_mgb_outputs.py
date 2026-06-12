@@ -15,19 +15,8 @@ SCHEMA_PATH = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql" / "model_outputs_
 
 
 def configure_export_logging(tmp_path: Path, monkeypatch) -> Path:
-    monkeypatch.setattr("mgb_ops.model.export_mgb_outputs.default_logs_dir", lambda: tmp_path / "logs")
     monkeypatch.setattr("mgb_ops.model.export_mgb_outputs.build_execution_id", lambda: "20260101T120000")
     return tmp_path / "logs" / "export_mgb_outputs" / "20260101T120000.log"
-
-
-def patch_settings(monkeypatch, reference_time: str) -> None:
-    monkeypatch.setattr(
-        "mgb_ops.model.export_mgb_outputs.load_settings",
-        lambda **_: {
-            "run": {"reference_time": reference_time},
-            "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
-        },
-    )
 
 
 def write_parhig(path: Path, *, start_time: datetime, nc: int, dt_seconds: int = 3600) -> None:
@@ -98,7 +87,6 @@ def build_dataset(
 
 def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
-    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     output_db_path = tmp_path / "data" / "interim" / "model_outputs.sqlite"
     output_db_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = configure_export_logging(tmp_path, monkeypatch)
@@ -112,11 +100,13 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
         connection.close()
 
     summary = export_mgb_outputs(
+        reference_time=datetime(2026, 2, 9, 23, 0, 0),
         parhig_path=dataset["parhig_path"],
         mini_gtp_path=dataset["mini_gtp_path"],
         output_dir=dataset["output_dir"],
         output_db_path=output_db_path,
         schema_path=SCHEMA_PATH,
+        logs_dir=tmp_path / "logs",
         output_days_before=30,
         forecast_horizon_days=15,
         chunk_hours=24,
@@ -207,17 +197,18 @@ def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> No
         assert forecast_first_value == 1920.0
 
 
-def test_export_mgb_outputs_resolves_date_only_reference_time(tmp_path, monkeypatch) -> None:
+def test_export_mgb_outputs_uses_explicit_reference_time(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
-    patch_settings(monkeypatch, "2026-02-09")
     configure_export_logging(tmp_path, monkeypatch)
 
     summary = export_mgb_outputs(
+        reference_time=datetime(2026, 2, 9, 23, 0, 0),
         parhig_path=dataset["parhig_path"],
         mini_gtp_path=dataset["mini_gtp_path"],
         output_dir=dataset["output_dir"],
         output_db_path=tmp_path / "model_outputs.sqlite",
         schema_path=SCHEMA_PATH,
+        logs_dir=tmp_path / "logs",
         output_days_before=30,
         forecast_horizon_days=15,
     )
@@ -235,12 +226,12 @@ def test_build_output_series_id_zero_pads_mini_id() -> None:
 
 def test_export_mgb_outputs_requires_single_source_file(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
-    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
     Path(dataset["output_dir"]).joinpath("YTUDO.MGB").unlink()
 
     with pytest.raises(FileNotFoundError, match="YTUDO"):
         export_mgb_outputs(
+            reference_time=datetime(2026, 2, 9, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
             output_dir=dataset["output_dir"],
@@ -253,11 +244,11 @@ def test_export_mgb_outputs_requires_single_source_file(tmp_path, monkeypatch) -
 
 def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, mini_ids=[101, 101])
-    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="duplicated Mini ids"):
         export_mgb_outputs(
+            reference_time=datetime(2026, 2, 9, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
             output_dir=dataset["output_dir"],
@@ -270,11 +261,11 @@ def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) ->
 
 def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, total_nt=1440, y_total_nt=120)
-    patch_settings(monkeypatch, "2026-02-09T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="Inconsistent NT across outputs"):
         export_mgb_outputs(
+            reference_time=datetime(2026, 2, 9, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
             output_dir=dataset["output_dir"],
@@ -287,16 +278,17 @@ def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, 
 
 def test_export_mgb_outputs_allows_cutoff_at_last_available_timestamp(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, total_nt=48)
-    patch_settings(monkeypatch, "2026-01-02T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
     output_db_path = tmp_path / "model_outputs.sqlite"
 
     summary = export_mgb_outputs(
+        reference_time=datetime(2026, 1, 2, 23, 0, 0),
         parhig_path=dataset["parhig_path"],
         mini_gtp_path=dataset["mini_gtp_path"],
         output_dir=dataset["output_dir"],
         output_db_path=output_db_path,
         schema_path=SCHEMA_PATH,
+        logs_dir=tmp_path / "logs",
         output_days_before=1,
         forecast_horizon_days=0,
     )
@@ -314,11 +306,11 @@ def test_export_mgb_outputs_allows_cutoff_at_last_available_timestamp(tmp_path, 
 
 def test_export_mgb_outputs_rejects_cutoff_before_available_range(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, total_nt=48)
-    patch_settings(monkeypatch, "2025-12-31T23:00:00")
     configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="before the available output start"):
         export_mgb_outputs(
+            reference_time=datetime(2025, 12, 31, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
             output_dir=dataset["output_dir"],
@@ -331,11 +323,11 @@ def test_export_mgb_outputs_rejects_cutoff_before_available_range(tmp_path, monk
 
 def test_export_mgb_outputs_rejects_cutoff_after_available_range(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path, total_nt=48)
-    patch_settings(monkeypatch, "2026-01-03T00:00:00")
     configure_export_logging(tmp_path, monkeypatch)
 
     with pytest.raises(ValueError, match="exceeds the available output end"):
         export_mgb_outputs(
+            reference_time=datetime(2026, 1, 3, 0, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
             output_dir=dataset["output_dir"],

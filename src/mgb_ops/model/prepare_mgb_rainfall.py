@@ -16,20 +16,11 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from mgb_ops.common.paths import history_db_path, logs_dir as default_logs_dir, mgb_input_dir, resolve_workspace_path
-from mgb_ops.common.settings import load_settings
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
-from mgb_ops.model.prepare_mgb_meta import (
-    DEFAULT_PARHIG,
-    build_mgb_window,
-    read_time_settings_from_parhig,
-)
+from mgb_ops.model.prepare_mgb_meta import build_mgb_window, read_time_settings_from_parhig
 
-DEFAULT_HISTORY_DB = history_db_path()
-DEFAULT_MINI_GTP = mgb_input_dir() / "MINI.gtp"
-DEFAULT_OUTPUT_PATH = mgb_input_dir() / "chuvabin.hig"
 DEFAULT_CHUNK_HOURS = 720
 LOGGER_NAME = "floodqc.model.prepare_mgb_rainfall"
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
@@ -266,15 +257,11 @@ def build_hourly_station_matrix(
     return station_meta, station_matrix
 
 
-def _resolve_workspace_asset_path(raw_path: str, *, workspace: str | Path | None = None) -> Path:
-    return resolve_workspace_path(raw_path, workspace)
-
-
 def load_latest_ecmwf_asset_path(
     connection: sqlite3.Connection,
     *,
     reference_time: datetime,
-    workspace: str | Path | None = None,
+    asset_base_dir: Path,
 ) -> Path:
     row = connection.execute(
         """
@@ -301,7 +288,8 @@ def load_latest_ecmwf_asset_path(
             "Run `mgb-ops ingest forecast-grid` first."
         )
 
-    asset_path = _resolve_workspace_asset_path(str(row["relative_path"]), workspace=workspace)
+    registered_path = Path(str(row["relative_path"]))
+    asset_path = registered_path if registered_path.is_absolute() else asset_base_dir / registered_path
     if not asset_path.exists():
         raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
     return asset_path
@@ -510,15 +498,20 @@ def build_hourly_forecast_grid_series(
 
 def prepare_mgb_rainfall(
     *,
-    history_db: Path = DEFAULT_HISTORY_DB,
-    parhig_path: Path = DEFAULT_PARHIG,
-    mini_gtp_path: Path = DEFAULT_MINI_GTP,
-    output_path: Path = DEFAULT_OUTPUT_PATH,
+    history_db: Path,
+    parhig_path: Path,
+    mini_gtp_path: Path,
+    output_path: Path,
+    reference_time: datetime,
+    input_days_before: int,
+    forecast_horizon_days: int,
+    use_forecast_data: bool,
     nearest_stations: int,
     power: float,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
-    logs_dir: Path = default_logs_dir(),
-    workspace: str | Path | None = None,
+    forecast_asset_path: Path | None = None,
+    logs_dir: Path | None = None,
+    logger: logging.Logger | None = None,
 ) -> RainfallPreparationSummary:
     if not history_db.exists():
         raise FileNotFoundError(f"History database not found: {history_db}")
@@ -527,21 +520,22 @@ def prepare_mgb_rainfall(
     if not mini_gtp_path.exists():
         raise FileNotFoundError(f"MINI.gtp not found: {mini_gtp_path}")
 
-    execution_id = build_execution_id()
-    logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
+    run_logger = logger
+    if run_logger is None and logs_dir is not None:
+        execution_id = build_execution_id()
+        run_logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
+    if run_logger is None:
+        run_logger = logging.getLogger(LOGGER_NAME)
+
     start_time, nt, dt_seconds = read_time_settings_from_parhig(parhig_path)
     if dt_seconds != 3600:
         raise ValueError(f"Only hourly rainfall input is currently supported; PARHIG DT={dt_seconds}.")
 
-    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
-    mgb_settings = settings["mgb"]
     window = build_mgb_window(
         reference_time,
-        input_days_before=int(mgb_settings["input_days_before"]),
-        forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        input_days_before=input_days_before,
+        forecast_horizon_days=forecast_horizon_days,
     )
-    use_forecast_data = bool(mgb_settings["use_forecast_data"])
     if start_time != window.start_time or nt != window.nt:
         raise ValueError(
             "PARHIG timing does not match current settings. "
@@ -555,7 +549,7 @@ def prepare_mgb_rainfall(
     query_start = start_time - timedelta(hours=1)
     observed_end_exclusive = window.forecast_start_time
 
-    logger.info(
+    run_logger.info(
         "rainfall_prepare_start history_db=%s parhig=%s mini_gtp=%s output=%s start_time=%s nt=%s nc=%s nearest=%s power=%s reference_time=%s forecast_start_time=%s forecast_nt=%s use_forecast_data=%s",
         history_db,
         parhig_path,
@@ -584,15 +578,6 @@ def prepare_mgb_rainfall(
             query_start=query_start,
             query_end_exclusive=observed_end_exclusive,
         )
-        forecast_asset_path = (
-            load_latest_ecmwf_asset_path(
-                connection,
-                reference_time=window.forecast_start_time,
-                workspace=workspace,
-            )
-            if use_forecast_data and window.forecast_nt > 0
-            else None
-        )
 
     hourly_values, used_hourly_normalization = temporarily_normalize_rain_to_hourly(raw_values)
     observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq="h")
@@ -615,7 +600,8 @@ def prepare_mgb_rainfall(
     )
 
     if use_forecast_data and window.forecast_nt > 0:
-        assert forecast_asset_path is not None
+        if forecast_asset_path is None:
+            raise ValueError("forecast_asset_path is required when use_forecast_data is true.")
         forecast_latitudes, forecast_longitudes, forecast_hourly_grids = build_hourly_forecast_grid_series(
             forecast_asset_path,
             forecast_start_time=window.forecast_start_time,
@@ -648,7 +634,7 @@ def prepare_mgb_rainfall(
         chunk_hours=chunk_hours,
     )
 
-    logger.info(
+    run_logger.info(
         "rainfall_prepare_done output=%s station_count=%s nt=%s nc=%s forecast_nt=%s used_hourly_normalization=%s",
         output_path,
         len(station_meta),
@@ -674,26 +660,38 @@ def prepare_mgb_rainfall(
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Interpolate observed rainfall to MGB minis and write chuvabin.hig.")
-    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="SQLite history database.")
-    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="PARHIG.hig file.")
-    parser.add_argument("--mini-gtp", type=Path, default=DEFAULT_MINI_GTP, help="MINI.gtp file.")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Binary chuvabin.hig file.")
+    parser.add_argument("--history-db", type=Path, required=True, help="SQLite history database.")
+    parser.add_argument("--parhig", type=Path, required=True, help="PARHIG.hig file.")
+    parser.add_argument("--mini-gtp", type=Path, required=True, help="MINI.gtp file.")
+    parser.add_argument("--output", type=Path, required=True, help="Binary chuvabin.hig file.")
+    parser.add_argument("--reference-time", required=True)
+    parser.add_argument("--input-days-before", type=int, required=True)
+    parser.add_argument("--forecast-horizon-days", type=int, required=True)
+    parser.add_argument("--use-forecast-data", action="store_true")
+    parser.add_argument("--forecast-asset", type=Path, default=None)
+    parser.add_argument("--nearest-stations", type=int, required=True)
+    parser.add_argument("--power", type=float, required=True)
     parser.add_argument("--chunk-hours", type=int, default=DEFAULT_CHUNK_HOURS, help="Hours per interpolation/write chunk.")
+    parser.add_argument("--logs-dir", type=Path, default=None)
     return parser
 
 
 def main() -> int:
     args = build_parser().parse_args()
-    settings = load_settings()
-    rainfall_settings = settings["rainfall_interpolation"]
     summary = prepare_mgb_rainfall(
         history_db=args.history_db,
         parhig_path=args.parhig,
         mini_gtp_path=args.mini_gtp,
         output_path=args.output,
-        nearest_stations=int(rainfall_settings["nearest_stations"]),
-        power=float(rainfall_settings["power"]),
+        reference_time=resolve_reference_time(args.reference_time),
+        input_days_before=args.input_days_before,
+        forecast_horizon_days=args.forecast_horizon_days,
+        use_forecast_data=args.use_forecast_data,
+        forecast_asset_path=args.forecast_asset,
+        nearest_stations=args.nearest_stations,
+        power=args.power,
         chunk_hours=int(args.chunk_hours),
+        logs_dir=args.logs_dir,
     )
     print(
         "chuvabin_ready "

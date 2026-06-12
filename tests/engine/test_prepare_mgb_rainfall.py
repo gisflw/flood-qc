@@ -73,23 +73,7 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
     mini_gtp_path.write_text(MINI_TEMPLATE, encoding="latin-1")
     history_db.write_bytes(b"sqlite placeholder")
 
-    monkeypatch.setattr(
-        "mgb_ops.model.prepare_mgb_rainfall.load_settings",
-        lambda **_: {
-            "run": {"reference_time": "2026-03-11"},
-            "ingest": {"request_days": 7, "timeout_seconds": 15},
-            "summaries": {"forecast_days": [1], "accum_hours": [24], "selected_mini_ids": []},
-            "mgb": {
-                "input_days_before": 2,
-                "output_days_before": 30,
-                "forecast_horizon_days": 2,
-                "use_forecast_data": False,
-            },
-            "rainfall_interpolation": {"nearest_stations": 1, "power": 2.0},
-        },
-    )
     monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
-    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.default_logs_dir", lambda: tmp_path / "logs")
 
     class FakeConnection:
         def __enter__(self):
@@ -140,6 +124,10 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
         parhig_path=parhig_path,
         mini_gtp_path=mini_gtp_path,
         output_path=output_path,
+        reference_time=datetime(2026, 3, 11, 23, 0, 0),
+        input_days_before=2,
+        forecast_horizon_days=2,
+        use_forecast_data=False,
         nearest_stations=1,
         power=2.0,
         chunk_hours=24,
@@ -168,23 +156,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
     history_db.write_bytes(b"sqlite placeholder")
     forecast_grib.write_bytes(b"grib placeholder")
 
-    monkeypatch.setattr(
-        "mgb_ops.model.prepare_mgb_rainfall.load_settings",
-        lambda **_: {
-            "run": {"reference_time": "2026-03-11"},
-            "ingest": {"request_days": 7, "timeout_seconds": 15},
-            "summaries": {"forecast_days": [1], "accum_hours": [24], "selected_mini_ids": []},
-            "mgb": {
-                "input_days_before": 2,
-                "output_days_before": 30,
-                "forecast_horizon_days": 2,
-                "use_forecast_data": True,
-            },
-            "rainfall_interpolation": {"nearest_stations": 1, "power": 2.0},
-        },
-    )
     monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
-    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.default_logs_dir", lambda: tmp_path / "logs")
 
     class FakeConnection:
         def __enter__(self):
@@ -221,8 +193,6 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
             }
         ),
     )
-    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.load_latest_ecmwf_asset_path", lambda *args, **kwargs: forecast_grib)
-
     forecast_nt = 49
     hourly_grids = np.zeros((forecast_nt, 2, 2), dtype=np.float64)
     hourly_grids[:, 0, 0] = 10.0
@@ -249,6 +219,11 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         parhig_path=parhig_path,
         mini_gtp_path=mini_gtp_path,
         output_path=output_path,
+        reference_time=datetime(2026, 3, 11, 23, 0, 0),
+        input_days_before=2,
+        forecast_horizon_days=2,
+        use_forecast_data=True,
+        forecast_asset_path=forecast_grib,
         nearest_stations=1,
         power=2.0,
         chunk_hours=24,

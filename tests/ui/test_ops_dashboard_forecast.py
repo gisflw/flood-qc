@@ -98,7 +98,7 @@ def test_ops_dashboard_forecast_applies_preview_correction() -> None:
 
 
 def test_build_forecast_map_returns_single_map_with_raster_inspector(monkeypatch) -> None:
-    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda: None)
+    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda *args, **kwargs: None)
 
     fmap = ops_dashboard_forecast.build_forecast_map(_preview("Mapa original"), opacity=0.65)
 
@@ -109,7 +109,7 @@ def test_build_forecast_map_returns_single_map_with_raster_inspector(monkeypatch
 
 
 def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> None:
-    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda: None)
+    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda *args, **kwargs: None)
     original = _preview("Mapa original")
     corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
 
@@ -123,7 +123,7 @@ def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> 
 
 
 def test_build_forecast_map_artifacts_returns_external_legends(monkeypatch) -> None:
-    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda: None)
+    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda *args, **kwargs: None)
     original = _preview("Mapa original")
     corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
 

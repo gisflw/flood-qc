@@ -16,17 +16,10 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
-from mgb_ops.common.paths import (
-    history_db_path,
-    interim_dir as default_interim_dir,
-    logs_dir as default_logs_dir,
-    relative_to_repo,
-)
-from mgb_ops.common.settings import load_settings
+from mgb_ops.common.paths import relative_to_repo
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.storage.history_repository import HistoryRepository
 
-DEFAULT_HISTORY_DB = history_db_path()
 LOGGER_NAME = "floodqc.ingest.forecast_grid"
 ECMWF_ASSET_KIND = "forecast_grib_rs_buffered"
 ECMWF_MODEL = "ifs"
@@ -376,13 +369,19 @@ def ingest_forecast_grids(
     )
 
 
-def collect_forecast_grids(run: RunMetadata) -> list[RasterAsset]:
+def collect_forecast_grids(
+    run: RunMetadata,
+    *,
+    history_db: Path,
+    interim_dir: Path,
+    logs_dir: Path,
+) -> list[RasterAsset]:
     reference_time = resolve_reference_time(run.reference_time)
     summary = ingest_forecast_grids(
-        history_db_path(),
+        history_db,
         reference_time=reference_time,
-        interim_dir=default_interim_dir(),
-        logs_dir=default_logs_dir(),
+        interim_dir=interim_dir,
+        logs_dir=logs_dir,
     )
     return [
         RasterAsset(
@@ -397,16 +396,18 @@ def collect_forecast_grids(run: RunMetadata) -> list[RasterAsset]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Download and clip the operational ECMWF grid for RS.")
-    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="SQLite history database.")
+    parser.add_argument("--history-db", type=Path, required=True, help="SQLite history database.")
+    parser.add_argument("--reference-time", required=True)
+    parser.add_argument("--interim-dir", type=Path, required=True)
+    parser.add_argument("--logs-dir", type=Path, required=True)
     args = parser.parse_args()
 
-    settings = load_settings()
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    reference_time = resolve_reference_time(args.reference_time)
     summary = ingest_forecast_grids(
         args.history_db,
         reference_time=reference_time,
-        interim_dir=default_interim_dir(),
-        logs_dir=default_logs_dir(),
+        interim_dir=args.interim_dir,
+        logs_dir=args.logs_dir,
     )
     print(
         "forecast_grid_ready "

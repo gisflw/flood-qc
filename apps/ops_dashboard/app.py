@@ -26,7 +26,9 @@ except ModuleNotFoundError as exc:
         "pip install streamlit plotly folium streamlit-folium branca rasterio"
     ) from exc
 
-from mgb_ops.common.paths import history_db_path, set_workspace
+from mgb_ops.common.paths import history_db_path, runtime_paths, set_workspace
+from mgb_ops.common.settings import load_settings
+from mgb_ops.common.time_utils import resolve_reference_time
 
 
 def _configure_workspace_from_argv(argv: list[str]) -> None:
@@ -79,12 +81,12 @@ st.set_page_config(
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def get_station_catalog(days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_station_catalog(days=days)
+    return ops_dashboard_data.load_station_catalog(history_db_path(), days=days)
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
 def get_observed_series(station_uid: int, days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_observed_series(station_uid=station_uid, days=days)
+    return ops_dashboard_data.load_observed_series(station_uid=station_uid, database_path=history_db_path(), days=days)
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
@@ -94,21 +96,27 @@ def get_model_variables() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=256)
 def get_mgb_series(mini_id: int, variable_code: str, days_window: int) -> pd.DataFrame:
+    paths = runtime_paths()
+    settings = load_settings(workspace=paths.workspace, require_custom=False)
     return ops_dashboard_data.load_mgb_series(
         mini_id=mini_id,
         variable_code=variable_code,
+        parhig_path=paths.mgb_input_dir / "PARHIG.hig",
+        mini_gtp_path=paths.mgb_input_dir / "MINI.gtp",
+        output_dir=paths.mgb_output_dir,
+        reference_time=resolve_reference_time(settings["run"]["reference_time"]),
         days_window=days_window,
     )
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def get_accumulation_rasters() -> list[dict[str, object]]:
-    return ops_dashboard_data.list_accumulation_rasters()
+    return ops_dashboard_data.list_accumulation_rasters(runtime_paths().interim_dir)
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def get_rivers_geojson() -> dict | None:
-    return ops_dashboard_data.load_rivers_layer_geojson()
+    return ops_dashboard_data.load_rivers_layer_geojson(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -180,9 +188,9 @@ def get_map_artifacts(
     opacity: float,
 ) -> map_component.MapRenderArtifacts:
     del map_cache_key
-    stations_df = ops_dashboard_data.load_station_catalog(days=DAYS_WINDOW)
-    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson()
-    raster_catalog = {str(item["name"]): item for item in ops_dashboard_data.list_accumulation_rasters()}
+    stations_df = ops_dashboard_data.load_station_catalog(history_db_path(), days=DAYS_WINDOW)
+    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
+    raster_catalog = {str(item["name"]): item for item in ops_dashboard_data.list_accumulation_rasters(runtime_paths().interim_dir)}
     base_map = ops_dashboard_map.build_ops_map(
         selected_layer_name,
         opacity,
@@ -737,7 +745,7 @@ def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) ->
         selected_layer_name=selected_layer_name,
         opacity=opacity,
         history_version=ops_dashboard_map.build_file_version(history_db_path()),
-        rivers_version=ops_dashboard_map.build_file_version(ops_dashboard_data.LEGACY_RIVERS_GEOJSON_PATH),
+        rivers_version=ops_dashboard_map.build_file_version(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson"),
         raster_version=raster_version,
         station_uid=st.session_state.get("station_uid"),
         mini_id=st.session_state.get("mini_id"),

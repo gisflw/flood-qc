@@ -18,6 +18,11 @@ from mgb_ops.model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Windows-only MGB runner.")
     parser.add_argument("--dry-run", action="store_true", help="Do not execute the real binary.")
+    parser.add_argument("--executable", type=Path, required=True)
+    parser.add_argument("--input-dir", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--workspace-root", type=Path, required=True)
+    parser.add_argument("--logs-dir", type=Path, default=None)
     return parser
 
 
@@ -48,8 +53,14 @@ def build_summary(plan, result, *, dry_run: bool) -> dict[str, object]:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     metadata = build_run_metadata()
-    plan = prepare_mgb_execution(metadata)
-    result = execute_mgb_plan(plan, dry_run=args.dry_run)
+    plan = prepare_mgb_execution(
+        metadata,
+        executable_path=str(args.executable),
+        input_dir=args.input_dir,
+        output_dir=args.output_dir,
+        workspace_root=args.workspace_root,
+    )
+    result = execute_mgb_plan(plan, dry_run=args.dry_run, logs_dir=args.logs_dir)
     print(json.dumps(build_summary(plan, result, dry_run=args.dry_run), indent=2))
     return 0
 

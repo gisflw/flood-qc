@@ -14,8 +14,6 @@ SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from mgb_ops.common.paths import history_db_path, interim_dir as default_interim_dir, logs_dir as default_logs_dir
-from mgb_ops.common.settings import load_settings
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.storage.history_repository import HistoryRepository
 
@@ -307,21 +305,7 @@ def ingest_observed_ana(
 
 
 def main() -> int:
-    settings = load_settings()
-    ingest_settings = settings["ingest"]
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
-
-    ingest_observed_ana(
-        history_db_path(),
-        base_url=DEFAULT_ANA_BASE_URL,
-        reference_time=reference_time,
-        request_days=int(ingest_settings["request_days"]),
-        timeout_seconds=float(ingest_settings["timeout_seconds"]),
-        station_codes=None,
-        interim_dir=default_interim_dir(),
-        logs_dir=default_logs_dir(),
-    )
-    return 0
+    raise SystemExit("Use the mgb-ops CLI wrapper or call ingest_observed_ana() with explicit paths and settings.")
 
 
 if __name__ == "__main__":

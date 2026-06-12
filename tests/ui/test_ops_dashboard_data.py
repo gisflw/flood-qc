@@ -99,19 +99,21 @@ def build_mgb_dataset(tmp_path: Path, *, nt_total: int = 72) -> dict[str, object
     }
 
 
-def patch_mgb_runtime(monkeypatch, dataset: dict[str, object], *, reference_time: str) -> None:
-    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_INPUT_DIR", Path(dataset["input_dir"]))
-    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_OUTPUT_DIR", Path(dataset["output_dir"]))
-    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_PARHIG_PATH", Path(dataset["parhig_path"]))
-    monkeypatch.setattr(ops_dashboard_data, "DEFAULT_MGB_MINI_GTP_PATH", Path(dataset["mini_gtp_path"]))
-    monkeypatch.setattr(
-        ops_dashboard_data,
-        "load_settings",
-        lambda **_: {
-            "run": {"reference_time": reference_time},
-            "mgb": {"output_days_before": 30, "forecast_horizon_days": 15},
-        },
-    )
+def mgb_runtime_kwargs(dataset: dict[str, object], *, reference_time: str) -> dict[str, object]:
+    return {
+        "parhig_path": Path(dataset["parhig_path"]),
+        "mini_gtp_path": Path(dataset["mini_gtp_path"]),
+        "output_dir": Path(dataset["output_dir"]),
+        "reference_time": datetime.fromisoformat(reference_time),
+    }
+
+
+def mgb_metadata_kwargs(dataset: dict[str, object], *, reference_time: str) -> dict[str, object]:
+    return {
+        **mgb_runtime_kwargs(dataset, reference_time=reference_time),
+        "output_days_before": 30,
+        "forecast_horizon_days": 15,
+    }
 
 
 def insert_station(connection: sqlite3.Connection, *, station_uid: int, station_code: str, station_name: str) -> None:
@@ -266,9 +268,12 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
 
 def test_load_mgb_series_splits_current_and_forecast(tmp_path, monkeypatch) -> None:
     dataset = build_mgb_dataset(tmp_path, nt_total=72)
-    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-02T23:00:00")
-
-    series = ops_dashboard_data.load_mgb_series(539, "q", days_window=1)
+    series = ops_dashboard_data.load_mgb_series(
+        539,
+        "q",
+        **mgb_runtime_kwargs(dataset, reference_time="2026-02-02T23:00:00"),
+        days_window=1,
+    )
 
     assert series["prev_flag"].tolist() == ([0] * 25) + ([1] * 24)
     assert series["value"].tolist()[0] == 1023.0
@@ -291,9 +296,7 @@ def test_list_model_variables_returns_static_mgb_catalog() -> None:
 
 def test_load_model_metadata_is_derived_from_parhig_binaries_and_config(tmp_path, monkeypatch) -> None:
     dataset = build_mgb_dataset(tmp_path, nt_total=72)
-    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-02T23:00:00")
-
-    metadata = ops_dashboard_data.load_model_metadata()
+    metadata = ops_dashboard_data.load_model_metadata(**mgb_metadata_kwargs(dataset, reference_time="2026-02-02T23:00:00"))
 
     assert metadata["reference_time"] == pd.Timestamp("2026-02-02 23:00:00")
     assert metadata["reference_date"] == pd.Timestamp("2026-02-02")
@@ -318,36 +321,43 @@ def test_build_mgb_mini_index_preserves_mini_row_order(tmp_path) -> None:
 
 def test_load_mgb_series_rejects_unknown_mini_id(tmp_path, monkeypatch) -> None:
     dataset = build_mgb_dataset(tmp_path, nt_total=24)
-    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-01T23:00:00")
-
     with pytest.raises(ValueError, match="Mini 999 was not found"):
-        ops_dashboard_data.load_mgb_series(999, "q", days_window=1)
+        ops_dashboard_data.load_mgb_series(
+            999,
+            "q",
+            **mgb_runtime_kwargs(dataset, reference_time="2026-02-01T23:00:00"),
+            days_window=1,
+        )
 
 
 def test_load_model_metadata_rejects_inconsistent_nt_between_variables(tmp_path, monkeypatch) -> None:
     dataset = build_mgb_dataset(tmp_path, nt_total=24)
     write_output(Path(dataset["output_dir"]) / "YTUDO.MGB", np.arange(2 * 12, dtype=np.float32).reshape(2, 12))
-    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-01T23:00:00")
-
     with pytest.raises(ValueError, match="Inconsistent NT across MGB binary outputs"):
-        ops_dashboard_data.load_model_metadata()
+        ops_dashboard_data.load_model_metadata(**mgb_metadata_kwargs(dataset, reference_time="2026-02-01T23:00:00"))
 
 
 def test_load_mgb_series_rejects_binary_incompatible_with_nc(tmp_path, monkeypatch) -> None:
     dataset = build_mgb_dataset(tmp_path, nt_total=24)
     write_output(Path(dataset["output_dir"]) / "QTUDO_Inercial_Atual.MGB", np.arange(25, dtype=np.float32))
-    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-01T23:00:00")
-
     with pytest.raises(ValueError, match="not divisible by NC=2"):
-        ops_dashboard_data.load_mgb_series(101, "q", days_window=1)
+        ops_dashboard_data.load_mgb_series(
+            101,
+            "q",
+            **mgb_runtime_kwargs(dataset, reference_time="2026-02-01T23:00:00"),
+            days_window=1,
+        )
 
 
 def test_load_mgb_series_rejects_reference_time_after_available_range(tmp_path, monkeypatch) -> None:
     dataset = build_mgb_dataset(tmp_path, nt_total=24)
-    patch_mgb_runtime(monkeypatch, dataset, reference_time="2026-02-03T00:00:00")
-
     with pytest.raises(ValueError, match="exceeds the available output end"):
-        ops_dashboard_data.load_mgb_series(101, "q", days_window=1)
+        ops_dashboard_data.load_mgb_series(
+            101,
+            "q",
+            **mgb_runtime_kwargs(dataset, reference_time="2026-02-03T00:00:00"),
+            days_window=1,
+        )
 
 
 def test_list_accumulation_rasters_catalogs_expected_horizons(tmp_path) -> None:
