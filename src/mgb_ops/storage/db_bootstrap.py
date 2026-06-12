@@ -1,22 +1,14 @@
 from __future__ import annotations
 
-import argparse
 import csv
 import sqlite3
-import sys
 import unicodedata
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
 from mgb_ops.common.paths import (
     SQL_DIR,
     build_run_db_path,
-    history_db_path,
     history_station_inventory_csv_path,
 )
 
@@ -205,40 +197,3 @@ def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
         )
         connection.commit()
     return target
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Initialize repository SQLite databases.")
-    parser.add_argument("--history", action="store_true", help="Initialize `<workspace>/data/history.sqlite`.")
-    parser.add_argument("--history-path", type=Path, default=None, help="Alternative path for the history database.")
-    parser.add_argument(
-        "--inventory-csv",
-        type=Path,
-        default=None,
-        help="Station inventory CSV to load into the history database.",
-    )
-    parser.add_argument("--run-id", type=str, default=None, help="Identifier of the run to create.")
-    parser.add_argument("--run-path", type=Path, default=None, help="Alternative path for the run database.")
-    return parser
-
-
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    if args.history:
-        path = initialize_history_db(args.history_path, args.inventory_csv)
-        print(path)
-
-    if args.run_id:
-        path = initialize_run_db(args.run_id, args.run_path)
-        print(path)
-
-    if not args.history and not args.run_id:
-        parser.error("Provide --history and/or --run-id.")
-
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

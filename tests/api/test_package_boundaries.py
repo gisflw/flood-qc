@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 
@@ -25,14 +26,12 @@ def test_root_sql_and_config_directories_are_not_present() -> None:
 def _core_library_paths() -> list[Path]:
     roots = [
         REPO_ROOT / "src" / "mgb_ops" / name
-        for name in ("storage", "ingest", "qc", "model")
+        for name in ("common", "storage", "ingest", "qc", "model")
     ]
     return [path for root in roots for path in root.rglob("*.py")]
 
 
 def _call_name(node) -> str | None:
-    import ast
-
     if isinstance(node, ast.Name):
         return node.id
     if isinstance(node, ast.Attribute):
@@ -41,8 +40,6 @@ def _call_name(node) -> str | None:
 
 
 def test_core_library_does_not_load_settings_or_set_workspace() -> None:
-    import ast
-
     forbidden = {"load_settings", "set_workspace"}
     offenders: list[str] = []
     for path in _core_library_paths():
@@ -56,8 +53,6 @@ def test_core_library_does_not_load_settings_or_set_workspace() -> None:
 
 
 def test_core_library_has_no_import_time_workspace_path_defaults() -> None:
-    import ast
-
     workspace_helpers = {
         "history_db_path",
         "mgb_input_dir",
@@ -79,5 +74,30 @@ def test_core_library_has_no_import_time_workspace_path_defaults() -> None:
             if isinstance(value, ast.Call) and _call_name(value.func) in workspace_helpers:
                 rel_path = path.relative_to(REPO_ROOT).as_posix()
                 offenders.append(f"{rel_path}:{node.lineno}")
+
+    assert offenders == []
+
+def test_core_library_has_no_cli_or_direct_script_entrypoints() -> None:
+    forbidden_text = (
+        "argparse",
+        "ArgumentParser",
+        "parse_args",
+        'if __name__ == "__main__"',
+        "if __name__ == '__main__'",
+        "sys.path.insert",
+    )
+    offenders: list[str] = []
+
+    for path in _core_library_paths():
+        rel_path = path.relative_to(REPO_ROOT).as_posix()
+        text = path.read_text(encoding="utf-8-sig")
+        for forbidden in forbidden_text:
+            if forbidden in text:
+                offenders.append(f"{rel_path}: contains {forbidden}")
+
+        tree = ast.parse(text, filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "main":
+                offenders.append(f"{rel_path}:{node.lineno} defines main()")
 
     assert offenders == []

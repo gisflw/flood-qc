@@ -11,11 +11,6 @@ from uuid import uuid4
 
 import numpy as np
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
 from mgb_ops.common.paths import SQL_DIR
 
 
@@ -657,11 +652,3 @@ def export_mgb_outputs(
         final_summary.value_count,
     )
     return final_summary
-
-
-def main() -> int:
-    raise SystemExit("Use the mgb-ops CLI wrapper or call export_mgb_outputs() with explicit paths and settings.")
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

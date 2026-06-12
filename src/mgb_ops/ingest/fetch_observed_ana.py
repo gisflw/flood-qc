@@ -9,12 +9,7 @@ from pathlib import Path
 
 import requests
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
+from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.storage.history_repository import HistoryRepository
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
@@ -302,11 +297,3 @@ def ingest_observed_ana(
             summary["stations_error"],
         )
         return summary
-
-
-def main() -> int:
-    raise SystemExit("Use the mgb-ops CLI wrapper or call ingest_observed_ana() with explicit paths and settings.")
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

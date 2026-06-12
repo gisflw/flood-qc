@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from mgb_ops.common.models import RunMetadata
+from mgb_ops.cli import main as cli_main
 from mgb_ops.model import mgb_execution
 from mgb_ops.model import run_mgb
 
@@ -174,7 +176,7 @@ def test_execute_mgb_plan_fails_when_output_is_empty(monkeypatch, tmp_path) -> N
         mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs")
 
 
-def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_path, capsys) -> None:
+def test_model_run_cli_prints_summary_without_running_real_exe(monkeypatch, tmp_path, capsys) -> None:
     plan = mgb_execution.CommandPlan(
         command=["fake.exe"],
         working_directory="C:/mgb-hora",
@@ -186,6 +188,15 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
             "status": "success",
             "log_path": "logs/mgb_execution/20260325T120000.log",
         },
+    )
+
+    paths = SimpleNamespace(
+        workspace=tmp_path,
+        mgb_executable_path=Path("fake.exe"),
+        mgb_input_dir=Path("mgb_runner/Input"),
+        mgb_output_dir=Path("mgb_runner/Output"),
+        remote_workspace_root=Path("C:/mgb-hora"),
+        logs_dir=Path("logs"),
     )
 
     def fake_prepare(metadata, *, executable_path, input_dir, output_dir, workspace_root):
@@ -206,22 +217,13 @@ def test_run_mgb_main_prints_summary_without_running_real_exe(monkeypatch, tmp_p
             asset_refs=["mgb_runner/Output/QTUDO01.MGB"],
         )
 
+    monkeypatch.setattr(cli_main, "runtime_paths", lambda workspace=None: paths)
+    monkeypatch.setattr(cli_main, "set_workspace", lambda workspace=None: tmp_path)
     monkeypatch.setattr(run_mgb, "build_run_id", lambda: "20260325T120000")
-    monkeypatch.setattr(run_mgb, "prepare_mgb_execution", fake_prepare)
-    monkeypatch.setattr(run_mgb, "execute_mgb_plan", fake_execute)
+    monkeypatch.setattr(mgb_execution, "prepare_mgb_execution", fake_prepare)
+    monkeypatch.setattr(mgb_execution, "execute_mgb_plan", fake_execute)
 
-    result = run_mgb.main([
-        "--executable",
-        "fake.exe",
-        "--input-dir",
-        "mgb_runner/Input",
-        "--output-dir",
-        "mgb_runner/Output",
-        "--workspace-root",
-        "C:/mgb-hora",
-        "--logs-dir",
-        "logs",
-    ])
+    result = cli_main.main(["model", "run"])
     captured = capsys.readouterr()
 
     assert result == 0

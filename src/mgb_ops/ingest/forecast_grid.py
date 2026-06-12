@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import tempfile
 from dataclasses import dataclass
@@ -9,11 +8,6 @@ from pathlib import Path
 import sys
 
 import numpy as np
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
 
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.paths import relative_to_repo
@@ -392,31 +386,3 @@ def collect_forecast_grids(
             crs="EPSG:4326",
         )
     ]
-
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Download and clip the operational ECMWF grid for RS.")
-    parser.add_argument("--history-db", type=Path, required=True, help="SQLite history database.")
-    parser.add_argument("--reference-time", required=True)
-    parser.add_argument("--interim-dir", type=Path, required=True)
-    parser.add_argument("--logs-dir", type=Path, required=True)
-    args = parser.parse_args()
-
-    reference_time = resolve_reference_time(args.reference_time)
-    summary = ingest_forecast_grids(
-        args.history_db,
-        reference_time=reference_time,
-        interim_dir=args.interim_dir,
-        logs_dir=args.logs_dir,
-    )
-    print(
-        "forecast_grid_ready "
-        f"asset_path={summary.asset_path} "
-        f"valid_from={summary.valid_from.isoformat(timespec='seconds')} "
-        f"valid_to={summary.valid_to.isoformat(timespec='seconds')}"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import sqlite3
 import sys
@@ -11,12 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
+from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import build_mgb_window, read_time_settings_from_parhig
@@ -656,53 +650,3 @@ def prepare_mgb_rainfall(
         used_hourly_normalization=used_hourly_normalization,
         forecast_hours=window.forecast_nt,
     )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Interpolate observed rainfall to MGB minis and write chuvabin.hig.")
-    parser.add_argument("--history-db", type=Path, required=True, help="SQLite history database.")
-    parser.add_argument("--parhig", type=Path, required=True, help="PARHIG.hig file.")
-    parser.add_argument("--mini-gtp", type=Path, required=True, help="MINI.gtp file.")
-    parser.add_argument("--output", type=Path, required=True, help="Binary chuvabin.hig file.")
-    parser.add_argument("--reference-time", required=True)
-    parser.add_argument("--input-days-before", type=int, required=True)
-    parser.add_argument("--forecast-horizon-days", type=int, required=True)
-    parser.add_argument("--use-forecast-data", action="store_true")
-    parser.add_argument("--forecast-asset", type=Path, default=None)
-    parser.add_argument("--nearest-stations", type=int, required=True)
-    parser.add_argument("--power", type=float, required=True)
-    parser.add_argument("--chunk-hours", type=int, default=DEFAULT_CHUNK_HOURS, help="Hours per interpolation/write chunk.")
-    parser.add_argument("--logs-dir", type=Path, default=None)
-    return parser
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    summary = prepare_mgb_rainfall(
-        history_db=args.history_db,
-        parhig_path=args.parhig,
-        mini_gtp_path=args.mini_gtp,
-        output_path=args.output,
-        reference_time=resolve_reference_time(args.reference_time),
-        input_days_before=args.input_days_before,
-        forecast_horizon_days=args.forecast_horizon_days,
-        use_forecast_data=args.use_forecast_data,
-        forecast_asset_path=args.forecast_asset,
-        nearest_stations=args.nearest_stations,
-        power=args.power,
-        chunk_hours=int(args.chunk_hours),
-        logs_dir=args.logs_dir,
-    )
-    print(
-        "chuvabin_ready "
-        f"output={summary.output_path} "
-        f"station_count={summary.station_count} "
-        f"nt={summary.nt} "
-        f"nc={summary.nc} "
-        f"used_hourly_normalization={summary.used_hourly_normalization}"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

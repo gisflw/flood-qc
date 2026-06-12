@@ -1,18 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from mgb_ops.common.time_utils import resolve_reference_time
 
 DEFAULT_DT_SECONDS = 3600
 LOGGER_NAME = "floodqc.model.prepare_mgb_meta"
@@ -228,36 +220,3 @@ def rewrite_mgb_meta(
         input_days_before=input_days_before,
         forecast_horizon_days=forecast_horizon_days,
     )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Rewrite PARHIG.hig timing metadata.")
-    parser.add_argument("--parhig", type=Path, required=True, help="PARHIG.hig file to rewrite.")
-    parser.add_argument("--reference-time", required=True, help="Reference time for the MGB window.")
-    parser.add_argument("--input-days-before", type=int, required=True)
-    parser.add_argument("--forecast-horizon-days", type=int, required=True)
-    parser.add_argument("--logs-dir", type=Path, default=None)
-    return parser
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    summary = rewrite_mgb_meta(
-        parhig_path=args.parhig,
-        reference_time=resolve_reference_time(args.reference_time),
-        input_days_before=args.input_days_before,
-        forecast_horizon_days=args.forecast_horizon_days,
-        logs_dir=args.logs_dir,
-    )
-    print(
-        "mgb_meta_ready "
-        f"parhig={summary.parhig_path} "
-        f"reference_time={summary.reference_time.isoformat(timespec='seconds')} "
-        f"start_time={summary.start_time.isoformat(timespec='seconds')} "
-        f"nt={summary.nt}"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
