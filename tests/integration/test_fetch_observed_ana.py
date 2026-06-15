@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 
 from mgb_ops.common import time_utils
 from mgb_ops.ingest import fetch_observed_ana
-from mgb_ops.storage.db_bootstrap import initialize_history_db
+from db_helpers import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository, build_observed_series_id
 
 

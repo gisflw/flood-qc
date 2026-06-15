@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Mapping
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -25,6 +26,7 @@ _WORKSPACE_ROOT: Path | None = None
 @dataclass(frozen=True, slots=True)
 class RuntimePaths:
     workspace: Path
+    remote_workspace_root: Path = DEFAULT_REMOTE_WORKSPACE
 
     @property
     def config_dir(self) -> Path:
@@ -74,17 +76,27 @@ class RuntimePaths:
     def mgb_executable_path(self) -> Path:
         return self.mgb_runner_dir / DEFAULT_MGB_EXECUTABLE_NAME
 
-    @property
-    def remote_workspace_root(self) -> Path:
-        return Path(os.getenv(MGB_REMOTE_WORKSPACE_ENV, str(DEFAULT_REMOTE_WORKSPACE)))
+
+def _env_value(values: Mapping[str, str] | None, name: str) -> str:
+    if values is None:
+        return os.getenv(name, "").strip()
+    return str(values.get(name, "")).strip()
 
 
-def resolve_workspace(workspace: str | Path | None = None) -> Path:
+def resolve_workspace(
+    workspace: str | Path | None = None,
+    *,
+    env: Mapping[str, str] | None = None,
+    dotenv_values: Mapping[str, str] | None = None,
+) -> Path:
     if workspace is not None:
         return Path(workspace).expanduser().resolve()
-    env_workspace = os.getenv(MGB_OPS_WORKSPACE_ENV, "").strip()
+    env_workspace = _env_value(env, MGB_OPS_WORKSPACE_ENV)
     if env_workspace:
         return Path(env_workspace).expanduser().resolve()
+    dotenv_workspace = _env_value(dotenv_values, MGB_OPS_WORKSPACE_ENV)
+    if dotenv_workspace:
+        return Path(dotenv_workspace).expanduser().resolve()
     return Path.cwd().resolve()
 
 
@@ -104,7 +116,8 @@ def get_workspace() -> Path:
 
 
 def runtime_paths(workspace: str | Path | None = None) -> RuntimePaths:
-    return RuntimePaths(resolve_workspace(workspace) if workspace is not None else get_workspace())
+    remote_workspace = Path(os.getenv(MGB_REMOTE_WORKSPACE_ENV, str(DEFAULT_REMOTE_WORKSPACE)))
+    return RuntimePaths(resolve_workspace(workspace) if workspace is not None else get_workspace(), remote_workspace)
 
 
 def history_db_path(workspace: str | Path | None = None) -> Path:

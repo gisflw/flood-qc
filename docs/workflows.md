@@ -11,7 +11,7 @@ commands remain available as thin wrappers for repeatable local operation.
 
 Library module: `mgb_ops.storage.db_bootstrap`
 
-1. Initialize `<workspace>/data/history.sqlite`.
+1. Initialize an explicitly supplied history SQLite path with an explicitly supplied schema path.
 2. Load the station inventory into `station`.
 3. Ensure the basic `provider` and `variable` catalogs.
 
@@ -42,7 +42,7 @@ mgb-ops --workspace examples/rs_hydro ingest ana
 Library module: `mgb_ops.ingest.fetch_observed_inmet`
 
 1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
-2. Read the local key from `INMET_API_KEY` or `.env`.
+2. In CLI/dashboard convenience flows, resolve the local key from explicit input, process `INMET_API_KEY`, or `<workspace>/.env`; pass `api_key` explicitly to the domain function.
 3. Query the operational rainfall API by station and day.
 4. Save raw payloads in `<workspace>/data/interim/inmet/`.
 5. Persist rainfall in `observed_series` and `observed_value`.
@@ -61,7 +61,7 @@ Library module: `mgb_ops.ingest.forecast_grid`
 1. Resolve the cycle from `reference_time`.
 2. Download the ECMWF GRIB.
 3. Clip the grid to the operational bounding box.
-4. Register the canonical asset in `<workspace>/data/history.sqlite`.
+4. Register the canonical asset in the explicitly supplied history database, using an explicitly supplied asset base directory for relative paths.
 5. Register logs in `logs/forecast_grid/`.
 
 CLI wrapper:

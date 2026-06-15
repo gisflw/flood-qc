@@ -54,6 +54,7 @@ def build_plan(monkeypatch, tmp_path: Path):
         input_dir=local_input_dir,
         output_dir=local_output_dir,
         workspace_root=workspace_root,
+        asset_base_dir=tmp_path,
     )
 
 
@@ -67,6 +68,7 @@ def test_prepare_mgb_execution_uses_fixed_paths(monkeypatch, tmp_path) -> None:
         input_dir=local_input_dir,
         output_dir=local_output_dir,
         workspace_root=workspace_root,
+        asset_base_dir=tmp_path,
     )
 
     assert plan.command == [str(executable_path)]
@@ -185,6 +187,7 @@ def test_model_run_cli_prints_summary_without_running_real_exe(monkeypatch, tmp_
             "local_input_dir": "mgb_runner/Input",
             "local_output_dir": "mgb_runner/Output",
             "remote_output_dir": "C:/mgb-hora/Output",
+            "asset_base_dir": str(tmp_path),
             "status": "success",
             "log_path": "logs/mgb_execution/20260325T120000.log",
         },
@@ -199,12 +202,13 @@ def test_model_run_cli_prints_summary_without_running_real_exe(monkeypatch, tmp_
         logs_dir=Path("logs"),
     )
 
-    def fake_prepare(metadata, *, executable_path, input_dir, output_dir, workspace_root):
+    def fake_prepare(metadata, *, executable_path, input_dir, output_dir, workspace_root, asset_base_dir):
         assert metadata.run_id == "20260325T120000"
         assert executable_path == "fake.exe"
         assert str(input_dir) == "mgb_runner/Input"
         assert str(output_dir) == "mgb_runner/Output"
         assert str(workspace_root) == "C:/mgb-hora"
+        assert str(asset_base_dir) == str(tmp_path)
         return plan
 
     def fake_execute(received_plan, *, dry_run=False, logs_dir=None):
@@ -217,7 +221,7 @@ def test_model_run_cli_prints_summary_without_running_real_exe(monkeypatch, tmp_
             asset_refs=["mgb_runner/Output/QTUDO01.MGB"],
         )
 
-    monkeypatch.setattr(cli_main, "runtime_paths", lambda workspace=None: paths)
+    monkeypatch.setattr(cli_main, "build_runtime_context", lambda **kwargs: SimpleNamespace(paths=paths, settings={}, env=SimpleNamespace()))
     monkeypatch.setattr(cli_main, "set_workspace", lambda workspace=None: tmp_path)
     monkeypatch.setattr(run_mgb, "build_run_id", lambda: "20260325T120000")
     monkeypatch.setattr(mgb_execution, "prepare_mgb_execution", fake_prepare)

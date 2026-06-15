@@ -7,20 +7,13 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
-TEST_INVENTORY_CSV = REPO_ROOT / "tests" / "fixtures" / "history_station_inventory.csv"
+TEST_DIR = REPO_ROOT / "tests"
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
-
-
-@pytest.fixture(autouse=True)
-def use_test_history_station_inventory(monkeypatch):
-    from mgb_ops.storage import db_bootstrap
-
-    monkeypatch.setattr(
-        db_bootstrap,
-        "history_station_inventory_csv_path",
-        lambda: TEST_INVENTORY_CSV,
-    )
+if str(TEST_DIR) not in sys.path:
+    sys.path.insert(0, str(TEST_DIR))
 
 
 @pytest.fixture(autouse=True)

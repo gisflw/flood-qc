@@ -8,7 +8,6 @@ from datetime import datetime
 from pathlib import Path
 
 from mgb_ops.common.models import CommandPlan, ModelOutput, RunMetadata
-from mgb_ops.common.paths import relative_to_repo
 
 LOGGER_NAME = "floodqc.model.mgb_execution"
 
@@ -84,11 +83,20 @@ def _directory_has_files(path: Path) -> bool:
     return any(candidate.is_file() for candidate in path.rglob("*"))
 
 
-def _collect_output_asset_refs(output_dir: Path) -> list[str]:
+def _relative_asset_ref(path: Path, *, asset_base_dir: Path) -> str:
+    resolved_path = Path(path).resolve()
+    resolved_base = Path(asset_base_dir).resolve()
+    try:
+        return resolved_path.relative_to(resolved_base).as_posix()
+    except ValueError:
+        return Path(path).as_posix()
+
+
+def _collect_output_asset_refs(output_dir: Path, *, asset_base_dir: Path) -> list[str]:
     asset_refs: list[str] = []
     for candidate in sorted(output_dir.rglob("*")):
         if candidate.is_file():
-            asset_refs.append(relative_to_repo(candidate))
+            asset_refs.append(_relative_asset_ref(candidate, asset_base_dir=asset_base_dir))
     return asset_refs
 
 
@@ -117,7 +125,7 @@ def _copy_output_back(plan: CommandPlan, logger: logging.Logger) -> list[str]:
 
     _clear_directory_contents(local_output_dir)
     _copy_directory_contents(remote_output_dir, local_output_dir)
-    asset_refs = _collect_output_asset_refs(local_output_dir)
+    asset_refs = _collect_output_asset_refs(local_output_dir, asset_base_dir=Path(plan.metadata["asset_base_dir"]))
     logger.info(
         "mgb_output_copied remote_output=%s local_output=%s files=%s",
         remote_output_dir,
@@ -140,6 +148,7 @@ def prepare_mgb_execution(
     input_dir: str | Path,
     output_dir: str | Path,
     workspace_root: str | Path,
+    asset_base_dir: str | Path,
     workdir: str | None = None,
 ) -> CommandPlan:
     """Prepare the real MGB execution plan on Windows."""
@@ -149,6 +158,7 @@ def prepare_mgb_execution(
     local_input_dir = Path(input_dir)
     local_output_dir = Path(output_dir)
     remote_workspace_root = Path(workspace_root)
+    asset_base_path = Path(asset_base_dir)
     remote_input_dir = remote_workspace_root / "Input"
     remote_output_dir = remote_workspace_root / "Output"
 
@@ -167,6 +177,7 @@ def prepare_mgb_execution(
             "local_output_dir": str(local_output_dir),
             "remote_input_dir": str(remote_input_dir),
             "remote_output_dir": str(remote_output_dir),
+            "asset_base_dir": str(asset_base_path),
         },
     )
 

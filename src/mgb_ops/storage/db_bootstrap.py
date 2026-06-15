@@ -6,13 +6,6 @@ import unicodedata
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
-from mgb_ops.common.paths import (
-    SQL_DIR,
-    build_run_db_path,
-    history_station_inventory_csv_path,
-)
-
-
 PROVIDER_UID_BASES = {
     "ana": 1_000_000_000,
     "inmet": 2_000_000_000,
@@ -84,20 +77,9 @@ def build_station_uid(provider_code: str, station_code: str) -> int:
 
 def load_history_station_inventory(
     database_path: Path,
-    inventory_csv_path: Path | None = None,
+    inventory_csv_path: Path,
 ) -> int:
-    inventory_path = inventory_csv_path or history_station_inventory_csv_path()
-    if inventory_csv_path is None and not inventory_path.exists():
-        development_inventory_path = (
-            Path(__file__).resolve().parents[3]
-            / "examples"
-            / "rs_hydro"
-            / "data"
-            / "interim"
-            / "history_station_inventory.csv"
-        )
-        if development_inventory_path.exists():
-            inventory_path = development_inventory_path
+    inventory_path = Path(inventory_csv_path)
     if not inventory_path.exists():
         raise FileNotFoundError(f"Inventory CSV not found: {inventory_path}")
 
@@ -178,17 +160,18 @@ def load_history_station_inventory(
 
 def initialize_history_db(
     database_path: Path,
-    inventory_csv_path: Path | None = None,
+    inventory_csv_path: Path,
+    schema_path: Path,
 ) -> Path:
-    target = database_path
-    apply_schema(target, SQL_DIR / "history_schema.sql")
+    target = Path(database_path)
+    apply_schema(target, Path(schema_path))
     load_history_station_inventory(target, inventory_csv_path)
     return target
 
 
-def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
-    target = database_path or build_run_db_path(run_id)
-    apply_schema(target, SQL_DIR / "run_schema.sql")
+def initialize_run_db(run_id: str, database_path: Path, schema_path: Path) -> Path:
+    target = Path(database_path)
+    apply_schema(target, Path(schema_path))
     with sqlite3.connect(target) as connection:
         connection.execute(
             "INSERT OR IGNORE INTO run (run_id, reference_time, run_kind, status, parent_run_id, operator, note) "

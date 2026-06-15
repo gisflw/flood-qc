@@ -8,6 +8,16 @@ import pytest
 from mgb_ops.storage.db_bootstrap import initialize_history_db, initialize_run_db
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+SQL_DIR = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql"
+TEST_INVENTORY_CSV = REPO_ROOT / "tests" / "fixtures" / "history_station_inventory.csv"
+
+
+def _init_history(database_path: Path) -> Path:
+    return initialize_history_db(database_path, TEST_INVENTORY_CSV, SQL_DIR / "history_schema.sql")
+
+
+def _init_run(run_id: str, database_path: Path) -> Path:
+    return initialize_run_db(run_id, database_path, SQL_DIR / "run_schema.sql")
 
 
 def _list_tables(database_path) -> set[str]:
@@ -32,7 +42,7 @@ def _list_triggers(database_path) -> set[str]:
 
 def test_initialize_history_db(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
-    initialize_history_db(db_path)
+    _init_history(db_path)
     tables = _list_tables(db_path)
     assert {
         "provider",
@@ -103,7 +113,7 @@ def test_initialize_history_db(tmp_path) -> None:
 
 def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
-    initialize_history_db(db_path)
+    _init_history(db_path)
 
     with sqlite3.connect(db_path) as connection:
         connection.execute(
@@ -149,7 +159,7 @@ def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
 
 def test_history_station_inventory_csv_loads(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
-    initialize_history_db(db_path)
+    _init_history(db_path)
 
     with sqlite3.connect(db_path) as connection:
         total = connection.execute("SELECT COUNT(*) FROM station").fetchone()[0]
@@ -206,7 +216,7 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
 
 def test_initialize_run_db(tmp_path) -> None:
     db_path = tmp_path / "20260310T120000.sqlite"
-    initialize_run_db("20260310T120000", db_path)
+    _init_run("20260310T120000", db_path)
     tables = _list_tables(db_path)
     assert {
         "run",

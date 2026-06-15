@@ -9,11 +9,13 @@ from pathlib import Path
 
 from mgb_ops.common.paths import (
     SQL_DIR,
+    build_run_db_path,
     ensure_standard_dirs,
+    history_station_inventory_csv_path,
     runtime_paths,
     set_workspace,
 )
-from mgb_ops.common.settings import load_settings
+from mgb_ops.common.runtime import build_runtime_context, resolve_workspace_from_runtime_env
 from mgb_ops.common.time_utils import resolve_reference_time
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
@@ -27,34 +29,43 @@ def _print_json(value: object) -> None:
     print(json.dumps(value, indent=2, default=str))
 
 
+def _context(args: argparse.Namespace, *, remote_workspace: Path | None = None):
+    return build_runtime_context(workspace=args.workspace, remote_workspace=remote_workspace, require_custom_settings=False)
+
+
 def _settings(args: argparse.Namespace) -> dict[str, object]:
-    return load_settings(workspace=args.workspace, require_custom=False)
+    return _context(args).settings
 
 
 def cmd_bootstrap_history(args: argparse.Namespace) -> int:
     from mgb_ops.storage.db_bootstrap import initialize_history_db
 
-    paths = runtime_paths(args.workspace)
-    ensure_standard_dirs(args.workspace)
+    ctx = _context(args)
+    paths = ctx.paths
+    ensure_standard_dirs(paths.workspace)
     target = args.history_path or paths.history_db
-    inventory = args.inventory_csv or paths.interim_dir / "history_station_inventory.csv"
-    print(initialize_history_db(target, inventory))
+    inventory = args.inventory_csv or history_station_inventory_csv_path(paths.workspace)
+    print(initialize_history_db(target, inventory, SQL_DIR / "history_schema.sql"))
     return 0
 
 
 def cmd_bootstrap_run(args: argparse.Namespace) -> int:
     from mgb_ops.storage.db_bootstrap import initialize_run_db
 
-    ensure_standard_dirs(args.workspace)
-    print(initialize_run_db(args.run_id, args.run_path))
+    ctx = _context(args)
+    paths = ctx.paths
+    ensure_standard_dirs(paths.workspace)
+    target = args.run_path or build_run_db_path(args.run_id, paths.workspace)
+    print(initialize_run_db(args.run_id, target, SQL_DIR / "run_schema.sql"))
     return 0
 
 
 def cmd_ingest_ana(args: argparse.Namespace) -> int:
     from mgb_ops.ingest.fetch_observed_ana import ingest_observed_ana
 
-    paths = runtime_paths(args.workspace)
-    settings = _settings(args)
+    ctx = _context(args)
+    paths = ctx.paths
+    settings = ctx.settings
     ingest_settings = settings["ingest"]
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
     summary = ingest_observed_ana(
@@ -72,15 +83,14 @@ def cmd_ingest_ana(args: argparse.Namespace) -> int:
 
 
 def cmd_ingest_inmet(args: argparse.Namespace) -> int:
-    from mgb_ops.ingest.fetch_observed_inmet import INMET_API_KEY_ENV, ingest_observed_inmet
+    from mgb_ops.ingest.fetch_observed_inmet import ingest_observed_inmet
 
-    paths = runtime_paths(args.workspace)
-    settings = _settings(args)
+    ctx = _context(args)
+    paths = ctx.paths
+    settings = ctx.settings
     ingest_settings = settings["ingest"]
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
-    api_key = os.getenv(INMET_API_KEY_ENV, "").strip()
-    if not api_key:
-        raise RuntimeError(f"Missing INMET/BNDMET API key. Set {INMET_API_KEY_ENV} before running ingestion.")
+    api_key = ctx.env.require_inmet_api_key()
     summary = ingest_observed_inmet(
         args.history_db if args.history_db is not None else paths.history_db,
         reference_time=reference_time,
@@ -99,14 +109,16 @@ def cmd_ingest_inmet(args: argparse.Namespace) -> int:
 def cmd_ingest_forecast_grid(args: argparse.Namespace) -> int:
     from mgb_ops.ingest.forecast_grid import ingest_forecast_grids
 
-    paths = runtime_paths(args.workspace)
-    settings = _settings(args)
+    ctx = _context(args)
+    paths = ctx.paths
+    settings = ctx.settings
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
     summary = ingest_forecast_grids(
         args.history_db or paths.history_db,
         reference_time=reference_time,
         interim_dir=paths.interim_dir,
         logs_dir=paths.logs_dir,
+        asset_base_dir=paths.workspace,
     )
     _print_json(summary.__dict__)
     return 0
@@ -115,8 +127,9 @@ def cmd_ingest_forecast_grid(args: argparse.Namespace) -> int:
 def cmd_model_prepare_meta(args: argparse.Namespace) -> int:
     from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
-    paths = runtime_paths(args.workspace)
-    settings = _settings(args)
+    ctx = _context(args)
+    paths = ctx.paths
+    settings = ctx.settings
     mgb_settings = settings["mgb"]
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
     summary = rewrite_mgb_meta(
@@ -138,8 +151,9 @@ def cmd_model_prepare_rainfall(args: argparse.Namespace) -> int:
         prepare_mgb_rainfall,
     )
 
-    paths = runtime_paths(args.workspace)
-    settings = _settings(args)
+    ctx = _context(args)
+    paths = ctx.paths
+    settings = ctx.settings
     mgb_settings = settings["mgb"]
     rainfall_settings = settings["rainfall_interpolation"]
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
@@ -181,14 +195,16 @@ def cmd_model_run(args: argparse.Namespace) -> int:
     from mgb_ops.model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
     from mgb_ops.model.run_mgb import build_run_metadata, build_summary
 
-    paths = runtime_paths(args.workspace)
+    ctx = _context(args, remote_workspace=args.remote_workspace)
+    paths = ctx.paths
     metadata = build_run_metadata()
     plan = prepare_mgb_execution(
         metadata,
         executable_path=str(args.executable or paths.mgb_executable_path),
         input_dir=str(args.input_dir or paths.mgb_input_dir),
         output_dir=str(args.output_dir or paths.mgb_output_dir),
-        workspace_root=str(args.remote_workspace or paths.remote_workspace_root),
+        workspace_root=str(paths.remote_workspace_root),
+        asset_base_dir=str(paths.workspace),
     )
     result = execute_mgb_plan(plan, dry_run=args.dry_run, logs_dir=paths.logs_dir)
     _print_json(build_summary(plan, result, dry_run=args.dry_run))
@@ -198,8 +214,9 @@ def cmd_model_run(args: argparse.Namespace) -> int:
 def cmd_model_export_outputs(args: argparse.Namespace) -> int:
     from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 
-    paths = runtime_paths(args.workspace)
-    settings = _settings(args)
+    ctx = _context(args)
+    paths = ctx.paths
+    settings = ctx.settings
     mgb_settings = settings["mgb"]
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
     summary = export_mgb_outputs(
@@ -222,12 +239,13 @@ def cmd_dashboard(args: argparse.Namespace) -> int:
     app_path = APP_ROOT / "ops_dashboard" / "app.py"
     if not app_path.exists():
         raise RuntimeError(f"Could not locate ops dashboard app at {app_path}.")
-    command = ["streamlit", "run", str(app_path), "--", "--workspace", str(runtime_paths(args.workspace).workspace)]
+    ctx = _context(args)
+    command = ["streamlit", "run", str(app_path), "--", "--workspace", str(ctx.paths.workspace)]
     if not args.launch:
         print(" ".join(command))
         return 0
     env = os.environ.copy()
-    env["MGB_OPS_WORKSPACE"] = str(runtime_paths(args.workspace).workspace)
+    env["MGB_OPS_WORKSPACE"] = str(ctx.paths.workspace)
     return subprocess.call(command, env=env)
 
 
@@ -311,7 +329,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    args.workspace = set_workspace(args.workspace)
+    args.workspace = resolve_workspace_from_runtime_env(workspace=args.workspace)
+    set_workspace(args.workspace)
     return int(args.func(args))
 
 

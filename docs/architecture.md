@@ -27,9 +27,9 @@ These modules should remain usable directly from Python without CLI or UI state:
 - `src/mgb_ops/model/`: preparation of MGB inputs, model execution, and output export;
 - `src/mgb_ops/qc/`: QC and review rules, still incomplete in this phase.
 
-Core library functions should accept explicit paths, databases, settings, and
-times where practical. They should return structured summaries or domain objects
-instead of depending on `argparse`, Streamlit session state, or console output.
+Core domain functions in `storage`, `ingest`, `qc`, and `model` accept explicit paths, databases, settings, schema paths, asset bases, and times. They should return structured summaries or domain objects instead of depending on `argparse`, Streamlit session state, console output, process environment, `.env`, or workspace globals.
+
+`mgb_ops.common` is the only library area that may provide convenience runtime helpers for resolving workspaces, settings, and `.env` values. CLI and dashboard code may use those helpers before calling explicit-input domain functions.
 
 ### Thin Interfaces
 

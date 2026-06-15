@@ -39,8 +39,9 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
         history_db=Path("/tmp/history.sqlite"),
         interim_dir=Path("/tmp/interim"),
         logs_dir=Path("/tmp/logs"),
+        asset_base_dir=Path("/tmp"),
     )
 
     assert len(assets) == 1
     assert assets[0].format == "GRIB2"
-    assert assets[0].relative_path == "/tmp/fc_2026-03-10_00_IFS_rsbuf.grib2"
+    assert assets[0].relative_path == "fc_2026-03-10_00_IFS_rsbuf.grib2"

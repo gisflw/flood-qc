@@ -8,7 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from mgb_ops.ingest import forecast_grid
-from mgb_ops.storage.db_bootstrap import initialize_history_db
+from db_helpers import initialize_history_db
 
 
 class FakeTemporaryDirectory:
@@ -61,6 +61,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
         reference_time=datetime(2026, 3, 11, 23, 0, 0),
         interim_dir=tmp_path / "data" / "interim",
         logs_dir=tmp_path / "logs",
+        asset_base_dir=tmp_path,
     )
 
     assert summary.asset_path.exists()
@@ -79,7 +80,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
         forecast_grid.ECMWF_ASSET_KIND,
         "GRIB2",
         "ecmwf",
-        summary.asset_path.as_posix(),
+        summary.asset_path.relative_to(tmp_path).as_posix(),
         "2026-03-11T03:00:00",
         "2026-03-26T00:00:00",
     )

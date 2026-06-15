@@ -11,10 +11,6 @@ from uuid import uuid4
 
 import numpy as np
 
-from mgb_ops.common.paths import SQL_DIR
-
-
-DEFAULT_SCHEMA_PATH = SQL_DIR / "model_outputs_schema.sql"
 DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 LOGGER_NAME = "floodqc.model.export_mgb_outputs"
@@ -548,7 +544,7 @@ def export_mgb_outputs(
     mini_gtp_path: Path,
     output_dir: Path,
     output_db_path: Path,
-    schema_path: Path = DEFAULT_SCHEMA_PATH,
+    schema_path: Path,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,

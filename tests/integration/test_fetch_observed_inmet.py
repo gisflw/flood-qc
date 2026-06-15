@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 
 from mgb_ops.ingest import fetch_observed_inmet
-from mgb_ops.storage.db_bootstrap import initialize_history_db
+from db_helpers import initialize_history_db
 
 
 SAMPLE_INMET_PAYLOAD = {

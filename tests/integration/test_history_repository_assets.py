@@ -4,7 +4,7 @@ from datetime import datetime
 
 import pytest
 
-from mgb_ops.storage.db_bootstrap import initialize_history_db
+from db_helpers import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository
 
 

@@ -10,7 +10,6 @@ import sys
 import numpy as np
 
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
-from mgb_ops.common.paths import relative_to_repo
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.storage.history_repository import HistoryRepository
 
@@ -276,6 +275,17 @@ def extract_valid_time_bounds(grib_path: Path) -> tuple[datetime, datetime]:
     return messages[0].valid_time, messages[-1].valid_time
 
 
+
+
+def build_relative_asset_path(path: Path, *, asset_base_dir: Path) -> str:
+    resolved_path = Path(path).resolve()
+    resolved_base = Path(asset_base_dir).resolve()
+    try:
+        return resolved_path.relative_to(resolved_base).as_posix()
+    except ValueError:
+        return Path(path).as_posix()
+
+
 def download_ecmwf_grib_to_path(target_path: Path, *, reference_time: datetime) -> None:
     Client = _require_opendata_client()
     cycle_time = build_ecmwf_cycle(reference_time)
@@ -299,6 +309,7 @@ def ingest_forecast_grids(
     reference_time: datetime,
     interim_dir: Path,
     logs_dir: Path,
+    asset_base_dir: Path,
 ) -> ForecastGridSummary:
     if not Path(database_path).exists():
         raise FileNotFoundError(f"History database not found: {database_path}")
@@ -324,7 +335,7 @@ def ingest_forecast_grids(
         crop_grib_to_bbox(temp_grib_path, target_path, bbox=bbox)
 
     valid_from, valid_to = extract_valid_time_bounds(target_path)
-    relative_path = relative_to_repo(target_path)
+    relative_path = build_relative_asset_path(target_path, asset_base_dir=asset_base_dir)
     metadata = {
         "model": ECMWF_MODEL,
         "product_type": ECMWF_PRODUCT_TYPE,
@@ -369,6 +380,7 @@ def collect_forecast_grids(
     history_db: Path,
     interim_dir: Path,
     logs_dir: Path,
+    asset_base_dir: Path,
 ) -> list[RasterAsset]:
     reference_time = resolve_reference_time(run.reference_time)
     summary = ingest_forecast_grids(
@@ -376,11 +388,12 @@ def collect_forecast_grids(
         reference_time=reference_time,
         interim_dir=interim_dir,
         logs_dir=logs_dir,
+        asset_base_dir=asset_base_dir,
     )
     return [
         RasterAsset(
             name=summary.asset_id,
-            relative_path=relative_to_repo(summary.asset_path),
+            relative_path=build_relative_asset_path(summary.asset_path, asset_base_dir=asset_base_dir),
             format="GRIB2",
             state=DataState.RAW,
             crs="EPSG:4326",

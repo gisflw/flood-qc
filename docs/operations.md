@@ -9,7 +9,8 @@ report results.
 
 1. Create a virtual environment with `Python 3.11+`.
 2. Install dependencies with `pip install -e .[dev,data,geo,ui]`.
-3. Use `<workspace>/config/custom.yaml` for optional regional overrides.
+3. Use `<workspace>/config/custom.yaml` for optional regional settings overrides.
+4. Use `<workspace>/.env` only for runtime convenience values consumed by `mgb_ops.common`, the CLI, or the dashboard.
 
 Typical Linux/macOS setup:
 
@@ -29,19 +30,17 @@ pip install -e .[dev,data,geo,ui]
 
 ## Operational Configuration
 
-The runtime reads:
+Common runtime helpers read:
 
 - module-owned in-code defaults;
-- `<workspace>/config/custom.yaml` when present.
+- `<workspace>/config/custom.yaml` when present;
+- `<workspace>/.env` for runtime convenience values such as `INMET_API_KEY` and `MGB_OPS_REMOTE_WORKSPACE`.
 
-The regional workspace is provided through explicit Python arguments,
-`mgb-ops --workspace PATH`, `MGB_OPS_WORKSPACE`, or the current directory. Each
-workspace must contain `data/`, `logs/`, and `mgb_runner/`. The possible
-migration to `.toml` remains under evaluation.
+Precedence is explicit Python/CLI arguments first, process environment second, `.env` third, and defaults last. `.env` loading is intentionally limited to `mgb_ops.common`, the CLI, and the dashboard. Domain modules under `storage`, `ingest`, `qc`, and `model` require explicit inputs and must not inspect process environment or workspace state.
 
-For library calls, prefer passing explicit `Path` values for the workspace,
-history database, MGB input/output files, interim directories, and log
-directories whenever the function supports them.
+The regional workspace is provided through explicit Python arguments, `mgb-ops --workspace PATH`, `MGB_OPS_WORKSPACE`, workspace `.env`, or the current directory. Each workspace must contain `data/`, `logs/`, and `mgb_runner/`. The possible migration to `.toml` remains under evaluation.
+
+For core library calls, pass explicit `Path` values for database paths, schema paths, station inventory CSVs, MGB input/output files, asset base directories, interim directories, and log directories.
 
 ## Python-First Operation
 
@@ -51,16 +50,21 @@ library function directly. For example:
 ```python
 from pathlib import Path
 
-from mgb_ops.common.paths import runtime_paths
-from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta_from_config
+from mgb_ops.common.runtime import build_runtime_context
+from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
-workspace = Path("examples/rs_hydro")
-paths = runtime_paths(workspace)
+context = build_runtime_context(workspace=Path("scratch/rs_hydro"))
+paths = context.paths
+settings = context.settings
+mgb_settings = settings["mgb"]
 
-summary = rewrite_mgb_meta_from_config(
+summary = rewrite_mgb_meta(
     parhig_path=paths.mgb_input_dir / "PARHIG.hig",
+    reference_time=resolve_reference_time(settings["run"]["reference_time"]),
+    input_days_before=int(mgb_settings["input_days_before"]),
+    forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     logs_dir=paths.logs_dir,
-    workspace=workspace,
 )
 ```
 
@@ -83,8 +87,7 @@ mgb-ops --workspace examples/rs_hydro model export-outputs
 mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-`mgb-ops ingest inmet` requires `INMET_API_KEY` in the local environment or in
-`.env`.
+`mgb-ops ingest inmet` requires `INMET_API_KEY` in the process environment or in `<workspace>/.env`.
 
 ## Naming Conventions
 

@@ -9,7 +9,7 @@ from pathlib import Path
 
 import requests
 
-from mgb_ops.common.time_utils import TIMEZONE
+from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.storage.history_repository import HistoryRepository
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"

@@ -26,22 +26,34 @@ except ModuleNotFoundError as exc:
         "pip install streamlit plotly folium streamlit-folium branca rasterio"
     ) from exc
 
-from mgb_ops.common.paths import history_db_path, runtime_paths, set_workspace
-from mgb_ops.common.settings import load_settings
+from mgb_ops.common.paths import runtime_paths, set_workspace
+from mgb_ops.common.runtime import build_runtime_context, resolve_workspace_from_runtime_env
 from mgb_ops.common.time_utils import resolve_reference_time
 
 
 def _configure_workspace_from_argv(argv: list[str]) -> None:
     if "--workspace" not in argv:
-        set_workspace(None)
+        set_workspace(resolve_workspace_from_runtime_env())
         return
     idx = argv.index("--workspace")
     if idx + 1 >= len(argv):
         raise SystemExit("--workspace requires a path")
-    set_workspace(argv[idx + 1])
+    set_workspace(resolve_workspace_from_runtime_env(workspace=argv[idx + 1]))
 
 
 _configure_workspace_from_argv(sys.argv[1:])
+
+
+def _runtime_context():
+    return build_runtime_context(workspace=runtime_paths().workspace, require_custom_settings=False)
+
+
+def _runtime_paths():
+    return _runtime_context().paths
+
+
+def _history_db_path() -> Path:
+    return _runtime_paths().history_db
 
 from mgb_ops.storage.history_repository import HistoryRepository
 from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
@@ -81,12 +93,12 @@ st.set_page_config(
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def get_station_catalog(days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_station_catalog(history_db_path(), days=days)
+    return ops_dashboard_data.load_station_catalog(_history_db_path(), days=days)
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
 def get_observed_series(station_uid: int, days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_observed_series(station_uid=station_uid, database_path=history_db_path(), days=days)
+    return ops_dashboard_data.load_observed_series(station_uid=station_uid, database_path=_history_db_path(), days=days)
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
@@ -96,8 +108,9 @@ def get_model_variables() -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=256)
 def get_mgb_series(mini_id: int, variable_code: str, days_window: int) -> pd.DataFrame:
-    paths = runtime_paths()
-    settings = load_settings(workspace=paths.workspace, require_custom=False)
+    context = _runtime_context()
+    paths = context.paths
+    settings = context.settings
     return ops_dashboard_data.load_mgb_series(
         mini_id=mini_id,
         variable_code=variable_code,
@@ -111,12 +124,12 @@ def get_mgb_series(mini_id: int, variable_code: str, days_window: int) -> pd.Dat
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def get_accumulation_rasters() -> list[dict[str, object]]:
-    return ops_dashboard_data.list_accumulation_rasters(runtime_paths().interim_dir)
+    return ops_dashboard_data.list_accumulation_rasters(_runtime_paths().interim_dir)
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def get_rivers_geojson() -> dict | None:
-    return ops_dashboard_data.load_rivers_layer_geojson(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
+    return ops_dashboard_data.load_rivers_layer_geojson(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
@@ -131,7 +144,7 @@ def get_forecast_steps(asset_id: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=64)
 def get_saved_forecast_edits(asset_id: str) -> pd.DataFrame:
-    with HistoryRepository(history_db_path()) as repository:
+    with HistoryRepository(_history_db_path()) as repository:
         rows = repository.list_forecast_manual_edits(asset_id)
     if not rows:
         return pd.DataFrame(columns=FORECAST_EDIT_COLUMNS)
@@ -188,9 +201,9 @@ def get_map_artifacts(
     opacity: float,
 ) -> map_component.MapRenderArtifacts:
     del map_cache_key
-    stations_df = ops_dashboard_data.load_station_catalog(history_db_path(), days=DAYS_WINDOW)
-    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
-    raster_catalog = {str(item["name"]): item for item in ops_dashboard_data.list_accumulation_rasters(runtime_paths().interim_dir)}
+    stations_df = ops_dashboard_data.load_station_catalog(_history_db_path(), days=DAYS_WINDOW)
+    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
+    raster_catalog = {str(item["name"]): item for item in ops_dashboard_data.list_accumulation_rasters(_runtime_paths().interim_dir)}
     base_map = ops_dashboard_map.build_ops_map(
         selected_layer_name,
         opacity,
@@ -744,8 +757,8 @@ def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) ->
     return ops_dashboard_map.build_map_cache_key(
         selected_layer_name=selected_layer_name,
         opacity=opacity,
-        history_version=ops_dashboard_map.build_file_version(history_db_path()),
-        rivers_version=ops_dashboard_map.build_file_version(runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson"),
+        history_version=ops_dashboard_map.build_file_version(_history_db_path()),
+        rivers_version=ops_dashboard_map.build_file_version(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson"),
         raster_version=raster_version,
         station_uid=st.session_state.get("station_uid"),
         mini_id=st.session_state.get("mini_id"),
@@ -1057,7 +1070,7 @@ def render_forecast_corrections_fragment(
     if save_clicked:
         try:
             rows_to_persist = validate_forecast_edit_draft(selected_asset_id, edited_draft)
-            with HistoryRepository(history_db_path()) as repository:
+            with HistoryRepository(_history_db_path()) as repository:
                 persisted_rows = repository.replace_forecast_manual_edits(selected_asset_id, rows_to_persist)
             clear_saved_forecast_edits_cache(selected_asset_id)
             st.session_state["forecast_edit_draft"] = normalize_forecast_edit_frame(pd.DataFrame(persisted_rows))
@@ -1266,7 +1279,7 @@ def render_forecast_tab() -> None:
 def main() -> None:
     initialize_session_state()
 
-    history_path = history_db_path()
+    history_path = _history_db_path()
     if not history_path.exists():
         st.error(f"History database not found: {history_path}")
         st.info("Set MGB_OPS_WORKSPACE or run the dashboard with `-- --workspace <workspace>`.")
