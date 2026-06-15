@@ -87,13 +87,15 @@ mgb-ops --workspace examples/rs_hydro model export-outputs
 mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-`mgb-ops ingest inmet` requires `INMET_API_KEY` in the process environment or in `<workspace>/.env`.
+`mgb-ops ingest inmet` requires `INMET_API_KEY` in the process environment or in `<workspace>/.env`. It accepts `--product-code`, defaulting to the library default `I175`.
 
 ## Naming Conventions
 
 - `run_id`: preferably `YYYYMMDDTHHMMSS`
 - `history.sqlite`: single history database
 - `<workspace>/data/runs/<run_id>.sqlite`: one file per run
+- `station_id`: canonical `{provider_code}:{normalized_station_code}`, for example `ana:74100000` or `inmet:A801`
+- normalized observed CSVs: `station_id,provider_code,station_code,observed_at,variable_code,value,state`
 - external assets with relative paths whenever possible
 
 ## Maturity States

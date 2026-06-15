@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS variable (
 );
 
 CREATE TABLE IF NOT EXISTS station (
-    station_uid INTEGER PRIMARY KEY,
+    station_id TEXT PRIMARY KEY,
     station_code TEXT NOT NULL,
     station_name TEXT NOT NULL,
     provider_code TEXT NOT NULL REFERENCES provider(provider_code),
@@ -44,11 +44,11 @@ CREATE TABLE IF NOT EXISTS asset (
 
 CREATE TABLE IF NOT EXISTS observed_series (
     series_id TEXT PRIMARY KEY,
-    station_uid INTEGER NOT NULL REFERENCES station(station_uid) ON DELETE CASCADE,
+    station_id TEXT NOT NULL REFERENCES station(station_id) ON DELETE CASCADE,
     variable_code TEXT NOT NULL REFERENCES variable(variable_code),
     state TEXT NOT NULL DEFAULT 'raw' CHECK (state IN ('raw', 'curated', 'approved')),
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE (station_uid, variable_code, state)
+    UNIQUE (station_id, variable_code, state)
 );
 
 CREATE TABLE IF NOT EXISTS observed_value (
@@ -125,7 +125,7 @@ CREATE TABLE IF NOT EXISTS run_catalog (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE INDEX IF NOT EXISTS idx_observed_series_station_var ON observed_series(station_uid, variable_code);
+CREATE INDEX IF NOT EXISTS idx_observed_series_station_var ON observed_series(station_id, variable_code);
 CREATE INDEX IF NOT EXISTS idx_observed_value_observed_at ON observed_value(observed_at);
 CREATE INDEX IF NOT EXISTS idx_qc_flag_scope ON qc_flag(scope_type, scope_key);
 CREATE INDEX IF NOT EXISTS idx_manual_edit_asset_step ON manual_edit(asset_id, t0_step, t1_step, created_at);

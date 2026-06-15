@@ -46,6 +46,39 @@ def test_history_repository_upserts_and_finds_ecmwf_asset(tmp_path) -> None:
     assert listed[0]["asset_id"] == "ecmwf.ifs.fc.20260311T000000Z.rsbuf"
 
 
+def test_history_repository_lists_and_finds_generic_non_ecmwf_asset(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+
+    with HistoryRepository(db_path) as repository:
+        repository.connection.execute(
+            "INSERT INTO provider (provider_code, provider_name, provider_type) VALUES (?, ?, ?)",
+            ("gfs", "Global Forecast System", "forecast"),
+        )
+        repository.connection.commit()
+        repository.upsert_asset(
+            asset_id="gfs.test.fc.20260311T000000Z.rsbuf",
+            asset_kind="forecast_grib_rs_buffered",
+            format="GRIB2",
+            relative_path="data/interim/gfs/fc_2026-03-11_00_GFS_rsbuf.grib2",
+            provider_code="gfs",
+            valid_from="2026-03-11T03:00:00",
+            valid_to="2026-03-12T00:00:00",
+            metadata={"cycle_time": "2026-03-11T00:00:00Z"},
+        )
+
+        listed = repository.list_assets(provider_code="gfs", asset_kind="forecast_grib_rs_buffered")
+        found = repository.find_latest_asset(
+            datetime(2026, 3, 11, 12, 0, 0),
+            provider_code="gfs",
+            asset_kind="forecast_grib_rs_buffered",
+        )
+
+    assert [asset["asset_id"] for asset in listed] == ["gfs.test.fc.20260311T000000Z.rsbuf"]
+    assert found is not None
+    assert found["provider_code"] == "gfs"
+
+
 def test_history_repository_replaces_forecast_manual_edits(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)

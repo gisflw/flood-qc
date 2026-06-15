@@ -29,15 +29,15 @@ Catalog of canonical variables. In this phase, the history database works with:
 
 ### `station`
 
-Unified operational station registry. The logical identity remains `provider_code + station_code`.
+Unified operational station registry. The primary identity is `station_id`, a canonical string in the form `{provider_code}:{normalized_station_code}`. Examples include `ana:74100000` and `inmet:A801`.
 
-The initial inventory comes from `<workspace>/data/interim/history_station_inventory.csv`. Bootstrap computes `station_uid` by provider, including alphanumeric INMET codes.
+`provider_code` and `station_code` remain separate searchable columns, with duplicate detection on the provider-local code pair as well as the canonical `station_id`. The initial inventory comes from `<workspace>/data/interim/history_station_inventory.csv`, and bootstrap derives `station_id` from the normalized provider and station code.
 
 ### `observed_series`
 
 Defines an observed series by combination of:
 
-- `station_uid`
+- `station_id`
 - `variable_code`
 - `state`
 
@@ -51,11 +51,21 @@ In the repository's current state, the history database in active use is still m
 
 ### `observed_value`
 
-Long-format time table, with one value per `series_id + observed_at`.
+Long-format time table, with one value per `series_id + observed_at`. Observed provider fetchers write normalized CSV artifacts first, then the shared importer persists rows into `observed_series` and `observed_value`.
+
+The normalized observed CSV columns are:
+
+- `station_id`
+- `provider_code`
+- `station_code`
+- `observed_at`
+- `variable_code`
+- `value`
+- `state`
 
 ### `asset`
 
-Generic registry of external files. It is already used operationally for ECMWF assets.
+Generic registry of external files. Forecast-grid assets are registered by `provider_code` and `asset_kind`; ECMWF remains the default forecast product configuration.
 
 ### `qc_flag`
 

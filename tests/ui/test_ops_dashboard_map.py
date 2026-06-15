@@ -10,7 +10,7 @@ def test_build_map_cache_key_ignores_series_selection() -> None:
         history_version="history:v1",
         rivers_version="rivers:v1",
         raster_version="raster:v1",
-        station_uid=1001,
+        station_id=1001,
         mini_id=10,
     )
     key_b = ops_dashboard_map.build_map_cache_key(
@@ -19,7 +19,7 @@ def test_build_map_cache_key_ignores_series_selection() -> None:
         history_version="history:v1",
         rivers_version="rivers:v1",
         raster_version="raster:v1",
-        station_uid=2002,
+        station_id=2002,
         mini_id=20,
     )
 
@@ -60,12 +60,12 @@ def test_parse_click_token_recognizes_station_and_mini() -> None:
 
 
 def test_update_selection_from_click_token_updates_only_changed_values() -> None:
-    session_state: dict[str, object] = {"station_uid": 1001, "mini_id": 10}
+    session_state: dict[str, object] = {"station_id": "1001", "mini_id": 10}
 
     changed = ops_dashboard_map.update_selection_from_click_token("POSTO|1001", session_state)
     assert changed is False
-    assert session_state == {"station_uid": 1001, "mini_id": 10}
+    assert session_state == {"station_id": "1001", "mini_id": 10}
 
     changed = ops_dashboard_map.update_selection_from_click_token("MINI|20", session_state)
     assert changed is True
-    assert session_state == {"station_uid": 1001, "mini_id": 20}
+    assert session_state == {"station_id": "1001", "mini_id": 20}

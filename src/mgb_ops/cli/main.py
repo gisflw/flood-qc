@@ -18,8 +18,8 @@ from mgb_ops.common.paths import (
 from mgb_ops.common.runtime import build_runtime_context, resolve_workspace_from_runtime_env
 from mgb_ops.common.time_utils import resolve_reference_time
 
-DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
-DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
+from mgb_ops.ingest.fetch_observed_ana import DEFAULT_ANA_BASE_URL
+from mgb_ops.ingest.fetch_observed_inmet import DEFAULT_INMET_BASE_URL, DEFAULT_INMET_RAIN_PRODUCT
 RAINFALL_DEFAULT_CHUNK_HOURS = 720
 EXPORT_DEFAULT_CHUNK_HOURS = 720
 APP_ROOT = Path(__file__).resolve().parents[3] / "apps"
@@ -101,6 +101,7 @@ def cmd_ingest_inmet(args: argparse.Namespace) -> int:
         interim_dir=paths.interim_dir,
         logs_dir=paths.logs_dir,
         base_url=args.base_url,
+        product_code=args.product_code,
     )
     _print_json(summary)
     return 0
@@ -285,8 +286,9 @@ def build_parser() -> argparse.ArgumentParser:
     inmet.add_argument("--request-days", type=int, default=None)
     inmet.add_argument("--timeout-seconds", type=float, default=None)
     inmet.add_argument("--station-code", action="append", default=None)
+    inmet.add_argument("--product-code", default=DEFAULT_INMET_RAIN_PRODUCT)
     inmet.set_defaults(func=cmd_ingest_inmet)
-    forecast = ingest_sub.add_parser("forecast-grid", help="Ingest ECMWF forecast grids.")
+    forecast = ingest_sub.add_parser("forecast-grid", help="Ingest forecast grids using the configured provider defaults.")
     forecast.add_argument("--history-db", type=Path, default=None)
     forecast.set_defaults(func=cmd_ingest_forecast_grid)
 

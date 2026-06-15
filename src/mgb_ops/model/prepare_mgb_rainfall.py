@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from mgb_ops.common.time_utils import TIMEZONE
-from mgb_ops.ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
+from mgb_ops.ingest.forecast_grid import ECMWF_FORECAST_PRODUCT, TpGribMessage, read_tp_grib_messages
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import build_mgb_window, read_time_settings_from_parhig
 
@@ -79,8 +79,8 @@ def _select_preferred_series_rows(series_df: pd.DataFrame) -> pd.DataFrame:
     ranked = series_df.copy()
     ranked["state_rank"] = ranked["state"].map(STATE_PRIORITY).fillna(len(STATE_PRIORITY)).astype(int)
     ranked["created_at"] = ranked["created_at"].fillna("")
-    ranked = ranked.sort_values(["station_uid", "state_rank", "created_at"], ascending=[True, True, False])
-    preferred = ranked.drop_duplicates(subset=["station_uid"], keep="first")
+    ranked = ranked.sort_values(["station_id", "state_rank", "created_at"], ascending=[True, True, False])
+    preferred = ranked.drop_duplicates(subset=["station_id"], keep="first")
     return preferred.drop(columns=["state_rank"], errors="ignore").reset_index(drop=True)
 
 
@@ -89,13 +89,13 @@ def load_preferred_rain_stations(connection: sqlite3.Connection) -> pd.DataFrame
         """
         SELECT
             os.series_id,
-            os.station_uid,
+            os.station_id,
             os.state,
             os.created_at,
             st.latitude AS lat,
             st.longitude AS lon
         FROM observed_series os
-        JOIN station st ON st.station_uid = os.station_uid
+        JOIN station st ON st.station_id = os.station_id
         WHERE os.variable_code = 'rain'
           AND st.latitude IS NOT NULL
           AND st.longitude IS NOT NULL
@@ -105,7 +105,7 @@ def load_preferred_rain_stations(connection: sqlite3.Connection) -> pd.DataFrame
     preferred = _select_preferred_series_rows(series)
     preferred["lat"] = pd.to_numeric(preferred["lat"], errors="coerce")
     preferred["lon"] = pd.to_numeric(preferred["lon"], errors="coerce")
-    return preferred.dropna(subset=["lat", "lon"]).sort_values("station_uid").reset_index(drop=True)
+    return preferred.dropna(subset=["lat", "lon"]).sort_values("station_id").reset_index(drop=True)
 
 
 def load_rain_values(
@@ -117,7 +117,7 @@ def load_rain_values(
     batch_size: int = 400,
 ) -> pd.DataFrame:
     if preferred_stations.empty:
-        return pd.DataFrame(columns=["station_uid", "observed_at", "value"])
+        return pd.DataFrame(columns=["station_id", "observed_at", "value"])
 
     series_ids = preferred_stations["series_id"].astype(str).tolist()
     frames: list[pd.DataFrame] = []
@@ -131,7 +131,7 @@ def load_rain_values(
             pd.read_sql_query(
                 f"""
                 SELECT
-                    os.station_uid,
+                    os.station_id,
                     ov.observed_at,
                     ov.value
                 FROM observed_value ov
@@ -146,22 +146,22 @@ def load_rain_values(
             )
         )
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["station_uid", "observed_at", "value"])
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["station_id", "observed_at", "value"])
 
 
-def temporarily_normalize_rain_to_hourly(values_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+def normalize_rainfall_observations_to_hourly(values_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
     if values_df.empty:
-        return pd.DataFrame(columns=["station_uid", "observed_at", "value"]), False
+        return pd.DataFrame(columns=["station_id", "observed_at", "value"]), False
 
     frame = values_df.copy()
-    frame["station_uid"] = pd.to_numeric(frame["station_uid"], errors="coerce")
+    frame["station_id"] = frame["station_id"].astype(str).str.strip()
     frame["observed_at"] = pd.to_datetime(frame["observed_at"], errors="coerce")
     frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
-    frame = frame.dropna(subset=["station_uid", "observed_at", "value"]).copy()
+    frame = frame.dropna(subset=["station_id", "observed_at", "value"]).copy()
+    frame = frame[frame["station_id"] != ""].copy()
     if frame.empty:
-        return pd.DataFrame(columns=["station_uid", "observed_at", "value"]), False
+        return pd.DataFrame(columns=["station_id", "observed_at", "value"]), False
 
-    frame["station_uid"] = frame["station_uid"].astype(np.int64)
     used_hourly_normalization = bool(
         (frame["observed_at"].dt.minute != 0).any()
         or (frame["observed_at"].dt.second != 0).any()
@@ -170,15 +170,16 @@ def temporarily_normalize_rain_to_hourly(values_df: pd.DataFrame) -> tuple[pd.Da
 
     frame["observed_at"] = frame["observed_at"].dt.ceil("h")
     if not used_hourly_normalization:
-        used_hourly_normalization = bool(frame.duplicated(subset=["station_uid", "observed_at"]).any())
+        used_hourly_normalization = bool(frame.duplicated(subset=["station_id", "observed_at"]).any())
 
     hourly = (
-        frame.groupby(["station_uid", "observed_at"], as_index=False, sort=True)["value"]
+        frame.groupby(["station_id", "observed_at"], as_index=False, sort=True)["value"]
         .sum()
-        .sort_values(["station_uid", "observed_at"])
+        .sort_values(["station_id", "observed_at"])
         .reset_index(drop=True)
     )
     return hourly, used_hourly_normalization
+
 
 
 def read_mini_centroids(mini_gtp_path: Path, *, nc: int) -> pd.DataFrame:
@@ -232,16 +233,20 @@ def build_hourly_station_matrix(
     if hourly_values.empty:
         raise ValueError("No rainfall observations found in the requested simulation window.")
 
-    pivoted = hourly_values.pivot_table(index="observed_at", columns="station_uid", values="value", aggfunc="sum").reindex(time_index)
+    preferred_stations = preferred_stations.copy()
+    preferred_stations["station_id"] = preferred_stations["station_id"].astype(str)
+    hourly_values = hourly_values.copy()
+    hourly_values["station_id"] = hourly_values["station_id"].astype(str)
+    pivoted = hourly_values.pivot_table(index="observed_at", columns="station_id", values="value", aggfunc="sum").reindex(time_index)
     available_station_ids = [
-        int(station_uid)
-        for station_uid in preferred_stations["station_uid"].tolist()
-        if station_uid in pivoted.columns and pivoted[station_uid].notna().any()
+        station_id
+        for station_id in preferred_stations["station_id"].astype(str).tolist()
+        if station_id in pivoted.columns and pivoted[station_id].notna().any()
     ]
     if not available_station_ids:
         raise ValueError("No rain stations with valid values were found for the requested simulation window.")
 
-    station_meta = preferred_stations.set_index("station_uid").loc[available_station_ids].reset_index()
+    station_meta = preferred_stations.set_index("station_id").loc[available_station_ids].reset_index()
     station_matrix = (
         pivoted.reindex(columns=available_station_ids)
         .fillna(0.0)
@@ -271,7 +276,7 @@ def load_latest_ecmwf_asset_path(
         LIMIT 1
         """,
         (
-            ECMWF_ASSET_KIND,
+            ECMWF_FORECAST_PRODUCT.asset_kind,
             reference_time.isoformat(timespec="seconds"),
             reference_time.isoformat(timespec="seconds"),
         ),
@@ -573,7 +578,7 @@ def prepare_mgb_rainfall(
             query_end_exclusive=observed_end_exclusive,
         )
 
-    hourly_values, used_hourly_normalization = temporarily_normalize_rain_to_hourly(raw_values)
+    hourly_values, used_hourly_normalization = normalize_rainfall_observations_to_hourly(raw_values)
     observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq="h")
     station_meta, station_matrix = build_hourly_station_matrix(
         preferred_stations,

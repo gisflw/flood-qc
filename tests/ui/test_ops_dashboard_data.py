@@ -116,11 +116,11 @@ def mgb_metadata_kwargs(dataset: dict[str, object], *, reference_time: str) -> d
     }
 
 
-def insert_station(connection: sqlite3.Connection, *, station_uid: int, station_code: str, station_name: str) -> None:
+def insert_station(connection: sqlite3.Connection, *, station_id: int, station_code: str, station_name: str) -> None:
     connection.execute(
         """
         INSERT INTO station (
-            station_uid,
+            station_id,
             station_code,
             station_name,
             provider_code,
@@ -129,7 +129,7 @@ def insert_station(connection: sqlite3.Connection, *, station_uid: int, station_
             altitude_m
         ) VALUES (?, ?, ?, 'ana', -29.5, -53.5, 10)
         """,
-        (station_uid, station_code, station_name),
+        (station_id, station_code, station_name),
     )
 
 
@@ -137,17 +137,17 @@ def insert_observed_series(
     connection: sqlite3.Connection,
     *,
     series_id: str,
-    station_uid: int,
+    station_id: int,
     variable_code: str,
     state: str,
     created_at: str = "2026-03-17 12:00:00",
 ) -> None:
     connection.execute(
         """
-        INSERT INTO observed_series (series_id, station_uid, variable_code, state, created_at)
+        INSERT INTO observed_series (series_id, station_id, variable_code, state, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (series_id, station_uid, variable_code, state, created_at),
+        (series_id, station_id, variable_code, state, created_at),
     )
 
 
@@ -161,10 +161,10 @@ def insert_observed_value(connection: sqlite3.Connection, *, series_id: str, obs
 def test_select_preferred_series_rows_uses_state_precedence() -> None:
     series = pd.DataFrame(
         [
-            {"series_id": "rain.raw", "station_uid": 1, "variable_code": "rain", "state": "raw", "created_at": "2026-01-01 00:00:00"},
-            {"series_id": "rain.curated", "station_uid": 1, "variable_code": "rain", "state": "curated", "created_at": "2026-01-02 00:00:00"},
-            {"series_id": "rain.approved", "station_uid": 1, "variable_code": "rain", "state": "approved", "created_at": "2026-01-03 00:00:00"},
-            {"series_id": "level.raw", "station_uid": 1, "variable_code": "level", "state": "raw", "created_at": "2026-01-01 00:00:00"},
+            {"series_id": "rain.raw", "station_id": 1, "variable_code": "rain", "state": "raw", "created_at": "2026-01-01 00:00:00"},
+            {"series_id": "rain.curated", "station_id": 1, "variable_code": "rain", "state": "curated", "created_at": "2026-01-02 00:00:00"},
+            {"series_id": "rain.approved", "station_id": 1, "variable_code": "rain", "state": "approved", "created_at": "2026-01-03 00:00:00"},
+            {"series_id": "level.raw", "station_id": 1, "variable_code": "level", "state": "raw", "created_at": "2026-01-01 00:00:00"},
         ]
     )
 
@@ -185,13 +185,13 @@ def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -
     now = datetime(2026, 3, 17, 12, 0, 0)
 
     with sqlite3.connect(db_path) as connection:
-        insert_station(connection, station_uid=1001, station_code="1001", station_name="OK")
-        insert_station(connection, station_uid=1002, station_code="1002", station_name="ISSUE")
-        insert_station(connection, station_uid=1003, station_code="1003", station_name="NODATA")
+        insert_station(connection, station_id=1001, station_code="1001", station_name="OK")
+        insert_station(connection, station_id=1002, station_code="1002", station_name="ISSUE")
+        insert_station(connection, station_id=1003, station_code="1003", station_name="NODATA")
 
-        insert_observed_series(connection, series_id="1001.rain.raw", station_uid=1001, variable_code="rain", state="raw")
-        insert_observed_series(connection, series_id="1002.rain.raw", station_uid=1002, variable_code="rain", state="raw")
-        insert_observed_series(connection, series_id="1003.rain.raw", station_uid=1003, variable_code="rain", state="raw")
+        insert_observed_series(connection, series_id="1001.rain.raw", station_id=1001, variable_code="rain", state="raw")
+        insert_observed_series(connection, series_id="1002.rain.raw", station_id=1002, variable_code="rain", state="raw")
+        insert_observed_series(connection, series_id="1003.rain.raw", station_id=1003, variable_code="rain", state="raw")
 
         insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-03-16 00:00:00", value=5.0)
         insert_observed_value(connection, series_id="1002.rain.raw", observed_at="2026-03-16 00:00:00", value=None)
@@ -199,15 +199,15 @@ def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -
         connection.commit()
 
     catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
-    status_by_station = dict(zip(catalog["station_uid"], catalog["status"]))
+    status_by_station = dict(zip(catalog["station_id"], catalog["status"]))
 
     assert status_by_station == {
-        1001: "ok",
-        1002: "data_issue",
-        1003: "no_data",
+        "1001": "ok",
+        "1002": "data_issue",
+        "1003": "no_data",
     }
     assert set(catalog.columns).issuperset(
-        {"station_uid", "station_code", "provider_code", "station_name", "lat", "lon", "kind", "status", "status_reason"}
+        {"station_id", "station_code", "provider_code", "station_name", "lat", "lon", "kind", "status", "status_reason"}
     )
 
 
@@ -216,14 +216,14 @@ def test_load_station_catalog_handles_all_stations_without_recent_values(tmp_pat
     now = datetime(2026, 3, 17, 12, 0, 0)
 
     with sqlite3.connect(db_path) as connection:
-        insert_station(connection, station_uid=1001, station_code="1001", station_name="NODATA")
-        insert_observed_series(connection, series_id="1001.rain.raw", station_uid=1001, variable_code="rain", state="raw")
+        insert_station(connection, station_id=1001, station_code="1001", station_name="NODATA")
+        insert_observed_series(connection, series_id="1001.rain.raw", station_id=1001, variable_code="rain", state="raw")
         insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
         connection.commit()
 
     catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
 
-    assert catalog["station_uid"].tolist() == [1001]
+    assert catalog["station_id"].tolist() == ["1001"]
     assert catalog["kind"].tolist() == ["rain"]
     assert catalog["status"].tolist() == ["no_data"]
     assert catalog["rows_recent"].tolist() == [0]
@@ -234,11 +234,11 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
     now = datetime(2026, 3, 17, 12, 0, 0)
 
     with sqlite3.connect(db_path) as connection:
-        insert_station(connection, station_uid=1001, station_code="1001", station_name="TESTE")
+        insert_station(connection, station_id=1001, station_code="1001", station_name="TESTE")
         insert_observed_series(
             connection,
             series_id="1001.rain.raw",
-            station_uid=1001,
+            station_id=1001,
             variable_code="rain",
             state="raw",
             created_at="2026-03-10 00:00:00",
@@ -246,12 +246,12 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
         insert_observed_series(
             connection,
             series_id="1001.rain.curated",
-            station_uid=1001,
+            station_id=1001,
             variable_code="rain",
             state="curated",
             created_at="2026-03-11 00:00:00",
         )
-        insert_observed_series(connection, series_id="1001.level.raw", station_uid=1001, variable_code="level", state="raw")
+        insert_observed_series(connection, series_id="1001.level.raw", station_id=1001, variable_code="level", state="raw")
 
         insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-03-16 01:00:00", value=1.0)
         insert_observed_value(connection, series_id="1001.rain.curated", observed_at="2026-03-16 01:00:00", value=2.5)

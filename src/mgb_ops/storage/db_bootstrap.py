@@ -6,11 +6,6 @@ import unicodedata
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
-PROVIDER_UID_BASES = {
-    "ana": 1_000_000_000,
-    "inmet": 2_000_000_000,
-}
-
 
 def apply_schema(database_path: Path, schema_path: Path) -> None:
     database_path.parent.mkdir(parents=True, exist_ok=True)
@@ -53,26 +48,11 @@ def _parse_nullable_coordinate(value: str) -> float | None:
     return float(Decimal(normalized).quantize(Decimal("0.0001"), rounding=ROUND_DOWN))
 
 
-def _station_code_to_int(station_code: str) -> int:
-    pieces: list[str] = []
-    for char in station_code.strip().upper():
-        if char.isdigit():
-            pieces.append(char)
-        elif "A" <= char <= "Z":
-            pieces.append(str(ord(char) - ord("A") + 1))
-        else:
-            raise ValueError(f"Invalid character in station_code: {station_code!r}")
-    if not pieces:
-        raise ValueError("Empty station_code is not supported.")
-    return int("".join(pieces))
 
-
-def build_station_uid(provider_code: str, station_code: str) -> int:
-    try:
-        provider_base = PROVIDER_UID_BASES[provider_code]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported provider_code for station_uid: {provider_code!r}") from exc
-    return provider_base + _station_code_to_int(station_code)
+def build_station_id(provider_code: str, station_code: str) -> str:
+    normalized_provider = provider_code.strip().lower()
+    normalized_station_code = _normalize_station_code(normalized_provider, station_code)
+    return f"{normalized_provider}:{normalized_station_code}"
 
 
 def load_history_station_inventory(
@@ -93,7 +73,7 @@ def load_history_station_inventory(
     }
     rows_to_insert: list[tuple[object, ...]] = []
     seen_keys: set[tuple[str, str]] = set()
-    seen_uids: set[int] = set()
+    seen_station_ids: set[str] = set()
 
     with inventory_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -116,14 +96,14 @@ def load_history_station_inventory(
                 raise ValueError(f"Duplicate station in inventory CSV: {row_key}")
             seen_keys.add(row_key)
 
-            station_uid = build_station_uid(provider_code, station_code)
-            if station_uid in seen_uids:
-                raise ValueError(f"Duplicate calculated station_uid for {row_key}: {station_uid}")
-            seen_uids.add(station_uid)
+            station_id = build_station_id(provider_code, station_code)
+            if station_id in seen_station_ids:
+                raise ValueError(f"Duplicate station_id in inventory CSV for {row_key}: {station_id}")
+            seen_station_ids.add(station_id)
 
             rows_to_insert.append(
                 (
-                    station_uid,
+                    station_id,
                     station_code,
                     station_name,
                     provider_code,
@@ -137,7 +117,7 @@ def load_history_station_inventory(
         connection.executemany(
             """
             INSERT INTO station (
-                station_uid,
+                station_id,
                 station_code,
                 station_name,
                 provider_code,

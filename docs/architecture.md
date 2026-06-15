@@ -52,8 +52,8 @@ helpers keep querying, map assembly, and forecast preview logic out of
 The repository currently provides:
 
 - history and run schema bootstrap;
-- operational ingestion of ANA observations;
-- ECMWF grid ingestion, spatial clipping, and GRIB registration in the history database;
+- operational ingestion of ANA observations through normalized observed CSV artifacts;
+- forecast grid ingestion with ECMWF defaults, spatial clipping, and generic asset registration in the history database;
 - hourly rainfall preparation for MGB from observations and ECMWF forecasts;
 - real or dry-run MGB runner execution through library functions and the CLI wrapper;
 - Streamlit dashboard for observations, MGB series, and ECMWF forecast preview/manual correction.
@@ -96,13 +96,16 @@ materialization is not finalized yet.
 ### Observations in Long Format
 
 Observations are stored in long format, with one series per relevant combination
-of station, variable, and state. This design is already in use in the history
-database and dashboard.
+of `station_id`, variable, and state. `station_id` is a canonical string
+`provider:station_code`, such as `ana:74100000` or `inmet:A801`. Provider
+fetchers write normalized CSV files with `station_id`, `provider_code`,
+`station_code`, `observed_at`, `variable_code`, `value`, and `state`; the shared
+CSV importer is the common persistence path into history SQLite.
 
 ### External Assets Outside the Database
 
 Rasters, vectors, and MGB binaries remain outside SQLite. The database stores
-metadata and relative paths. This applies to both ECMWF GRIB files and complete
+metadata and relative paths. This applies to forecast GRIB files, including the current ECMWF default, and complete
 MGB outputs.
 
 ### Streamlit as an Operational Adapter

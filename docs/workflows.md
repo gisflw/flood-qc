@@ -27,8 +27,8 @@ Library module: `mgb_ops.ingest.fetch_observed_ana`
 
 1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
 2. Fetch hydrometeorological data by station and day.
-3. Save raw XML in `<workspace>/data/interim/ana/`.
-4. Persist observations in `observed_series` and `observed_value`.
+3. Save provider XML as ancillary evidence and write normalized observed CSV files under `<workspace>/data/interim/ana/<run_id>/`.
+4. Import the normalized CSV through `mgb_ops.ingest.observed_csv.import_normalized_observed_csvs()` into `observed_series` and `observed_value`.
 5. Register logs in `logs/fetch_observed_ana/`.
 
 CLI wrapper:
@@ -43,9 +43,9 @@ Library module: `mgb_ops.ingest.fetch_observed_inmet`
 
 1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
 2. In CLI/dashboard convenience flows, resolve the local key from explicit input, process `INMET_API_KEY`, or `<workspace>/.env`; pass `api_key` explicitly to the domain function.
-3. Query the operational rainfall API by station and day.
-4. Save raw payloads in `<workspace>/data/interim/inmet/`.
-5. Persist rainfall in `observed_series` and `observed_value`.
+3. Query the operational rainfall API by station and day, using the explicit `product_code` input that defaults to `I175`.
+4. Write normalized observed rainfall CSV files under `<workspace>/data/interim/inmet/<run_id>/`.
+5. Import the normalized CSV through `mgb_ops.ingest.observed_csv.import_normalized_observed_csvs()` into `observed_series` and `observed_value`.
 6. Register logs in `logs/fetch_observed_inmet/`.
 
 CLI wrapper:
@@ -54,14 +54,14 @@ CLI wrapper:
 mgb-ops --workspace examples/rs_hydro ingest inmet
 ```
 
-### 3. ECMWF Forecast Ingestion
+### 3. Forecast Grid Ingestion
 
 Library module: `mgb_ops.ingest.forecast_grid`
 
 1. Resolve the cycle from `reference_time`.
-2. Download the ECMWF GRIB.
-3. Clip the grid to the operational bounding box.
-4. Register the canonical asset in the explicitly supplied history database, using an explicitly supplied asset base directory for relative paths.
+2. Download the configured forecast GRIB. ECMWF is the current default product configuration.
+3. Clip the grid to the configured operational bounding box.
+4. Register the canonical asset in the explicitly supplied history database, using `provider_code` and `asset_kind` plus an explicitly supplied asset base directory for relative paths.
 5. Register logs in `logs/forecast_grid/`.
 
 CLI wrapper:

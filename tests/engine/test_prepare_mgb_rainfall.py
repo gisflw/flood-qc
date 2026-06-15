@@ -88,7 +88,7 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
         lambda _: pd.DataFrame(
             {
                 "series_id": ["s1"],
-                "station_uid": [1],
+                "station_id": [1],
                 "state": ["raw"],
                 "created_at": [""],
                 "lat": [-29.5],
@@ -100,7 +100,7 @@ def test_prepare_mgb_rainfall_zeroes_forecast_period(tmp_path, monkeypatch) -> N
         "mgb_ops.model.prepare_mgb_rainfall.load_rain_values",
         lambda *args, **kwargs: pd.DataFrame(
             {
-                "station_uid": [1, 1, 1],
+                "station_id": [1, 1, 1],
                 "observed_at": [
                     "2026-03-09 00:00",
                     "2026-03-10 00:00",
@@ -171,7 +171,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         lambda _: pd.DataFrame(
             {
                 "series_id": ["s1"],
-                "station_uid": [1],
+                "station_id": [1],
                 "state": ["raw"],
                 "created_at": [""],
                 "lat": [-29.5],
@@ -183,7 +183,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         "mgb_ops.model.prepare_mgb_rainfall.load_rain_values",
         lambda *args, **kwargs: pd.DataFrame(
             {
-                "station_uid": [1, 1, 1],
+                "station_id": [1, 1, 1],
                 "observed_at": [
                     "2026-03-09 00:00",
                     "2026-03-10 00:00",

@@ -40,7 +40,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
         lambda prefix="": FakeTemporaryDirectory(temp_dir),
     )
 
-    def fake_download(target_path: Path, *, reference_time: datetime) -> None:
+    def fake_download(target_path: Path, *, reference_time: datetime, product_config=None) -> None:
         target_path.write_bytes(b"raw-grib")
 
     def fake_crop(source_path: Path, target_path: Path, *, bbox) -> None:

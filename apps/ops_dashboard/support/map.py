@@ -60,7 +60,7 @@ def build_map_cache_key(
     history_version: str,
     rivers_version: str,
     raster_version: str,
-    station_uid: int | None = None,
+    station_id: str | None = None,
     mini_id: int | None = None,
 ) -> str:
     payload = {
@@ -88,9 +88,9 @@ def update_selection_from_click_token(click_token: Optional[str], session_state:
 
     changed = False
     if click_token.startswith("POSTO|"):
-        station_uid = int(click_token.split("|", 1)[1].strip())
-        if session_state.get("station_uid") != station_uid:
-            session_state["station_uid"] = station_uid
+        station_id = click_token.split("|", 1)[1].strip()
+        if session_state.get("station_id") != station_id:
+            session_state["station_id"] = station_id
             changed = True
 
     if click_token.startswith("MINI|"):
@@ -283,7 +283,7 @@ def build_ops_map(
     no_data_layer = folium.FeatureGroup(name="Stations without data", show=True)
 
     for row in stations.itertuples():
-        tooltip = f"POSTO|{row.station_uid} - {row.station_name} ({str(row.provider_code).upper()} {row.station_code})"
+        tooltip = f"POSTO|{row.station_id} - {row.station_name} ({str(row.provider_code).upper()} {row.station_code})"
         status = getattr(row, "status", "no_data")
 
         if status == "no_data":

@@ -66,7 +66,7 @@ def test_initialize_history_db(tmp_path) -> None:
 
     station_columns = _list_columns(db_path, "station")
     assert {
-        "station_uid",
+        "station_id",
         "station_code",
         "station_name",
         "provider_code",
@@ -85,7 +85,7 @@ def test_initialize_history_db(tmp_path) -> None:
     assert {"rain", "level", "flow"}.issubset(variables)
 
     observed_series_columns = _list_columns(db_path, "observed_series")
-    assert {"series_id", "station_uid", "variable_code", "state", "created_at"}.issubset(observed_series_columns)
+    assert {"series_id", "station_id", "variable_code", "state", "created_at"}.issubset(observed_series_columns)
     assert "provider_code" not in observed_series_columns
     assert "unit" not in observed_series_columns
     assert "source_asset_id" not in observed_series_columns
@@ -169,8 +169,8 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
         inmet_total = connection.execute(
             "SELECT COUNT(*) FROM station WHERE provider_code = 'inmet'"
         ).fetchone()[0]
-        distinct_uid = connection.execute(
-            "SELECT COUNT(DISTINCT station_uid) FROM station"
+        distinct_id = connection.execute(
+            "SELECT COUNT(DISTINCT station_id) FROM station"
         ).fetchone()[0]
         distinct_station = connection.execute(
             "SELECT COUNT(DISTINCT provider_code || '|' || station_code) FROM station"
@@ -187,9 +187,9 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
             "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'inmet' AND station_code = 'A840'"
         ).fetchone()
-        computed_uids = dict(
+        computed_ids = dict(
             connection.execute(
-                "SELECT station_code, station_uid FROM station "
+                "SELECT station_code, station_id FROM station "
                 "WHERE station_code IN ('71200000', '2650035', 'A801', 'B807')"
             ).fetchall()
         )
@@ -200,16 +200,16 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
     assert total == 7
     assert ana_total == 4
     assert inmet_total == 3
-    assert distinct_uid == total
+    assert distinct_id == total
     assert distinct_station == total
     assert ana_sample == ("UHE ITA CACADOR PLU", -26.8192, -50.9856, 960, "integer")
     assert fallback_sample == ("PONTE DO SARGENTO", -26.6822, -53.2861, None, "null")
     assert inmet_sample == ("BENTO GONCALVES", -29.1645, -51.5342, 623, "integer")
-    assert computed_uids == {
-        "71200000": 1071200000,
-        "2650035": 1002650035,
-        "A801": 2000001801,
-        "B807": 2000002807,
+    assert computed_ids == {
+        "71200000": "ana:71200000",
+        "2650035": "ana:2650035",
+        "A801": "inmet:A801",
+        "B807": "inmet:B807",
     }
     assert padded_code == 0
 

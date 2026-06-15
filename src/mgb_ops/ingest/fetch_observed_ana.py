@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+import csv
 import logging
-import shutil
 import sys
 import xml.etree.ElementTree as ET
 from datetime import date, datetime, timedelta
@@ -10,6 +10,7 @@ from pathlib import Path
 import requests
 
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
+from mgb_ops.ingest.observed_csv import NORMALIZED_OBSERVED_COLUMNS, import_normalized_observed_csvs
 from mgb_ops.storage.history_repository import HistoryRepository
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
@@ -134,12 +135,6 @@ def iter_request_dates(reference_time: datetime, request_days: int):
         yield start_date + timedelta(days=offset)
 
 
-def reset_ana_interim_dir(ana_dir: Path) -> None:
-    if ana_dir.exists():
-        shutil.rmtree(ana_dir)
-    ana_dir.mkdir(parents=True, exist_ok=True)
-
-
 def save_raw_xml(
     xml_text: str,
     *,
@@ -155,38 +150,51 @@ def save_raw_xml(
     return file_path
 
 
-def persist_station_frame(
-    repository: HistoryRepository,
-    station_uid: int,
+
+def write_normalized_csv(
     frame,
     *,
+    output_path: Path,
+    station_id: str,
+    provider_code: str,
+    station_code: str,
     state: str = "raw",
-) -> dict[str, int]:
-    if frame.empty:
-        return {variable: 0 for variable in OBSERVED_VARIABLES}
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=NORMALIZED_OBSERVED_COLUMNS)
+        writer.writeheader()
+        if frame.empty:
+            return output_path
+        for record in frame.sort_values("observed_at").to_dict("records"):
+            observed_at = record["observed_at"].strftime("%Y-%m-%d %H:%M")
+            for variable in OBSERVED_VARIABLES:
+                value = record.get(variable)
+                if value is None:
+                    continue
+                try:
+                    if value != value:
+                        continue
+                except TypeError:
+                    pass
+                writer.writerow(
+                    {
+                        "station_id": station_id,
+                        "provider_code": provider_code,
+                        "station_code": station_code,
+                        "observed_at": observed_at,
+                        "variable_code": variable,
+                        "value": float(value),
+                        "state": state,
+                    }
+                )
+    return output_path
 
-    station_frame = frame.sort_values("observed_at").drop_duplicates(subset=["observed_at"], keep="last")
-    counts: dict[str, int] = {}
-    for variable in OBSERVED_VARIABLES:
-        variable_frame = station_frame.loc[station_frame[variable].notna(), ["observed_at", variable]]
-        if variable_frame.empty:
-            counts[variable] = 0
-            continue
-        rows = [
-            (observed_at.strftime("%Y-%m-%d %H:%M"), float(value))
-            for observed_at, value in zip(variable_frame["observed_at"], variable_frame[variable])
-        ]
-        series_id: str | None = None
-        try:
-            series_id = repository.ensure_observed_series(station_uid, variable, state)
-            counts[variable] = repository.upsert_observed_values(series_id, rows)
-        except Exception as exc:
-            raise RuntimeError(
-                "Falha ao persistir observed_value "
-                f"station_uid={station_uid} variable={variable} state={state} series_id={series_id!r}."
-            ) from exc
-    return counts
 
+def build_normalized_csv_path(ana_root_dir: Path, *, station_code: str, request_date: date) -> Path:
+    station_dir = ana_root_dir / station_code
+    file_stamp = request_date.strftime("%Y%m%d")
+    return station_dir / f"{file_stamp}__{file_stamp}.csv"
 
 def ingest_observed_ana(
     database_path: Path,
@@ -206,8 +214,8 @@ def ingest_observed_ana(
 
     run_id = build_run_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{run_id}.log")
-    ana_root_dir = interim_dir / "ana"
-    reset_ana_interim_dir(ana_root_dir)
+    ana_root_dir = interim_dir / "ana" / run_id
+    ana_root_dir.mkdir(parents=True, exist_ok=True)
 
     with HistoryRepository(database_path) as repository:
         stations = repository.get_provider_stations("ana")
@@ -227,7 +235,7 @@ def ingest_observed_ana(
 
         for station in stations:
             station_code = station["station_code"]
-            station_uid = station["station_uid"]
+            station_id = station["station_id"]
             station_written = {variable: 0 for variable in OBSERVED_VARIABLES}
             station_error = False
 
@@ -253,13 +261,21 @@ def ingest_observed_ana(
                         raise ValueError(
                             f"Resposta da ANA retornou codigos inesperados para {station_code}: {sorted(returned_codes)}"
                         )
-                    counts = persist_station_frame(repository, station_uid, frame)
+                    csv_path = write_normalized_csv(
+                        frame,
+                        output_path=build_normalized_csv_path(ana_root_dir, station_code=station_code, request_date=request_date),
+                        station_id=station_id,
+                        provider_code="ana",
+                        station_code=station_code,
+                    )
+                    import_summary = import_normalized_observed_csvs(database_path, [csv_path])
+                    counts = {variable: import_summary.values_by_variable.get(variable, 0) for variable in OBSERVED_VARIABLES}
                     for variable, count in counts.items():
                         station_written[variable] += count
                     logger.info(
-                        "station=%s station_uid=%s window_start=%s window_end=%s records=%s rain=%s level=%s flow=%s raw_xml=%s",
+                        "station=%s station_id=%s window_start=%s window_end=%s records=%s rain=%s level=%s flow=%s raw_xml=%s normalized_csv=%s",
                         station_code,
-                        station_uid,
+                        station_id,
                         request_date.strftime("%Y-%m-%d"),
                         request_date.strftime("%Y-%m-%d"),
                         len(frame),
@@ -267,13 +283,14 @@ def ingest_observed_ana(
                         counts["level"],
                         counts["flow"],
                         raw_path,
+                        csv_path,
                     )
                 except (requests.RequestException, ET.ParseError, ValueError, RuntimeError) as exc:
                     station_error = True
                     logger.error(
-                        "station=%s station_uid=%s window_start=%s window_end=%s error=%s",
+                        "station=%s station_id=%s window_start=%s window_end=%s error=%s",
                         station_code,
-                        station_uid,
+                        station_id,
                         request_date.strftime("%Y-%m-%d"),
                         request_date.strftime("%Y-%m-%d"),
                         exc,

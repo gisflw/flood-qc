@@ -60,8 +60,8 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
 
     with HistoryRepository(db_path) as repository:
         station = repository.get_provider_stations("ana")[0]
-        series_id = repository.ensure_observed_series(station["station_uid"], "rain")
-        repeated_series_id = repository.ensure_observed_series(station["station_uid"], "rain")
+        series_id = repository.ensure_observed_series(station["station_id"], "rain")
+        repeated_series_id = repository.ensure_observed_series(station["station_id"], "rain")
         written = repository.upsert_observed_values(
             series_id,
             [("2026-03-10 00:00", 1.0), ("2026-03-10 01:00", 2.0)],
@@ -79,7 +79,7 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
         ).fetchall()
 
     assert series_id == repeated_series_id
-    assert series_id == build_observed_series_id(station["station_uid"], "rain")
+    assert series_id == build_observed_series_id(station["station_id"], "rain")
     assert written == 2
     assert updated == 1
     assert series_total == 1
@@ -105,10 +105,10 @@ def test_history_repository_rebuild_assumption_uses_canonical_series_id(tmp_path
     initialize_history_db(db_path)
 
     with HistoryRepository(db_path) as repository:
-        station_uid = repository.get_provider_stations("ana")[0]["station_uid"]
-        series_id = repository.ensure_observed_series(station_uid, "rain")
+        station_id = repository.get_provider_stations("ana")[0]["station_id"]
+        series_id = repository.ensure_observed_series(station_id, "rain")
 
-    assert series_id == f"{station_uid}.rain.raw"
+    assert series_id == f"{station_id}.rain.raw"
 
 
 def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
@@ -145,18 +145,19 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
         ).fetchall()
         rain_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = '1074100000.rain.raw' ORDER BY observed_at"
+            "WHERE series_id = 'ana:74100000.rain.raw' ORDER BY observed_at"
         ).fetchall()
         level_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = '1074100000.level.raw' ORDER BY observed_at"
+            "WHERE series_id = 'ana:74100000.level.raw' ORDER BY observed_at"
         ).fetchall()
         flow_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = '1074100000.flow.raw' ORDER BY observed_at"
+            "WHERE series_id = 'ana:74100000.flow.raw' ORDER BY observed_at"
         ).fetchall()
 
-    raw_xml_files = list((tmp_path / "interim" / "ana" / "74100000").glob("*.xml"))
+    raw_xml_files = list((tmp_path / "interim" / "ana" / "20260311T134500" / "74100000").glob("*.xml"))
+    normalized_csv_files = list((tmp_path / "interim" / "ana" / "20260311T134500" / "74100000").glob("*.csv"))
     log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
@@ -169,20 +170,23 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
     }
     assert requested_params == [{"codEstacao": "74100000", "dataInicio": "11/03/2026", "dataFim": "11/03/2026"}]
     assert series_rows == [
-        ("1074100000.flow.raw", "flow"),
-        ("1074100000.level.raw", "level"),
-        ("1074100000.rain.raw", "rain"),
+        ("ana:74100000.flow.raw", "flow"),
+        ("ana:74100000.level.raw", "level"),
+        ("ana:74100000.rain.raw", "rain"),
     ]
     assert rain_values == [("2026-03-10 00:00", 2.0)]
     assert level_values == [("2026-03-10 00:00", 101.0), ("2026-03-10 02:00", 105.0)]
     assert flow_values == [("2026-03-10 00:00", 11.0), ("2026-03-10 02:00", 12.0)]
     assert len(raw_xml_files) == 1
+    assert len(normalized_csv_files) == 1
     assert raw_xml_files[0].name == "20260311__20260311.xml"
+    assert normalized_csv_files[0].name == "20260311__20260311.csv"
     assert raw_xml_files[0].read_text(encoding="utf-8") == SAMPLE_ANA_XML
-    assert not stale_station_dir.exists()
+    assert stale_station_dir.exists()
     assert log_file.exists()
     assert "window_start=2026-03-11 window_end=2026-03-11" in log_text
     assert "raw_xml=" in log_text
+    assert "normalized_csv=" in log_text
     assert not (tmp_path / "interim" / "ana" / "raw").exists()
     assert not (tmp_path / "reports").exists()
 
@@ -195,7 +199,7 @@ def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
             """
             CREATE TABLE observed_series (
                 series_id TEXT PRIMARY KEY,
-                station_uid INTEGER NOT NULL,
+                station_id TEXT NOT NULL,
                 provider_code TEXT NOT NULL,
                 variable_code TEXT NOT NULL,
                 unit TEXT NOT NULL,

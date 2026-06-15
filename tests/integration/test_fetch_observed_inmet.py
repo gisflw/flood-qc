@@ -160,10 +160,10 @@ def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -
         ).fetchall()
         rain_values = connection.execute(
             "SELECT observed_at, value FROM observed_value "
-            "WHERE series_id = '2000001801.rain.raw' ORDER BY observed_at"
+            "WHERE series_id = 'inmet:A801.rain.raw' ORDER BY observed_at"
         ).fetchall()
 
-    raw_json_files = list((tmp_path / "interim" / "inmet" / "A801").glob("*.json"))
+    normalized_csv_files = list((tmp_path / "interim" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
     log_file = tmp_path / "logs" / "fetch_observed_inmet" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
@@ -174,13 +174,13 @@ def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -
         "stations_no_data": 0,
         "stations_error": 0,
     }
-    assert series_rows == [("2000001801.rain.raw", "rain")]
+    assert series_rows == [("inmet:A801.rain.raw", "rain")]
     assert rain_values == [("2026-03-10 21:00", 2.0), ("2026-03-10 23:00", 3.5)]
-    assert len(raw_json_files) == 1
-    assert json.loads(raw_json_files[0].read_text(encoding="utf-8")) == SAMPLE_INMET_PAYLOAD
+    assert len(normalized_csv_files) == 1
+    assert normalized_csv_files[0].name == "20260311__20260311.csv"
     assert log_file.exists()
     assert "window_start=2026-03-11 window_end=2026-03-11" in log_text
-    assert "raw_json=" in log_text
+    assert "normalized_csv=" in log_text
 
 
 def test_ingest_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, monkeypatch) -> None:

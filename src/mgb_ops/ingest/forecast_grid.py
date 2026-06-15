@@ -24,6 +24,32 @@ BUFFER_FRACTION = 1.0
 
 
 @dataclass(frozen=True, slots=True)
+class ForecastProductConfig:
+    provider_code: str
+    asset_kind: str
+    model: str
+    product_type: str
+    resolution: str
+    param: str
+    bbox: tuple[float, float, float, float]
+    buffer_fraction: float
+    step_schedule: tuple[int, ...]
+
+
+ECMWF_FORECAST_PRODUCT = ForecastProductConfig(
+    provider_code="ecmwf",
+    asset_kind=ECMWF_ASSET_KIND,
+    model=ECMWF_MODEL,
+    product_type=ECMWF_PRODUCT_TYPE,
+    resolution=ECMWF_RESOLUTION,
+    param=ECMWF_PARAM,
+    bbox=RS_BBOX,
+    buffer_fraction=BUFFER_FRACTION,
+    step_schedule=tuple([hour for hour in range(0, 144 + 3, 3)] + [hour for hour in range(150, 360 + 6, 6)]),
+)
+
+
+@dataclass(frozen=True, slots=True)
 class ForecastGridSummary:
     run_id: str
     asset_id: str
@@ -96,8 +122,12 @@ def _normalize_longitudes(values: np.ndarray) -> np.ndarray:
     return normalized
 
 
-def build_rs_bbox_with_buffer(*, buffer_fraction: float = BUFFER_FRACTION) -> tuple[float, float, float, float]:
-    west, south, east, north = RS_BBOX
+def build_rs_bbox_with_buffer(
+    *,
+    buffer_fraction: float = BUFFER_FRACTION,
+    bbox: tuple[float, float, float, float] = RS_BBOX,
+) -> tuple[float, float, float, float]:
+    west, south, east, north = bbox
     width = east - west
     height = north - south
     return (
@@ -117,18 +147,22 @@ def build_ecmwf_cycle(reference_time: datetime) -> datetime:
     return datetime(forecast_start_utc.year, forecast_start_utc.month, forecast_start_utc.day, 0, 0, 0)
 
 
-def build_ecmwf_steps() -> list[int]:
-    return [hour for hour in range(0, 144 + 3, 3)] + [hour for hour in range(150, 360 + 6, 6)]
+def build_ecmwf_steps(product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> list[int]:
+    return list(product_config.step_schedule)
 
 
-def build_output_path(interim_root: Path, cycle_time: datetime) -> Path:
-    directory = interim_root / "ecmwf"
-    file_name = f"{ECMWF_PRODUCT_TYPE}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_{ECMWF_MODEL.upper()}_rsbuf.grib2"
+def build_output_path(
+    interim_root: Path,
+    cycle_time: datetime,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> Path:
+    directory = interim_root / product_config.provider_code
+    file_name = f"{product_config.product_type}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_{product_config.model.upper()}_rsbuf.grib2"
     return directory / file_name
 
 
-def build_asset_id(cycle_time: datetime) -> str:
-    return f"ecmwf.{ECMWF_MODEL}.{ECMWF_PRODUCT_TYPE}.{cycle_time.strftime('%Y%m%dT%H%M%SZ')}.rsbuf"
+def build_asset_id(cycle_time: datetime, product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> str:
+    return f"{product_config.provider_code}.{product_config.model}.{product_config.product_type}.{cycle_time.strftime('%Y%m%dT%H%M%SZ')}.rsbuf"
 
 
 def _build_grid_arrays(gid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -286,19 +320,24 @@ def build_relative_asset_path(path: Path, *, asset_base_dir: Path) -> str:
         return Path(path).as_posix()
 
 
-def download_ecmwf_grib_to_path(target_path: Path, *, reference_time: datetime) -> None:
+def download_ecmwf_grib_to_path(
+    target_path: Path,
+    *,
+    reference_time: datetime,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> None:
     Client = _require_opendata_client()
     cycle_time = build_ecmwf_cycle(reference_time)
     client = Client()
     client.retrieve(
         date=cycle_time.strftime("%Y-%m-%d"),
-        model=ECMWF_MODEL,
+        model=product_config.model,
         time=cycle_time.hour,
-        step=build_ecmwf_steps(),
-        resol=ECMWF_RESOLUTION,
-        type=ECMWF_PRODUCT_TYPE,
+        step=build_ecmwf_steps(product_config),
+        resol=product_config.resolution,
+        type=product_config.product_type,
         levtype="sfc",
-        param=[ECMWF_PARAM],
+        param=[product_config.param],
         target=str(target_path),
     )
 
@@ -310,6 +349,7 @@ def ingest_forecast_grids(
     interim_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> ForecastGridSummary:
     if not Path(database_path).exists():
         raise FileNotFoundError(f"History database not found: {database_path}")
@@ -317,8 +357,11 @@ def ingest_forecast_grids(
     execution_id = build_execution_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
     cycle_time = build_ecmwf_cycle(reference_time)
-    target_path = build_output_path(interim_dir, cycle_time)
-    bbox = build_rs_bbox_with_buffer()
+    target_path = build_output_path(interim_dir, cycle_time, product_config)
+    bbox = build_rs_bbox_with_buffer(
+        buffer_fraction=product_config.buffer_fraction,
+        bbox=product_config.bbox,
+    )
 
     logger.info(
         "forecast_grid_start history_db=%s cycle_time=%s bbox=%s target=%s",
@@ -331,28 +374,28 @@ def ingest_forecast_grids(
     with tempfile.TemporaryDirectory(prefix="ecmwf_download_") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         temp_grib_path = temp_dir / "download.grib2"
-        download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time)
+        download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time, product_config=product_config)
         crop_grib_to_bbox(temp_grib_path, target_path, bbox=bbox)
 
     valid_from, valid_to = extract_valid_time_bounds(target_path)
     relative_path = build_relative_asset_path(target_path, asset_base_dir=asset_base_dir)
     metadata = {
-        "model": ECMWF_MODEL,
-        "product_type": ECMWF_PRODUCT_TYPE,
-        "resolution": ECMWF_RESOLUTION,
+        "model": product_config.model,
+        "product_type": product_config.product_type,
+        "resolution": product_config.resolution,
         "reference_time": reference_time.isoformat(timespec="seconds"),
         "cycle_time": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "bbox": list(bbox),
-        "buffer_fraction": BUFFER_FRACTION,
+        "buffer_fraction": product_config.buffer_fraction,
     }
 
     with HistoryRepository(database_path) as repository:
         asset = repository.upsert_asset(
-            asset_id=build_asset_id(cycle_time),
-            asset_kind=ECMWF_ASSET_KIND,
+            asset_id=build_asset_id(cycle_time, product_config),
+            asset_kind=product_config.asset_kind,
             format="GRIB2",
             relative_path=relative_path,
-            provider_code="ecmwf",
+            provider_code=product_config.provider_code,
             valid_from=valid_from.isoformat(timespec="seconds"),
             valid_to=valid_to.isoformat(timespec="seconds"),
             metadata=metadata,

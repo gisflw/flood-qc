@@ -97,8 +97,8 @@ def get_station_catalog(days: int) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
-def get_observed_series(station_uid: int, days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_observed_series(station_uid=station_uid, database_path=_history_db_path(), days=days)
+def get_observed_series(station_id: str, days: int) -> pd.DataFrame:
+    return ops_dashboard_data.load_observed_series(station_id=station_id, database_path=_history_db_path(), days=days)
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
@@ -618,7 +618,7 @@ def lookup_variable_metadata(model_variables: pd.DataFrame, variable_code: Optio
     return str(row["display_name"]), str(row["unit"])
 
 
-def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
+def time_series_chart(df: pd.DataFrame, station_id: str, days: int) -> None:
     if df.empty:
         st.info("No data for this station/interval.")
         return
@@ -688,7 +688,7 @@ def time_series_chart(df: pd.DataFrame, station_uid: int, days: int) -> None:
         xaxis=dict(title=""),
         xaxis2=dict(title="Date/time"),
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"chart-{station_uid}-{days}")
+    st.plotly_chart(fig, use_container_width=True, key=f"chart-{station_id}-{days}")
 
 
 def mgb_time_series_chart(
@@ -760,7 +760,7 @@ def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) ->
         history_version=ops_dashboard_map.build_file_version(_history_db_path()),
         rivers_version=ops_dashboard_map.build_file_version(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson"),
         raster_version=raster_version,
-        station_uid=st.session_state.get("station_uid"),
+        station_id=st.session_state.get("station_id"),
         mini_id=st.session_state.get("mini_id"),
     )
 
@@ -778,12 +778,12 @@ def render_map_fragment(map_artifacts: map_component.MapRenderArtifacts) -> None
 
 
 def ensure_default_selection(stations_df: pd.DataFrame) -> None:
-    if "station_uid" not in st.session_state and not stations_df.empty:
+    if "station_id" not in st.session_state and not stations_df.empty:
         preferred = stations_df[stations_df["status"] != "no_data"]
-        default_station_uid = (
-            int(preferred["station_uid"].iloc[0]) if not preferred.empty else int(stations_df["station_uid"].iloc[0])
+        default_station_id = (
+            str(preferred["station_id"].iloc[0]) if not preferred.empty else str(stations_df["station_id"].iloc[0])
         )
-        st.session_state["station_uid"] = default_station_uid
+        st.session_state["station_id"] = default_station_id
 
 
 def format_layer_option(option: str, raster_catalog: dict[str, dict[str, object]]) -> str:
@@ -840,15 +840,15 @@ def render_monitoring_tab(
         fallback_key = compute_map_cache_key(None, opacity)
         map_artifacts = get_map_artifacts(fallback_key, None, opacity)
 
-    station_uid = st.session_state.get("station_uid")
-    station_uid = int(station_uid) if station_uid is not None else None
+    station_id = st.session_state.get("station_id")
+    station_id = str(station_id) if station_id is not None else None
     mini_id = st.session_state.get("mini_id")
     mini_id = int(mini_id) if mini_id is not None else None
 
-    observed_series = get_observed_series(station_uid, DAYS_WINDOW) if station_uid is not None else pd.DataFrame()
+    observed_series = get_observed_series(station_id, DAYS_WINDOW) if station_id is not None else pd.DataFrame()
     selected_station_row: Optional[pd.Series] = None
-    if station_uid is not None and not stations_df.empty:
-        selected = stations_df[stations_df["station_uid"] == station_uid]
+    if station_id is not None and not stations_df.empty:
+        selected = stations_df[stations_df["station_id"] == station_id]
         if not selected.empty:
             selected_station_row = selected.iloc[0]
 
@@ -891,10 +891,10 @@ def render_monitoring_tab(
     with chart_left:
         with st.container(border=True):
             st.subheader("Station Chart")
-            if station_uid is None:
+            if station_id is None:
                 st.info("Select a station on the map.")
             else:
-                time_series_chart(observed_series, station_uid, DAYS_WINDOW)
+                time_series_chart(observed_series, station_id, DAYS_WINDOW)
 
     with chart_right:
         with st.container(border=True):

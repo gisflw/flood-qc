@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Any
 
 
-def build_observed_series_id(station_uid: int, variable_code: str, state: str = "raw") -> str:
-    return f"{station_uid}.{variable_code}.{state}"
+def build_observed_series_id(station_id: str, variable_code: str, state: str = "raw") -> str:
+    return f"{station_id}.{variable_code}.{state}"
 
 
 class HistoryRepository:
@@ -65,7 +65,7 @@ class HistoryRepository:
             "observed_series",
             {
                 "series_id",
-                "station_uid",
+                "station_id",
                 "variable_code",
                 "state",
                 "created_at",
@@ -118,7 +118,7 @@ class HistoryRepository:
     def get_provider_stations(self, provider_code: str) -> list[dict[str, Any]]:
         rows = self.connection.execute(
             """
-            SELECT station_uid, station_code, station_name, provider_code
+            SELECT station_id, station_code, station_name, provider_code
             FROM station
             WHERE provider_code = ?
             ORDER BY station_code
@@ -127,43 +127,43 @@ class HistoryRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def _get_observed_series_id(self, station_uid: int, variable_code: str, state: str) -> str | None:
+    def _get_observed_series_id(self, station_id: str, variable_code: str, state: str) -> str | None:
         row = self.connection.execute(
             """
             SELECT series_id
             FROM observed_series
-            WHERE station_uid = ? AND variable_code = ? AND state = ?
+            WHERE station_id = ? AND variable_code = ? AND state = ?
             """,
-            (station_uid, variable_code, state),
+            (station_id, variable_code, state),
         ).fetchone()
         if row is None:
             return None
         return str(row["series_id"])
 
-    def ensure_observed_series(self, station_uid: int, variable_code: str, state: str = "raw") -> str:
-        existing_series_id = self._get_observed_series_id(station_uid, variable_code, state)
+    def ensure_observed_series(self, station_id: str, variable_code: str, state: str = "raw") -> str:
+        existing_series_id = self._get_observed_series_id(station_id, variable_code, state)
         if existing_series_id is not None:
             return existing_series_id
 
-        series_id = build_observed_series_id(station_uid, variable_code, state)
+        series_id = build_observed_series_id(station_id, variable_code, state)
         self.connection.execute(
             """
             INSERT INTO observed_series (
                 series_id,
-                station_uid,
+                station_id,
                 variable_code,
                 state
             ) VALUES (?, ?, ?, ?)
-            ON CONFLICT(station_uid, variable_code, state) DO NOTHING
+            ON CONFLICT(station_id, variable_code, state) DO NOTHING
             """,
-            (series_id, station_uid, variable_code, state),
+            (series_id, station_id, variable_code, state),
         )
         self.connection.commit()
-        ensured_series_id = self._get_observed_series_id(station_uid, variable_code, state)
+        ensured_series_id = self._get_observed_series_id(station_id, variable_code, state)
         if ensured_series_id is None:
             raise RuntimeError(
                 "Failed to ensure observed_series "
-                f"station_uid={station_uid} variable_code={variable_code} state={state}."
+                f"station_id={station_id} variable_code={variable_code} state={state}."
             )
         return ensured_series_id
 
@@ -231,9 +231,23 @@ class HistoryRepository:
             return None
         return dict(row)
 
-    def list_ecmwf_assets(self, *, asset_kind: str) -> list[dict[str, Any]]:
+    def list_assets(
+        self,
+        *,
+        provider_code: str | None = None,
+        asset_kind: str | None = None,
+    ) -> list[dict[str, Any]]:
+        clauses: list[str] = []
+        params: list[str] = []
+        if provider_code is not None:
+            clauses.append("provider_code = ?")
+            params.append(provider_code)
+        if asset_kind is not None:
+            clauses.append("asset_kind = ?")
+            params.append(asset_kind)
+        where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         rows = self.connection.execute(
-            """
+            f"""
             SELECT
                 asset_id,
                 asset_kind,
@@ -246,13 +260,15 @@ class HistoryRepository:
                 metadata_json,
                 created_at
             FROM asset
-            WHERE provider_code = 'ecmwf'
-              AND asset_kind = ?
+            {where_sql}
             ORDER BY COALESCE(valid_from, created_at) DESC, created_at DESC
             """,
-            (asset_kind,),
+            params,
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def list_ecmwf_assets(self, *, asset_kind: str) -> list[dict[str, Any]]:
+        return self.list_assets(provider_code="ecmwf", asset_kind=asset_kind)
 
     def upsert_asset(
         self,
@@ -309,13 +325,24 @@ class HistoryRepository:
             raise RuntimeError(f"Falha ao garantir asset relative_path={relative_path}.")
         return ensured_asset
 
-    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict[str, Any] | None:
+    def find_latest_asset(
+        self,
+        reference_time: datetime | str,
+        *,
+        asset_kind: str,
+        provider_code: str | None = None,
+    ) -> dict[str, Any] | None:
         if isinstance(reference_time, datetime):
             reference_text = reference_time.isoformat(timespec="seconds")
         else:
             reference_text = str(reference_time)
+        provider_clause = "AND provider_code = ?" if provider_code is not None else ""
+        params: list[str] = [asset_kind]
+        if provider_code is not None:
+            params.append(provider_code)
+        params.extend([reference_text, reference_text])
         row = self.connection.execute(
-            """
+            f"""
             SELECT
                 asset_id,
                 asset_kind,
@@ -328,8 +355,8 @@ class HistoryRepository:
                 metadata_json,
                 created_at
             FROM asset
-            WHERE provider_code = 'ecmwf'
-              AND asset_kind = ?
+            WHERE asset_kind = ?
+              {provider_clause}
               AND valid_from IS NOT NULL
               AND valid_to IS NOT NULL
               AND valid_from <= ?
@@ -337,11 +364,14 @@ class HistoryRepository:
             ORDER BY valid_from DESC, created_at DESC
             LIMIT 1
             """,
-            (asset_kind, reference_text, reference_text),
+            params,
         ).fetchone()
         if row is None:
             return None
         return dict(row)
+
+    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict[str, Any] | None:
+        return self.find_latest_asset(reference_time, provider_code="ecmwf", asset_kind=asset_kind)
 
     def _normalize_forecast_manual_edit_row(self, asset_id: str, row: dict[str, Any], row_number: int) -> dict[str, Any]:
         if row.get("asset_id") not in (None, "", asset_id):

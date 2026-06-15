@@ -58,10 +58,10 @@ def select_preferred_series_rows(series_df: pd.DataFrame) -> pd.DataFrame:
         ranked["created_at"] = ranked["created_at"].fillna("")
 
     ranked = ranked.sort_values(
-        ["station_uid", "variable_code", "state_rank", "created_at"],
+        ["station_id", "variable_code", "state_rank", "created_at"],
         ascending=[True, True, True, False],
     )
-    preferred = ranked.drop_duplicates(subset=["station_uid", "variable_code"], keep="first")
+    preferred = ranked.drop_duplicates(subset=["station_id", "variable_code"], keep="first")
     return preferred.drop(columns=["state_rank"], errors="ignore").reset_index(drop=True)
 
 
@@ -143,7 +143,7 @@ def load_station_catalog(
         stations = pd.read_sql_query(
             """
             SELECT
-                station_uid,
+                station_id,
                 station_code,
                 provider_code,
                 station_name,
@@ -160,7 +160,7 @@ def load_station_catalog(
             """
             SELECT
                 series_id,
-                station_uid,
+                station_id,
                 variable_code,
                 state,
                 created_at
@@ -172,7 +172,7 @@ def load_station_catalog(
             """
             SELECT
                 os.series_id,
-                os.station_uid,
+                os.station_id,
                 os.variable_code,
                 ov.observed_at,
                 ov.value
@@ -187,7 +187,7 @@ def load_station_catalog(
     if stations.empty:
         return pd.DataFrame(
             columns=[
-                "station_uid",
+                "station_id",
                 "station_code",
                 "provider_code",
                 "station_name",
@@ -207,19 +207,19 @@ def load_station_catalog(
     recent_values = recent_values.dropna(subset=["datetime"])
 
     coverage = (
-        preferred_series.groupby("station_uid")["variable_code"]
+        preferred_series.groupby("station_id")["variable_code"]
         .agg(list)
         .reset_index(name="variable_codes")
     )
     coverage["kind"] = coverage["variable_codes"].apply(derive_station_kind)
 
     metrics_rows: list[dict[str, object]] = []
-    for station_uid, station_values in recent_values.groupby("station_uid", sort=False):
+    for station_id, station_values in recent_values.groupby("station_id", sort=False):
         status_summary = summarize_station_status(station_values, days=days)
         rain_summary = compute_rain_summary(station_values[station_values["variable_code"] == "rain"])
         metrics_rows.append(
             {
-                "station_uid": int(station_uid),
+                "station_id": str(station_id),
                 **status_summary,
                 **rain_summary,
             }
@@ -227,10 +227,10 @@ def load_station_catalog(
 
     metrics = pd.DataFrame(
         metrics_rows,
-        columns=["station_uid", "status", "status_reason", "rows_recent", "rain_mean_mm_h", "rain_acc_24h_mm", "rain_p90_mm_h"],
+        columns=["station_id", "status", "status_reason", "rows_recent", "rain_mean_mm_h", "rain_acc_24h_mm", "rain_p90_mm_h"],
     )
-    merged = stations.merge(coverage[["station_uid", "kind"]], on="station_uid", how="left")
-    merged = merged.merge(metrics, on="station_uid", how="left")
+    merged = stations.merge(coverage[["station_id", "kind"]], on="station_id", how="left")
+    merged = merged.merge(metrics, on="station_id", how="left")
     merged["kind"] = merged["kind"].fillna("no_data")
     merged["status"] = merged["status"].fillna("no_data")
     merged["status_reason"] = merged["status_reason"].fillna(f"sem registros nos ultimos {days} dias")
@@ -244,7 +244,7 @@ def load_station_catalog(
 
 
 def load_observed_series(
-    station_uid: int,
+    station_id: str,
     database_path: Path,
     *,
     days: int = 30,
@@ -258,15 +258,15 @@ def load_observed_series(
             """
             SELECT
                 series_id,
-                station_uid,
+                station_id,
                 variable_code,
                 state,
                 created_at
             FROM observed_series
-            WHERE station_uid = ?
+            WHERE station_id = ?
             """,
             connection,
-            params=(int(station_uid),),
+            params=(str(station_id),),
         )
 
         if series.empty:

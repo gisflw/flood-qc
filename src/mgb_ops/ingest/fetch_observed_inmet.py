@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import json
+import csv
 import logging
-import shutil
 import sys
 import time
 from datetime import date, datetime, timedelta
@@ -12,6 +11,7 @@ from typing import Any
 import requests
 
 from mgb_ops.common.time_utils import TIMEZONE
+from mgb_ops.ingest.observed_csv import NORMALIZED_OBSERVED_COLUMNS, import_normalized_observed_csvs
 from mgb_ops.storage.history_repository import HistoryRepository
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
@@ -69,30 +69,6 @@ def iter_request_dates(reference_time: datetime, request_days: int):
         yield start_date + timedelta(days=offset)
 
 
-def reset_inmet_interim_dir(inmet_dir: Path) -> None:
-    if inmet_dir.exists():
-        shutil.rmtree(inmet_dir)
-    inmet_dir.mkdir(parents=True, exist_ok=True)
-
-
-def save_raw_json(
-    payload: Any,
-    *,
-    inmet_root_dir: Path,
-    station_code: str,
-    request_date: date,
-) -> Path:
-    station_dir = inmet_root_dir / station_code
-    station_dir.mkdir(parents=True, exist_ok=True)
-    file_stamp = request_date.strftime("%Y%m%d")
-    file_path = station_dir / f"{file_stamp}__{file_stamp}.json"
-    file_path.write_text(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
-        encoding="utf-8",
-    )
-    return file_path
-
-
 def build_station_request_url(
     station_code: str,
     *,
@@ -109,6 +85,7 @@ def fetch_station_payload(
     base_url: str,
     timeout_seconds: float,
     api_key: str,
+    product_code: str = DEFAULT_INMET_RAIN_PRODUCT,
     session: requests.Session | None = None,
     retry_attempts: int = RETRY_ATTEMPTS,
     retry_sleep_seconds: float = RETRY_SLEEP_SECONDS,
@@ -124,7 +101,7 @@ def fetch_station_payload(
             "x-api-key": api_key,
         }
     )
-    url = build_station_request_url(station_code, base_url=base_url)
+    url = build_station_request_url(station_code, base_url=base_url, product_code=product_code)
 
     last_exc: Exception | None = None
     for attempt in range(retry_attempts):
@@ -267,35 +244,49 @@ def parse_payload(payload: Any, *, station_code: str):
     return frame.sort_values("observed_at").reset_index(drop=True)
 
 
-def persist_station_frame(
-    repository: HistoryRepository,
-    station_uid: int,
+
+def write_normalized_csv(
     frame,
     *,
+    output_path: Path,
+    station_id: str,
+    provider_code: str,
+    station_code: str,
     state: str = "raw",
-) -> dict[str, int]:
-    if frame.empty:
-        return {"rain": 0}
+) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=NORMALIZED_OBSERVED_COLUMNS)
+        writer.writeheader()
+        if frame.empty:
+            return output_path
+        for record in frame.sort_values("observed_at").to_dict("records"):
+            value = record.get("rain")
+            if value is None:
+                continue
+            try:
+                if value != value:
+                    continue
+            except TypeError:
+                pass
+            writer.writerow(
+                {
+                    "station_id": station_id,
+                    "provider_code": provider_code,
+                    "station_code": station_code,
+                    "observed_at": record["observed_at"].strftime("%Y-%m-%d %H:%M"),
+                    "variable_code": "rain",
+                    "value": float(value),
+                    "state": state,
+                }
+            )
+    return output_path
 
-    station_frame = frame.sort_values("observed_at").drop_duplicates(subset=["observed_at"], keep="last")
-    variable_frame = station_frame.loc[station_frame["rain"].notna(), ["observed_at", "rain"]]
-    if variable_frame.empty:
-        return {"rain": 0}
 
-    rows = [
-        (observed_at.strftime("%Y-%m-%d %H:%M"), float(value))
-        for observed_at, value in zip(variable_frame["observed_at"], variable_frame["rain"])
-    ]
-    series_id: str | None = None
-    try:
-        series_id = repository.ensure_observed_series(station_uid, "rain", state)
-        return {"rain": repository.upsert_observed_values(series_id, rows)}
-    except Exception as exc:
-        raise RuntimeError(
-            "Falha ao persistir observed_value "
-            f"station_uid={station_uid} variable=rain state={state} series_id={series_id!r}."
-        ) from exc
-
+def build_normalized_csv_path(inmet_root_dir: Path, *, station_code: str, request_date: date) -> Path:
+    station_dir = inmet_root_dir / station_code
+    file_stamp = request_date.strftime("%Y%m%d")
+    return station_dir / f"{file_stamp}__{file_stamp}.csv"
 
 def ingest_observed_inmet(
     database_path: Path,
@@ -308,6 +299,7 @@ def ingest_observed_inmet(
     interim_dir: Path,
     logs_dir: Path,
     base_url: str = DEFAULT_INMET_BASE_URL,
+    product_code: str = DEFAULT_INMET_RAIN_PRODUCT,
 ) -> dict[str, object]:
     if request_days < 1:
         raise ValueError("request_days must be >= 1.")
@@ -320,8 +312,9 @@ def ingest_observed_inmet(
 
     run_id = build_run_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{run_id}.log")
-    inmet_root_dir = interim_dir / "inmet"
-    reset_inmet_interim_dir(inmet_root_dir)
+    product_code = product_code.strip() or DEFAULT_INMET_RAIN_PRODUCT
+    inmet_root_dir = interim_dir / "inmet" / run_id
+    inmet_root_dir.mkdir(parents=True, exist_ok=True)
 
     with HistoryRepository(database_path) as repository:
         stations = repository.get_provider_stations("inmet")
@@ -341,7 +334,7 @@ def ingest_observed_inmet(
 
         for station in stations:
             station_code = normalize_inmet_station_code(station["station_code"])
-            station_uid = station["station_uid"]
+            station_id = station["station_id"]
             assert station_code is not None
             station_written = {"rain": 0}
             station_error = False
@@ -355,33 +348,37 @@ def ingest_observed_inmet(
                             base_url=base_url,
                             timeout_seconds=timeout_seconds,
                             api_key=api_key,
+                            product_code=product_code,
                             session=session,
                         )
-                        raw_path = save_raw_json(
-                            payload,
-                            inmet_root_dir=inmet_root_dir,
-                            station_code=station_code,
-                            request_date=request_date,
-                        )
                         frame = parse_payload(payload, station_code=station_code)
-                        counts = persist_station_frame(repository, station_uid, frame)
+                        csv_path = write_normalized_csv(
+                            frame,
+                            output_path=build_normalized_csv_path(inmet_root_dir, station_code=station_code, request_date=request_date),
+                            station_id=station_id,
+                            provider_code="inmet",
+                            station_code=station_code,
+                        )
+                        import_summary = import_normalized_observed_csvs(database_path, [csv_path])
+                        counts = {"rain": import_summary.values_by_variable.get("rain", 0)}
                         station_written["rain"] += counts["rain"]
                         logger.info(
-                            "station=%s station_uid=%s window_start=%s window_end=%s records=%s rain=%s raw_json=%s",
+                            "station=%s station_id=%s window_start=%s window_end=%s records=%s rain=%s normalized_csv=%s product_code=%s",
                             station_code,
-                            station_uid,
+                            station_id,
                             request_date.strftime("%Y-%m-%d"),
                             request_date.strftime("%Y-%m-%d"),
                             len(frame),
                             counts["rain"],
-                            raw_path,
+                            csv_path,
+                            product_code,
                         )
                     except (requests.RequestException, ValueError, RuntimeError) as exc:
                         station_error = True
                         logger.error(
-                            "station=%s station_uid=%s window_start=%s window_end=%s error=%s",
+                            "station=%s station_id=%s window_start=%s window_end=%s error=%s",
                             station_code,
-                            station_uid,
+                            station_id,
                             request_date.strftime("%Y-%m-%d"),
                             request_date.strftime("%Y-%m-%d"),
                             exc,
