@@ -45,6 +45,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
 
     def fake_crop(source_path: Path, target_path: Path, *, bbox) -> None:
         assert source_path.exists()
+        assert bbox == (-72.0, -44.0, -36.0, -17.0)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(b"cropped-grib")
 
@@ -59,6 +60,8 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
     summary = forecast_grid.ingest_forecast_grids(
         history_db,
         reference_time=datetime(2026, 3, 11, 23, 0, 0),
+        bbox=(-60.0, -35.0, -48.0, -26.0),
+        buffer_fraction=1.0,
         interim_dir=tmp_path / "data" / "interim",
         logs_dir=tmp_path / "logs",
         asset_base_dir=tmp_path,

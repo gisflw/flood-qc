@@ -60,14 +60,20 @@ Library module: `mgb_ops.ingest.forecast_grid`
 
 1. Resolve the cycle from `reference_time`.
 2. Download the configured forecast GRIB. ECMWF is the current default product configuration.
-3. Clip the grid to the configured operational bounding box.
+3. Clip the grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
 4. Register the canonical asset in the explicitly supplied history database, using `provider_code` and `asset_kind` plus an explicitly supplied asset base directory for relative paths.
 5. Register logs in `logs/forecast_grid/`.
+
+Python callers pass `bbox=(west, south, east, north)` and `buffer_fraction=...`
+directly to `mgb_ops.ingest.forecast_grid.ingest_forecast_grids`. CLI users can
+set `forecast_grid.bbox` and `forecast_grid.buffer_fraction` in
+`<workspace>/config/custom.yaml`, or override them per run with `--bbox` and
+`--buffer-fraction`.
 
 CLI wrapper:
 
 ```bash
-mgb-ops --workspace examples/rs_hydro ingest forecast-grid
+mgb-ops --workspace examples/rs_hydro ingest forecast-grid --bbox -60 -35 -48 -26 --buffer-fraction 1
 ```
 
 ### 4. MGB Preparation

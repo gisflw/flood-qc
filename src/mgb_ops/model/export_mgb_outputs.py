@@ -13,7 +13,7 @@ import numpy as np
 
 DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
-LOGGER_NAME = "floodqc.model.export_mgb_outputs"
+LOGGER_NAME = "model.export_mgb_outputs"
 
 
 @dataclass(frozen=True, slots=True)

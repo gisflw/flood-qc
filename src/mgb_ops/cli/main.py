@@ -37,6 +37,37 @@ def _settings(args: argparse.Namespace) -> dict[str, object]:
     return _context(args).settings
 
 
+def _resolve_forecast_grid_spatial_args(args: argparse.Namespace, settings: dict[str, object]) -> tuple[tuple[float, float, float, float], float]:
+    forecast_grid_settings = settings["forecast_grid"]
+    if not isinstance(forecast_grid_settings, dict):
+        raise ValueError("config.forecast_grid must be a mapping.")
+
+    bbox_value = args.bbox if args.bbox is not None else forecast_grid_settings.get("bbox")
+    buffer_fraction_value = (
+        args.buffer_fraction if args.buffer_fraction is not None else forecast_grid_settings.get("buffer_fraction")
+    )
+    if bbox_value is None:
+        raise ValueError(
+            "Forecast grid bbox is required. Pass --bbox west south east north or set forecast_grid.bbox in custom.yaml."
+        )
+    if buffer_fraction_value is None:
+        raise ValueError(
+            "Forecast grid buffer fraction is required. Pass --buffer-fraction or set forecast_grid.buffer_fraction in custom.yaml."
+        )
+
+    bbox = tuple(float(item) for item in bbox_value)
+    if len(bbox) != 4:
+        raise ValueError("Forecast grid bbox must contain four numbers: west south east north.")
+    west, south, east, north = bbox
+    if west >= east or south >= north:
+        raise ValueError("Forecast grid bbox must satisfy west < east and south < north.")
+
+    buffer_fraction = float(buffer_fraction_value)
+    if buffer_fraction < 0:
+        raise ValueError("Forecast grid buffer fraction must be >= 0.")
+    return bbox, buffer_fraction
+
+
 def cmd_bootstrap_history(args: argparse.Namespace) -> int:
     from mgb_ops.storage.db_bootstrap import initialize_history_db
 
@@ -114,9 +145,12 @@ def cmd_ingest_forecast_grid(args: argparse.Namespace) -> int:
     paths = ctx.paths
     settings = ctx.settings
     reference_time = resolve_reference_time(settings["run"]["reference_time"])
+    bbox, buffer_fraction = _resolve_forecast_grid_spatial_args(args, settings)
     summary = ingest_forecast_grids(
         args.history_db or paths.history_db,
         reference_time=reference_time,
+        bbox=bbox,
+        buffer_fraction=buffer_fraction,
         interim_dir=paths.interim_dir,
         logs_dir=paths.logs_dir,
         asset_base_dir=paths.workspace,
@@ -290,6 +324,20 @@ def build_parser() -> argparse.ArgumentParser:
     inmet.set_defaults(func=cmd_ingest_inmet)
     forecast = ingest_sub.add_parser("forecast-grid", help="Ingest forecast grids using the configured provider defaults.")
     forecast.add_argument("--history-db", type=Path, default=None)
+    forecast.add_argument(
+        "--bbox",
+        type=float,
+        nargs=4,
+        metavar=("WEST", "SOUTH", "EAST", "NORTH"),
+        default=None,
+        help="Forecast clipping bounds before buffering. Overrides forecast_grid.bbox in custom.yaml.",
+    )
+    forecast.add_argument(
+        "--buffer-fraction",
+        type=float,
+        default=None,
+        help="Fraction of bbox width/height to add on every side. Overrides forecast_grid.buffer_fraction in custom.yaml.",
+    )
     forecast.set_defaults(func=cmd_ingest_forecast_grid)
 
     model = subparsers.add_parser("model", help="Prepare, run, and export MGB data.")

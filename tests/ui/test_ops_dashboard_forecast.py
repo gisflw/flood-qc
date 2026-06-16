@@ -45,8 +45,8 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
 
     with HistoryRepository(db_path) as repository:
         repository.upsert_asset(
-            asset_id="ecmwf.ifs.fc.20260311T000000Z.rsbuf",
-            asset_kind="forecast_grib_rs_buffered",
+            asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
+            asset_kind="forecast_grib_buffered",
             format="GRIB2",
             relative_path=str(forecast_path),
             provider_code="ecmwf",
@@ -59,21 +59,21 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
     monkeypatch.setattr(ops_dashboard_forecast, "read_tp_grib_messages", lambda _: messages)
 
     assets = ops_dashboard_forecast.list_forecast_assets(db_path)
-    steps = ops_dashboard_forecast.list_forecast_steps("ecmwf.ifs.fc.20260311T000000Z.rsbuf", db_path)
+    steps = ops_dashboard_forecast.list_forecast_steps("ecmwf.ifs.fc.20260311T000000Z.buffered", db_path)
     accum_preview = ops_dashboard_forecast.build_forecast_preview(
-        "ecmwf.ifs.fc.20260311T000000Z.rsbuf",
+        "ecmwf.ifs.fc.20260311T000000Z.buffered",
         t0_step=0,
         t1_step=3,
         database_path=db_path,
     )
     incr_preview = ops_dashboard_forecast.build_forecast_preview(
-        "ecmwf.ifs.fc.20260311T000000Z.rsbuf",
+        "ecmwf.ifs.fc.20260311T000000Z.buffered",
         t0_step=3,
         t1_step=6,
         database_path=db_path,
     )
 
-    assert assets["asset_id"].tolist() == ["ecmwf.ifs.fc.20260311T000000Z.rsbuf"]
+    assert assets["asset_id"].tolist() == ["ecmwf.ifs.fc.20260311T000000Z.buffered"]
     assert steps["step_hours"].tolist() == [0, 3, 6]
     assert np.allclose(accum_preview.data, 6.0)
     assert np.allclose(incr_preview.data, 4.0)

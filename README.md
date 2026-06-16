@@ -155,7 +155,7 @@ the Python modules:
 mgb-ops --workspace examples/rs_hydro bootstrap history
 mgb-ops --workspace examples/rs_hydro ingest ana
 mgb-ops --workspace examples/rs_hydro ingest inmet
-mgb-ops --workspace examples/rs_hydro ingest forecast-grid
+mgb-ops --workspace examples/rs_hydro ingest forecast-grid --bbox -60 -35 -48 -26 --buffer-fraction 1
 mgb-ops --workspace examples/rs_hydro model prepare-meta
 mgb-ops --workspace examples/rs_hydro model prepare-rainfall
 mgb-ops --workspace examples/rs_hydro model run --dry-run
@@ -163,7 +163,7 @@ mgb-ops --workspace examples/rs_hydro model export-outputs
 mgb-ops --workspace examples/rs_hydro dashboard
 ```
 
-To run INMET ingestion through the CLI, set `INMET_API_KEY` in the process environment or in `<workspace>/.env` copied from `.env.example`. Explicit Python arguments still belong at the domain-function boundary.
+To run INMET ingestion through the CLI, set `INMET_API_KEY` in the process environment or in `<workspace>/.env` copied from `.env.example`. Forecast grid ingestion also requires a user-supplied bbox and buffer fraction, either as CLI flags or as `forecast_grid.bbox` and `forecast_grid.buffer_fraction` in `<workspace>/config/custom.yaml`. Explicit Python arguments still belong at the domain-function boundary.
 
 ## Main Components
 

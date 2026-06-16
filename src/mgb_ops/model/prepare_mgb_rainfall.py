@@ -16,7 +16,7 @@ from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import build_mgb_window, read_time_settings_from_parhig
 
 DEFAULT_CHUNK_HOURS = 720
-LOGGER_NAME = "floodqc.model.prepare_mgb_rainfall"
+LOGGER_NAME = "model.prepare_mgb_rainfall"
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 
 

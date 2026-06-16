@@ -18,6 +18,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "request_days": 90,
         "timeout_seconds": 15,
     },
+    "forecast_grid": {
+        "bbox": None,
+        "buffer_fraction": None,
+    },
     "summaries": {
         "forecast_days": [1, 3, 7, 14],
         "accum_hours": [24, 72, 240, 720],
@@ -89,9 +93,28 @@ def _validate_positive_number(value: Any, context: str) -> None:
         raise ValueError(f"{context} must be a number > 0.")
 
 
+def _validate_optional_nonnegative_number(value: Any, context: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
+        raise ValueError(f"{context} must be null or a number >= 0.")
+
+
 def _validate_bool(value: Any, context: str) -> None:
     if not isinstance(value, bool):
         raise ValueError(f"{context} must be boolean.")
+
+
+def _validate_optional_bbox(value: Any, context: str) -> None:
+    if value is None:
+        return
+    if not isinstance(value, list) or len(value) != 4:
+        raise ValueError(f"{context} must be null or a list of four numbers: [west, south, east, north].")
+    if any(not isinstance(item, (int, float)) or isinstance(item, bool) for item in value):
+        raise ValueError(f"{context} must contain only numbers.")
+    west, south, east, north = (float(item) for item in value)
+    if west >= east or south >= north:
+        raise ValueError(f"{context} must satisfy west < east and south < north.")
 
 
 def _validate_positive_int_list(value: Any, context: str) -> None:
@@ -137,6 +160,10 @@ def _validate_settings(settings: dict[str, Any]) -> None:
         "ingest": {
             "request_days": _validate_positive_int,
             "timeout_seconds": _validate_positive_number,
+        },
+        "forecast_grid": {
+            "bbox": _validate_optional_bbox,
+            "buffer_fraction": _validate_optional_nonnegative_number,
         },
         "summaries": {
             "forecast_days": _validate_positive_int_list,

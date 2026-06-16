@@ -7,7 +7,7 @@ from datetime import datetime, time, timedelta
 from pathlib import Path
 
 DEFAULT_DT_SECONDS = 3600
-LOGGER_NAME = "floodqc.model.prepare_mgb_meta"
+LOGGER_NAME = "model.prepare_mgb_meta"
 
 
 @dataclass(frozen=True, slots=True)

@@ -79,7 +79,7 @@ The CLI remains convenient for manual operation and automation:
 mgb-ops --workspace examples/rs_hydro bootstrap history
 mgb-ops --workspace examples/rs_hydro ingest ana
 mgb-ops --workspace examples/rs_hydro ingest inmet
-mgb-ops --workspace examples/rs_hydro ingest forecast-grid
+mgb-ops --workspace examples/rs_hydro ingest forecast-grid --bbox -60 -35 -48 -26 --buffer-fraction 1
 mgb-ops --workspace examples/rs_hydro model prepare-meta
 mgb-ops --workspace examples/rs_hydro model prepare-rainfall
 mgb-ops --workspace examples/rs_hydro model run --dry-run

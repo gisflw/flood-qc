@@ -27,8 +27,8 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
         "ingest_forecast_grids",
         lambda *args, **kwargs: forecast_grid_module.ForecastGridSummary(
             run_id="20260310T120000",
-            asset_id="ecmwf.ifs.fc.20260310T000000Z.rsbuf",
-            asset_path=Path("/tmp/fc_2026-03-10_00_IFS_rsbuf.grib2"),
+            asset_id="ecmwf.ifs.fc.20260310T000000Z.buffered",
+            asset_path=Path("/tmp/fc_2026-03-10_00_IFS_buffered.grib2"),
             valid_from=forecast_grid_module.datetime(2026, 3, 10, 3, 0, 0),
             valid_to=forecast_grid_module.datetime(2026, 3, 25, 0, 0, 0),
         ),
@@ -37,6 +37,8 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
     assets = collect_forecast_grids(
         run_metadata,
         history_db=Path("/tmp/history.sqlite"),
+        bbox=(-60.0, -35.0, -48.0, -26.0),
+        buffer_fraction=1.0,
         interim_dir=Path("/tmp/interim"),
         logs_dir=Path("/tmp/logs"),
         asset_base_dir=Path("/tmp"),
@@ -44,4 +46,4 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
 
     assert len(assets) == 1
     assert assets[0].format == "GRIB2"
-    assert assets[0].relative_path == "fc_2026-03-10_00_IFS_rsbuf.grib2"
+    assert assets[0].relative_path == "fc_2026-03-10_00_IFS_buffered.grib2"

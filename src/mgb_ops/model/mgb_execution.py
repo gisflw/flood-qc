@@ -9,7 +9,7 @@ from pathlib import Path
 
 from mgb_ops.common.models import CommandPlan, ModelOutput, RunMetadata
 
-LOGGER_NAME = "floodqc.model.mgb_execution"
+LOGGER_NAME = "model.mgb_execution"
 
 
 def script_stem() -> str:

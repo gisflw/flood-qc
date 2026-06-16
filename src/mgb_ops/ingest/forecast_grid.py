@@ -13,14 +13,12 @@ from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.storage.history_repository import HistoryRepository
 
-LOGGER_NAME = "floodqc.ingest.forecast_grid"
-ECMWF_ASSET_KIND = "forecast_grib_rs_buffered"
+LOGGER_NAME = "ingest.forecast_grid"
+ECMWF_ASSET_KIND = "forecast_grib_buffered"
 ECMWF_MODEL = "ifs"
 ECMWF_PRODUCT_TYPE = "fc"
 ECMWF_RESOLUTION = "0p25"
 ECMWF_PARAM = "tp"
-RS_BBOX = (-60.0, -35.0, -48.0, -26.0)  # west, south, east, north
-BUFFER_FRACTION = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +29,6 @@ class ForecastProductConfig:
     product_type: str
     resolution: str
     param: str
-    bbox: tuple[float, float, float, float]
-    buffer_fraction: float
     step_schedule: tuple[int, ...]
 
 
@@ -43,8 +39,6 @@ ECMWF_FORECAST_PRODUCT = ForecastProductConfig(
     product_type=ECMWF_PRODUCT_TYPE,
     resolution=ECMWF_RESOLUTION,
     param=ECMWF_PARAM,
-    bbox=RS_BBOX,
-    buffer_fraction=BUFFER_FRACTION,
     step_schedule=tuple([hour for hour in range(0, 144 + 3, 3)] + [hour for hour in range(150, 360 + 6, 6)]),
 )
 
@@ -122,12 +116,16 @@ def _normalize_longitudes(values: np.ndarray) -> np.ndarray:
     return normalized
 
 
-def build_rs_bbox_with_buffer(
+def build_bbox_with_buffer(
+    bbox: tuple[float, float, float, float],
     *,
-    buffer_fraction: float = BUFFER_FRACTION,
-    bbox: tuple[float, float, float, float] = RS_BBOX,
+    buffer_fraction: float,
 ) -> tuple[float, float, float, float]:
     west, south, east, north = bbox
+    if west >= east or south >= north:
+        raise ValueError("bbox must satisfy west < east and south < north.")
+    if buffer_fraction < 0:
+        raise ValueError("buffer_fraction must be >= 0.")
     width = east - west
     height = north - south
     return (
@@ -157,12 +155,12 @@ def build_output_path(
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> Path:
     directory = interim_root / product_config.provider_code
-    file_name = f"{product_config.product_type}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_{product_config.model.upper()}_rsbuf.grib2"
+    file_name = f"{product_config.product_type}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_{product_config.model.upper()}_buffered.grib2"
     return directory / file_name
 
 
 def build_asset_id(cycle_time: datetime, product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> str:
-    return f"{product_config.provider_code}.{product_config.model}.{product_config.product_type}.{cycle_time.strftime('%Y%m%dT%H%M%SZ')}.rsbuf"
+    return f"{product_config.provider_code}.{product_config.model}.{product_config.product_type}.{cycle_time.strftime('%Y%m%dT%H%M%SZ')}.buffered"
 
 
 def _build_grid_arrays(gid) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -346,6 +344,8 @@ def ingest_forecast_grids(
     database_path: Path,
     *,
     reference_time: datetime,
+    bbox: tuple[float, float, float, float],
+    buffer_fraction: float,
     interim_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
@@ -358,16 +358,16 @@ def ingest_forecast_grids(
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
     cycle_time = build_ecmwf_cycle(reference_time)
     target_path = build_output_path(interim_dir, cycle_time, product_config)
-    bbox = build_rs_bbox_with_buffer(
-        buffer_fraction=product_config.buffer_fraction,
-        bbox=product_config.bbox,
+    buffered_bbox = build_bbox_with_buffer(
+        bbox,
+        buffer_fraction=buffer_fraction,
     )
 
     logger.info(
         "forecast_grid_start history_db=%s cycle_time=%s bbox=%s target=%s",
         database_path,
         cycle_time.strftime("%Y-%m-%dT%H:%M:%S"),
-        bbox,
+        buffered_bbox,
         target_path,
     )
 
@@ -375,7 +375,7 @@ def ingest_forecast_grids(
         temp_dir = Path(temp_dir_name)
         temp_grib_path = temp_dir / "download.grib2"
         download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time, product_config=product_config)
-        crop_grib_to_bbox(temp_grib_path, target_path, bbox=bbox)
+        crop_grib_to_bbox(temp_grib_path, target_path, bbox=buffered_bbox)
 
     valid_from, valid_to = extract_valid_time_bounds(target_path)
     relative_path = build_relative_asset_path(target_path, asset_base_dir=asset_base_dir)
@@ -385,8 +385,9 @@ def ingest_forecast_grids(
         "resolution": product_config.resolution,
         "reference_time": reference_time.isoformat(timespec="seconds"),
         "cycle_time": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "bbox": list(bbox),
-        "buffer_fraction": product_config.buffer_fraction,
+        "bbox": list(buffered_bbox),
+        "source_bbox": list(bbox),
+        "buffer_fraction": buffer_fraction,
     }
 
     with HistoryRepository(database_path) as repository:
@@ -421,6 +422,8 @@ def collect_forecast_grids(
     run: RunMetadata,
     *,
     history_db: Path,
+    bbox: tuple[float, float, float, float],
+    buffer_fraction: float,
     interim_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
@@ -429,6 +432,8 @@ def collect_forecast_grids(
     summary = ingest_forecast_grids(
         history_db,
         reference_time=reference_time,
+        bbox=bbox,
+        buffer_fraction=buffer_fraction,
         interim_dir=interim_dir,
         logs_dir=logs_dir,
         asset_base_dir=asset_base_dir,
