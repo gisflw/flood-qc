@@ -11,7 +11,14 @@ import numpy as np
 import pandas as pd
 
 from mgb_ops.common.time_utils import TIMEZONE
-from mgb_ops.ingest.forecast_grid import ECMWF_FORECAST_PRODUCT, TpGribMessage, read_tp_grib_messages
+from mgb_ops.ingest.forecast_grid import (
+    ECMWF_FORECAST_PRODUCT,
+    ForecastProductConfig,
+    TpGribMessage,
+    build_asset_id,
+    build_ecmwf_cycle,
+    read_tp_grib_messages,
+)
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import build_mgb_window, read_time_settings_from_parhig
 
@@ -33,6 +40,14 @@ class RainfallPreparationSummary:
     power: float
     used_hourly_normalization: bool
     forecast_hours: int
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastAssetMatch:
+    asset_id: str
+    asset_path: Path
+    valid_from: datetime
+    valid_to: datetime
 
 
 def script_stem() -> str:
@@ -292,6 +307,67 @@ def load_latest_ecmwf_asset_path(
     if not asset_path.exists():
         raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
     return asset_path
+
+
+def find_required_ecmwf_asset(
+    connection: sqlite3.Connection,
+    *,
+    reference_time: datetime,
+    input_days_before: int,
+    forecast_horizon_days: int,
+    asset_base_dir: Path,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> ForecastAssetMatch | None:
+    window = build_mgb_window(
+        reference_time,
+        input_days_before=input_days_before,
+        forecast_horizon_days=forecast_horizon_days,
+    )
+    cycle_time = build_ecmwf_cycle(reference_time)
+    expected_asset_id = build_asset_id(cycle_time, product_config)
+    forecast_end_time = window.forecast_start_time + timedelta(hours=window.forecast_nt - 1)
+    forecast_start_utc = (
+        window.forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+    )
+    forecast_end_utc = (
+        forecast_end_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+    )
+
+    row = connection.execute(
+        """
+        SELECT asset_id, relative_path, valid_from, valid_to
+        FROM asset
+        WHERE asset_id = ?
+          AND provider_code = ?
+          AND asset_kind = ?
+          AND valid_from IS NOT NULL
+          AND valid_to IS NOT NULL
+          AND valid_from <= ?
+          AND valid_to >= ?
+        LIMIT 1
+        """,
+        (
+            expected_asset_id,
+            product_config.provider_code,
+            product_config.asset_kind,
+            forecast_start_utc.isoformat(timespec="seconds"),
+            forecast_end_utc.isoformat(timespec="seconds"),
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+
+    registered_path = Path(str(row[1]))
+    asset_path = registered_path if registered_path.is_absolute() else Path(asset_base_dir) / registered_path
+    if not asset_path.exists():
+        raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
+
+    return ForecastAssetMatch(
+        asset_id=str(row[0]),
+        asset_path=asset_path,
+        valid_from=datetime.fromisoformat(str(row[2])),
+        valid_to=datetime.fromisoformat(str(row[3])),
+    )
 
 
 def extend_station_matrix_with_forecast(
