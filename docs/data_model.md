@@ -7,10 +7,9 @@ The canonical model remains split between:
 - persistent history in `<workspace>/data/history.sqlite`;
 - one file per run in `<workspace>/data/runs/<run_id>.sqlite`.
 
-Today the history database is used operationally by ANA, ECMWF, the dashboard,
-and manual forecast corrections. These stores should be accessed through
-library functions where possible; the CLI and dashboard are consumers of the
-same data model. The run schema already exists, but its operational
+Today the history database is used operationally by ANA, ECMWF, and manual
+forecast corrections. These stores should be accessed through library functions
+where possible. The run schema already exists, but its operational
 materialization is not complete yet.
 
 ## Main History Entities
@@ -100,7 +99,7 @@ Complete MGB output remains outside SQLite, in the canonical runner binaries:
 - `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
 - `<workspace>/mgb_runner/Output/YTUDO.MGB`
 
-The dashboard reads these binaries directly with support from:
+Library readers use these binaries with support from:
 
 - `<workspace>/mgb_runner/Input/PARHIG.hig`
 - `<workspace>/mgb_runner/Input/MINI.gtp`
@@ -114,7 +113,7 @@ The contract remains:
 - rasters and vectors live outside SQLite;
 - the database stores only metadata and relative paths.
 
-`<workspace>/data/spatial/` remains the canonical destination for processed spatial assets, but the dashboard map still depends on legacy material in `<workspace>/data/legacy/app_layers/`.
+`<workspace>/data/spatial/` remains the canonical destination for processed spatial assets, although some spatial inputs still come from legacy material in `<workspace>/data/legacy/app_layers/`.
 
 ## Configuration
 
@@ -126,7 +125,7 @@ The repository's operational configuration remains in:
 The possible migration to `.toml` remains under evaluation and does not yet
 change the data model or the runtime contract for this phase. Library functions
 should prefer explicit path/config inputs where practical so notebooks, scripts,
-CLI commands, and dashboard flows can share the same model.
+and orchestrated data flows can share the same model.
 
 ## Canonical Schemas
 

@@ -284,7 +284,7 @@ def load_latest_ecmwf_asset_path(
     if row is None:
         raise FileNotFoundError(
             "No ECMWF forecast asset was found in history for the requested forecast window. "
-            "Run `mgb-ops ingest forecast-grid` first."
+            "Ingest forecast grids with `mgb_ops.ingest.forecast_grid` first."
         )
 
     registered_path = Path(str(row["relative_path"]))

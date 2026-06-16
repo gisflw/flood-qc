@@ -21,14 +21,6 @@ data = [
 geo = [
   "rasterio>=1.3",
 ]
-ui = [
-  "streamlit>=1.40",
-  "plotly>=5.20",
-  "folium>=0.18",
-  "streamlit-folium>=0.24",
-  "branca>=0.8",
-  "affine>=2.4",
-]
 dev = [
   "pytest>=8.0",
 ]
@@ -41,9 +33,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "mgb_ops.assets" = ["sql/*.sql"]
-
-[project.scripts]
-mgb-ops = "mgb_ops.cli.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -41,8 +41,8 @@ class HistoryRepository:
             raise RuntimeError(
                 f"History database is incompatible with the current schema for {table_name}. "
                 f"Expected {sorted(expected_columns)}, found {sorted(found_columns)}. "
-                f"Delete {self.database_path} and run `mgb-ops bootstrap history` "
-                "to recreate the database."
+                f"Delete {self.database_path} and recreate the database with "
+                "`mgb_ops.storage.db_bootstrap`."
             )
 
     def _validate_expected_schema(self) -> None:
@@ -98,8 +98,8 @@ class HistoryRepository:
             raise RuntimeError(
                 "History database is incompatible with the current variable catalog. "
                 f"Expected at least {sorted(expected_variables)}, found {sorted(variable_codes)}. "
-                f"Delete {self.database_path} and run `mgb-ops bootstrap history` "
-                "to recreate the database."
+                f"Delete {self.database_path} and recreate the database with "
+                "`mgb_ops.storage.db_bootstrap`."
             )
 
         provider_codes = {
@@ -111,8 +111,8 @@ class HistoryRepository:
             raise RuntimeError(
                 "History database is incompatible with the current provider catalog. "
                 f"Expected at least {sorted(expected_providers)}, found {sorted(provider_codes)}. "
-                f"Delete {self.database_path} and run `mgb-ops bootstrap history` "
-                "to recreate the database."
+                f"Delete {self.database_path} and recreate the database with "
+                "`mgb_ops.storage.db_bootstrap`."
             )
 
     def get_provider_stations(self, provider_code: str) -> list[dict[str, Any]]:

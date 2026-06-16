@@ -2,12 +2,10 @@ from __future__ import annotations
 
 from io import StringIO
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
 from mgb_ops.common.models import RunMetadata
-from mgb_ops.cli import main as cli_main
 from mgb_ops.model import mgb_execution
 from mgb_ops.model import run_mgb
 
@@ -178,7 +176,7 @@ def test_execute_mgb_plan_fails_when_output_is_empty(monkeypatch, tmp_path) -> N
         mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs")
 
 
-def test_model_run_cli_prints_summary_without_running_real_exe(monkeypatch, tmp_path, capsys) -> None:
+def test_model_run_summary_reports_execution_plan(tmp_path) -> None:
     plan = mgb_execution.CommandPlan(
         command=["fake.exe"],
         working_directory="C:/mgb-hora",
@@ -193,44 +191,14 @@ def test_model_run_cli_prints_summary_without_running_real_exe(monkeypatch, tmp_
         },
     )
 
-    paths = SimpleNamespace(
-        workspace=tmp_path,
-        mgb_executable_path=Path("fake.exe"),
-        mgb_input_dir=Path("mgb_runner/Input"),
-        mgb_output_dir=Path("mgb_runner/Output"),
-        remote_workspace_root=Path("C:/mgb-hora"),
-        logs_dir=Path("logs"),
+    result = mgb_execution.ModelOutput(
+        output_name="mgb_output",
+        description="Execucao real do MGB concluida com sucesso.",
+        asset_refs=["mgb_runner/Output/QTUDO01.MGB"],
     )
 
-    def fake_prepare(metadata, *, executable_path, input_dir, output_dir, workspace_root, asset_base_dir):
-        assert metadata.run_id == "20260325T120000"
-        assert executable_path == "fake.exe"
-        assert str(input_dir) == "mgb_runner/Input"
-        assert str(output_dir) == "mgb_runner/Output"
-        assert str(workspace_root) == "C:/mgb-hora"
-        assert str(asset_base_dir) == str(tmp_path)
-        return plan
+    summary = run_mgb.build_summary(plan, result, dry_run=False)
 
-    def fake_execute(received_plan, *, dry_run=False, logs_dir=None):
-        assert received_plan is plan
-        assert dry_run is False
-        assert str(logs_dir) == "logs"
-        return mgb_execution.ModelOutput(
-            output_name="mgb_output",
-            description="Execucao real do MGB concluida com sucesso.",
-            asset_refs=["mgb_runner/Output/QTUDO01.MGB"],
-        )
-
-    monkeypatch.setattr(cli_main, "build_runtime_context", lambda **kwargs: SimpleNamespace(paths=paths, settings={}, env=SimpleNamespace()))
-    monkeypatch.setattr(cli_main, "set_workspace", lambda workspace=None: tmp_path)
-    monkeypatch.setattr(run_mgb, "build_run_id", lambda: "20260325T120000")
-    monkeypatch.setattr(mgb_execution, "prepare_mgb_execution", fake_prepare)
-    monkeypatch.setattr(mgb_execution, "execute_mgb_plan", fake_execute)
-
-    result = cli_main.main(["model", "run"])
-    captured = capsys.readouterr()
-
-    assert result == 0
-    assert '"status": "success"' in captured.out
-    assert '"command": [' in captured.out
-    assert "QTUDO01.MGB" in captured.out
+    assert summary["status"] == "success"
+    assert summary["command"] == ["fake.exe"]
+    assert summary["asset_refs"] == ["mgb_runner/Output/QTUDO01.MGB"]

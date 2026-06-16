@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_only_ops_dashboard_app_imports_streamlit() -> None:
+def test_package_does_not_import_streamlit() -> None:
     offenders: list[str] = []
     for path in (REPO_ROOT / "src").rglob("*.py"):
         text = path.read_text(encoding="utf-8-sig")
@@ -112,7 +112,7 @@ def test_domain_modules_do_not_call_or_read_ambient_runtime_state() -> None:
     assert offenders == []
 
 
-def test_domain_modules_have_no_cli_or_direct_script_entrypoints() -> None:
+def test_domain_modules_have_no_direct_script_entrypoints() -> None:
     forbidden_text = (
         "argparse",
         "ArgumentParser",

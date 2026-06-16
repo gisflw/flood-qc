@@ -29,10 +29,10 @@ def test_run_path_uses_single_sqlite_file() -> None:
 
 def test_workspace_argument_wins_over_env(monkeypatch, tmp_path) -> None:
     env_workspace = tmp_path / "env"
-    cli_workspace = tmp_path / "cli"
+    explicit_workspace = tmp_path / "explicit"
     monkeypatch.setenv(MGB_OPS_WORKSPACE_ENV, str(env_workspace))
 
-    assert resolve_workspace(cli_workspace) == cli_workspace.resolve()
+    assert resolve_workspace(explicit_workspace) == explicit_workspace.resolve()
 
 
 def test_workspace_env_wins_over_cwd(monkeypatch, tmp_path) -> None:

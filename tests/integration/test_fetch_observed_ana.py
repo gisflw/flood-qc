@@ -224,6 +224,6 @@ def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
         HistoryRepository(db_path)
     except RuntimeError as exc:
         assert "History database is incompatible" in str(exc)
-        assert "mgb-ops bootstrap history" in str(exc)
+        assert "mgb_ops.storage.db_bootstrap" in str(exc)
     else:
         raise AssertionError("Expected an error for the old observed_series schema.")
