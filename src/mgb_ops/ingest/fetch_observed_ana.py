@@ -4,16 +4,53 @@ import csv
 import logging
 import sys
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Iterable
 
 import requests
 
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
-from mgb_ops.ingest.observed_csv import NORMALIZED_OBSERVED_COLUMNS, import_normalized_observed_csvs
+from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 OBSERVED_VARIABLES = ("rain", "level", "flow")
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedFetchStationSummary:
+    station_id: str
+    station_code: str
+    request_start: date | None
+    request_end: date | None
+    rows_parsed: int
+    csv_path: Path | None
+    no_data: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedFetchSummary:
+    run_id: str
+    provider_code: str
+    stations: tuple[ObservedFetchStationSummary, ...]
+
+    @property
+    def csv_paths(self) -> list[Path]:
+        return [station.csv_path for station in self.stations if station.csv_path is not None]
+
+    def legacy_counts(self) -> dict[str, int | str]:
+        stations_ok = sum(1 for station in self.stations if station.error is None and not station.no_data)
+        stations_error = sum(1 for station in self.stations if station.error is not None)
+        stations_no_data = sum(1 for station in self.stations if station.error is None and station.no_data)
+        return {
+            "run_id": self.run_id,
+            "stations_total": len(self.stations),
+            "stations_ok": stations_ok,
+            "stations_no_data": stations_no_data,
+            "stations_error": stations_error,
+        }
 
 
 def script_stem() -> str:
@@ -149,7 +186,6 @@ def save_raw_xml(
     return file_path
 
 
-
 def write_normalized_csv(
     frame,
     *,
@@ -190,7 +226,140 @@ def write_normalized_csv(
     return output_path
 
 
-def build_normalized_csv_path(ana_root_dir: Path, *, station_code: str, request_date: date) -> Path:
-    station_dir = ana_root_dir / station_code
-    file_stamp = request_date.strftime("%Y%m%d")
-    return station_dir / f"{file_stamp}__{file_stamp}.csv"
+def build_normalized_csv_path(ana_root_dir: Path, *, station_code: str, request_date: date | None = None) -> Path:
+    return ana_root_dir / station_code / "observed.csv"
+
+
+def fetch_observed_ana(
+    stations: Iterable[dict],
+    *,
+    request_dates_by_station: dict[str, Iterable[date]],
+    interim_dir: Path,
+    run_id: str,
+    base_url: str = DEFAULT_ANA_BASE_URL,
+    timeout_seconds: float = 30.0,
+    logger: logging.Logger | None = None,
+    save_raw: bool = True,
+) -> ObservedFetchSummary:
+    import pandas as pd
+
+    ana_root_dir = Path(interim_dir) / "ana" / run_id
+    station_summaries: list[ObservedFetchStationSummary] = []
+
+    for station in stations:
+        station_id = str(station["station_id"])
+        station_code = str(station["station_code"])
+        request_dates = list(request_dates_by_station.get(station_id, []))
+        csv_path = build_normalized_csv_path(ana_root_dir, station_code=station_code)
+
+        if not request_dates:
+            write_normalized_csv(
+                pd.DataFrame(columns=["station_code", "observed_at", *OBSERVED_VARIABLES]),
+                output_path=csv_path,
+                station_id=station_id,
+                provider_code="ana",
+                station_code=station_code,
+            )
+            station_summaries.append(
+                ObservedFetchStationSummary(
+                    station_id=station_id,
+                    station_code=station_code,
+                    request_start=None,
+                    request_end=None,
+                    rows_parsed=0,
+                    csv_path=csv_path,
+                    no_data=True,
+                )
+            )
+            continue
+
+        frames = []
+        try:
+            for request_date in request_dates:
+                xml_text = fetch_station_xml(
+                    station_code,
+                    request_date=request_date,
+                    base_url=base_url,
+                    timeout_seconds=timeout_seconds,
+                )
+                if save_raw:
+                    raw_xml_path = save_raw_xml(
+                        xml_text,
+                        ana_root_dir=ana_root_dir,
+                        station_code=station_code,
+                        request_date=request_date,
+                    )
+                else:
+                    raw_xml_path = None
+                frame = parse_response(xml_text)
+                if not frame.empty:
+                    frame = frame[frame["station_code"].astype(str) == normalize_ana_station_code(station_code)]
+                    frames.append(frame)
+                if logger is not None:
+                    logger.info(
+                        "station_day_fetched station_id=%s station_code=%s request_date=%s raw_xml=%s rows=%s",
+                        station_id,
+                        station_code,
+                        request_date.isoformat(),
+                        raw_xml_path,
+                        len(frame),
+                    )
+
+            combined = (
+                pd.concat(frames, ignore_index=True)
+                if frames
+                else pd.DataFrame(columns=["station_code", "observed_at", *OBSERVED_VARIABLES])
+            )
+            write_normalized_csv(
+                combined,
+                output_path=csv_path,
+                station_id=station_id,
+                provider_code="ana",
+                station_code=station_code,
+            )
+            station_summaries.append(
+                ObservedFetchStationSummary(
+                    station_id=station_id,
+                    station_code=station_code,
+                    request_start=min(request_dates),
+                    request_end=max(request_dates),
+                    rows_parsed=len(combined),
+                    csv_path=csv_path,
+                    no_data=combined.empty,
+                )
+            )
+            if logger is not None:
+                logger.info(
+                    "station_complete station_id=%s station_code=%s window_start=%s window_end=%s rows_parsed=%s normalized_csv=%s no_data=%s",
+                    station_id,
+                    station_code,
+                    min(request_dates).isoformat(),
+                    max(request_dates).isoformat(),
+                    len(combined),
+                    csv_path,
+                    combined.empty,
+                )
+        except Exception as exc:
+            station_summaries.append(
+                ObservedFetchStationSummary(
+                    station_id=station_id,
+                    station_code=station_code,
+                    request_start=min(request_dates),
+                    request_end=max(request_dates),
+                    rows_parsed=0,
+                    csv_path=None,
+                    no_data=False,
+                    error=str(exc),
+                )
+            )
+            if logger is not None:
+                logger.exception(
+                    "station_error station_id=%s station_code=%s window_start=%s window_end=%s",
+                    station_id,
+                    station_code,
+                    min(request_dates).isoformat(),
+                    max(request_dates).isoformat(),
+                )
+
+    return ObservedFetchSummary(run_id=run_id, provider_code="ana", stations=tuple(station_summaries))
+

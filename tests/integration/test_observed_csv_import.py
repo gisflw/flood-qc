@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from db_helpers import initialize_history_db
-from mgb_ops.ingest.observed_csv import NORMALIZED_OBSERVED_COLUMNS, import_normalized_observed_csvs
+from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS, load_normalized_observed_csvs
 
 
 def write_csv(path, rows, *, columns=NORMALIZED_OBSERVED_COLUMNS):
@@ -44,7 +44,7 @@ def test_import_normalized_observed_csv_imports_series_and_values(tmp_path) -> N
         ],
     )
 
-    summary = import_normalized_observed_csvs(db_path, [csv_path])
+    summary = load_normalized_observed_csvs(db_path, [csv_path])
 
     with sqlite3.connect(db_path) as connection:
         series = connection.execute(
@@ -74,7 +74,7 @@ def test_import_normalized_observed_csv_rejects_bad_station_id(tmp_path) -> None
     write_csv(csv_path, [valid_row(station_id="ana:missing")])
 
     with pytest.raises(ValueError, match="unknown station_id"):
-        import_normalized_observed_csvs(db_path, [csv_path])
+        load_normalized_observed_csvs(db_path, [csv_path])
 
 
 def test_import_normalized_observed_csv_rejects_missing_columns(tmp_path) -> None:
@@ -84,7 +84,7 @@ def test_import_normalized_observed_csv_rejects_missing_columns(tmp_path) -> Non
     write_csv(csv_path, [{"station_id": "ana:74100000"}], columns=["station_id"])
 
     with pytest.raises(ValueError, match="missing columns"):
-        import_normalized_observed_csvs(db_path, [csv_path])
+        load_normalized_observed_csvs(db_path, [csv_path])
 
 
 def test_import_normalized_observed_csv_rejects_bad_timestamp(tmp_path) -> None:
@@ -94,7 +94,7 @@ def test_import_normalized_observed_csv_rejects_bad_timestamp(tmp_path) -> None:
     write_csv(csv_path, [valid_row(observed_at="not-a-time")])
 
     with pytest.raises(ValueError, match="invalid observed_at"):
-        import_normalized_observed_csvs(db_path, [csv_path])
+        load_normalized_observed_csvs(db_path, [csv_path])
 
 
 def test_import_normalized_observed_csv_rejects_unsupported_variable(tmp_path) -> None:
@@ -104,4 +104,41 @@ def test_import_normalized_observed_csv_rejects_unsupported_variable(tmp_path) -
     write_csv(csv_path, [valid_row(variable_code="wind")])
 
     with pytest.raises(ValueError, match="unsupported variable_code"):
-        import_normalized_observed_csvs(db_path, [csv_path])
+        load_normalized_observed_csvs(db_path, [csv_path])
+
+
+def test_load_normalized_observed_csv_upserts_missing_hours_and_duplicates(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    first_csv_path = tmp_path / "first.csv"
+    second_csv_path = tmp_path / "second.csv"
+    write_csv(
+        first_csv_path,
+        [
+            valid_row(observed_at="2026-03-10 00:00", value="1.0"),
+            valid_row(observed_at="2026-03-10 02:00", value="3.0"),
+        ],
+    )
+    write_csv(
+        second_csv_path,
+        [
+            valid_row(observed_at="2026-03-10 01:00", value="2.0"),
+            valid_row(observed_at="2026-03-10 02:00", value="4.0"),
+        ],
+    )
+
+    summary = load_normalized_observed_csvs(db_path, [first_csv_path, second_csv_path])
+
+    with sqlite3.connect(db_path) as connection:
+        values = connection.execute(
+            "SELECT observed_at, value FROM observed_value "
+            "WHERE series_id = 'ana:74100000.rain.raw' ORDER BY observed_at"
+        ).fetchall()
+
+    assert summary.rows_total == 4
+    assert summary.rows_imported == 3
+    assert values == [
+        ("2026-03-10 00:00", 1.0),
+        ("2026-03-10 01:00", 2.0),
+        ("2026-03-10 02:00", 4.0),
+    ]

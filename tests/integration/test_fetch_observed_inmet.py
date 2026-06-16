@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime
+import csv
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
 import pytest
 
-from mgb_ops.ingest import fetch_observed_inmet
+from mgb_ops.ingest import fetch_observed_inmet, observed_workflow
 from db_helpers import initialize_history_db
 
 
@@ -117,16 +118,52 @@ def test_fetch_station_payload_retries_and_preserves_headers(monkeypatch) -> Non
     assert session.requests[0]["params"] == {"dataInicio": "2026-03-11", "dataFinal": "2026-03-11"}
 
 
+def test_fetch_observed_inmet_writes_one_station_csv_without_sqlite_writes(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    session = FakeSession(
+        responses=[
+            FakeResponse({"data": {"data": [{"timestamp": "2026-03-10T00:00:00", "value": 1.0, "codigo": "A801"}]}}),
+            FakeResponse({"data": {"data": [{"timestamp": "2026-03-11T00:00:00", "value": 2.0, "codigo": "A801"}]}}),
+        ]
+    )
+    monkeypatch.setattr(fetch_observed_inmet.requests, "Session", lambda: session)
 
-def test_ingest_observed_inmet_requires_explicit_api_key(tmp_path) -> None:
+    summary = fetch_observed_inmet.fetch_observed_inmet(
+        [{"station_id": "inmet:A801", "station_code": "A801"}],
+        request_dates_by_station={"inmet:A801": [date(2026, 3, 10), date(2026, 3, 11)]},
+        interim_dir=tmp_path / "interim",
+        run_id="run",
+        base_url="https://example.test/v1",
+        timeout_seconds=5,
+        api_key="secret",
+    )
+
+    with summary.csv_paths[0].open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    with sqlite3.connect(db_path) as connection:
+        series_total = connection.execute("SELECT COUNT(*) FROM observed_series").fetchone()[0]
+
+    assert [request["params"] for request in session.requests] == [
+        {"dataInicio": "2026-03-10", "dataFinal": "2026-03-10"},
+        {"dataInicio": "2026-03-11", "dataFinal": "2026-03-11"},
+    ]
+    assert summary.csv_paths == [tmp_path / "interim" / "inmet" / "run" / "A801" / "observed.csv"]
+    assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
+    assert series_total == 0
+
+
+
+def test_fetch_and_load_observed_inmet_requires_explicit_api_key(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     with pytest.raises(ValueError, match="api_key"):
-        fetch_observed_inmet.ingest_observed_inmet(
-            db_path,
-            reference_time=datetime(2026, 3, 11, 13, 45, 0),
-            request_days=1,
+        observed_workflow.fetch_and_load_observed_provider(
+            "inmet",
+            database_path=db_path,
+            window_start=datetime(2026, 3, 11, 0, 0, 0),
+            window_end=datetime(2026, 3, 11, 13, 45, 0),
             timeout_seconds=5,
             api_key="",
             station_codes=["A801"],
@@ -135,17 +172,18 @@ def test_ingest_observed_inmet_requires_explicit_api_key(tmp_path) -> None:
             base_url="https://example.test/v1",
         )
 
-def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -> None:
+def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     session = FakeSession(responses=[FakeResponse(SAMPLE_INMET_PAYLOAD)])
     monkeypatch.setattr(fetch_observed_inmet.requests, "Session", lambda: session)
 
-    summary = fetch_observed_inmet.ingest_observed_inmet(
-        db_path,
-        reference_time=datetime(2026, 3, 11, 13, 45, 0),
-        request_days=1,
+    summary = observed_workflow.fetch_and_load_observed_provider(
+        "inmet",
+        database_path=db_path,
+        window_start=datetime(2026, 3, 11, 0, 0, 0),
+        window_end=datetime(2026, 3, 11, 13, 45, 0),
         timeout_seconds=5,
         api_key="secret",
         station_codes=["a801"],
@@ -167,7 +205,7 @@ def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -
     log_file = tmp_path / "logs" / "fetch_observed_inmet" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
-    assert summary == {
+    assert summary.fetch_summary.legacy_counts() == {
         "run_id": "20260311T134500",
         "stations_total": 1,
         "stations_ok": 1,
@@ -177,13 +215,13 @@ def test_ingest_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -
     assert series_rows == [("inmet:A801.rain.raw", "rain")]
     assert rain_values == [("2026-03-10 21:00", 2.0), ("2026-03-10 23:00", 3.5)]
     assert len(normalized_csv_files) == 1
-    assert normalized_csv_files[0].name == "20260311__20260311.csv"
+    assert normalized_csv_files[0].name == "observed.csv"
     assert log_file.exists()
     assert "window_start=2026-03-11 window_end=2026-03-11" in log_text
     assert "normalized_csv=" in log_text
 
 
-def test_ingest_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, monkeypatch) -> None:
+def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -193,10 +231,11 @@ def test_ingest_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, mo
         lambda: FakeSession(responses=[FakeResponse({"data": {"data": []}})]),
     )
 
-    summary = fetch_observed_inmet.ingest_observed_inmet(
-        db_path,
-        reference_time=datetime(2026, 3, 11, 13, 45, 0),
-        request_days=1,
+    summary = observed_workflow.fetch_and_load_observed_provider(
+        "inmet",
+        database_path=db_path,
+        window_start=datetime(2026, 3, 11, 0, 0, 0),
+        window_end=datetime(2026, 3, 11, 13, 45, 0),
         timeout_seconds=5,
         api_key="secret",
         station_codes=["A801"],
@@ -205,11 +244,11 @@ def test_ingest_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, mo
         base_url="https://example.test/v1",
     )
 
-    assert summary["stations_no_data"] == 1
-    assert summary["stations_ok"] == 0
+    assert summary.fetch_summary.legacy_counts()["stations_no_data"] == 1
+    assert summary.fetch_summary.legacy_counts()["stations_ok"] == 0
 
 
-def test_ingest_observed_inmet_marks_station_error_after_final_failure(tmp_path, monkeypatch) -> None:
+def test_fetch_and_load_observed_inmet_marks_station_error_after_final_failure(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -220,10 +259,11 @@ def test_ingest_observed_inmet_marks_station_error_after_final_failure(tmp_path,
         lambda: FakeSession(side_effects=[fetch_observed_inmet.requests.Timeout("timeout")] * 5),
     )
 
-    summary = fetch_observed_inmet.ingest_observed_inmet(
-        db_path,
-        reference_time=datetime(2026, 3, 11, 13, 45, 0),
-        request_days=1,
+    summary = observed_workflow.fetch_and_load_observed_provider(
+        "inmet",
+        database_path=db_path,
+        window_start=datetime(2026, 3, 11, 0, 0, 0),
+        window_end=datetime(2026, 3, 11, 13, 45, 0),
         timeout_seconds=5,
         api_key="secret",
         station_codes=["A801"],
@@ -232,19 +272,20 @@ def test_ingest_observed_inmet_marks_station_error_after_final_failure(tmp_path,
         base_url="https://example.test/v1",
     )
 
-    assert summary["stations_error"] == 1
-    assert summary["stations_ok"] == 0
+    assert summary.fetch_summary.legacy_counts()["stations_error"] == 1
+    assert summary.fetch_summary.legacy_counts()["stations_ok"] == 0
 
 
-def test_ingest_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypatch) -> None:
+def test_fetch_and_load_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     with pytest.raises(ValueError, match="No INMET station found"):
-        fetch_observed_inmet.ingest_observed_inmet(
-            db_path,
-            reference_time=datetime(2026, 3, 11, 13, 45, 0),
-            request_days=1,
+        observed_workflow.fetch_and_load_observed_provider(
+            "inmet",
+            database_path=db_path,
+            window_start=datetime(2026, 3, 11, 0, 0, 0),
+            window_end=datetime(2026, 3, 11, 13, 45, 0),
             timeout_seconds=5,
             api_key="secret",
             station_codes=["A999"],
@@ -252,4 +293,3 @@ def test_ingest_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypa
             logs_dir=tmp_path / "logs",
             base_url="https://example.test/v1",
         )
-

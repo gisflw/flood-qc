@@ -67,7 +67,7 @@ def _load_catalogs(repository: HistoryRepository) -> tuple[dict[str, dict[str, s
     return stations, variables
 
 
-def import_normalized_observed_csvs(
+def load_normalized_observed_csvs(
     database_path: Path,
     csv_paths: Iterable[Path],
 ) -> ObservedCsvImportSummary:
@@ -142,3 +142,10 @@ def import_normalized_observed_csvs(
         rows_imported=rows_imported,
         values_by_variable=values_by_variable,
     )
+
+
+def import_normalized_observed_csvs(
+    database_path: Path,
+    csv_paths: Iterable[Path],
+) -> ObservedCsvImportSummary:
+    return load_normalized_observed_csvs(database_path, csv_paths)

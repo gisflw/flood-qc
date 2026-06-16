@@ -36,7 +36,7 @@ helpers for resolving workspaces, settings, and `.env` values.
 The repository currently provides:
 
 - history and run schema bootstrap;
-- operational ingestion of ANA observations through normalized observed CSV artifacts;
+- operational ingestion of observed ANA and INMET data through normalized per-station CSV artifacts and storage-owned SQLite loading;
 - forecast grid ingestion with ECMWF defaults, spatial clipping, and generic asset registration in the history database;
 - hourly rainfall preparation for MGB from observations and ECMWF forecasts;
 - real or dry-run MGB runner execution through library functions.

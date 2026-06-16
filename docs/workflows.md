@@ -16,24 +16,28 @@ Library module: `mgb_ops.storage.db_bootstrap`
 
 ### 2. ANA Observation Ingestion
 
-Library module: `mgb_ops.ingest.fetch_observed_ana`
+Fetch module: `mgb_ops.ingest.fetch_observed_ana`
+Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_provider`
 
-1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
-2. Fetch hydrometeorological data by station and day.
-3. Save provider XML as ancillary evidence and write normalized observed CSV files under `<workspace>/data/interim/ana/<run_id>/`.
-4. Import the normalized CSV through `mgb_ops.ingest.observed_csv.import_normalized_observed_csvs()` into `observed_series` and `observed_value`.
-5. Register logs in `logs/fetch_observed_ana/`.
+1. Read ANA stations from the caller-supplied history database.
+2. For each station, resume from the latest raw observed day already present in SQLite, overlapping that day; stations without later data start at the MGB observed window start.
+3. Fetch hydrometeorological data by station and day.
+4. Save provider XML as ancillary evidence and write one normalized observed CSV per station per run under `<workspace>/data/interim/ana/<run_id>/<station_code>/observed.csv`.
+5. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
+6. Register logs in `logs/fetch_observed_ana/`.
 
 ### 2b. INMET Rainfall Ingestion
 
-Library module: `mgb_ops.ingest.fetch_observed_inmet`
+Fetch module: `mgb_ops.ingest.fetch_observed_inmet`
+Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_provider`
 
-1. Read module-owned defaults and the optional override in `<workspace>/config/custom.yaml`.
-2. Resolve the local key from explicit input, process `INMET_API_KEY`, or `<workspace>/.env`; pass `api_key` explicitly to the domain function.
-3. Query the operational rainfall API by station and day, using the explicit `product_code` input that defaults to `I175`.
-4. Write normalized observed rainfall CSV files under `<workspace>/data/interim/inmet/<run_id>/`.
-5. Import the normalized CSV through `mgb_ops.ingest.observed_csv.import_normalized_observed_csvs()` into `observed_series` and `observed_value`.
-6. Register logs in `logs/fetch_observed_inmet/`.
+1. Read INMET stations from the caller-supplied history database.
+2. Resolve the local key in the thin CLI/app layer; pass `api_key` explicitly to the library workflow.
+3. For each station, resume from the latest raw observed rain day already present in SQLite, overlapping that day; stations without later data start at the MGB observed window start.
+4. Query the operational rainfall API by station and day, using the explicit `product_code` input that defaults to `I175`.
+5. Write one normalized observed rainfall CSV per station per run under `<workspace>/data/interim/inmet/<run_id>/<station_code>/observed.csv`.
+6. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
+7. Register logs in `logs/fetch_observed_inmet/`.
 
 ### 3. Forecast Grid Ingestion
 

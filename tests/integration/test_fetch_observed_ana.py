@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import csv
 from datetime import date, datetime, timedelta
 
 from mgb_ops.common import time_utils
-from mgb_ops.ingest import fetch_observed_ana
+from mgb_ops.ingest import fetch_observed_ana, observed_workflow
 from db_helpers import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository, build_observed_series_id
 
@@ -111,7 +112,72 @@ def test_history_repository_rebuild_assumption_uses_canonical_series_id(tmp_path
     assert series_id == f"{station_id}.rain.raw"
 
 
-def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
+def test_fetch_observed_ana_writes_one_station_csv_without_sqlite_writes(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    requested_params: list[dict[str, str]] = []
+
+    def fake_get(url, params=None, timeout=None):
+        requested_params.append(params)
+        day = params["dataInicio"][:2]
+        return FakeResponse(
+            f"""\
+<root>
+  <DadosHidrometereologicos>
+    <CodEstacao>74100000</CodEstacao>
+    <DataHora>2026-03-{day} 00:00:00</DataHora>
+    <Chuva>{int(day)}</Chuva>
+  </DadosHidrometereologicos>
+</root>
+"""
+        )
+
+    monkeypatch.setattr("mgb_ops.ingest.fetch_observed_ana.requests.get", fake_get)
+
+    summary = fetch_observed_ana.fetch_observed_ana(
+        [{"station_id": "ana:74100000", "station_code": "74100000"}],
+        request_dates_by_station={"ana:74100000": [date(2026, 3, 10), date(2026, 3, 11)]},
+        interim_dir=tmp_path / "interim",
+        run_id="run",
+        base_url="http://example.test/ana",
+        timeout_seconds=5,
+    )
+
+    with summary.csv_paths[0].open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    with sqlite3.connect(db_path) as connection:
+        series_total = connection.execute("SELECT COUNT(*) FROM observed_series").fetchone()[0]
+
+    assert requested_params == [
+        {"codEstacao": "74100000", "dataInicio": "10/03/2026", "dataFim": "10/03/2026"},
+        {"codEstacao": "74100000", "dataInicio": "11/03/2026", "dataFim": "11/03/2026"},
+    ]
+    assert summary.csv_paths == [tmp_path / "interim" / "ana" / "run" / "74100000" / "observed.csv"]
+    assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
+    assert series_total == 0
+
+
+def test_history_repository_get_latest_observed_at_per_station(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+
+    with HistoryRepository(db_path) as repository:
+        station_id = repository.get_provider_stations("ana")[0]["station_id"]
+        rain_series_id = repository.ensure_observed_series(station_id, "rain")
+        level_series_id = repository.ensure_observed_series(station_id, "level")
+        repository.upsert_observed_values(rain_series_id, [("2026-03-10 01:00", 1.0)])
+        repository.upsert_observed_values(level_series_id, [("2026-03-10 03:00", 100.0)])
+
+        latest_any = repository.get_latest_observed_at(station_id)
+        latest_rain = repository.get_latest_observed_at(station_id, variable_codes=["rain"])
+        latest_missing = repository.get_latest_observed_at("ana:missing")
+
+    assert latest_any == datetime(2026, 3, 10, 3, 0)
+    assert latest_rain == datetime(2026, 3, 10, 1, 0)
+    assert latest_missing is None
+
+
+def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -128,11 +194,12 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
     stale_station_dir.mkdir(parents=True, exist_ok=True)
     (stale_station_dir / "old.xml").write_text("obsolete", encoding="utf-8")
 
-    summary = fetch_observed_ana.ingest_observed_ana(
-        db_path,
+    summary = observed_workflow.fetch_and_load_observed_provider(
+        "ana",
+        database_path=db_path,
         base_url="http://example.test/ana",
-        reference_time=datetime(2026, 3, 11, 13, 45, 0),
-        request_days=1,
+        window_start=datetime(2026, 3, 11, 0, 0, 0),
+        window_end=datetime(2026, 3, 11, 13, 45, 0),
         timeout_seconds=5,
         station_codes=["74100000"],
         interim_dir=tmp_path / "interim",
@@ -161,7 +228,7 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
     log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
-    assert summary == {
+    assert summary.fetch_summary.legacy_counts() == {
         "run_id": "20260311T134500",
         "stations_total": 1,
         "stations_ok": 1,
@@ -180,7 +247,7 @@ def test_fetch_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> N
     assert len(raw_xml_files) == 1
     assert len(normalized_csv_files) == 1
     assert raw_xml_files[0].name == "20260311__20260311.xml"
-    assert normalized_csv_files[0].name == "20260311__20260311.csv"
+    assert normalized_csv_files[0].name == "observed.csv"
     assert raw_xml_files[0].read_text(encoding="utf-8") == SAMPLE_ANA_XML
     assert stale_station_dir.exists()
     assert log_file.exists()

@@ -4,14 +4,15 @@ import csv
 import logging
 import sys
 import time
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 import requests
 
 from mgb_ops.common.time_utils import TIMEZONE
-from mgb_ops.ingest.observed_csv import NORMALIZED_OBSERVED_COLUMNS, import_normalized_observed_csvs
+from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
 DEFAULT_INMET_RAIN_PRODUCT = "I175"
@@ -19,6 +20,41 @@ INMET_API_KEY_ENV = "INMET_API_KEY"
 OBSERVED_VARIABLES = ("rain",)
 RETRY_ATTEMPTS = 5
 RETRY_SLEEP_SECONDS = 5.0
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedFetchStationSummary:
+    station_id: str
+    station_code: str
+    request_start: date | None
+    request_end: date | None
+    rows_parsed: int
+    csv_path: Path | None
+    no_data: bool
+    error: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedFetchSummary:
+    run_id: str
+    provider_code: str
+    stations: tuple[ObservedFetchStationSummary, ...]
+
+    @property
+    def csv_paths(self) -> list[Path]:
+        return [station.csv_path for station in self.stations if station.csv_path is not None]
+
+    def legacy_counts(self) -> dict[str, int | str]:
+        stations_ok = sum(1 for station in self.stations if station.error is None and not station.no_data)
+        stations_error = sum(1 for station in self.stations if station.error is not None)
+        stations_no_data = sum(1 for station in self.stations if station.error is None and station.no_data)
+        return {
+            "run_id": self.run_id,
+            "stations_total": len(self.stations),
+            "stations_ok": stations_ok,
+            "stations_no_data": stations_no_data,
+            "stations_error": stations_error,
+        }
 
 
 def script_stem() -> str:
@@ -282,7 +318,141 @@ def write_normalized_csv(
     return output_path
 
 
-def build_normalized_csv_path(inmet_root_dir: Path, *, station_code: str, request_date: date) -> Path:
-    station_dir = inmet_root_dir / station_code
-    file_stamp = request_date.strftime("%Y%m%d")
-    return station_dir / f"{file_stamp}__{file_stamp}.csv"
+def build_normalized_csv_path(inmet_root_dir: Path, *, station_code: str, request_date: date | None = None) -> Path:
+    return inmet_root_dir / station_code / "observed.csv"
+
+
+def fetch_observed_inmet(
+    stations: Iterable[dict],
+    *,
+    request_dates_by_station: dict[str, Iterable[date]],
+    interim_dir: Path,
+    run_id: str,
+    api_key: str,
+    base_url: str = DEFAULT_INMET_BASE_URL,
+    timeout_seconds: float = 30.0,
+    product_code: str = DEFAULT_INMET_RAIN_PRODUCT,
+    retry_attempts: int = RETRY_ATTEMPTS,
+    retry_sleep_seconds: float = RETRY_SLEEP_SECONDS,
+    logger: logging.Logger | None = None,
+) -> ObservedFetchSummary:
+    import pandas as pd
+
+    if not api_key:
+        raise ValueError("api_key is required for INMET/BNDMET observed ingestion.")
+
+    inmet_root_dir = Path(interim_dir) / "inmet" / run_id
+    station_summaries: list[ObservedFetchStationSummary] = []
+
+    with requests.Session() as session:
+        for station in stations:
+            station_id = str(station["station_id"])
+            station_code = str(station["station_code"])
+            request_dates = list(request_dates_by_station.get(station_id, []))
+            csv_path = build_normalized_csv_path(inmet_root_dir, station_code=station_code)
+
+            if not request_dates:
+                write_normalized_csv(
+                    pd.DataFrame(columns=["station_code", "observed_at", "rain"]),
+                    output_path=csv_path,
+                    station_id=station_id,
+                    provider_code="inmet",
+                    station_code=station_code,
+                )
+                station_summaries.append(
+                    ObservedFetchStationSummary(
+                        station_id=station_id,
+                        station_code=station_code,
+                        request_start=None,
+                        request_end=None,
+                        rows_parsed=0,
+                        csv_path=csv_path,
+                        no_data=True,
+                    )
+                )
+                continue
+
+            frames = []
+            try:
+                for request_date in request_dates:
+                    payload = fetch_station_payload(
+                        station_code,
+                        request_date=request_date,
+                        base_url=base_url,
+                        timeout_seconds=timeout_seconds,
+                        api_key=api_key,
+                        product_code=product_code,
+                        session=session,
+                        retry_attempts=retry_attempts,
+                        retry_sleep_seconds=retry_sleep_seconds,
+                    )
+                    frame = parse_payload(payload, station_code=station_code)
+                    if not frame.empty:
+                        frames.append(frame)
+                    if logger is not None:
+                        logger.info(
+                            "station_day_fetched station_id=%s station_code=%s request_date=%s rows=%s",
+                            station_id,
+                            station_code,
+                            request_date.isoformat(),
+                            len(frame),
+                        )
+
+                combined = (
+                    pd.concat(frames, ignore_index=True)
+                    if frames
+                    else pd.DataFrame(columns=["station_code", "observed_at", "rain"])
+                )
+                write_normalized_csv(
+                    combined,
+                    output_path=csv_path,
+                    station_id=station_id,
+                    provider_code="inmet",
+                    station_code=station_code,
+                )
+                station_summaries.append(
+                    ObservedFetchStationSummary(
+                        station_id=station_id,
+                        station_code=station_code,
+                        request_start=min(request_dates),
+                        request_end=max(request_dates),
+                        rows_parsed=len(combined),
+                        csv_path=csv_path,
+                        no_data=combined.empty,
+                    )
+                )
+                if logger is not None:
+                    logger.info(
+                        "station_complete station_id=%s station_code=%s window_start=%s window_end=%s rows_parsed=%s normalized_csv=%s no_data=%s",
+                        station_id,
+                        station_code,
+                        min(request_dates).isoformat(),
+                        max(request_dates).isoformat(),
+                        len(combined),
+                        csv_path,
+                        combined.empty,
+                    )
+            except Exception as exc:
+                station_summaries.append(
+                    ObservedFetchStationSummary(
+                        station_id=station_id,
+                        station_code=station_code,
+                        request_start=min(request_dates),
+                        request_end=max(request_dates),
+                        rows_parsed=0,
+                        csv_path=None,
+                        no_data=False,
+                        error=str(exc),
+                    )
+                )
+                if logger is not None:
+                    logger.exception(
+                        "station_error station_id=%s station_code=%s window_start=%s window_end=%s",
+                        station_id,
+                        station_code,
+                        min(request_dates).isoformat(),
+                        max(request_dates).isoformat(),
+                    )
+
+    return ObservedFetchSummary(run_id=run_id, provider_code="inmet", stations=tuple(station_summaries))
+

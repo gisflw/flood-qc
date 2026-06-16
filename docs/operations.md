@@ -86,7 +86,7 @@ first, with explicit inputs and structured return values.
 - `history.sqlite`: single history database
 - `<workspace>/data/runs/<run_id>.sqlite`: one file per run
 - `station_id`: canonical `{provider_code}:{normalized_station_code}`, for example `ana:74100000` or `inmet:A801`
-- normalized observed CSVs: `station_id,provider_code,station_code,observed_at,variable_code,value,state`
+- normalized observed CSVs, one file per station per run: `station_id,provider_code,station_code,observed_at,variable_code,value,state`
 - external assets with relative paths whenever possible
 
 ## Maturity States

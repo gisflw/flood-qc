@@ -140,6 +140,35 @@ class HistoryRepository:
             return None
         return str(row["series_id"])
 
+    def get_latest_observed_at(
+        self,
+        station_id: str,
+        state: str = "raw",
+        variable_codes: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> datetime | None:
+        params: list[str] = [station_id, state]
+        variable_filter = ""
+        if variable_codes:
+            ordered_variables = sorted(str(variable_code) for variable_code in variable_codes)
+            placeholders = ", ".join("?" for _ in ordered_variables)
+            variable_filter = f"AND os.variable_code IN ({placeholders})"
+            params.extend(ordered_variables)
+
+        row = self.connection.execute(
+            f"""
+            SELECT MAX(ov.observed_at) AS latest_observed_at
+            FROM observed_value ov
+            JOIN observed_series os ON os.series_id = ov.series_id
+            WHERE os.station_id = ?
+              AND os.state = ?
+              {variable_filter}
+            """,
+            params,
+        ).fetchone()
+        if row is None or row["latest_observed_at"] is None:
+            return None
+        return datetime.strptime(str(row["latest_observed_at"]), "%Y-%m-%d %H:%M")
+
     def ensure_observed_series(self, station_id: str, variable_code: str, state: str = "raw") -> str:
         existing_series_id = self._get_observed_series_id(station_id, variable_code, state)
         if existing_series_id is not None:
