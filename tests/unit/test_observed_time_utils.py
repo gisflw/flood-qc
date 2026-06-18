@@ -2,7 +2,32 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from mgb_ops.common.time_utils import iter_observed_request_dates
+from mgb_ops.common.time_utils import build_horizon_window, iter_observed_request_dates
+
+
+def test_build_horizon_window_includes_forecast_horizon() -> None:
+    window = build_horizon_window(
+        datetime(2026, 3, 11, 23, 0, 0),
+        days_before=2,
+        horizon_days=2,
+    )
+
+    assert window.start_time == datetime(2026, 3, 9, 0, 0, 0)
+    assert window.forecast_start_time == datetime(2026, 3, 12, 0, 0, 0)
+    assert window.forecast_nt == 49
+    assert window.nt == 121
+
+
+def test_build_horizon_window_fetch_only_ends_at_reference_hour() -> None:
+    window = build_horizon_window(
+        datetime(2026, 3, 11, 23, 0, 0),
+        days_before=89,
+    )
+
+    assert window.start_time == datetime(2025, 12, 12, 0, 0, 0)
+    assert window.forecast_start_time == datetime(2026, 3, 12, 0, 0, 0)
+    assert window.forecast_nt == 0
+    assert window.nt == 2160
 
 
 def test_iter_observed_request_dates_empty_db_starts_at_window_start() -> None:

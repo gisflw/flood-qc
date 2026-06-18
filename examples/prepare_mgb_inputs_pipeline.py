@@ -14,10 +14,10 @@ from pathlib import Path
 from mgb_ops.common.env import INMET_API_KEY_ENV
 from mgb_ops.common.paths import SQL_DIR, ensure_standard_dirs
 from mgb_ops.common.runtime import build_runtime_context
-from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.common.time_utils import build_horizon_window, resolve_reference_time
 from mgb_ops.ingest.forecast_grid import build_ecmwf_cycle, ingest_forecast_grids
 from mgb_ops.ingest.observed_workflow import fetch_and_load_observed_provider
-from mgb_ops.model.prepare_mgb_meta import build_mgb_window, rewrite_mgb_meta
+from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import find_required_ecmwf_asset, prepare_mgb_rainfall
 from mgb_ops.storage.db_bootstrap import initialize_history_db
 
@@ -88,26 +88,31 @@ if not paths.history_db.exists():
     )
 
 # %% [markdown]
-# ## 4. Resolve the MGB reference time and input window
+# ## 4. Resolve reference, fetch, and MGB horizon windows
 #
 # `run.reference_time` may be an ISO timestamp, `now`, or `yesterday`. MGB input
-# timing is derived from that reference time and the configured observed-history
-# and forecast horizon lengths.
+# timing is derived from that reference time and the configured MGB observed-history
+# and forecast horizon lengths. Observed ingestion uses the separate request window.
 
 # %%
 reference_time = resolve_reference_time(str(settings["run"]["reference_time"]))
 mgb_settings = settings["mgb"]
-window = build_mgb_window(
+fetch_window = build_horizon_window(
     reference_time,
-    input_days_before=int(mgb_settings["input_days_before"]),
-    forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    days_before=int(settings["ingest"]["request_days"]) - 1,
+)
+mgb_window = build_horizon_window(
+    reference_time,
+    days_before=int(mgb_settings["input_days_before"]),
+    horizon_days=int(mgb_settings["forecast_horizon_days"]),
 )
 
-print(f"reference_time: {window.reference_time.isoformat(timespec='seconds')}")
-print(f"input start: {window.start_time.isoformat(timespec='seconds')}")
-print(f"forecast start: {window.forecast_start_time.isoformat(timespec='seconds')}")
-print(f"forecast hours: {window.forecast_nt}")
-print(f"total MGB hours: {window.nt}")
+print(f"reference_time: {mgb_window.reference_time.isoformat(timespec='seconds')}")
+print(f"fetch start: {fetch_window.start_time.isoformat(timespec='seconds')}")
+print(f"MGB input start: {mgb_window.start_time.isoformat(timespec='seconds')}")
+print(f"forecast start: {mgb_window.forecast_start_time.isoformat(timespec='seconds')}")
+print(f"forecast hours: {mgb_window.forecast_nt}")
+print(f"total MGB hours: {mgb_window.nt}")
 
 # %% [markdown]
 # ## 5. Fetch and load observed providers into SQLite
@@ -129,8 +134,8 @@ for provider_code in OBSERVED_PROVIDERS:
     summary = fetch_and_load_observed_provider(
         provider,
         database_path=paths.history_db,
-        window_start=window.start_time,
-        window_end=window.reference_time,
+        window_start=fetch_window.start_time,
+        window_end=fetch_window.reference_time,
         downloads_dir=paths.downloads_dir,
         logs_dir=paths.logs_dir,
         station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
@@ -152,13 +157,13 @@ for provider_code in OBSERVED_PROVIDERS:
 # %%
 use_forecast_data = bool(mgb_settings["use_forecast_data"])
 forecast_asset = None
-forecast_cycle = build_ecmwf_cycle(window.reference_time)
+forecast_cycle = build_ecmwf_cycle(mgb_window.reference_time)
 
 if use_forecast_data:
     with sqlite3.connect(paths.history_db) as connection:
         forecast_asset = find_required_ecmwf_asset(
             connection,
-            reference_time=window.reference_time,
+            reference_time=mgb_window.reference_time,
             input_days_before=int(mgb_settings["input_days_before"]),
             forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
             asset_base_dir=paths.workspace,
@@ -189,7 +194,7 @@ if use_forecast_data and forecast_asset is None:
 
     grid_summary = ingest_forecast_grids(
         paths.history_db,
-        reference_time=window.reference_time,
+        reference_time=mgb_window.reference_time,
         bbox=tuple(float(value) for value in bbox),
         buffer_fraction=float(buffer_fraction),
         downloads_dir=paths.downloads_dir,
@@ -201,7 +206,7 @@ if use_forecast_data and forecast_asset is None:
     with sqlite3.connect(paths.history_db) as connection:
         forecast_asset = find_required_ecmwf_asset(
             connection,
-            reference_time=window.reference_time,
+            reference_time=mgb_window.reference_time,
             input_days_before=int(mgb_settings["input_days_before"]),
             forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
             asset_base_dir=paths.workspace,
@@ -218,7 +223,7 @@ if use_forecast_data and forecast_asset is None:
 # %%
 meta_summary = rewrite_mgb_meta(
     parhig_path=PARHIG_PATH,
-    reference_time=window.reference_time,
+    reference_time=mgb_window.reference_time,
     input_days_before=int(mgb_settings["input_days_before"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     logs_dir=paths.logs_dir,
@@ -241,7 +246,7 @@ rainfall_summary = prepare_mgb_rainfall(
     parhig_path=PARHIG_PATH,
     mini_gtp_path=MINI_GTP_PATH,
     output_path=CHUVABIN_PATH,
-    reference_time=window.reference_time,
+    reference_time=mgb_window.reference_time,
     input_days_before=int(mgb_settings["input_days_before"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     use_forecast_data=use_forecast_data,

@@ -3,23 +3,12 @@ from __future__ import annotations
 import logging
 import sys
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import datetime
 from pathlib import Path
 
-DEFAULT_DT_SECONDS = 3600
+from mgb_ops.common.time_utils import DEFAULT_DT_SECONDS, build_horizon_window
+
 LOGGER_NAME = "model.prepare_mgb_meta"
-
-
-@dataclass(frozen=True, slots=True)
-class MgbWindow:
-    reference_time: datetime
-    start_time: datetime
-    forecast_start_time: datetime
-    forecast_nt: int
-    nt: int
-    dt_seconds: int
-    input_days_before: int
-    forecast_horizon_days: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,39 +82,6 @@ def _format_nt_dt_line(nt: int, dt_seconds: int) -> str:
     return f"{nt:10d}     {dt_seconds}."
 
 
-def build_mgb_window(
-    reference_time: datetime,
-    *,
-    input_days_before: int,
-    forecast_horizon_days: int,
-) -> MgbWindow:
-    if input_days_before < 1:
-        raise ValueError("input_days_before must be >= 1.")
-    if forecast_horizon_days < 1:
-        raise ValueError("forecast_horizon_days must be >= 1.")
-    if reference_time.minute != 0 or reference_time.second != 0 or reference_time.microsecond != 0:
-        raise ValueError("reference_time must be aligned to the hour for MGB hourly inputs.")
-
-    start_date = reference_time.date() - timedelta(days=input_days_before)
-    start_time = datetime.combine(start_date, time.min)
-    forecast_start_time = reference_time + timedelta(hours=1)
-    forecast_nt = forecast_horizon_days * 24 + 1
-    forecast_end_time = forecast_start_time + timedelta(hours=forecast_nt - 1)
-    nt = int((forecast_end_time - start_time).total_seconds() // DEFAULT_DT_SECONDS) + 1
-    if nt < 1:
-        raise ValueError(f"Invalid NT calculated from reference_time={reference_time} and start_time={start_time}.")
-    return MgbWindow(
-        reference_time=reference_time,
-        start_time=start_time,
-        forecast_start_time=forecast_start_time,
-        forecast_nt=forecast_nt,
-        nt=nt,
-        dt_seconds=DEFAULT_DT_SECONDS,
-        input_days_before=input_days_before,
-        forecast_horizon_days=forecast_horizon_days,
-    )
-
-
 def update_parhig_text(text: str, *, start_time: datetime, nt: int, dt_seconds: int = DEFAULT_DT_SECONDS) -> str:
     lines = text.splitlines()
     start_header_idx = _find_header_index(lines, ("DIA", "MES", "ANO", "HORA"))
@@ -181,10 +137,10 @@ def rewrite_mgb_meta(
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> MgbMetaUpdateSummary:
-    window = build_mgb_window(
+    window = build_horizon_window(
         reference_time,
-        input_days_before=input_days_before,
-        forecast_horizon_days=forecast_horizon_days,
+        days_before=input_days_before,
+        horizon_days=forecast_horizon_days,
     )
     run_logger = logger
     if run_logger is None and logs_dir is not None:

@@ -10,7 +10,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mgb_ops.common.time_utils import TIMEZONE
+from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window
 from mgb_ops.ingest.forecast_grid import (
     ECMWF_FORECAST_PRODUCT,
     ForecastProductConfig,
@@ -20,7 +20,7 @@ from mgb_ops.ingest.forecast_grid import (
     read_tp_grib_messages,
 )
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
-from mgb_ops.model.prepare_mgb_meta import build_mgb_window, read_time_settings_from_parhig
+from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
 DEFAULT_CHUNK_HOURS = 720
 LOGGER_NAME = "model.prepare_mgb_rainfall"
@@ -318,10 +318,10 @@ def find_required_ecmwf_asset(
     asset_base_dir: Path,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> ForecastAssetMatch | None:
-    window = build_mgb_window(
+    window = build_horizon_window(
         reference_time,
-        input_days_before=input_days_before,
-        forecast_horizon_days=forecast_horizon_days,
+        days_before=input_days_before,
+        horizon_days=forecast_horizon_days,
     )
     cycle_time = build_ecmwf_cycle(reference_time)
     expected_asset_id = build_asset_id(cycle_time, product_config)
@@ -606,10 +606,10 @@ def prepare_mgb_rainfall(
     if dt_seconds != 3600:
         raise ValueError(f"Only hourly rainfall input is currently supported; PARHIG DT={dt_seconds}.")
 
-    window = build_mgb_window(
+    window = build_horizon_window(
         reference_time,
-        input_days_before=input_days_before,
-        forecast_horizon_days=forecast_horizon_days,
+        days_before=input_days_before,
+        horizon_days=forecast_horizon_days,
     )
     if start_time != window.start_time or nt != window.nt:
         raise ValueError(

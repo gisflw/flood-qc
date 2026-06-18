@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from mgb_ops.model.prepare_mgb_meta import build_mgb_window, rewrite_mgb_meta
+from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
 
 PARHIG_TEMPLATE = """\
@@ -21,17 +21,6 @@ Projeto Teste
 
 linha final preservada
 """
-
-def test_build_mgb_window_includes_forecast_horizon() -> None:
-    window = build_mgb_window(
-        datetime(2026, 3, 11, 23, 0, 0),
-        input_days_before=2,
-        forecast_horizon_days=2,
-    )
-
-    assert window.start_time == datetime(2026, 3, 9, 0, 0, 0)
-    assert window.nt == 121
-
 
 def test_rewrite_mgb_meta_updates_parhig(tmp_path, monkeypatch) -> None:
     parhig_path = tmp_path / "PARHIG.hig"
