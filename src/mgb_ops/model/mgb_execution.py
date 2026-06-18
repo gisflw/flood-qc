@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -68,17 +69,6 @@ def _clear_directory_contents(path: Path) -> None:
             child.unlink()
 
 
-def _copy_directory_contents(source_dir: Path, destination_dir: Path) -> None:
-    _require_existing_directory(source_dir, label="Diretorio de origem")
-    _ensure_directory(destination_dir)
-    for child in source_dir.iterdir():
-        target = destination_dir / child.name
-        if child.is_dir():
-            shutil.copytree(child, target)
-        else:
-            shutil.copy2(child, target)
-
-
 def _directory_has_files(path: Path) -> bool:
     return any(candidate.is_file() for candidate in path.rglob("*"))
 
@@ -100,39 +90,11 @@ def _collect_output_asset_refs(output_dir: Path, *, asset_base_dir: Path) -> lis
     return asset_refs
 
 
-def _prepare_workspace(plan: CommandPlan, logger: logging.Logger) -> None:
-    workspace_root = Path(plan.metadata["workspace_root"])
-    remote_input_dir = Path(plan.metadata["remote_input_dir"])
-    remote_output_dir = Path(plan.metadata["remote_output_dir"])
-    local_input_dir = Path(plan.metadata["local_input_dir"])
-
-    _ensure_directory(workspace_root)
-    logger.info("mgb_workspace_prepare root=%s", workspace_root)
-    _clear_directory_contents(workspace_root)
-    _copy_directory_contents(local_input_dir, remote_input_dir)
-    _ensure_directory(remote_output_dir)
-    logger.info(
-        "mgb_workspace_ready local_input=%s remote_input=%s remote_output=%s",
-        local_input_dir,
-        remote_input_dir,
-        remote_output_dir,
-    )
-
-
-def _copy_output_back(plan: CommandPlan, logger: logging.Logger) -> list[str]:
-    remote_output_dir = Path(plan.metadata["remote_output_dir"])
-    local_output_dir = Path(plan.metadata["local_output_dir"])
-
-    _clear_directory_contents(local_output_dir)
-    _copy_directory_contents(remote_output_dir, local_output_dir)
-    asset_refs = _collect_output_asset_refs(local_output_dir, asset_base_dir=Path(plan.metadata["asset_base_dir"]))
-    logger.info(
-        "mgb_output_copied remote_output=%s local_output=%s files=%s",
-        remote_output_dir,
-        local_output_dir,
-        len(asset_refs),
-    )
-    return asset_refs
+def _prepare_output_directory(plan: CommandPlan, logger: logging.Logger) -> Path:
+    output_dir = Path(plan.metadata["output_dir"])
+    _clear_directory_contents(output_dir)
+    logger.info("mgb_output_ready output=%s", output_dir)
+    return output_dir
 
 
 def _stream_process_output(process: subprocess.Popen[str], logger: logging.Logger) -> None:
@@ -151,32 +113,29 @@ def prepare_mgb_execution(
     asset_base_dir: str | Path,
     workdir: str | None = None,
 ) -> CommandPlan:
-    """Prepare the real MGB execution plan on Windows."""
+    """Prepare a direct MGB execution plan for the configured runner paths."""
     del workdir
 
-    local_executable_path = Path(executable_path)
-    local_input_dir = Path(input_dir)
-    local_output_dir = Path(output_dir)
-    remote_workspace_root = Path(workspace_root)
+    executable = Path(executable_path)
+    input_path = Path(input_dir)
+    output_path = Path(output_dir)
+    workspace = Path(workspace_root)
     asset_base_path = Path(asset_base_dir)
-    remote_input_dir = remote_workspace_root / "Input"
-    remote_output_dir = remote_workspace_root / "Output"
 
-    _require_existing_file(local_executable_path, label="MGB executable")
-    _require_existing_directory(local_input_dir, label="Local MGB Input directory")
+    _require_existing_file(executable, label="MGB executable")
+    _require_existing_directory(input_path, label="MGB Input directory")
+    _ensure_directory(output_path)
 
     return CommandPlan(
-        command=[str(local_executable_path)],
-        working_directory=str(remote_workspace_root),
+        command=[str(executable)],
+        working_directory=str(workspace),
         metadata={
             "run_id": run.run_id,
             "reference_time": run.reference_time,
-            "workspace_root": str(remote_workspace_root),
-            "local_executable_path": str(local_executable_path),
-            "local_input_dir": str(local_input_dir),
-            "local_output_dir": str(local_output_dir),
-            "remote_input_dir": str(remote_input_dir),
-            "remote_output_dir": str(remote_output_dir),
+            "workspace_root": str(workspace),
+            "executable_path": str(executable),
+            "input_dir": str(input_path),
+            "output_dir": str(output_path),
             "asset_base_dir": str(asset_base_path),
         },
     )
@@ -203,16 +162,20 @@ def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path
     logger.info(
         "mgb_execution_started run_id=%s executable=%s workspace=%s",
         plan.metadata["run_id"],
-        plan.metadata["local_executable_path"],
+        plan.metadata["executable_path"],
         plan.metadata["workspace_root"],
     )
 
-    _prepare_workspace(plan, logger)
+    output_dir = _prepare_output_directory(plan, logger)
+    process_env = os.environ.copy()
+    process_env["MGB_INPUT_DIR"] = plan.metadata["input_dir"]
+    process_env["MGB_OUTPUT_DIR"] = plan.metadata["output_dir"]
 
     try:
         process = subprocess.Popen(
             plan.command,
             cwd=plan.working_directory,
+            env=process_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -220,7 +183,7 @@ def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path
         )
     except OSError as exc:
         raise RuntimeError(
-            f"Falha ao iniciar o executavel do MGB: {plan.metadata['local_executable_path']} | log={log_path}"
+            f"Falha ao iniciar o executavel do MGB: {plan.metadata['executable_path']} | log={log_path}"
         ) from exc
 
     _stream_process_output(process, logger)
@@ -231,12 +194,11 @@ def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path
         logger.error("mgb_execution_failed exit_code=%s", return_code)
         raise RuntimeError(f"Execucao do MGB falhou com exit code {return_code}. Log: {log_path}")
 
-    remote_output_dir = Path(plan.metadata["remote_output_dir"])
-    if not _directory_has_files(remote_output_dir):
-        logger.error("mgb_execution_failed output_dir_empty=%s", remote_output_dir)
+    if not _directory_has_files(output_dir):
+        logger.error("mgb_execution_failed output_dir_empty=%s", output_dir)
         raise RuntimeError(f"Execucao do MGB terminou sem arquivos em Output. Log: {log_path}")
 
-    asset_refs = _copy_output_back(plan, logger)
+    asset_refs = _collect_output_asset_refs(output_dir, asset_base_dir=Path(plan.metadata["asset_base_dir"]))
     plan.metadata["status"] = "success"
     logger.info("mgb_execution_finished exit_code=%s files=%s", return_code, len(asset_refs))
     return ModelOutput(

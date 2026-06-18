@@ -4,5 +4,3 @@
 
 - Data analysis module
 
-- Add mgb runner binary (compile for linux)
-

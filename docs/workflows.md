@@ -75,9 +75,9 @@ Library modules:
 - `mgb_ops.model.run_mgb`
 - `mgb_ops.model.export_mgb_outputs`
 
-1. Prepare the runner workspace.
-2. Run the MGB binary or dry-run.
-3. Mirror output back to `<workspace>/mgb_runner/Output`.
+1. Build an execution plan from the executable, input directory, output directory, and workspace root paths.
+2. Clear the configured runner output directory.
+3. Run the MGB binary or dry-run with `MGB_INPUT_DIR` and `MGB_OUTPUT_DIR` pointing to the configured direct paths.
 4. Optionally export the operational MGB output window to SQLite.
 5. Read MGB binaries or exported outputs for visualization and downstream use.
 

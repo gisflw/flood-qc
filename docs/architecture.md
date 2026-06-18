@@ -11,7 +11,7 @@ artifacts on disk:
 
 - `<workspace>/data/history.sqlite` as the persistent history database;
 - `<workspace>/data/runs/<run_id>.sqlite` as the closed context of an operational run;
-- `<workspace>/mgb_runner/Input` and `<workspace>/mgb_runner/Output` as the local mirror of the MGB runner;
+- `<workspace>/mgb_runner/Input` and `<workspace>/mgb_runner/Output` as the direct input and output paths used by the MGB runner;
 - `<workspace>/data/interim/` for collected or intermediate artifacts.
 
 ## Layer Model
