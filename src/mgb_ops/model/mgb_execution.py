@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import shutil
 import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Mapping
 
 from mgb_ops.common.models import CommandPlan, ModelOutput, RunMetadata
 
@@ -141,7 +141,13 @@ def prepare_mgb_execution(
     )
 
 
-def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path | None = None) -> ModelOutput:
+def execute_mgb_plan(
+    plan: CommandPlan,
+    *,
+    dry_run: bool = False,
+    logs_dir: Path | None = None,
+    env: Mapping[str, str] | None = None,
+) -> ModelOutput:
     """Run the real MGB runner or return only the plan in dry-run mode."""
     if dry_run:
         plan.metadata["status"] = "dry_run"
@@ -167,7 +173,7 @@ def execute_mgb_plan(plan: CommandPlan, *, dry_run: bool = False, logs_dir: Path
     )
 
     output_dir = _prepare_output_directory(plan, logger)
-    process_env = os.environ.copy()
+    process_env = dict(env or {})
     process_env["MGB_INPUT_DIR"] = plan.metadata["input_dir"]
     process_env["MGB_OUTPUT_DIR"] = plan.metadata["output_dir"]
 

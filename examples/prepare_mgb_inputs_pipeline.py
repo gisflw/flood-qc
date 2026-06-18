@@ -39,7 +39,7 @@ OBSERVED_STATION_CODES_BY_PROVIDER = {
 }
 
 INITIALIZE_HISTORY = False
-HISTORY_STATION_INVENTORY_CSV = WORKSPACE / "config" / "history_station_inventory.csv"
+HISTORY_STATION_INVENTORY_CSV = WORKSPACE / "data" / "source" / "history_station_inventory.csv"
 
 PARHIG_PATH = WORKSPACE / "mgb_runner" / "Input" / "PARHIG.hig"
 MINI_GTP_PATH = WORKSPACE / "mgb_runner" / "Input" / "MINI.gtp"
@@ -112,7 +112,7 @@ print(f"total MGB hours: {window.nt}")
 # %% [markdown]
 # ## 5. Fetch and load observed providers into SQLite
 #
-# Each provider fetch writes normalized CSVs under `data/interim/`, then imports
+# Each provider fetch writes normalized CSVs under `data/downloads/`, then imports
 # them into `history.sqlite`. ANA includes rain, level, and flow series. INMET
 # imports rain.
 
@@ -131,7 +131,7 @@ for provider_code in OBSERVED_PROVIDERS:
         database_path=paths.history_db,
         window_start=window.start_time,
         window_end=window.reference_time,
-        interim_dir=paths.interim_dir,
+        downloads_dir=paths.downloads_dir,
         logs_dir=paths.logs_dir,
         station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
         timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
@@ -176,7 +176,7 @@ else:
 # ## 7. If missing, ingest/register the ECMWF grid and resolve it again
 #
 # ECMWF ingestion downloads the deterministic total-precipitation GRIB, crops it
-# to the configured buffered bounding box, writes it under `data/interim/ecmwf/`,
+# to the configured buffered bounding box, writes it under `data/downloads/ecmwf/`,
 # and registers the asset in `history.sqlite`.
 
 # %%
@@ -192,7 +192,7 @@ if use_forecast_data and forecast_asset is None:
         reference_time=window.reference_time,
         bbox=tuple(float(value) for value in bbox),
         buffer_fraction=float(buffer_fraction),
-        interim_dir=paths.interim_dir,
+        downloads_dir=paths.downloads_dir,
         logs_dir=paths.logs_dir,
         asset_base_dir=paths.workspace,
     )

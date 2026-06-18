@@ -126,7 +126,7 @@ def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
                 "ecmwf.ifs.fc.20260311T000000Z.buffered",
                 "forecast_grib_buffered",
                 "GRIB2",
-                "data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+                "data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
                 "ecmwf",
             ),
         )

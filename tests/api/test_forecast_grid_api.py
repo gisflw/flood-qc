@@ -39,7 +39,7 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
         history_db=Path("/tmp/history.sqlite"),
         bbox=(-60.0, -35.0, -48.0, -26.0),
         buffer_fraction=1.0,
-        interim_dir=Path("/tmp/interim"),
+        downloads_dir=Path("/tmp/downloads"),
         logs_dir=Path("/tmp/logs"),
         asset_base_dir=Path("/tmp"),
     )

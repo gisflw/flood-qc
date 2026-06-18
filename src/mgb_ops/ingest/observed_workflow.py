@@ -76,7 +76,7 @@ def fetch_and_load_observed_provider(
     database_path: Path,
     window_start: datetime,
     window_end: datetime,
-    interim_dir: Path,
+    downloads_dir: Path,
     logs_dir: Path | None = None,
     run_id: str | None = None,
     station_codes: Iterable[str] | None = None,
@@ -116,7 +116,7 @@ def fetch_and_load_observed_provider(
         fetch_summary = fetch_observed_ana(
             stations,
             request_dates_by_station=request_dates,
-            interim_dir=interim_dir,
+            downloads_dir=downloads_dir,
             run_id=run_id,
             base_url=base_url or DEFAULT_ANA_BASE_URL,
             timeout_seconds=timeout_seconds,
@@ -128,7 +128,7 @@ def fetch_and_load_observed_provider(
         fetch_summary = fetch_observed_inmet(
             stations,
             request_dates_by_station=request_dates,
-            interim_dir=interim_dir,
+            downloads_dir=downloads_dir,
             run_id=run_id,
             api_key=api_key,
             base_url=base_url or DEFAULT_INMET_BASE_URL,

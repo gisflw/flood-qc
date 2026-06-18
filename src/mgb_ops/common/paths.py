@@ -45,16 +45,28 @@ class RuntimePaths:
         return self.data_dir / "runs"
 
     @property
-    def interim_dir(self) -> Path:
-        return self.data_dir / "interim"
+    def source_dir(self) -> Path:
+        return self.data_dir / "source"
 
     @property
-    def timeseries_dir(self) -> Path:
-        return self.data_dir / "timeseries"
+    def downloads_dir(self) -> Path:
+        return self.data_dir / "downloads"
 
     @property
-    def spatial_dir(self) -> Path:
-        return self.data_dir / "spatial"
+    def cache_dir(self) -> Path:
+        return self.data_dir / "cache"
+
+    @property
+    def processed_dir(self) -> Path:
+        return self.data_dir / "processed"
+
+    @property
+    def reports_dir(self) -> Path:
+        return self.data_dir / "reports"
+
+    @property
+    def station_inventory_csv_path(self) -> Path:
+        return self.source_dir / "history_station_inventory.csv"
 
     @property
     def logs_dir(self) -> Path:
@@ -128,24 +140,32 @@ def runs_dir(workspace: str | Path | None = None) -> Path:
     return runtime_paths(workspace).runs_dir
 
 
-def interim_dir(workspace: str | Path | None = None) -> Path:
-    return runtime_paths(workspace).interim_dir
+def source_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).source_dir
+
+
+def downloads_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).downloads_dir
+
+
+def cache_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).cache_dir
+
+
+def processed_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).processed_dir
+
+
+def reports_dir(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).reports_dir
 
 
 def logs_dir(workspace: str | Path | None = None) -> Path:
     return runtime_paths(workspace).logs_dir
 
 
-def history_station_inventory_csv_path(workspace: str | Path | None = None) -> Path:
-    return interim_dir(workspace) / "history_station_inventory.csv"
-
-
-def timeseries_dir(workspace: str | Path | None = None) -> Path:
-    return runtime_paths(workspace).timeseries_dir
-
-
-def spatial_dir(workspace: str | Path | None = None) -> Path:
-    return runtime_paths(workspace).spatial_dir
+def station_inventory_csv_path(workspace: str | Path | None = None) -> Path:
+    return runtime_paths(workspace).station_inventory_csv_path
 
 
 def mgb_runner_dir(workspace: str | Path | None = None) -> Path:
@@ -174,9 +194,11 @@ def build_run_db_path(run_id: str, workspace: str | Path | None = None) -> Path:
 
 def ensure_standard_dirs(workspace: str | Path | None = None) -> None:
     for path in (
-        interim_dir(workspace),
-        timeseries_dir(workspace),
-        spatial_dir(workspace),
+        source_dir(workspace),
+        downloads_dir(workspace),
+        cache_dir(workspace),
+        processed_dir(workspace),
+        reports_dir(workspace),
         runs_dir(workspace),
         logs_dir(workspace),
     ):

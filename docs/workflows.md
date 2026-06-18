@@ -22,7 +22,7 @@ Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_prov
 1. Read ANA stations from the caller-supplied history database.
 2. For each station, resume from the latest raw observed day already present in SQLite, overlapping that day; stations without later data start at the MGB observed window start.
 3. Fetch hydrometeorological data by station and day.
-4. Save provider XML as ancillary evidence and write one normalized observed CSV per station per run under `<workspace>/data/interim/ana/<run_id>/<station_code>/observed.csv`.
+4. Save provider XML as ancillary evidence and write one normalized observed CSV per station per run under `<workspace>/data/downloads/ana/<run_id>/<station_code>/observed.csv`.
 5. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
 6. Register logs in `logs/fetch_observed_ana/`.
 
@@ -35,7 +35,7 @@ Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_prov
 2. Resolve the local key in the thin CLI/app layer; pass `api_key` explicitly to the library workflow.
 3. For each station, resume from the latest raw observed rain day already present in SQLite, overlapping that day; stations without later data start at the MGB observed window start.
 4. Query the operational rainfall API by station and day, using the explicit `product_code` input that defaults to `I175`.
-5. Write one normalized observed rainfall CSV per station per run under `<workspace>/data/interim/inmet/<run_id>/<station_code>/observed.csv`.
+5. Write one normalized observed rainfall CSV per station per run under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/observed.csv`.
 6. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
 7. Register logs in `logs/fetch_observed_inmet/`.
 
@@ -114,6 +114,8 @@ Even with implementation gaps, the canonical direction remains:
 - Python library first;
 - persistent history in SQLite;
 - one SQLite file per run;
-- processed spatial assets in `data/spatial/`;
-- processed series in `data/timeseries/`;
+- raw provider artifacts and normalized fetch outputs in `data/downloads/`;
+- disposable model-output extracts such as `data/cache/model_outputs.sqlite` in `data/cache/`;
+- reusable derived outputs in `data/processed/`;
+- report artifacts in `data/reports/`;
 - current configuration in YAML, with `.toml` still under evaluation.

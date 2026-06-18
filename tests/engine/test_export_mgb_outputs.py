@@ -87,7 +87,7 @@ def build_dataset(
 
 def test_export_mgb_outputs_creates_expected_sqlite(tmp_path, monkeypatch) -> None:
     dataset = build_dataset(tmp_path)
-    output_db_path = tmp_path / "data" / "interim" / "model_outputs.sqlite"
+    output_db_path = tmp_path / "data" / "cache" / "model_outputs.sqlite"
     output_db_path.parent.mkdir(parents=True, exist_ok=True)
     log_file = configure_export_logging(tmp_path, monkeypatch)
 

@@ -137,7 +137,7 @@ def test_fetch_observed_ana_writes_one_station_csv_without_sqlite_writes(tmp_pat
     summary = fetch_observed_ana.fetch_observed_ana(
         [{"station_id": "ana:74100000", "station_code": "74100000"}],
         request_dates_by_station={"ana:74100000": [date(2026, 3, 10), date(2026, 3, 11)]},
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         run_id="run",
         base_url="http://example.test/ana",
         timeout_seconds=5,
@@ -152,7 +152,7 @@ def test_fetch_observed_ana_writes_one_station_csv_without_sqlite_writes(tmp_pat
         {"codEstacao": "74100000", "dataInicio": "10/03/2026", "dataFim": "10/03/2026"},
         {"codEstacao": "74100000", "dataInicio": "11/03/2026", "dataFim": "11/03/2026"},
     ]
-    assert summary.csv_paths == [tmp_path / "interim" / "ana" / "run" / "74100000" / "observed.csv"]
+    assert summary.csv_paths == [tmp_path / "downloads" / "ana" / "run" / "74100000" / "observed.csv"]
     assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
     assert series_total == 0
 
@@ -189,7 +189,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
 
     monkeypatch.setattr("mgb_ops.ingest.fetch_observed_ana.requests.get", fake_get)
 
-    stale_root = tmp_path / "interim" / "ana"
+    stale_root = tmp_path / "downloads" / "ana"
     stale_station_dir = stale_root / "99999999"
     stale_station_dir.mkdir(parents=True, exist_ok=True)
     (stale_station_dir / "old.xml").write_text("obsolete", encoding="utf-8")
@@ -202,7 +202,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
         window_end=datetime(2026, 3, 11, 13, 45, 0),
         timeout_seconds=5,
         station_codes=["74100000"],
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
     )
 
@@ -223,8 +223,8 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
             "WHERE series_id = 'ana:74100000.flow.raw' ORDER BY observed_at"
         ).fetchall()
 
-    raw_xml_files = list((tmp_path / "interim" / "ana" / "20260311T134500" / "74100000").glob("*.xml"))
-    normalized_csv_files = list((tmp_path / "interim" / "ana" / "20260311T134500" / "74100000").glob("*.csv"))
+    raw_xml_files = list((tmp_path / "downloads" / "ana" / "20260311T134500" / "74100000").glob("*.xml"))
+    normalized_csv_files = list((tmp_path / "downloads" / "ana" / "20260311T134500" / "74100000").glob("*.csv"))
     log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
@@ -254,7 +254,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
     assert "window_start=2026-03-11 window_end=2026-03-11" in log_text
     assert "raw_xml=" in log_text
     assert "normalized_csv=" in log_text
-    assert not (tmp_path / "interim" / "ana" / "raw").exists()
+    assert not (tmp_path / "downloads" / "ana" / "raw").exists()
     assert not (tmp_path / "reports").exists()
 
 

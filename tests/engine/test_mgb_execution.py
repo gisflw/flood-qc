@@ -121,6 +121,7 @@ def test_execute_mgb_plan_runs_process_logs_and_collects_direct_output(monkeypat
     def fake_popen(command, cwd, env, stdout, stderr, text, bufsize):
         assert command == plan.command
         assert cwd == plan.working_directory
+        assert env["EXISTING_ENV"] == "kept"
         assert env["MGB_INPUT_DIR"] == plan.metadata["input_dir"]
         assert env["MGB_OUTPUT_DIR"] == plan.metadata["output_dir"]
         assert stdout is mgb_execution.subprocess.PIPE
@@ -135,7 +136,7 @@ def test_execute_mgb_plan_runs_process_logs_and_collects_direct_output(monkeypat
 
     monkeypatch.setattr(mgb_execution.subprocess, "Popen", fake_popen)
 
-    result = mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs")
+    result = mgb_execution.execute_mgb_plan(plan, logs_dir=tmp_path / "logs", env={"EXISTING_ENV": "kept"})
     captured = capsys.readouterr()
     log_path = tmp_path / "logs" / "mgb_execution" / "20260325T120000.log"
 

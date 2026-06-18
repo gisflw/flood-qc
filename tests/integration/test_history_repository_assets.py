@@ -17,7 +17,7 @@ def test_history_repository_upserts_and_finds_ecmwf_asset(tmp_path) -> None:
             asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
             asset_kind="forecast_grib_buffered",
             format="GRIB2",
-            relative_path="data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+            relative_path="data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
             provider_code="ecmwf",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-26T00:00:00",
@@ -27,7 +27,7 @@ def test_history_repository_upserts_and_finds_ecmwf_asset(tmp_path) -> None:
             asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
             asset_kind="forecast_grib_buffered",
             format="GRIB2",
-            relative_path="data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+            relative_path="data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
             provider_code="ecmwf",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-27T00:00:00",
@@ -42,7 +42,7 @@ def test_history_repository_upserts_and_finds_ecmwf_asset(tmp_path) -> None:
     assert asset["asset_id"] == "ecmwf.ifs.fc.20260311T000000Z.buffered"
     assert same_path["valid_to"] == "2026-03-27T00:00:00"
     assert found is not None
-    assert found["relative_path"] == "data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2"
+    assert found["relative_path"] == "data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2"
     assert listed[0]["asset_id"] == "ecmwf.ifs.fc.20260311T000000Z.buffered"
 
 
@@ -60,7 +60,7 @@ def test_history_repository_lists_and_finds_generic_non_ecmwf_asset(tmp_path) ->
             asset_id="gfs.test.fc.20260311T000000Z.buffered",
             asset_kind="forecast_grib_buffered",
             format="GRIB2",
-            relative_path="data/interim/gfs/fc_2026-03-11_00_GFS_buffered.grib2",
+            relative_path="data/downloads/gfs/fc_2026-03-11_00_GFS_buffered.grib2",
             provider_code="gfs",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-12T00:00:00",
@@ -88,7 +88,7 @@ def test_history_repository_replaces_forecast_manual_edits(tmp_path) -> None:
             asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
             asset_kind="forecast_grib_buffered",
             format="GRIB2",
-            relative_path="data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+            relative_path="data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
             provider_code="ecmwf",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-26T00:00:00",
@@ -156,7 +156,7 @@ def test_history_repository_rejects_overlapping_forecast_manual_edits(tmp_path) 
             asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
             asset_kind="forecast_grib_buffered",
             format="GRIB2",
-            relative_path="data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+            relative_path="data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
             provider_code="ecmwf",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-26T00:00:00",
@@ -201,7 +201,7 @@ def test_history_repository_allows_touching_forecast_manual_edits(tmp_path) -> N
             asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
             asset_kind="forecast_grib_buffered",
             format="GRIB2",
-            relative_path="data/interim/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+            relative_path="data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
             provider_code="ecmwf",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-26T00:00:00",

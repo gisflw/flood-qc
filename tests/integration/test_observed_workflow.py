@@ -33,9 +33,9 @@ def test_fetch_and_load_observed_provider_empty_db_starts_at_window_start(tmp_pa
     initialize_history_db(db_path)
     captured_dates = {}
 
-    def fake_fetch(stations, *, request_dates_by_station, interim_dir, run_id, **kwargs):
+    def fake_fetch(stations, *, request_dates_by_station, downloads_dir, run_id, **kwargs):
         captured_dates.update(request_dates_by_station)
-        csv_path = tmp_path / "interim" / "ana" / run_id / "74100000" / "observed.csv"
+        csv_path = tmp_path / "downloads" / "ana" / run_id / "74100000" / "observed.csv"
         _write_station_csv(csv_path, observed_at="2026-03-10 00:00")
         return ObservedFetchSummary(
             run_id=run_id,
@@ -60,7 +60,7 @@ def test_fetch_and_load_observed_provider_empty_db_starts_at_window_start(tmp_pa
         database_path=db_path,
         window_start=datetime(2026, 3, 10, 0),
         window_end=datetime(2026, 3, 12, 23),
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         station_codes=["74100000"],
         run_id="run",
     )
@@ -78,9 +78,9 @@ def test_fetch_and_load_observed_provider_resumes_from_latest_day_with_overlap(t
 
     captured_dates = {}
 
-    def fake_fetch(stations, *, request_dates_by_station, interim_dir, run_id, **kwargs):
+    def fake_fetch(stations, *, request_dates_by_station, downloads_dir, run_id, **kwargs):
         captured_dates.update(request_dates_by_station)
-        csv_path = tmp_path / "interim" / "ana" / run_id / "74100000" / "observed.csv"
+        csv_path = tmp_path / "downloads" / "ana" / run_id / "74100000" / "observed.csv"
         _write_station_csv(csv_path, observed_at="2026-03-11 15:00", value="2.0")
         return ObservedFetchSummary(
             run_id=run_id,
@@ -105,7 +105,7 @@ def test_fetch_and_load_observed_provider_resumes_from_latest_day_with_overlap(t
         database_path=db_path,
         window_start=datetime(2026, 3, 10, 0),
         window_end=datetime(2026, 3, 12, 23),
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         station_codes=["74100000"],
         run_id="run",
     )

@@ -7,25 +7,21 @@ flow.
 
 ## Local Setup
 
-1. Create a virtual environment with `Python 3.11+`.
-2. Install dependencies with `pip install -e .[dev,data,geo]`.
+1. Use the current root Python environment with `Python 3.11+`.
+2. Install dependencies with `python -m pip install -e '.[dev,data,geo]'`.
 3. Use `<workspace>/config/custom.yaml` for optional regional settings overrides.
 4. Use `<workspace>/.env` only for runtime convenience values consumed by `mgb_ops.common`.
 
 Typical Linux/macOS setup:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev,data,geo]
+python -m pip install -e '.[dev,data,geo]'
 ```
 
 Typical Windows PowerShell setup:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev,data,geo]
+python -m pip install -e ".[dev,data,geo]"
 ```
 
 ## Operational Configuration
@@ -49,7 +45,7 @@ must contain `data/`, `logs/`, and `mgb_runner/`. The possible migration to
 
 For core library calls, pass explicit `Path` values for database paths, schema
 paths, station inventory CSVs, MGB input/output files, asset base directories,
-interim directories, and log directories.
+download directories, and log directories.
 
 ## Python-First Operation
 
@@ -114,8 +110,8 @@ context of the cycle, but that step is not complete in the current pipeline.
 
 - store relative paths in the database whenever possible
 - do not store rasters as SQLite blobs
-- preserve `data/spatial/` as the canonical destination for processed layers,
-  even if part of current consumption still uses legacy artifacts
+- preserve `data/processed/` as the canonical destination for reusable derived
+  layers, even if part of current consumption still uses legacy artifacts
 
 ## Destructive Editing and Audit
 

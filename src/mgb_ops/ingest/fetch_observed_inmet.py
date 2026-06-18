@@ -326,7 +326,7 @@ def fetch_observed_inmet(
     stations: Iterable[dict],
     *,
     request_dates_by_station: dict[str, Iterable[date]],
-    interim_dir: Path,
+    downloads_dir: Path,
     run_id: str,
     api_key: str,
     base_url: str = DEFAULT_INMET_BASE_URL,
@@ -341,7 +341,7 @@ def fetch_observed_inmet(
     if not api_key:
         raise ValueError("api_key is required for INMET/BNDMET observed ingestion.")
 
-    inmet_root_dir = Path(interim_dir) / "inmet" / run_id
+    inmet_root_dir = Path(downloads_dir) / "inmet" / run_id
     station_summaries: list[ObservedFetchStationSummary] = []
 
     with requests.Session() as session:
@@ -455,4 +455,3 @@ def fetch_observed_inmet(
                     )
 
     return ObservedFetchSummary(run_id=run_id, provider_code="inmet", stations=tuple(station_summaries))
-

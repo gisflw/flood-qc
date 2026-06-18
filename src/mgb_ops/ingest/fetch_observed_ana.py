@@ -234,7 +234,7 @@ def fetch_observed_ana(
     stations: Iterable[dict],
     *,
     request_dates_by_station: dict[str, Iterable[date]],
-    interim_dir: Path,
+    downloads_dir: Path,
     run_id: str,
     base_url: str = DEFAULT_ANA_BASE_URL,
     timeout_seconds: float = 30.0,
@@ -243,7 +243,7 @@ def fetch_observed_ana(
 ) -> ObservedFetchSummary:
     import pandas as pd
 
-    ana_root_dir = Path(interim_dir) / "ana" / run_id
+    ana_root_dir = Path(downloads_dir) / "ana" / run_id
     station_summaries: list[ObservedFetchStationSummary] = []
 
     for station in stations:
@@ -362,4 +362,3 @@ def fetch_observed_ana(
                 )
 
     return ObservedFetchSummary(run_id=run_id, provider_code="ana", stations=tuple(station_summaries))
-

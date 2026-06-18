@@ -132,7 +132,7 @@ def test_fetch_observed_inmet_writes_one_station_csv_without_sqlite_writes(tmp_p
     summary = fetch_observed_inmet.fetch_observed_inmet(
         [{"station_id": "inmet:A801", "station_code": "A801"}],
         request_dates_by_station={"inmet:A801": [date(2026, 3, 10), date(2026, 3, 11)]},
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         run_id="run",
         base_url="https://example.test/v1",
         timeout_seconds=5,
@@ -148,7 +148,7 @@ def test_fetch_observed_inmet_writes_one_station_csv_without_sqlite_writes(tmp_p
         {"dataInicio": "2026-03-10", "dataFinal": "2026-03-10"},
         {"dataInicio": "2026-03-11", "dataFinal": "2026-03-11"},
     ]
-    assert summary.csv_paths == [tmp_path / "interim" / "inmet" / "run" / "A801" / "observed.csv"]
+    assert summary.csv_paths == [tmp_path / "downloads" / "inmet" / "run" / "A801" / "observed.csv"]
     assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
     assert series_total == 0
 
@@ -167,7 +167,7 @@ def test_fetch_and_load_observed_inmet_requires_explicit_api_key(tmp_path) -> No
             timeout_seconds=5,
             api_key="",
             station_codes=["A801"],
-            interim_dir=tmp_path / "interim",
+            downloads_dir=tmp_path / "downloads",
             logs_dir=tmp_path / "logs",
             base_url="https://example.test/v1",
         )
@@ -187,7 +187,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         timeout_seconds=5,
         api_key="secret",
         station_codes=["a801"],
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
         base_url="https://example.test/v1",
     )
@@ -201,7 +201,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
             "WHERE series_id = 'inmet:A801.rain.raw' ORDER BY observed_at"
         ).fetchall()
 
-    normalized_csv_files = list((tmp_path / "interim" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
+    normalized_csv_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
     log_file = tmp_path / "logs" / "fetch_observed_inmet" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
@@ -239,7 +239,7 @@ def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_
         timeout_seconds=5,
         api_key="secret",
         station_codes=["A801"],
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
         base_url="https://example.test/v1",
     )
@@ -267,7 +267,7 @@ def test_fetch_and_load_observed_inmet_marks_station_error_after_final_failure(t
         timeout_seconds=5,
         api_key="secret",
         station_codes=["A801"],
-        interim_dir=tmp_path / "interim",
+        downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
         base_url="https://example.test/v1",
     )
@@ -289,7 +289,7 @@ def test_fetch_and_load_observed_inmet_rejects_unknown_station_filter(tmp_path, 
             timeout_seconds=5,
             api_key="secret",
             station_codes=["A999"],
-            interim_dir=tmp_path / "interim",
+            downloads_dir=tmp_path / "downloads",
             logs_dir=tmp_path / "logs",
             base_url="https://example.test/v1",
         )

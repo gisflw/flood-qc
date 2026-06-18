@@ -30,7 +30,7 @@ Catalog of canonical variables. In this phase, the history database works with:
 
 Unified operational station registry. The primary identity is `station_id`, a canonical string in the form `{provider_code}:{normalized_station_code}`. Examples include `ana:74100000` and `inmet:A801`.
 
-`provider_code` and `station_code` remain separate searchable columns, with duplicate detection on the provider-local code pair as well as the canonical `station_id`. The initial inventory comes from `<workspace>/data/interim/history_station_inventory.csv`, and bootstrap derives `station_id` from the normalized provider and station code.
+`provider_code` and `station_code` remain separate searchable columns, with duplicate detection on the provider-local code pair as well as the canonical `station_id`. The initial inventory comes from `<workspace>/data/source/history_station_inventory.csv`, and bootstrap derives `station_id` from the normalized provider and station code.
 
 ### `observed_series`
 
@@ -63,7 +63,7 @@ The normalized observed CSV columns are:
 - `state`
 
 Fetchers write one normalized CSV per station per run, for example
-`data/interim/ana/<run_id>/<station_code>/observed.csv`. Storage owns SQLite
+`data/downloads/ana/<run_id>/<station_code>/observed.csv`. Storage owns SQLite
 loading from these CSVs.
 
 ### `asset`
@@ -117,7 +117,7 @@ The contract remains:
 - rasters and vectors live outside SQLite;
 - the database stores only metadata and relative paths.
 
-`<workspace>/data/spatial/` remains the canonical destination for processed spatial assets, although some spatial inputs still come from legacy material in `<workspace>/data/legacy/app_layers/`.
+`<workspace>/data/processed/` remains the canonical destination for reusable derived outputs, including processed spatial assets, although some spatial inputs still come from legacy material in `<workspace>/data/legacy/app_layers/`.
 
 ## Configuration
 

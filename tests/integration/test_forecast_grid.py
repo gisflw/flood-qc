@@ -62,7 +62,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
         reference_time=datetime(2026, 3, 11, 23, 0, 0),
         bbox=(-60.0, -35.0, -48.0, -26.0),
         buffer_fraction=1.0,
-        interim_dir=tmp_path / "data" / "interim",
+        downloads_dir=tmp_path / "data" / "downloads",
         logs_dir=tmp_path / "logs",
         asset_base_dir=tmp_path,
     )

@@ -12,7 +12,11 @@ artifacts on disk:
 - `<workspace>/data/history.sqlite` as the persistent history database;
 - `<workspace>/data/runs/<run_id>.sqlite` as the closed context of an operational run;
 - `<workspace>/mgb_runner/Input` and `<workspace>/mgb_runner/Output` as the direct input and output paths used by the MGB runner;
-- `<workspace>/data/interim/` for collected or intermediate artifacts.
+- `<workspace>/data/source/` for immutable user-provided inputs;
+- `<workspace>/data/downloads/` for raw provider artifacts and normalized fetch outputs;
+- `<workspace>/data/cache/` for disposable analysis and intermediate artifacts;
+- `<workspace>/data/processed/` for reusable derived outputs;
+- `<workspace>/data/reports/` for report and publication artifacts.
 
 ## Layer Model
 
@@ -91,8 +95,8 @@ MGB outputs.
 ### QGIS as a Complement
 
 QGIS remains a complementary client for generated artifacts. The canonical
-layout reserves `data/spatial/` for stable processed layers, although that
-consolidation is still incomplete.
+layout reserves `data/processed/` for stable derived outputs, including
+processed spatial layers, although that consolidation is still incomplete.
 
 ### Isolated MGB Runner
 
@@ -106,8 +110,8 @@ Some decisions remain canonical targets but are not fully materialized yet:
 
 - a mature notebook-friendly function surface for every operational workflow;
 - operational reporting as an importable library capability;
-- `data/spatial/` as the location for processed spatial assets;
-- `data/timeseries/` as the location for processed operational series;
+- `data/processed/` as the location for reusable derived outputs;
+- `data/cache/` as the location for disposable analysis and intermediate artifacts;
 - `<workspace>/data/runs/` as an artifact actively used in the daily operational cycle;
 - `.toml` as a possible future configuration format, still under evaluation.
 

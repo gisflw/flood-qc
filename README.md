@@ -73,20 +73,16 @@ the reporting workflow is designed.
 
 ## Local Setup
 
-Create a virtual environment and install dependencies for full local use:
+Install dependencies into the current root Python environment for full local use:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev,data,geo]
+python -m pip install -e '.[dev,data,geo]'
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev,data,geo]
+python -m pip install -e ".[dev,data,geo]"
 ```
 
 ## Library Usage

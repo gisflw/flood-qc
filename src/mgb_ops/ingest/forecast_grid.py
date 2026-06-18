@@ -150,11 +150,11 @@ def build_ecmwf_steps(product_config: ForecastProductConfig = ECMWF_FORECAST_PRO
 
 
 def build_output_path(
-    interim_root: Path,
+    downloads_root: Path,
     cycle_time: datetime,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> Path:
-    directory = interim_root / product_config.provider_code
+    directory = downloads_root / product_config.provider_code
     file_name = f"{product_config.product_type}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_{product_config.model.upper()}_buffered.grib2"
     return directory / file_name
 
@@ -346,7 +346,7 @@ def ingest_forecast_grids(
     reference_time: datetime,
     bbox: tuple[float, float, float, float],
     buffer_fraction: float,
-    interim_dir: Path,
+    downloads_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
@@ -357,7 +357,7 @@ def ingest_forecast_grids(
     execution_id = build_execution_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
     cycle_time = build_ecmwf_cycle(reference_time)
-    target_path = build_output_path(interim_dir, cycle_time, product_config)
+    target_path = build_output_path(downloads_dir, cycle_time, product_config)
     buffered_bbox = build_bbox_with_buffer(
         bbox,
         buffer_fraction=buffer_fraction,
@@ -424,7 +424,7 @@ def collect_forecast_grids(
     history_db: Path,
     bbox: tuple[float, float, float, float],
     buffer_fraction: float,
-    interim_dir: Path,
+    downloads_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
 ) -> list[RasterAsset]:
@@ -434,7 +434,7 @@ def collect_forecast_grids(
         reference_time=reference_time,
         bbox=bbox,
         buffer_fraction=buffer_fraction,
-        interim_dir=interim_dir,
+        downloads_dir=downloads_dir,
         logs_dir=logs_dir,
         asset_base_dir=asset_base_dir,
     )
