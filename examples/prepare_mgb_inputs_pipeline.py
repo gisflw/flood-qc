@@ -15,8 +15,8 @@ from mgb_ops.common.env import INMET_API_KEY_ENV
 from mgb_ops.common.paths import SQL_DIR, ensure_standard_dirs
 from mgb_ops.common.runtime import build_runtime_context
 from mgb_ops.common.time_utils import build_horizon_window, resolve_reference_time
-from mgb_ops.ingest.forecast_grid import build_ecmwf_cycle, ingest_forecast_grids
-from mgb_ops.ingest.observed_workflow import fetch_and_load_observed_provider
+from mgb_ops.adapters.forecast_ecmwf import build_ecmwf_cycle, ingest_forecast_grids
+from mgb_ops.workflows.observed import fetch_and_load_observed_provider
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import find_required_ecmwf_asset, prepare_mgb_rainfall
 from mgb_ops.storage.db_bootstrap import initialize_history_db

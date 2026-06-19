@@ -6,7 +6,7 @@ from typing import Iterable
 
 import numpy as np
 
-from mgb_ops.ingest.forecast_grid import _require_eccodes, read_tp_grib_messages
+from mgb_ops.common.grib2 import read_tp_grib_messages, require_eccodes
 
 
 @dataclass(frozen=True, slots=True)
@@ -174,7 +174,7 @@ def write_corrected_grib2(
         raise ValueError(f"No tp messages found in {source_path}.")
 
     corrected_fields_iter = iter(corrected_fields)
-    eccodes = _require_eccodes()
+    eccodes = require_eccodes()
     target_path.parent.mkdir(parents=True, exist_ok=True)
 
     corrected_step_count = 0

@@ -6,14 +6,14 @@ from pathlib import Path
 from typing import Iterable
 
 from mgb_ops.common.time_utils import iter_observed_request_dates
-from mgb_ops.ingest.fetch_observed_ana import (
+from mgb_ops.adapters.observed_ana import (
     DEFAULT_ANA_BASE_URL,
     ObservedFetchSummary as AnaFetchSummary,
     build_run_id,
     configure_run_logger as configure_ana_logger,
     fetch_observed_ana,
 )
-from mgb_ops.ingest.fetch_observed_inmet import (
+from mgb_ops.adapters.observed_inmet import (
     DEFAULT_INMET_BASE_URL,
     DEFAULT_INMET_RAIN_PRODUCT,
     ObservedFetchSummary as InmetFetchSummary,
@@ -93,9 +93,9 @@ def fetch_and_load_observed_provider(
     logger = None
     if logs_dir is not None:
         if provider == "ana":
-            logger = configure_ana_logger(Path(logs_dir) / "fetch_observed_ana" / f"{run_id}.log")
+            logger = configure_ana_logger(Path(logs_dir) / "observed_ana" / f"{run_id}.log")
         else:
-            logger = configure_inmet_logger(Path(logs_dir) / "fetch_observed_inmet" / f"{run_id}.log")
+            logger = configure_inmet_logger(Path(logs_dir) / "observed_inmet" / f"{run_id}.log")
 
     variable_codes = ("rain", "level", "flow") if provider == "ana" else ("rain",)
     with HistoryRepository(database_path) as repository:

@@ -67,7 +67,7 @@ def build_run_id(reference_time: datetime) -> str:
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
     log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("ingest.inmet")
+    logger = logging.getLogger("adapters.observed_inmet")
     logger.setLevel(logging.INFO)
     for handler in logger.handlers[:]:
         handler.close()

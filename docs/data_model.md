@@ -76,7 +76,7 @@ Canonical structure for quality flags without overwriting the original data. The
 
 ### `manual_edit`
 
-In the current history database, this table is used for manual ECMWF forecast corrections by asset and time window. There is no equivalent implemented contract yet for manual correction of observed rainfall.
+In the current history database, this table is used for manual GRIB2 forecast corrections by asset and time window. There is no equivalent implemented contract yet for manual correction of observed rainfall.
 
 ### `run_catalog`
 

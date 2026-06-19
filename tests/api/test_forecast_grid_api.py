@@ -7,8 +7,8 @@ import pytest
 pytest.importorskip("numpy")
 
 from mgb_ops.common.models import RunKind, RunMetadata, RunStatus
-from mgb_ops.ingest import forecast_grid as forecast_grid_module
-from mgb_ops.ingest.forecast_grid import collect_forecast_grids
+from mgb_ops.adapters.forecast_ecmwf import collect_forecast_grids
+from mgb_ops.adapters import forecast_ecmwf as forecast_grid_module
 
 
 @pytest.fixture

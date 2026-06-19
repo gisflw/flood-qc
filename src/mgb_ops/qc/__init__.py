@@ -1,6 +1,6 @@
 """Automatic QC and manual review."""
 
-from mgb_ops.qc.ecmwf_forecast_correction import (
+from mgb_ops.qc.grib2_forecast_correction import (
     CorrectedGribSummary,
     ForecastCorrectionInstruction,
     apply_correction_sequence,

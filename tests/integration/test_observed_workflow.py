@@ -4,8 +4,8 @@ import csv
 from datetime import date, datetime
 
 from db_helpers import initialize_history_db
-from mgb_ops.ingest import observed_workflow
-from mgb_ops.ingest.fetch_observed_ana import ObservedFetchStationSummary, ObservedFetchSummary
+from mgb_ops.adapters.observed_ana import ObservedFetchStationSummary, ObservedFetchSummary
+from mgb_ops.workflows import observed as observed_workflow
 from mgb_ops.storage.history_repository import HistoryRepository
 from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
 

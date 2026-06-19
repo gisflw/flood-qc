@@ -8,7 +8,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mgb_ops.ingest.forecast_grid import TpGribMessage
+from mgb_ops.common.grib2 import TpGribMessage
 from mgb_ops.model.prepare_mgb_rainfall import (
     build_hourly_forecast_grid_series,
     extend_station_matrix_with_forecast,

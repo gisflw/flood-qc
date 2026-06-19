@@ -10,14 +10,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from mgb_ops.common.grib2 import TpGribMessage, read_tp_grib_messages
 from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window
-from mgb_ops.ingest.forecast_grid import (
+from mgb_ops.adapters.forecast_ecmwf import (
     ECMWF_FORECAST_PRODUCT,
     ForecastProductConfig,
-    TpGribMessage,
     build_asset_id,
     build_ecmwf_cycle,
-    read_tp_grib_messages,
 )
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
@@ -299,7 +298,7 @@ def load_latest_ecmwf_asset_path(
     if row is None:
         raise FileNotFoundError(
             "No ECMWF forecast asset was found in history for the requested forecast window. "
-            "Ingest forecast grids with `mgb_ops.ingest.forecast_grid` first."
+            "Ingest forecast grids with `mgb_ops.adapters.forecast_ecmwf` first."
         )
 
     registered_path = Path(str(row["relative_path"]))

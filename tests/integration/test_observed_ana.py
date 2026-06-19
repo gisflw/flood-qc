@@ -6,7 +6,8 @@ import csv
 from datetime import date, datetime, timedelta
 
 from mgb_ops.common import time_utils
-from mgb_ops.ingest import fetch_observed_ana, observed_workflow
+from mgb_ops.adapters import observed_ana
+from mgb_ops.workflows import observed as observed_workflow
 from db_helpers import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository, build_observed_series_id
 
@@ -90,13 +91,13 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
 def test_fetch_observed_ana_resolve_reference_time_accepts_yesterday(monkeypatch) -> None:
     monkeypatch.setattr(time_utils, "datetime", FakeDateTime)
 
-    reference_time = fetch_observed_ana.resolve_reference_time("yesterday")
+    reference_time = observed_ana.resolve_reference_time("yesterday")
 
     assert reference_time == datetime(2026, 3, 18, 23, 0, 0)
 
 
 def test_fetch_observed_ana_resolve_reference_time_date_only_assumes_last_hour() -> None:
-    reference_time = fetch_observed_ana.resolve_reference_time("2026-03-18")
+    reference_time = observed_ana.resolve_reference_time("2026-03-18")
 
     assert reference_time == datetime(2026, 3, 18, 23, 0, 0)
 
@@ -132,9 +133,9 @@ def test_fetch_observed_ana_writes_one_station_csv_without_sqlite_writes(tmp_pat
 """
         )
 
-    monkeypatch.setattr("mgb_ops.ingest.fetch_observed_ana.requests.get", fake_get)
+    monkeypatch.setattr("mgb_ops.adapters.observed_ana.requests.get", fake_get)
 
-    summary = fetch_observed_ana.fetch_observed_ana(
+    summary = observed_ana.fetch_observed_ana(
         [{"station_id": "ana:74100000", "station_code": "74100000"}],
         request_dates_by_station={"ana:74100000": [date(2026, 3, 10), date(2026, 3, 11)]},
         downloads_dir=tmp_path / "downloads",
@@ -187,7 +188,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
         requested_params.append(params)
         return FakeResponse(SAMPLE_ANA_XML)
 
-    monkeypatch.setattr("mgb_ops.ingest.fetch_observed_ana.requests.get", fake_get)
+    monkeypatch.setattr("mgb_ops.adapters.observed_ana.requests.get", fake_get)
 
     stale_root = tmp_path / "downloads" / "ana"
     stale_station_dir = stale_root / "99999999"
@@ -225,7 +226,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
 
     raw_xml_files = list((tmp_path / "downloads" / "ana" / "20260311T134500" / "74100000").glob("*.xml"))
     normalized_csv_files = list((tmp_path / "downloads" / "ana" / "20260311T134500" / "74100000").glob("*.csv"))
-    log_file = tmp_path / "logs" / "fetch_observed_ana" / "20260311T134500.log"
+    log_file = tmp_path / "logs" / "observed_ana" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
     assert summary.fetch_summary.legacy_counts() == {

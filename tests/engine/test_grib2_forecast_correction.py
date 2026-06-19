@@ -5,8 +5,8 @@ from pathlib import Path
 
 import numpy as np
 
-from mgb_ops.ingest.forecast_grid import TpGribMessage
-from mgb_ops.qc import ecmwf_forecast_correction
+from mgb_ops.common.grib2 import TpGribMessage
+from mgb_ops.qc import grib2_forecast_correction
 
 
 def _message(step_hours: int, value: float) -> TpGribMessage:
@@ -21,12 +21,12 @@ def _message(step_hours: int, value: float) -> TpGribMessage:
 
 def test_build_corrected_cumulative_fields_applies_instruction_to_matching_steps(monkeypatch) -> None:
     messages = [_message(0, 0.0), _message(3, 1.0), _message(6, 3.0)]
-    monkeypatch.setattr(ecmwf_forecast_correction, "read_tp_grib_messages", lambda _: messages)
+    monkeypatch.setattr(grib2_forecast_correction, "read_tp_grib_messages", lambda _: messages)
 
-    corrected = ecmwf_forecast_correction.build_corrected_cumulative_fields(
+    corrected = grib2_forecast_correction.build_corrected_cumulative_fields(
         Path("unused.grib2"),
         [
-            ecmwf_forecast_correction.ForecastCorrectionInstruction(
+            grib2_forecast_correction.ForecastCorrectionInstruction(
                 asset_id="asset",
                 t0_step=0,
                 t1_step=3,
@@ -46,7 +46,7 @@ def test_write_corrected_grib2_sets_corrected_tp_values(tmp_path, monkeypatch) -
     source_path.write_bytes(b"source")
 
     monkeypatch.setattr(
-        ecmwf_forecast_correction,
+        grib2_forecast_correction,
         "build_corrected_cumulative_fields",
         lambda *args, **kwargs: [np.array([[1000.0]]), np.array([[3000.0]])],
     )
@@ -80,13 +80,13 @@ def test_write_corrected_grib2_sets_corrected_tp_values(tmp_path, monkeypatch) -
             return None
 
     fake_eccodes = FakeEccodes()
-    monkeypatch.setattr(ecmwf_forecast_correction, "_require_eccodes", lambda: fake_eccodes)
+    monkeypatch.setattr(grib2_forecast_correction, "require_eccodes", lambda: fake_eccodes)
 
-    summary = ecmwf_forecast_correction.write_corrected_grib2(
+    summary = grib2_forecast_correction.write_corrected_grib2(
         source_path,
         target_path,
         [
-            ecmwf_forecast_correction.ForecastCorrectionInstruction(
+            grib2_forecast_correction.ForecastCorrectionInstruction(
                 asset_id="asset",
                 t0_step=0,
                 t1_step=3,

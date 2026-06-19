@@ -7,7 +7,8 @@ from pathlib import Path
 
 import numpy as np
 
-from mgb_ops.ingest import forecast_grid
+from mgb_ops.adapters import forecast_ecmwf
+from mgb_ops.common import grib2
 from db_helpers import initialize_history_db
 
 
@@ -24,7 +25,7 @@ class FakeTemporaryDirectory:
 
 
 def test_build_ecmwf_cycle_uses_next_local_hour_and_converts_to_utc() -> None:
-    cycle_time = forecast_grid.build_ecmwf_cycle(datetime(2026, 3, 18, 23, 0, 0))
+    cycle_time = forecast_ecmwf.build_ecmwf_cycle(datetime(2026, 3, 18, 23, 0, 0))
 
     assert cycle_time == datetime(2026, 3, 19, 0, 0, 0)
 
@@ -35,7 +36,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
     temp_dir = tmp_path / "temp_download"
 
     monkeypatch.setattr(
-        forecast_grid.tempfile,
+        forecast_ecmwf.tempfile,
         "TemporaryDirectory",
         lambda prefix="": FakeTemporaryDirectory(temp_dir),
     )
@@ -49,15 +50,15 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(b"cropped-grib")
 
-    monkeypatch.setattr(forecast_grid, "download_ecmwf_grib_to_path", fake_download)
-    monkeypatch.setattr(forecast_grid, "crop_grib_to_bbox", fake_crop)
+    monkeypatch.setattr(forecast_ecmwf, "download_ecmwf_grib_to_path", fake_download)
+    monkeypatch.setattr(forecast_ecmwf, "crop_grib_to_bbox", fake_crop)
     monkeypatch.setattr(
-        forecast_grid,
+        forecast_ecmwf,
         "extract_valid_time_bounds",
         lambda _: (datetime(2026, 3, 11, 3, 0, 0), datetime(2026, 3, 26, 0, 0, 0)),
     )
 
-    summary = forecast_grid.ingest_forecast_grids(
+    summary = forecast_ecmwf.ingest_forecast_grids(
         history_db,
         reference_time=datetime(2026, 3, 11, 23, 0, 0),
         bbox=(-60.0, -35.0, -48.0, -26.0),
@@ -80,7 +81,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
         ).fetchone()
 
     assert row == (
-        forecast_grid.ECMWF_ASSET_KIND,
+        forecast_ecmwf.ECMWF_ASSET_KIND,
         "GRIB2",
         "ecmwf",
         summary.asset_path.relative_to(tmp_path).as_posix(),
@@ -89,7 +90,7 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
     )
 
 
-def test_build_grid_arrays_uses_coordinate_arrays_for_wrapped_global_grid(monkeypatch) -> None:
+def test_grib2_grid_array_reader_uses_coordinate_arrays_for_wrapped_global_grid(monkeypatch) -> None:
     class FakeEccodes:
         @staticmethod
         def codes_get(gid, key):
@@ -115,9 +116,9 @@ def test_build_grid_arrays_uses_coordinate_arrays_for_wrapped_global_grid(monkey
                 return np.array([180.0, 180.25, 180.5, 180.75, 180.0, 180.25, 180.5, 180.75], dtype=np.float64)
             raise KeyError(key)
 
-    monkeypatch.setattr(forecast_grid, "_require_eccodes", lambda: FakeEccodes())
+    monkeypatch.setattr(grib2, "require_eccodes", lambda: FakeEccodes())
 
-    latitudes, longitudes, values = forecast_grid._build_grid_arrays(object())
+    latitudes, longitudes, values = grib2.build_grid_arrays(object())
 
     assert latitudes.tolist() == [1.0, -1.0]
     assert longitudes.tolist() == [-179.75, -179.5, -179.25, 180.0]

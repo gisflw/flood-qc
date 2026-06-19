@@ -9,7 +9,8 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from mgb_ops.ingest import fetch_observed_inmet, observed_workflow
+from mgb_ops.adapters import observed_inmet
+from mgb_ops.workflows import observed as observed_workflow
 from db_helpers import initialize_history_db
 
 
@@ -61,7 +62,7 @@ class FakeSession:
 
 
 def test_parse_payload_accepts_pair_rows_and_deduplicates() -> None:
-    frame = fetch_observed_inmet.parse_payload(SAMPLE_INMET_PAYLOAD, station_code="a801")
+    frame = observed_inmet.parse_payload(SAMPLE_INMET_PAYLOAD, station_code="a801")
 
     assert frame["station_code"].tolist() == ["A801", "A801", "A801", "A801"]
     assert frame["observed_at"].tolist() == [
@@ -86,7 +87,7 @@ def test_parse_payload_accepts_dict_rows() -> None:
         }
     }
 
-    frame = fetch_observed_inmet.parse_payload(payload, station_code="A801")
+    frame = observed_inmet.parse_payload(payload, station_code="A801")
 
     assert frame["station_code"].tolist() == ["A801", "A801"]
     assert frame["rain"].tolist() == [1.5, 2.5]
@@ -96,12 +97,12 @@ def test_parse_payload_accepts_dict_rows() -> None:
 def test_fetch_station_payload_retries_and_preserves_headers(monkeypatch) -> None:
     session = FakeSession(
         responses=[FakeResponse(SAMPLE_INMET_PAYLOAD)],
-        side_effects=[fetch_observed_inmet.requests.Timeout("timeout")],
+        side_effects=[observed_inmet.requests.Timeout("timeout")],
     )
     sleep_calls: list[float] = []
-    monkeypatch.setattr(fetch_observed_inmet.time, "sleep", lambda seconds: sleep_calls.append(seconds))
+    monkeypatch.setattr(observed_inmet.time, "sleep", lambda seconds: sleep_calls.append(seconds))
 
-    payload = fetch_observed_inmet.fetch_station_payload(
+    payload = observed_inmet.fetch_station_payload(
         "A801",
         request_date=datetime(2026, 3, 11).date(),
         base_url="https://example.test/v1",
@@ -127,9 +128,9 @@ def test_fetch_observed_inmet_writes_one_station_csv_without_sqlite_writes(tmp_p
             FakeResponse({"data": {"data": [{"timestamp": "2026-03-11T00:00:00", "value": 2.0, "codigo": "A801"}]}}),
         ]
     )
-    monkeypatch.setattr(fetch_observed_inmet.requests, "Session", lambda: session)
+    monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
 
-    summary = fetch_observed_inmet.fetch_observed_inmet(
+    summary = observed_inmet.fetch_observed_inmet(
         [{"station_id": "inmet:A801", "station_code": "A801"}],
         request_dates_by_station={"inmet:A801": [date(2026, 3, 10), date(2026, 3, 11)]},
         downloads_dir=tmp_path / "downloads",
@@ -177,7 +178,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
     initialize_history_db(db_path)
 
     session = FakeSession(responses=[FakeResponse(SAMPLE_INMET_PAYLOAD)])
-    monkeypatch.setattr(fetch_observed_inmet.requests, "Session", lambda: session)
+    monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
 
     summary = observed_workflow.fetch_and_load_observed_provider(
         "inmet",
@@ -202,7 +203,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         ).fetchall()
 
     normalized_csv_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
-    log_file = tmp_path / "logs" / "fetch_observed_inmet" / "20260311T134500.log"
+    log_file = tmp_path / "logs" / "observed_inmet" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
     assert summary.fetch_summary.legacy_counts() == {
@@ -226,7 +227,7 @@ def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_
     initialize_history_db(db_path)
 
     monkeypatch.setattr(
-        fetch_observed_inmet.requests,
+        observed_inmet.requests,
         "Session",
         lambda: FakeSession(responses=[FakeResponse({"data": {"data": []}})]),
     )
@@ -252,11 +253,11 @@ def test_fetch_and_load_observed_inmet_marks_station_error_after_final_failure(t
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
-    monkeypatch.setattr(fetch_observed_inmet.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(observed_inmet.time, "sleep", lambda _seconds: None)
     monkeypatch.setattr(
-        fetch_observed_inmet.requests,
+        observed_inmet.requests,
         "Session",
-        lambda: FakeSession(side_effects=[fetch_observed_inmet.requests.Timeout("timeout")] * 5),
+        lambda: FakeSession(side_effects=[observed_inmet.requests.Timeout("timeout")] * 5),
     )
 
     summary = observed_workflow.fetch_and_load_observed_provider(

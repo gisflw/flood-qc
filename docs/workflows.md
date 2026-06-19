@@ -16,20 +16,20 @@ Library module: `mgb_ops.storage.db_bootstrap`
 
 ### 2. ANA Observation Ingestion
 
-Fetch module: `mgb_ops.ingest.fetch_observed_ana`
-Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_provider`
+Fetch module: `mgb_ops.adapters.observed_ana`
+Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 
 1. Read ANA stations from the caller-supplied history database.
 2. For each station, resume from the latest raw observed day already present in SQLite, overlapping that day; stations without later data start at the configured observed request window start.
 3. Fetch hydrometeorological data by station and day.
 4. Save provider XML as ancillary evidence and write one normalized observed CSV per station per run under `<workspace>/data/downloads/ana/<run_id>/<station_code>/observed.csv`.
 5. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
-6. Register logs in `logs/fetch_observed_ana/`.
+6. Register logs in `logs/observed_ana/`.
 
 ### 2b. INMET Rainfall Ingestion
 
-Fetch module: `mgb_ops.ingest.fetch_observed_inmet`
-Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_provider`
+Fetch module: `mgb_ops.adapters.observed_inmet`
+Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 
 1. Read INMET stations from the caller-supplied history database.
 2. Resolve the local key in the thin CLI/app layer; pass `api_key` explicitly to the library workflow.
@@ -37,20 +37,20 @@ Fill-DB workflow: `mgb_ops.ingest.observed_workflow.fetch_and_load_observed_prov
 4. Query the operational rainfall API by station and day, using the explicit `product_code` input that defaults to `I175`.
 5. Write one normalized observed rainfall CSV per station per run under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/observed.csv`.
 6. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
-7. Register logs in `logs/fetch_observed_inmet/`.
+7. Register logs in `logs/observed_inmet/`.
 
 ### 3. Forecast Grid Ingestion
 
-Library module: `mgb_ops.ingest.forecast_grid`
+Library module: `mgb_ops.adapters.forecast_ecmwf`
 
 1. Resolve the cycle from `reference_time`.
 2. Download the configured forecast GRIB. ECMWF is the current default product configuration.
 3. Clip the grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
 4. Register the canonical asset in the explicitly supplied history database, using `provider_code` and `asset_kind` plus an explicitly supplied asset base directory for relative paths.
-5. Register logs in `logs/forecast_grid/`.
+5. Register logs in `logs/forecast_ecmwf/`.
 
 Python callers pass `bbox=(west, south, east, north)` and `buffer_fraction=...`
-directly to `mgb_ops.ingest.forecast_grid.ingest_forecast_grids`. These values
+directly to `mgb_ops.adapters.forecast_ecmwf.ingest_forecast_grids`. These values
 can also be set as `forecast_grid.bbox` and `forecast_grid.buffer_fraction` in
 `<workspace>/config/custom.yaml`.
 
