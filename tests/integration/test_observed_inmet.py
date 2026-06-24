@@ -124,8 +124,16 @@ def test_fetch_observed_inmet_writes_one_station_csv_without_sqlite_writes(tmp_p
     initialize_history_db(db_path)
     session = FakeSession(
         responses=[
-            FakeResponse({"data": {"data": [{"timestamp": "2026-03-10T00:00:00", "value": 1.0, "codigo": "A801"}]}}),
-            FakeResponse({"data": {"data": [{"timestamp": "2026-03-11T00:00:00", "value": 2.0, "codigo": "A801"}]}}),
+            FakeResponse(
+                {
+                    "data": {
+                        "data": [
+                            {"timestamp": "2026-03-10T00:00:00", "value": 1.0, "codigo": "A801"},
+                            {"timestamp": "2026-03-11T00:00:00", "value": 2.0, "codigo": "A801"},
+                        ]
+                    }
+                }
+            ),
         ]
     )
     monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
@@ -145,13 +153,56 @@ def test_fetch_observed_inmet_writes_one_station_csv_without_sqlite_writes(tmp_p
     with sqlite3.connect(db_path) as connection:
         series_total = connection.execute("SELECT COUNT(*) FROM observed_series").fetchone()[0]
 
+    raw_payload_files = list((tmp_path / "downloads" / "inmet" / "run" / "A801").glob("*.json"))
+
+    assert [request["params"] for request in session.requests] == [
+        {"dataInicio": "2026-03-10", "dataFinal": "2026-03-11"},
+    ]
+    assert summary.csv_paths == [tmp_path / "downloads" / "inmet" / "run" / "A801" / "observed.csv"]
+    assert [path.name for path in raw_payload_files] == ["20260310__20260311.json"]
+    assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
+    assert series_total == 0
+
+
+def test_fetch_observed_inmet_fetch_window_days_one_preserves_daily_requests(tmp_path, monkeypatch) -> None:
+    session = FakeSession(
+        responses=[
+            FakeResponse({"data": {"data": [{"timestamp": "2026-03-10T00:00:00", "value": 1.0, "codigo": "A801"}]}}),
+            FakeResponse({"data": {"data": [{"timestamp": "2026-03-11T00:00:00", "value": 2.0, "codigo": "A801"}]}}),
+        ]
+    )
+    monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
+
+    observed_inmet.fetch_observed_inmet(
+        [{"station_id": "inmet:A801", "station_code": "A801"}],
+        request_dates_by_station={"inmet:A801": [date(2026, 3, 10), date(2026, 3, 11)]},
+        downloads_dir=tmp_path / "downloads",
+        run_id="run",
+        base_url="https://example.test/v1",
+        timeout_seconds=5,
+        api_key="secret",
+        fetch_window_days=1,
+    )
+
+    raw_payload_files = list((tmp_path / "downloads" / "inmet" / "run" / "A801").glob("*.json"))
+
     assert [request["params"] for request in session.requests] == [
         {"dataInicio": "2026-03-10", "dataFinal": "2026-03-10"},
         {"dataInicio": "2026-03-11", "dataFinal": "2026-03-11"},
     ]
-    assert summary.csv_paths == [tmp_path / "downloads" / "inmet" / "run" / "A801" / "observed.csv"]
-    assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
-    assert series_total == 0
+    assert sorted(path.name for path in raw_payload_files) == ["20260310__20260310.json", "20260311__20260311.json"]
+
+
+def test_fetch_observed_inmet_rejects_invalid_fetch_window_days(tmp_path) -> None:
+    with pytest.raises(ValueError, match="fetch_window_days"):
+        observed_inmet.fetch_observed_inmet(
+            [{"station_id": "inmet:A801", "station_code": "A801"}],
+            request_dates_by_station={"inmet:A801": [date(2026, 3, 10)]},
+            downloads_dir=tmp_path / "downloads",
+            run_id="run",
+            api_key="secret",
+            fetch_window_days=0,
+        )
 
 
 
@@ -191,6 +242,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
         base_url="https://example.test/v1",
+        fetch_window_days=1,
     )
 
     with sqlite3.connect(db_path) as connection:
@@ -257,6 +309,7 @@ def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_
         downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
         base_url="https://example.test/v1",
+        fetch_window_days=1,
     )
 
     with sqlite3.connect(db_path) as connection:

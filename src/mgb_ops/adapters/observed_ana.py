@@ -12,6 +12,7 @@ from typing import Iterable
 import requests
 
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
+from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS, iter_fetch_date_windows
 from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
@@ -149,14 +150,24 @@ def parse_response(text: str):
 def fetch_station_xml(
     station_code: str,
     *,
-    request_date: date,
+    request_date: date | None = None,
+    request_start_date: date | None = None,
+    request_end_date: date | None = None,
     base_url: str,
     timeout_seconds: float,
 ) -> str:
+    if request_date is not None:
+        request_start_date = request_date
+        request_end_date = request_date
+    if request_start_date is None or request_end_date is None:
+        raise ValueError("request_start_date and request_end_date are required.")
+    if request_end_date < request_start_date:
+        raise ValueError("request_end_date must be >= request_start_date.")
+
     params = {
         "codEstacao": station_code,
-        "dataInicio": request_date.strftime("%d/%m/%Y"),
-        "dataFim": request_date.strftime("%d/%m/%Y"),
+        "dataInicio": request_start_date.strftime("%d/%m/%Y"),
+        "dataFim": request_end_date.strftime("%d/%m/%Y"),
     }
     response = requests.get(base_url, params=params, timeout=timeout_seconds)
     response.raise_for_status()
@@ -176,12 +187,21 @@ def save_raw_xml(
     *,
     ana_root_dir: Path,
     station_code: str,
-    request_date: date,
+    request_date: date | None = None,
+    request_start_date: date | None = None,
+    request_end_date: date | None = None,
 ) -> Path:
+    if request_date is not None:
+        request_start_date = request_date
+        request_end_date = request_date
+    if request_start_date is None or request_end_date is None:
+        raise ValueError("request_start_date and request_end_date are required.")
+
     station_dir = ana_root_dir / station_code
     station_dir.mkdir(parents=True, exist_ok=True)
-    file_stamp = request_date.strftime("%Y%m%d")
-    file_path = station_dir / f"{file_stamp}__{file_stamp}.xml"
+    start_stamp = request_start_date.strftime("%Y%m%d")
+    end_stamp = request_end_date.strftime("%Y%m%d")
+    file_path = station_dir / f"{start_stamp}__{end_stamp}.xml"
     file_path.write_text(xml_text, encoding="utf-8")
     return file_path
 
@@ -240,8 +260,12 @@ def fetch_observed_ana(
     timeout_seconds: float = 30.0,
     logger: logging.Logger | None = None,
     save_raw: bool = True,
+    fetch_window_days: int = DEFAULT_FETCH_WINDOW_DAYS,
 ) -> ObservedFetchSummary:
     import pandas as pd
+
+    if fetch_window_days < 1:
+        raise ValueError("fetch_window_days must be >= 1.")
 
     ana_root_dir = Path(downloads_dir) / "ana" / run_id
     station_summaries: list[ObservedFetchStationSummary] = []
@@ -275,10 +299,14 @@ def fetch_observed_ana(
 
         frames = []
         try:
-            for request_date in request_dates:
+            for request_start_date, request_end_date in iter_fetch_date_windows(
+                request_dates,
+                fetch_window_days=fetch_window_days,
+            ):
                 xml_text = fetch_station_xml(
                     station_code,
-                    request_date=request_date,
+                    request_start_date=request_start_date,
+                    request_end_date=request_end_date,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
                 )
@@ -287,7 +315,8 @@ def fetch_observed_ana(
                         xml_text,
                         ana_root_dir=ana_root_dir,
                         station_code=station_code,
-                        request_date=request_date,
+                        request_start_date=request_start_date,
+                        request_end_date=request_end_date,
                     )
                 else:
                     raw_xml_path = None
@@ -297,10 +326,11 @@ def fetch_observed_ana(
                     frames.append(frame)
                 if logger is not None:
                     logger.info(
-                        "station_day_fetched station_id=%s station_code=%s request_date=%s raw_xml=%s rows=%s",
+                        "station_window_fetched station_id=%s station_code=%s window_start=%s window_end=%s raw_xml=%s rows=%s",
                         station_id,
                         station_code,
-                        request_date.isoformat(),
+                        request_start_date.isoformat(),
+                        request_end_date.isoformat(),
                         raw_xml_path,
                         len(frame),
                     )

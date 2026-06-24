@@ -8,6 +8,7 @@ from mgb_ops.common import settings as settings_module
 CUSTOM_CONFIG = """\
 ingest:
   timeout_seconds: 30
+  fetch_window_days: 14
 
 forecast_grid:
   bbox: [-60.0, -35.0, -48.0, -26.0]
@@ -37,6 +38,7 @@ def test_load_settings_uses_in_code_defaults_without_workspace_config(tmp_path) 
     assert settings == settings_module.DEFAULT_SETTINGS
     assert settings["run"]["reference_time"] == "yesterday"
     assert settings["ingest"]["request_days"] == 90
+    assert settings["ingest"]["fetch_window_days"] == 30
     assert settings["mgb"]["use_forecast_data"] is True
 
 
@@ -48,6 +50,7 @@ def test_load_settings_merges_workspace_custom_yaml(tmp_path) -> None:
     assert settings["run"]["reference_time"] == "yesterday"
     assert settings["ingest"]["request_days"] == 90
     assert settings["ingest"]["timeout_seconds"] == 30
+    assert settings["ingest"]["fetch_window_days"] == 14
     assert settings["forecast_grid"]["bbox"] == [-60.0, -35.0, -48.0, -26.0]
     assert settings["forecast_grid"]["buffer_fraction"] == 1.0
     assert settings["summaries"]["forecast_days"] == [1, 3, 7, 14]
@@ -78,6 +81,13 @@ ingest:
   timeout_seconds: 0
 """,
             "number > 0",
+        ),
+        (
+            """\
+ingest:
+  fetch_window_days: 0
+""",
+            "integer >= 1",
         ),
         (
             """\

@@ -32,9 +32,11 @@ def test_fetch_and_load_observed_provider_empty_db_starts_at_window_start(tmp_pa
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
     captured_dates = {}
+    captured_kwargs = {}
 
     def fake_fetch(stations, *, request_dates_by_station, downloads_dir, run_id, **kwargs):
         captured_dates.update(request_dates_by_station)
+        captured_kwargs.update(kwargs)
         csv_path = tmp_path / "downloads" / "ana" / run_id / "74100000" / "observed.csv"
         _write_station_csv(csv_path, observed_at="2026-03-10 00:00")
         return ObservedFetchSummary(
@@ -63,9 +65,11 @@ def test_fetch_and_load_observed_provider_empty_db_starts_at_window_start(tmp_pa
         downloads_dir=tmp_path / "downloads",
         station_codes=["74100000"],
         run_id="run",
+        fetch_window_days=7,
     )
 
     assert captured_dates["ana:74100000"] == [date(2026, 3, 10), date(2026, 3, 11), date(2026, 3, 12)]
+    assert captured_kwargs["fetch_window_days"] == 7
     assert summary.import_summary.rows_imported == 1
 
 

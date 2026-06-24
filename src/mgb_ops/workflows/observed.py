@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Iterable
 
 from mgb_ops.common.time_utils import iter_observed_request_dates
+from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS
 from mgb_ops.adapters.observed_ana import (
     DEFAULT_ANA_BASE_URL,
     ObservedFetchSummary as AnaFetchSummary,
@@ -84,6 +85,7 @@ def fetch_and_load_observed_provider(
     timeout_seconds: float = 30.0,
     api_key: str | None = None,
     product_code: str = DEFAULT_INMET_RAIN_PRODUCT,
+    fetch_window_days: int = DEFAULT_FETCH_WINDOW_DAYS,
 ) -> ObservedWorkflowSummary:
     provider = provider_code.strip().lower()
     if provider not in {"ana", "inmet"}:
@@ -121,6 +123,7 @@ def fetch_and_load_observed_provider(
             base_url=base_url or DEFAULT_ANA_BASE_URL,
             timeout_seconds=timeout_seconds,
             logger=logger,
+            fetch_window_days=fetch_window_days,
         )
     else:
         if not api_key:
@@ -135,6 +138,7 @@ def fetch_and_load_observed_provider(
             timeout_seconds=timeout_seconds,
             product_code=product_code,
             logger=logger,
+            fetch_window_days=fetch_window_days,
         )
 
     import_summary = load_normalized_observed_csvs(database_path, fetch_summary.csv_paths)

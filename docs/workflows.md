@@ -21,8 +21,8 @@ Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 
 1. Read ANA stations from the caller-supplied history database.
 2. For each station, resume from the latest raw observed day already present in SQLite, overlapping that day; stations without later data start at the configured observed request window start.
-3. Fetch hydrometeorological data by station and day.
-4. Save provider XML as ancillary evidence and write one normalized observed CSV per station per run under `<workspace>/data/downloads/ana/<run_id>/<station_code>/observed.csv`.
+3. Fetch hydrometeorological data by station and contiguous date window. The library workflow accepts `fetch_window_days`, defaulting to `30`; use `1` to preserve one request per day.
+4. Save provider XML as ancillary evidence per fetch window under `<workspace>/data/downloads/ana/<run_id>/<station_code>/<YYYYMMDD>__<YYYYMMDD>.xml` and write one normalized observed CSV per station per run under `<workspace>/data/downloads/ana/<run_id>/<station_code>/observed.csv`.
 5. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
 6. Register logs in `logs/observed_ana/`.
 
@@ -34,8 +34,8 @@ Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 1. Read INMET stations from the caller-supplied history database.
 2. Resolve the local key in the thin CLI/app layer; pass `api_key` explicitly to the library workflow.
 3. For each station, resume from the latest raw observed rain day already present in SQLite, overlapping that day; stations without later data start at the configured observed request window start.
-4. Query the operational rainfall API by station and day, using the explicit `product_code` input that defaults to `I175`.
-5. Save each successful raw JSON response under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/<YYYYMMDD>__<YYYYMMDD>.json`.
+4. Query the operational rainfall API by station and contiguous date window, using the explicit `product_code` input that defaults to `I175`. The library workflow accepts `fetch_window_days`, defaulting to `30`; use `1` to preserve one request per day.
+5. Save each successful raw JSON response under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/<YYYYMMDD>__<YYYYMMDD>.json`, where the two dates are the request window start and end.
 6. Build one normalized observed rainfall CSV per station per run from the saved raw responses under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/observed.csv`. If a later day fails after earlier days succeeded, keep the partial CSV so successful data can still be imported while the station is marked as an error.
 7. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
 8. Register logs in `logs/observed_inmet/`.

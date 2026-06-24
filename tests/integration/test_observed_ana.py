@@ -5,6 +5,8 @@ import sqlite3
 import csv
 from datetime import date, datetime, timedelta
 
+import pytest
+
 from mgb_ops.common import time_utils
 from mgb_ops.adapters import observed_ana
 from mgb_ops.workflows import observed as observed_workflow
@@ -120,15 +122,21 @@ def test_fetch_observed_ana_writes_one_station_csv_without_sqlite_writes(tmp_pat
 
     def fake_get(url, params=None, timeout=None):
         requested_params.append(params)
-        day = params["dataInicio"][:2]
+        start_day = int(params["dataInicio"][:2])
+        end_day = int(params["dataFim"][:2])
+        nodes = "\n".join(
+            f"""\
+  <DadosHidrometereologicos>
+    <CodEstacao>74100000</CodEstacao>
+    <DataHora>2026-03-{day:02d} 00:00:00</DataHora>
+    <Chuva>{day}</Chuva>
+  </DadosHidrometereologicos>"""
+            for day in range(start_day, end_day + 1)
+        )
         return FakeResponse(
             f"""\
 <root>
-  <DadosHidrometereologicos>
-    <CodEstacao>74100000</CodEstacao>
-    <DataHora>2026-03-{day} 00:00:00</DataHora>
-    <Chuva>{int(day)}</Chuva>
-  </DadosHidrometereologicos>
+{nodes}
 </root>
 """
         )
@@ -149,13 +157,63 @@ def test_fetch_observed_ana_writes_one_station_csv_without_sqlite_writes(tmp_pat
     with sqlite3.connect(db_path) as connection:
         series_total = connection.execute("SELECT COUNT(*) FROM observed_series").fetchone()[0]
 
+    raw_xml_files = list((tmp_path / "downloads" / "ana" / "run" / "74100000").glob("*.xml"))
+
+    assert requested_params == [{"codEstacao": "74100000", "dataInicio": "10/03/2026", "dataFim": "11/03/2026"}]
+    assert summary.csv_paths == [tmp_path / "downloads" / "ana" / "run" / "74100000" / "observed.csv"]
+    assert [path.name for path in raw_xml_files] == ["20260310__20260311.xml"]
+    assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
+    assert series_total == 0
+
+
+def test_fetch_observed_ana_fetch_window_days_one_preserves_daily_requests(tmp_path, monkeypatch) -> None:
+    requested_params: list[dict[str, str]] = []
+
+    def fake_get(url, params=None, timeout=None):
+        requested_params.append(params)
+        day = params["dataInicio"][:2]
+        return FakeResponse(
+            f"""\
+<root>
+  <DadosHidrometereologicos>
+    <CodEstacao>74100000</CodEstacao>
+    <DataHora>2026-03-{day} 00:00:00</DataHora>
+    <Chuva>{int(day)}</Chuva>
+  </DadosHidrometereologicos>
+</root>
+"""
+        )
+
+    monkeypatch.setattr("mgb_ops.adapters.observed_ana.requests.get", fake_get)
+
+    observed_ana.fetch_observed_ana(
+        [{"station_id": "ana:74100000", "station_code": "74100000"}],
+        request_dates_by_station={"ana:74100000": [date(2026, 3, 10), date(2026, 3, 11)]},
+        downloads_dir=tmp_path / "downloads",
+        run_id="run",
+        base_url="http://example.test/ana",
+        timeout_seconds=5,
+        fetch_window_days=1,
+    )
+
+    raw_xml_files = list((tmp_path / "downloads" / "ana" / "run" / "74100000").glob("*.xml"))
+
     assert requested_params == [
         {"codEstacao": "74100000", "dataInicio": "10/03/2026", "dataFim": "10/03/2026"},
         {"codEstacao": "74100000", "dataInicio": "11/03/2026", "dataFim": "11/03/2026"},
     ]
-    assert summary.csv_paths == [tmp_path / "downloads" / "ana" / "run" / "74100000" / "observed.csv"]
-    assert [row["observed_at"] for row in rows] == ["2026-03-10 00:00", "2026-03-11 00:00"]
-    assert series_total == 0
+    assert sorted(path.name for path in raw_xml_files) == ["20260310__20260310.xml", "20260311__20260311.xml"]
+
+
+def test_fetch_observed_ana_rejects_invalid_fetch_window_days(tmp_path) -> None:
+    with pytest.raises(ValueError, match="fetch_window_days"):
+        observed_ana.fetch_observed_ana(
+            [{"station_id": "ana:74100000", "station_code": "74100000"}],
+            request_dates_by_station={"ana:74100000": [date(2026, 3, 10)]},
+            downloads_dir=tmp_path / "downloads",
+            run_id="run",
+            fetch_window_days=0,
+        )
 
 
 def test_history_repository_get_latest_observed_at_per_station(tmp_path) -> None:

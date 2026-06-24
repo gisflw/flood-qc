@@ -17,6 +17,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "ingest": {
         "request_days": 90,
         "timeout_seconds": 15,
+        "fetch_window_days": 30,
     },
     "forecast_grid": {
         "bbox": None,
@@ -160,6 +161,7 @@ def _validate_settings(settings: dict[str, Any]) -> None:
         "ingest": {
             "request_days": _validate_positive_int,
             "timeout_seconds": _validate_positive_number,
+            "fetch_window_days": _validate_positive_int,
         },
         "forecast_grid": {
             "bbox": _validate_optional_bbox,

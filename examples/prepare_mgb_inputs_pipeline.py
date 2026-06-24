@@ -140,6 +140,7 @@ for provider_code in OBSERVED_PROVIDERS:
         logs_dir=paths.logs_dir,
         station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
         timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
+        fetch_window_days=int(settings["ingest"]["fetch_window_days"]),
         api_key=api_key,
     )
     observed_summaries.append(summary)

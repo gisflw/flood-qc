@@ -13,6 +13,7 @@ from typing import Any, Iterable
 import requests
 
 from mgb_ops.common.time_utils import TIMEZONE
+from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS, iter_fetch_date_windows
 from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
@@ -117,7 +118,9 @@ def build_station_request_url(
 def fetch_station_payload(
     station_code: str,
     *,
-    request_date: date,
+    request_date: date | None = None,
+    request_start_date: date | None = None,
+    request_end_date: date | None = None,
     base_url: str,
     timeout_seconds: float,
     api_key: str,
@@ -126,9 +129,17 @@ def fetch_station_payload(
     retry_attempts: int = RETRY_ATTEMPTS,
     retry_sleep_seconds: float = RETRY_SLEEP_SECONDS,
 ) -> Any:
+    if request_date is not None:
+        request_start_date = request_date
+        request_end_date = request_date
+    if request_start_date is None or request_end_date is None:
+        raise ValueError("request_start_date and request_end_date are required.")
+    if request_end_date < request_start_date:
+        raise ValueError("request_end_date must be >= request_start_date.")
+
     params = {
-        "dataInicio": request_date.isoformat(),
-        "dataFinal": request_date.isoformat(),
+        "dataInicio": request_start_date.isoformat(),
+        "dataFinal": request_end_date.isoformat(),
     }
     session = session or requests.Session()
     session.headers.update(
@@ -154,7 +165,7 @@ def fetch_station_payload(
     assert last_exc is not None
     raise RuntimeError(
         f"Falha ao consultar INMET/BNDMET para station_code={station_code} "
-        f"date={request_date.isoformat()} apos {retry_attempts} tentativas."
+        f"window={request_start_date.isoformat()}..{request_end_date.isoformat()} apos {retry_attempts} tentativas."
     ) from last_exc
 
 
@@ -324,12 +335,21 @@ def save_raw_payload(
     *,
     inmet_root_dir: Path,
     station_code: str,
-    request_date: date,
+    request_date: date | None = None,
+    request_start_date: date | None = None,
+    request_end_date: date | None = None,
 ) -> Path:
+    if request_date is not None:
+        request_start_date = request_date
+        request_end_date = request_date
+    if request_start_date is None or request_end_date is None:
+        raise ValueError("request_start_date and request_end_date are required.")
+
     station_dir = inmet_root_dir / station_code
     station_dir.mkdir(parents=True, exist_ok=True)
-    file_stamp = request_date.strftime("%Y%m%d")
-    file_path = station_dir / f"{file_stamp}__{file_stamp}.json"
+    start_stamp = request_start_date.strftime("%Y%m%d")
+    end_stamp = request_end_date.strftime("%Y%m%d")
+    file_path = station_dir / f"{start_stamp}__{end_stamp}.json"
     file_path.write_text(
         json.dumps(payload, default=str, ensure_ascii=True, indent=2, sort_keys=True),
         encoding="utf-8",
@@ -359,11 +379,14 @@ def fetch_observed_inmet(
     retry_sleep_seconds: float = RETRY_SLEEP_SECONDS,
     logger: logging.Logger | None = None,
     save_raw: bool = True,
+    fetch_window_days: int = DEFAULT_FETCH_WINDOW_DAYS,
 ) -> ObservedFetchSummary:
     import pandas as pd
 
     if not api_key:
         raise ValueError("api_key is required for INMET/BNDMET observed ingestion.")
+    if fetch_window_days < 1:
+        raise ValueError("fetch_window_days must be >= 1.")
 
     inmet_root_dir = Path(downloads_dir) / "inmet" / run_id
     station_summaries: list[ObservedFetchStationSummary] = []
@@ -398,10 +421,14 @@ def fetch_observed_inmet(
 
             frames = []
             try:
-                for request_date in request_dates:
+                for request_start_date, request_end_date in iter_fetch_date_windows(
+                    request_dates,
+                    fetch_window_days=fetch_window_days,
+                ):
                     payload = fetch_station_payload(
                         station_code,
-                        request_date=request_date,
+                        request_start_date=request_start_date,
+                        request_end_date=request_end_date,
                         base_url=base_url,
                         timeout_seconds=timeout_seconds,
                         api_key=api_key,
@@ -415,7 +442,8 @@ def fetch_observed_inmet(
                             payload,
                             inmet_root_dir=inmet_root_dir,
                             station_code=station_code,
-                            request_date=request_date,
+                            request_start_date=request_start_date,
+                            request_end_date=request_end_date,
                         )
                         payload_to_parse = load_raw_payload(raw_payload_path)
                     else:
@@ -426,10 +454,11 @@ def fetch_observed_inmet(
                         frames.append(frame)
                     if logger is not None:
                         logger.info(
-                            "station_day_fetched station_id=%s station_code=%s request_date=%s raw_payload=%s rows=%s",
+                            "station_window_fetched station_id=%s station_code=%s window_start=%s window_end=%s raw_payload=%s rows=%s",
                             station_id,
                             station_code,
-                            request_date.isoformat(),
+                            request_start_date.isoformat(),
+                            request_end_date.isoformat(),
                             raw_payload_path,
                             len(frame),
                         )
