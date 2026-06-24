@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import sys
 import time
@@ -318,6 +319,28 @@ def write_normalized_csv(
     return output_path
 
 
+def save_raw_payload(
+    payload: Any,
+    *,
+    inmet_root_dir: Path,
+    station_code: str,
+    request_date: date,
+) -> Path:
+    station_dir = inmet_root_dir / station_code
+    station_dir.mkdir(parents=True, exist_ok=True)
+    file_stamp = request_date.strftime("%Y%m%d")
+    file_path = station_dir / f"{file_stamp}__{file_stamp}.json"
+    file_path.write_text(
+        json.dumps(payload, default=str, ensure_ascii=True, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return file_path
+
+
+def load_raw_payload(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def build_normalized_csv_path(inmet_root_dir: Path, *, station_code: str, request_date: date | None = None) -> Path:
     return inmet_root_dir / station_code / "observed.csv"
 
@@ -335,6 +358,7 @@ def fetch_observed_inmet(
     retry_attempts: int = RETRY_ATTEMPTS,
     retry_sleep_seconds: float = RETRY_SLEEP_SECONDS,
     logger: logging.Logger | None = None,
+    save_raw: bool = True,
 ) -> ObservedFetchSummary:
     import pandas as pd
 
@@ -386,15 +410,27 @@ def fetch_observed_inmet(
                         retry_attempts=retry_attempts,
                         retry_sleep_seconds=retry_sleep_seconds,
                     )
-                    frame = parse_payload(payload, station_code=station_code)
+                    if save_raw:
+                        raw_payload_path = save_raw_payload(
+                            payload,
+                            inmet_root_dir=inmet_root_dir,
+                            station_code=station_code,
+                            request_date=request_date,
+                        )
+                        payload_to_parse = load_raw_payload(raw_payload_path)
+                    else:
+                        raw_payload_path = None
+                        payload_to_parse = payload
+                    frame = parse_payload(payload_to_parse, station_code=station_code)
                     if not frame.empty:
                         frames.append(frame)
                     if logger is not None:
                         logger.info(
-                            "station_day_fetched station_id=%s station_code=%s request_date=%s rows=%s",
+                            "station_day_fetched station_id=%s station_code=%s request_date=%s raw_payload=%s rows=%s",
                             station_id,
                             station_code,
                             request_date.isoformat(),
+                            raw_payload_path,
                             len(frame),
                         )
 
@@ -433,25 +469,41 @@ def fetch_observed_inmet(
                         combined.empty,
                     )
             except Exception as exc:
+                combined = (
+                    pd.concat(frames, ignore_index=True)
+                    if frames
+                    else pd.DataFrame(columns=["station_code", "observed_at", "rain"])
+                )
+                partial_csv_path = None
+                if not combined.empty:
+                    partial_csv_path = write_normalized_csv(
+                        combined,
+                        output_path=csv_path,
+                        station_id=station_id,
+                        provider_code="inmet",
+                        station_code=station_code,
+                    )
                 station_summaries.append(
                     ObservedFetchStationSummary(
                         station_id=station_id,
                         station_code=station_code,
                         request_start=min(request_dates),
                         request_end=max(request_dates),
-                        rows_parsed=0,
-                        csv_path=None,
+                        rows_parsed=len(combined),
+                        csv_path=partial_csv_path,
                         no_data=False,
                         error=str(exc),
                     )
                 )
                 if logger is not None:
                     logger.exception(
-                        "station_error station_id=%s station_code=%s window_start=%s window_end=%s",
+                        "station_error station_id=%s station_code=%s window_start=%s window_end=%s rows_parsed=%s partial_csv=%s",
                         station_id,
                         station_code,
                         min(request_dates).isoformat(),
                         max(request_dates).isoformat(),
+                        len(combined),
+                        partial_csv_path,
                     )
 
     return ObservedFetchSummary(run_id=run_id, provider_code="inmet", stations=tuple(station_summaries))

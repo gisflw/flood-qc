@@ -203,6 +203,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         ).fetchall()
 
     normalized_csv_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
+    raw_payload_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.json"))
     log_file = tmp_path / "logs" / "observed_inmet" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
@@ -215,11 +216,68 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
     }
     assert series_rows == [("inmet:A801.rain.raw", "rain")]
     assert rain_values == [("2026-03-10 21:00", 2.0), ("2026-03-10 23:00", 3.5)]
+    assert len(raw_payload_files) == 1
     assert len(normalized_csv_files) == 1
+    assert raw_payload_files[0].name == "20260311__20260311.json"
     assert normalized_csv_files[0].name == "observed.csv"
+    assert json.loads(raw_payload_files[0].read_text(encoding="utf-8")) == SAMPLE_INMET_PAYLOAD
     assert log_file.exists()
     assert "window_start=2026-03-11 window_end=2026-03-11" in log_text
+    assert "raw_payload=" in log_text
     assert "normalized_csv=" in log_text
+
+
+def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_failure(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+
+    first_day_payload = {
+        "data": {
+            "data": [
+                {"timestamp": "2026-03-10T00:00:00", "value": 1.0, "codigo": "A801"},
+                {"timestamp": "2026-03-10T01:00:00", "value": 2.0, "codigo": "A801"},
+            ]
+        }
+    }
+    session = FakeSession(
+        responses=[FakeResponse(first_day_payload)],
+        side_effects=[None, *([observed_inmet.requests.Timeout("timeout")] * 5)],
+    )
+    monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
+    monkeypatch.setattr(observed_inmet.time, "sleep", lambda _seconds: None)
+
+    summary = observed_workflow.fetch_and_load_observed_provider(
+        "inmet",
+        database_path=db_path,
+        window_start=datetime(2026, 3, 10, 0, 0, 0),
+        window_end=datetime(2026, 3, 11, 13, 45, 0),
+        timeout_seconds=5,
+        api_key="secret",
+        station_codes=["A801"],
+        downloads_dir=tmp_path / "downloads",
+        logs_dir=tmp_path / "logs",
+        base_url="https://example.test/v1",
+    )
+
+    with sqlite3.connect(db_path) as connection:
+        rain_values = connection.execute(
+            "SELECT observed_at, value FROM observed_value "
+            "WHERE series_id = 'inmet:A801.rain.raw' ORDER BY observed_at"
+        ).fetchall()
+
+    station_summary = summary.fetch_summary.stations[0]
+    raw_payload_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.json"))
+    normalized_csv_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
+    log_text = (tmp_path / "logs" / "observed_inmet" / "20260311T134500.log").read_text(encoding="utf-8")
+
+    assert summary.fetch_summary.legacy_counts()["stations_error"] == 1
+    assert summary.import_summary.rows_imported == 2
+    assert station_summary.csv_path == tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801" / "observed.csv"
+    assert station_summary.rows_parsed == 2
+    assert rain_values == [("2026-03-10 00:00", 1.0), ("2026-03-10 01:00", 2.0)]
+    assert [path.name for path in raw_payload_files] == ["20260310__20260310.json"]
+    assert [path.name for path in normalized_csv_files] == ["observed.csv"]
+    assert "partial_csv=" in log_text
 
 
 def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, monkeypatch) -> None:
