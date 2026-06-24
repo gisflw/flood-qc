@@ -40,6 +40,10 @@ forecast_grid:
 ECMWF GRIB ingestion also needs operational dependencies installed in the
 runtime environment:
 
+```bash
+python -m pip install -e ".[forecast]"
+```
+
 - `ecmwf-opendata` for downloading deterministic ECMWF GRIB assets.
 - `eccodes` and its Python bindings for reading and cropping GRIB2 files.
 - The usual data dependencies such as `numpy`, `pandas`, and `requests`.

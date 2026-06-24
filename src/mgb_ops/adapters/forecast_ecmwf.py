@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import sys
 
+import numpy as np
+
 from mgb_ops.common.grib2 import (
     TpGribMessage,
     build_grid_arrays,

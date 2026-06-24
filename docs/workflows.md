@@ -44,6 +44,12 @@ Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 
 Library module: `mgb_ops.adapters.forecast_ecmwf`
 
+Install the optional forecast dependencies in the operational environment:
+
+```bash
+python -m pip install -e ".[forecast]"
+```
+
 1. Resolve the cycle from `reference_time`.
 2. Download the configured forecast GRIB. ECMWF is the current default product configuration.
 3. Clip the grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.

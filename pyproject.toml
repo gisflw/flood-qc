@@ -18,6 +18,13 @@ data = [
   "pandas>=2.1",
   "requests>=2.32",
 ]
+forecast = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "requests>=2.32",
+  "ecmwf-opendata",
+  "eccodes",
+]
 geo = [
   "rasterio>=1.3",
 ]
