@@ -17,11 +17,15 @@ data = [
   "numpy>=1.26",
   "pandas>=2.1",
   "requests>=2.32",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
 ]
 forecast = [
   "numpy>=1.26",
   "pandas>=2.1",
   "requests>=2.32",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
   "ecmwf-opendata",
   "eccodes",
 ]
@@ -30,6 +34,8 @@ geo = [
 ]
 dev = [
   "pytest>=8.0",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
 ]
 
 [tool.setuptools]

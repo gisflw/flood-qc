@@ -2,14 +2,15 @@ from __future__ import annotations
 
 import logging
 import re
-import sqlite3
 import sys
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
+import xarray as xr
 
 DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -22,6 +23,9 @@ class VariableSpec:
     variable_code: str
     display_name: str
     unit: str
+    netcdf_unit: str
+    long_name: str
+    standard_name: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,20 +45,35 @@ class ExportWindow:
 
 @dataclass(frozen=True, slots=True)
 class ExportSummary:
-    database_path: Path
+    netcdf_path: Path
     reference_time: datetime
     window_start: datetime
     window_end_exclusive: datetime
     nc: int
     nt_current: int
     nt_forecast: int
-    series_count: int
+    variable_count: int
     value_count: int
 
 
 VARIABLE_SPECS = (
-    VariableSpec(source_filename="QTUDO_Inercial_Atual.MGB", variable_code="q", display_name="QTUDO", unit="m3/s"),
-    VariableSpec(source_filename="YTUDO.MGB", variable_code="y", display_name="YTUDO", unit="m"),
+    VariableSpec(
+        source_filename="QTUDO_Inercial_Atual.MGB",
+        variable_code="q",
+        display_name="QTUDO",
+        unit="m3/s",
+        netcdf_unit="m3 s-1",
+        long_name="MGB river discharge",
+        standard_name="water_volume_transport_in_river_channel",
+    ),
+    VariableSpec(
+        source_filename="YTUDO.MGB",
+        variable_code="y",
+        display_name="YTUDO",
+        unit="m",
+        netcdf_unit="m",
+        long_name="MGB river stage",
+    ),
 )
 
 
@@ -64,10 +83,6 @@ def script_stem() -> str:
 
 def build_execution_id() -> str:
     return datetime.now().strftime("%Y%m%dT%H%M%S")
-
-
-def prev_flag_label(prev_flag: int) -> str:
-    return "sim" if prev_flag == 0 else "for"
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
@@ -117,22 +132,6 @@ def _isoformat_seconds(value: datetime) -> str:
 
 def _ceil_div(numerator: int, denominator: int) -> int:
     return -(-numerator // denominator)
-
-
-def build_output_series_id(mini_id: int, variable_code: str, prev_flag: int) -> str:
-    output_type = "sim" if prev_flag == 0 else "for"
-    return f"{mini_id:04d}.{variable_code}.{output_type}"
-
-
-def apply_schema(database_path: Path, schema_path: Path) -> None:
-    database_path.parent.mkdir(parents=True, exist_ok=True)
-    schema_sql = schema_path.read_text(encoding="utf-8")
-    connection = sqlite3.connect(database_path)
-    try:
-        connection.executescript(schema_sql)
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def read_nc_from_parhig(parhig_path: Path) -> int:
@@ -307,40 +306,6 @@ def compute_global_row_bounds(
     return start_offset, end_offset
 
 
-def build_series_rows(
-    mini_ids: list[int],
-) -> tuple[list[tuple[str, str, int, int, str]], dict[tuple[str, int], dict[int, str]]]:
-    rows: list[tuple[str, str, int, int, str]] = []
-    lookup: dict[tuple[str, int], dict[int, str]] = {}
-
-    for spec in VARIABLE_SPECS:
-        for prev_flag in (0, 1):
-            mapping: dict[int, str] = {}
-            for mini_id in mini_ids:
-                series_id = build_output_series_id(mini_id, spec.variable_code, prev_flag)
-                rows.append((series_id, spec.variable_code, mini_id, prev_flag, spec.unit))
-                mapping[mini_id] = series_id
-            lookup[(spec.variable_code, prev_flag)] = mapping
-
-    return rows, lookup
-
-
-def iter_value_rows(
-    values_chunk: np.ndarray,
-    *,
-    dt_values: list[str],
-    mini_ids: list[int],
-    series_ids_by_mini: dict[int, str],
-):
-    for row_index, dt_value in enumerate(dt_values):
-        row = values_chunk[row_index, :]
-        for column_index, mini_id in enumerate(mini_ids):
-            raw_value = float(row[column_index])
-            value = raw_value if np.isfinite(raw_value) else None
-            yield (series_ids_by_mini[mini_id], dt_value, value)
-
-
-
 def compute_nt_current(
     *,
     start_time: datetime,
@@ -376,10 +341,70 @@ def compute_nt_current(
         raise ValueError(f"Invalid nt_forecast computed from nt_total={nt_total} and nt_current={nt_current}.")
     return nt_current, nt_forecast
 
-def write_output_database(
+
+def _package_version() -> str:
+    try:
+        return version("mgb-ops")
+    except PackageNotFoundError:
+        return "unknown"
+
+
+def _build_time_values(*, start_time: datetime, dt_seconds: int, start_offset: int, end_offset: int) -> np.ndarray:
+    return np.array(
+        [start_time + timedelta(seconds=offset * dt_seconds) for offset in range(start_offset, end_offset)],
+        dtype="datetime64[ns]",
+    )
+
+
+def _build_time_segment(*, start_offset: int, end_offset: int, nt_current: int) -> np.ndarray:
+    offsets = np.arange(start_offset, end_offset, dtype=np.int32)
+    return np.where(offsets < nt_current, 0, 1).astype(np.int8)
+
+
+def _build_variable_attrs(spec: VariableSpec) -> dict[str, str]:
+    attrs = {
+        "long_name": spec.long_name,
+        "units": spec.netcdf_unit,
+        "source_filename": spec.source_filename,
+        "mgb_display_name": spec.display_name,
+    }
+    if spec.standard_name is not None:
+        attrs["standard_name"] = spec.standard_name
+    return attrs
+
+
+def _build_global_attrs(
     *,
-    database_path: Path,
-    schema_path: Path,
+    start_time: datetime,
+    dt_seconds: int,
+    export_window: ExportWindow,
+    nt_current: int,
+    nt_forecast: int,
+) -> dict[str, str | int]:
+    created_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+    return {
+        "Conventions": "CF-1.11 ACDD-1.3",
+        "title": "MGB operational model outputs",
+        "summary": "Dense NetCDF export of selected MGB operational output variables by time and mini-basin.",
+        "source": "MGB hydrological model binary output files",
+        "history": f"{created_at} created by mgb_ops.model.export_mgb_outputs",
+        "date_created": created_at,
+        "reference_time": _isoformat_seconds(export_window.reference_time),
+        "reference_date": export_window.reference_date.isoformat(),
+        "mgb_start_time": _isoformat_seconds(start_time),
+        "window_start": _isoformat_seconds(export_window.window_start),
+        "window_end_exclusive": _isoformat_seconds(export_window.window_end_exclusive),
+        "dt_seconds": dt_seconds,
+        "nt_current": nt_current,
+        "nt_forecast": nt_forecast,
+        "package_name": "mgb-ops",
+        "package_version": _package_version(),
+    }
+
+
+def write_output_netcdf(
+    *,
+    netcdf_path: Path,
     mini_ids: list[int],
     sources: dict[str, OutputSource],
     start_time: datetime,
@@ -390,9 +415,6 @@ def write_output_database(
     chunk_hours: int,
 ) -> ExportSummary:
     logger = logging.getLogger(LOGGER_NAME)
-    apply_schema(database_path, schema_path)
-    logger.info("schema_applied database=%s", database_path)
-
     total_nt = nt_current + nt_forecast
     global_start_offset, global_end_offset = compute_global_row_bounds(
         start_time=start_time,
@@ -409,131 +431,113 @@ def write_output_database(
         _isoformat_seconds(export_window.window_end_exclusive),
     )
 
-    series_rows, series_lookup = build_series_rows(mini_ids)
+    window_nt = global_end_offset - global_start_offset
+    time_values = _build_time_values(
+        start_time=start_time,
+        dt_seconds=dt_seconds,
+        start_offset=global_start_offset,
+        end_offset=global_end_offset,
+    )
+    time_segment = _build_time_segment(
+        start_offset=global_start_offset,
+        end_offset=global_end_offset,
+        nt_current=nt_current,
+    )
+
+    data_vars: dict[str, tuple[tuple[str, str], np.ndarray, dict[str, str]]] = {}
     value_count = 0
-    connection = sqlite3.connect(database_path)
-    try:
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute(
-            "INSERT INTO metadata (reference_time, reference_date, window_start, window_end_exclusive, dt_seconds, nc, nt_current, nt_forecast) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                _isoformat_seconds(export_window.reference_time),
-                export_window.reference_date.isoformat(),
-                _isoformat_seconds(export_window.window_start),
-                _isoformat_seconds(export_window.window_end_exclusive),
-                dt_seconds,
-                len(mini_ids),
-                nt_current,
-                nt_forecast,
-            ),
-        )
-        connection.executemany(
-            "INSERT INTO variable (variable_code, display_name, unit) VALUES (?, ?, ?)",
-            [(spec.variable_code, spec.display_name, spec.unit) for spec in VARIABLE_SPECS],
-        )
-        connection.executemany(
-            "INSERT INTO output_series (series_id, variable_code, mini_id, prev_flag, unit) VALUES (?, ?, ?, ?, ?)",
-            series_rows,
-        )
-        logger.info("series_inserted count=%s", len(series_rows))
+    for spec in VARIABLE_SPECS:
+        source = sources[spec.variable_code]
+        overlap_start = global_start_offset
+        overlap_end = min(global_end_offset, source.nt_total)
+        if overlap_start >= overlap_end:
+            logger.info("variable_skip variable=%s reason=no_overlap", spec.variable_code)
+            continue
 
-        for spec in VARIABLE_SPECS:
-            source = sources[spec.variable_code]
-            overlap_start = global_start_offset
-            overlap_end = min(global_end_offset, source.nt_total)
-            if overlap_start >= overlap_end:
-                logger.info("series_skip variable=%s reason=no_overlap", spec.variable_code)
-                continue
+        values = np.full((window_nt, len(mini_ids)), np.nan, dtype=np.float32)
+        matrix = np.memmap(source.path, dtype=np.float32, mode="r", shape=(source.nt_total, len(mini_ids)))
+        logger.info(
+            "variable_start variable=%s local_start=%s local_end=%s source_nt=%s",
+            spec.variable_code,
+            overlap_start,
+            overlap_end,
+            source.nt_total,
+        )
 
-            matrix = np.memmap(source.path, dtype=np.float32, mode="r", shape=(source.nt_total, len(mini_ids)))
-            logger.info(
-                "series_start variable=%s local_start=%s local_end=%s source_nt=%s",
-                spec.variable_code,
-                overlap_start,
-                overlap_end,
-                source.nt_total,
+        try:
+            for chunk_start in range(overlap_start, overlap_end, chunk_hours):
+                chunk_end = min(chunk_start + chunk_hours, overlap_end)
+                values_slice_start = chunk_start - global_start_offset
+                values_slice_end = chunk_end - global_start_offset
+                values[values_slice_start:values_slice_end, :] = np.asarray(
+                    matrix[chunk_start:chunk_end, :],
+                    dtype=np.float32,
+                )
+                chunk_value_count = len(mini_ids) * (chunk_end - chunk_start)
+                value_count += chunk_value_count
+                logger.info(
+                    "chunk_written variable=%s chunk_start=%s chunk_end=%s values=%s dt_start=%s dt_end=%s",
+                    spec.variable_code,
+                    chunk_start,
+                    chunk_end,
+                    chunk_value_count,
+                    _isoformat_seconds(start_time + timedelta(seconds=chunk_start * dt_seconds)),
+                    _isoformat_seconds(start_time + timedelta(seconds=(chunk_end - 1) * dt_seconds)),
+                )
+        finally:
+            del matrix
+        data_vars[spec.variable_code] = (("time", "mini"), values, _build_variable_attrs(spec))
+        logger.info("variable_done variable=%s", spec.variable_code)
+
+    dataset = xr.Dataset(
+        data_vars=data_vars
+        | {
+            "time_segment": (
+                ("time",),
+                time_segment,
+                {
+                    "long_name": "MGB output time segment",
+                    "flag_values": np.array([0, 1], dtype=np.int8),
+                    "flag_meanings": "current_simulation forecast",
+                },
             )
-
-            try:
-                for chunk_start in range(overlap_start, overlap_end, chunk_hours):
-                    chunk_end = min(chunk_start + chunk_hours, overlap_end)
-                    values_chunk = np.asarray(matrix[chunk_start:chunk_end, :], dtype=np.float32)
-
-                    sim_chunk_end = min(chunk_end, nt_current)
-                    if chunk_start < sim_chunk_end:
-                        sim_dt_values = [
-                            _isoformat_seconds(start_time + timedelta(seconds=offset * dt_seconds))
-                            for offset in range(chunk_start, sim_chunk_end)
-                        ]
-                        connection.executemany(
-                            "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
-                            iter_value_rows(
-                                values_chunk[: sim_chunk_end - chunk_start, :],
-                                dt_values=sim_dt_values,
-                                mini_ids=mini_ids,
-                                series_ids_by_mini=series_lookup[(spec.variable_code, 0)],
-                            ),
-                        )
-                        sim_value_count = len(mini_ids) * (sim_chunk_end - chunk_start)
-                        value_count += sim_value_count
-                        logger.info(
-                            "chunk_written variable=%s prev=%s chunk_start=%s chunk_end=%s values=%s dt_start=%s dt_end=%s",
-                            spec.variable_code,
-                            prev_flag_label(0),
-                            chunk_start,
-                            sim_chunk_end,
-                            sim_value_count,
-                            sim_dt_values[0],
-                            sim_dt_values[-1],
-                        )
-
-                    forecast_chunk_start = max(chunk_start, nt_current)
-                    if forecast_chunk_start < chunk_end:
-                        forecast_dt_values = [
-                            _isoformat_seconds(start_time + timedelta(seconds=offset * dt_seconds))
-                            for offset in range(forecast_chunk_start, chunk_end)
-                        ]
-                        forecast_slice_start = forecast_chunk_start - chunk_start
-                        connection.executemany(
-                            "INSERT INTO output_value (series_id, dt, value) VALUES (?, ?, ?)",
-                            iter_value_rows(
-                                values_chunk[forecast_slice_start:, :],
-                                dt_values=forecast_dt_values,
-                                mini_ids=mini_ids,
-                                series_ids_by_mini=series_lookup[(spec.variable_code, 1)],
-                            ),
-                        )
-                        forecast_value_count = len(mini_ids) * (chunk_end - forecast_chunk_start)
-                        value_count += forecast_value_count
-                        logger.info(
-                            "chunk_written variable=%s prev=%s chunk_start=%s chunk_end=%s values=%s dt_start=%s dt_end=%s",
-                            spec.variable_code,
-                            prev_flag_label(1),
-                            forecast_chunk_start,
-                            chunk_end,
-                            forecast_value_count,
-                            forecast_dt_values[0],
-                            forecast_dt_values[-1],
-                        )
-            finally:
-                del matrix
-            logger.info("series_done variable=%s", spec.variable_code)
-
-        connection.commit()
-    finally:
-        connection.close()
+        },
+        coords={
+            "time": (("time",), time_values, {"long_name": "time"}),
+            "mini": (("mini",), np.arange(len(mini_ids), dtype=np.int32), {"long_name": "mini-basin index"}),
+            "mini_id": (("mini",), np.asarray(mini_ids, dtype=np.int32), {"long_name": "MGB mini-basin identifier"}),
+        },
+        attrs=_build_global_attrs(
+            start_time=start_time,
+            dt_seconds=dt_seconds,
+            export_window=export_window,
+            nt_current=nt_current,
+            nt_forecast=nt_forecast,
+        ),
+    )
+    encoding = {
+        spec.variable_code: {"_FillValue": np.float32(np.nan), "zlib": True, "complevel": 4}
+        for spec in VARIABLE_SPECS
+        if spec.variable_code in data_vars
+    }
+    encoding["time_segment"] = {"dtype": "i1"}
+    netcdf_path.parent.mkdir(parents=True, exist_ok=True)
+    dataset.to_netcdf(netcdf_path, engine="netcdf4", encoding=encoding)
+    dataset.close()
+    logger.info("netcdf_written path=%s variables=%s values=%s", netcdf_path, len(data_vars), value_count)
 
     return ExportSummary(
-        database_path=database_path,
+        netcdf_path=netcdf_path,
         reference_time=export_window.reference_time,
         window_start=export_window.window_start,
         window_end_exclusive=export_window.window_end_exclusive,
         nc=len(mini_ids),
         nt_current=nt_current,
         nt_forecast=nt_forecast,
-        series_count=len(series_rows),
+        variable_count=len(data_vars),
         value_count=value_count,
     )
+
 
 def export_mgb_outputs(
     *,
@@ -543,8 +547,7 @@ def export_mgb_outputs(
     parhig_path: Path,
     mini_gtp_path: Path,
     output_dir: Path,
-    output_db_path: Path,
-    schema_path: Path,
+    output_nc_path: Path,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,
@@ -555,12 +558,11 @@ def export_mgb_outputs(
     if run_logger is None:
         run_logger = logging.getLogger(LOGGER_NAME)
     run_logger.info(
-        "export_start parhig=%s mini_gtp=%s output_dir=%s output_db=%s schema=%s chunk_hours=%s",
+        "export_start parhig=%s mini_gtp=%s output_dir=%s output_nc=%s chunk_hours=%s",
         parhig_path,
         mini_gtp_path,
         output_dir,
-        output_db_path,
-        schema_path,
+        output_nc_path,
         chunk_hours,
     )
     if chunk_hours <= 0:
@@ -602,14 +604,13 @@ def export_mgb_outputs(
         _isoformat_seconds(export_window.window_end_exclusive),
     )
 
-    output_db_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_db_path = output_db_path.with_name(f"{output_db_path.stem}.{uuid4().hex[:8]}.tmp{output_db_path.suffix}")
-    run_logger.info("database_temp_path path=%s", temp_db_path)
+    output_nc_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_nc_path = output_nc_path.with_name(f"{output_nc_path.stem}.{uuid4().hex[:8]}.tmp{output_nc_path.suffix}")
+    run_logger.info("netcdf_temp_path path=%s", temp_nc_path)
 
     try:
-        summary = write_output_database(
-            database_path=temp_db_path,
-            schema_path=schema_path,
+        summary = write_output_netcdf(
+            netcdf_path=temp_nc_path,
             mini_ids=mini_ids,
             sources=sources,
             start_time=start_time,
@@ -619,32 +620,32 @@ def export_mgb_outputs(
             nt_forecast=nt_forecast,
             chunk_hours=chunk_hours,
         )
-        temp_db_path.replace(output_db_path)
-        run_logger.info("database_finalized path=%s", output_db_path)
+        temp_nc_path.replace(output_nc_path)
+        run_logger.info("netcdf_finalized path=%s", output_nc_path)
     except Exception:
-        if temp_db_path.exists():
-            temp_db_path.unlink()
+        if temp_nc_path.exists():
+            temp_nc_path.unlink()
         run_logger.exception("export_failed")
         raise
 
     final_summary = ExportSummary(
-        database_path=output_db_path,
+        netcdf_path=output_nc_path,
         reference_time=summary.reference_time,
         window_start=summary.window_start,
         window_end_exclusive=summary.window_end_exclusive,
         nc=summary.nc,
         nt_current=summary.nt_current,
         nt_forecast=summary.nt_forecast,
-        series_count=summary.series_count,
+        variable_count=summary.variable_count,
         value_count=summary.value_count,
     )
     run_logger.info(
-        "export_done database=%s reference_time=%s window_start=%s window_end_exclusive=%s series_count=%s value_count=%s",
-        final_summary.database_path,
+        "export_done netcdf=%s reference_time=%s window_start=%s window_end_exclusive=%s variable_count=%s value_count=%s",
+        final_summary.netcdf_path,
         _isoformat_seconds(final_summary.reference_time),
         _isoformat_seconds(final_summary.window_start),
         _isoformat_seconds(final_summary.window_end_exclusive),
-        final_summary.series_count,
+        final_summary.variable_count,
         final_summary.value_count,
     )
     return final_summary
