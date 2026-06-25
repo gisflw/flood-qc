@@ -9,6 +9,8 @@ import numpy as np
 
 from mgb_ops.adapters import forecast_ecmwf
 from mgb_ops.common import grib2
+from mgb_ops.common.grib2 import TpGribMessage
+from mgb_ops.model.forecast_grid import read_forecast_precipitation_grid
 from db_helpers import initialize_history_db
 
 
@@ -30,7 +32,7 @@ def test_build_ecmwf_cycle_uses_next_local_hour_and_converts_to_utc() -> None:
     assert cycle_time == datetime(2026, 3, 19, 0, 0, 0)
 
 
-def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) -> None:
+def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkeypatch) -> None:
     history_db = tmp_path / "history.sqlite"
     initialize_history_db(history_db)
     temp_dir = tmp_path / "temp_download"
@@ -54,8 +56,23 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
     monkeypatch.setattr(forecast_ecmwf, "crop_grib_to_bbox", fake_crop)
     monkeypatch.setattr(
         forecast_ecmwf,
-        "extract_valid_time_bounds",
-        lambda _: (datetime(2026, 3, 11, 3, 0, 0), datetime(2026, 3, 26, 0, 0, 0)),
+        "read_tp_grib_messages",
+        lambda _: [
+            TpGribMessage(
+                valid_time=datetime(2026, 3, 12, 0, 0, 0),
+                step_hours=0,
+                latitudes=np.array([-29.5], dtype=np.float64),
+                longitudes=np.array([-51.5], dtype=np.float64),
+                values_mm=np.array([[0.0]], dtype=np.float64),
+            ),
+            TpGribMessage(
+                valid_time=datetime(2026, 3, 12, 3, 0, 0),
+                step_hours=3,
+                latitudes=np.array([-29.5], dtype=np.float64),
+                longitudes=np.array([-51.5], dtype=np.float64),
+                values_mm=np.array([[6.0]], dtype=np.float64),
+            ),
+        ],
     )
 
     summary = forecast_ecmwf.ingest_forecast_grids(
@@ -69,25 +86,33 @@ def test_ingest_forecast_grids_stores_only_cropped_asset(tmp_path, monkeypatch) 
     )
 
     assert summary.asset_path.exists()
+    assert summary.asset_path.suffix == ".nc"
     assert not temp_dir.exists()
+    grid = read_forecast_precipitation_grid(summary.asset_path)
+    assert grid.times_utc == (
+        datetime(2026, 3, 12, 1, 0, 0),
+        datetime(2026, 3, 12, 2, 0, 0),
+        datetime(2026, 3, 12, 3, 0, 0),
+    )
+    assert grid.hourly_grids[:, 0, 0].tolist() == [2.0, 2.0, 2.0]
 
     with sqlite3.connect(history_db) as connection:
-        row = connection.execute(
+        rows = connection.execute(
             """
             SELECT asset_kind, format, provider_code, relative_path, valid_from, valid_to
             FROM asset
             WHERE provider_code = 'ecmwf'
             """
-        ).fetchone()
+        ).fetchall()
 
-    assert row == (
+    assert rows == [(
         forecast_ecmwf.ECMWF_ASSET_KIND,
-        "GRIB2",
+        "NetCDF",
         "ecmwf",
         summary.asset_path.relative_to(tmp_path).as_posix(),
-        "2026-03-11T03:00:00",
-        "2026-03-26T00:00:00",
-    )
+        "2026-03-12T01:00:00",
+        "2026-03-12T03:00:00",
+    )]
 
 
 def test_grib2_grid_array_reader_uses_coordinate_arrays_for_wrapped_global_grid(monkeypatch) -> None:

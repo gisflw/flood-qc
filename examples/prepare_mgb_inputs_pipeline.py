@@ -181,9 +181,10 @@ else:
 # %% [markdown]
 # ## 7. If missing, ingest/register the ECMWF grid and resolve it again
 #
-# ECMWF ingestion downloads the deterministic total-precipitation GRIB, crops it
-# to the configured buffered bounding box, writes it under `data/downloads/ecmwf/`,
-# and registers the asset in `history.sqlite`.
+# ECMWF ingestion downloads the deterministic total-precipitation GRIB inside the
+# adapter, crops it to the configured buffered bounding box, converts cumulative
+# totals to hourly UTC precipitation increments, writes a canonical NetCDF under
+# `data/downloads/ecmwf/`, and registers only that NetCDF in `history.sqlite`.
 
 # %%
 if use_forecast_data and forecast_asset is None:

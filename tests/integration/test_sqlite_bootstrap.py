@@ -128,10 +128,10 @@ def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
             ) VALUES (?, ?, ?, ?, ?)
             """,
             (
-                "ecmwf.ifs.fc.20260311T000000Z.buffered",
-                "forecast_grib_buffered",
-                "GRIB2",
-                "data/downloads/ecmwf/fc_2026-03-11_00_IFS_buffered.grib2",
+                "ecmwf.ifs.fc.20260311T000000Z.precipitation_grid",
+                "forecast_precipitation_grid",
+                "NetCDF",
+                "data/downloads/ecmwf/fc_2026-03-11_00_IFS_precipitation_grid.nc",
                 "ecmwf",
             ),
         )
@@ -141,7 +141,7 @@ def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
                 asset_id, t0_step, t1_step, shift_lat, shift_lon, rotation_deg, multiplication_factor, reason, metadata_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("ecmwf.ifs.fc.20260311T000000Z.buffered", 0, 24, 0.0, 0.0, 0.0, 1.0, "primeira", "{}"),
+            ("ecmwf.ifs.fc.20260311T000000Z.precipitation_grid", 0, 24, 0.0, 0.0, 0.0, 1.0, "primeira", "{}"),
         )
         connection.execute(
             """
@@ -149,7 +149,7 @@ def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
                 asset_id, t0_step, t1_step, shift_lat, shift_lon, rotation_deg, multiplication_factor, reason, metadata_json
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            ("ecmwf.ifs.fc.20260311T000000Z.buffered", 24, 48, 0.0, 0.0, 0.0, 1.0, "encostada", "{}"),
+            ("ecmwf.ifs.fc.20260311T000000Z.precipitation_grid", 24, 48, 0.0, 0.0, 0.0, 1.0, "encostada", "{}"),
         )
         with pytest.raises(sqlite3.IntegrityError, match="manual_edit overlap"):
             connection.execute(
@@ -158,7 +158,7 @@ def test_manual_edit_overlap_trigger_blocks_conflicts(tmp_path) -> None:
                     asset_id, t0_step, t1_step, shift_lat, shift_lon, rotation_deg, multiplication_factor, reason, metadata_json
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                ("ecmwf.ifs.fc.20260311T000000Z.buffered", 12, 36, 0.0, 0.0, 0.0, 1.0, "sobreposta", "{}"),
+                ("ecmwf.ifs.fc.20260311T000000Z.precipitation_grid", 12, 36, 0.0, 0.0, 0.0, 1.0, "sobreposta", "{}"),
             )
 
 

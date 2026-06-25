@@ -37,13 +37,17 @@ forecast_grid:
   buffer_fraction: 0.25
 ```
 
-ECMWF GRIB ingestion also needs operational dependencies installed in the
-runtime environment:
+ECMWF forecast ingestion writes canonical CF-style NetCDF assets to
+`data/downloads/ecmwf/` and registers only those `.nc` files in history. GRIB2 is
+downloaded, cropped, and read inside `mgb_ops.adapters.forecast_ecmwf`; downstream
+rainfall preparation consumes the NetCDF contract through `mgb_ops.model`.
+
+Install the optional forecast dependencies in the runtime environment:
 
 ```bash
 python -m pip install -e ".[forecast]"
 ```
 
-- `ecmwf-opendata` for downloading deterministic ECMWF GRIB assets.
-- `eccodes` and its Python bindings for reading and cropping GRIB2 files.
-- The usual data dependencies such as `numpy`, `pandas`, and `requests`.
+- `ecmwf-opendata` for downloading deterministic ECMWF source GRIB assets.
+- `eccodes` and its Python bindings for adapter-internal GRIB2 reading and cropping.
+- The usual data dependencies such as `numpy`, `pandas`, `xarray`, `netCDF4`, and `requests`.

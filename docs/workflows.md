@@ -42,7 +42,10 @@ Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 
 ### 3. Forecast Grid Ingestion
 
-Library module: `mgb_ops.adapters.forecast_ecmwf`
+Library modules:
+
+- `mgb_ops.adapters.forecast_ecmwf`
+- `mgb_ops.model.forecast_grid`
 
 Install the optional forecast dependencies in the operational environment:
 
@@ -51,10 +54,11 @@ python -m pip install -e ".[forecast]"
 ```
 
 1. Resolve the cycle from `reference_time`.
-2. Download the configured forecast GRIB. ECMWF is the current default product configuration.
-3. Clip the grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
-4. Register the canonical asset in the explicitly supplied history database, using `provider_code` and `asset_kind` plus an explicitly supplied asset base directory for relative paths.
-5. Register logs in `logs/forecast_ecmwf/`.
+2. Download the configured ECMWF GRIB source inside the adapter.
+3. Clip the source grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
+4. Convert cumulative precipitation to hourly UTC precipitation increments and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)` and `time_bounds(time, bounds)`.
+5. Register only the canonical NetCDF asset in the explicitly supplied history database, using `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and an explicitly supplied asset base directory for relative paths.
+6. Register logs in `logs/forecast_ecmwf/`.
 
 Python callers pass `bbox=(west, south, east, north)` and `buffer_fraction=...`
 directly to `mgb_ops.adapters.forecast_ecmwf.ingest_forecast_grids`. These values
@@ -71,7 +75,7 @@ Library modules:
 1. Rewrite `PARHIG.hig` from the current configuration.
 2. Load observed rainfall from the history database.
 3. Normalize rainfall to the hourly grid and interpolate it to the minis.
-4. When enabled, incorporate hourly ECMWF rainfall into the forecast block.
+4. When enabled, load the canonical forecast NetCDF, match the local MGB forecast window against UTC NetCDF coordinates, and incorporate hourly ECMWF rainfall into the forecast block.
 5. Write `<workspace>/mgb_runner/Input/chuvabin.hig`.
 
 ### 5. Model Execution and Consumption

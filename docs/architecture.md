@@ -89,8 +89,10 @@ CSV importer is the common persistence path into history SQLite.
 ### External Assets Outside the Database
 
 Rasters, vectors, and MGB binaries remain outside SQLite. The database stores
-metadata and relative paths. This applies to forecast GRIB files, including the current ECMWF default, and complete
-MGB outputs.
+metadata and relative paths. Operational forecast grids are registered as
+canonical CF-style NetCDF files; ECMWF GRIB2 remains adapter-internal source
+material and is not the registered history asset. Complete MGB outputs also
+remain outside SQLite.
 
 ### QGIS as a Complement
 

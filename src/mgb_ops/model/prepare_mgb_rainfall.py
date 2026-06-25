@@ -10,7 +10,6 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mgb_ops.common.grib2 import TpGribMessage, read_tp_grib_messages
 from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window
 from mgb_ops.adapters.forecast_ecmwf import (
     ECMWF_FORECAST_PRODUCT,
@@ -19,6 +18,7 @@ from mgb_ops.adapters.forecast_ecmwf import (
     build_ecmwf_cycle,
 )
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
+from mgb_ops.model.forecast_grid import load_forecast_precipitation_grid
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
 DEFAULT_CHUNK_HOURS = 720
@@ -276,6 +276,7 @@ def load_latest_ecmwf_asset_path(
     reference_time: datetime,
     asset_base_dir: Path,
 ) -> Path:
+    reference_time_utc = reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
     row = connection.execute(
         """
         SELECT relative_path
@@ -291,8 +292,8 @@ def load_latest_ecmwf_asset_path(
         """,
         (
             ECMWF_FORECAST_PRODUCT.asset_kind,
-            reference_time.isoformat(timespec="seconds"),
-            reference_time.isoformat(timespec="seconds"),
+            reference_time_utc.isoformat(timespec="seconds"),
+            reference_time_utc.isoformat(timespec="seconds"),
         ),
     ).fetchone()
     if row is None:
@@ -509,65 +510,21 @@ def write_mini_rainfall_atomic(
             temp_path.unlink(missing_ok=True)
 
 
-def build_hourly_forecast_grid_series(
-    grib_path: Path,
+def build_forecast_start_time_utc(forecast_start_time: datetime) -> datetime:
+    return forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def load_required_forecast_precipitation_grid(
+    netcdf_path: Path,
     *,
     forecast_start_time: datetime,
     forecast_nt: int,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    messages = read_tp_grib_messages(grib_path)
-    first_message = messages[0]
-    local_messages: list[TpGribMessage] = [
-        TpGribMessage(
-            valid_time=message.valid_time.replace(tzinfo=timezone.utc).astimezone(TIMEZONE).replace(tzinfo=None),
-            step_hours=message.step_hours,
-            latitudes=message.latitudes,
-            longitudes=message.longitudes,
-            values_mm=message.values_mm,
-        )
-        for message in messages
-    ]
-    cycle_time = min(message.valid_time - timedelta(hours=message.step_hours) for message in local_messages)
-    prev_valid_time = cycle_time
-    prev_cumulative = np.zeros_like(first_message.values_mm, dtype=np.float64)
-    latitudes = first_message.latitudes
-    longitudes = first_message.longitudes
-    hourly_lookup: dict[datetime, np.ndarray] = {}
-
-    for message in local_messages:
-        if message.values_mm.shape != prev_cumulative.shape:
-            raise ValueError("ECMWF GRIB contains inconsistent grid shapes across messages.")
-        if not np.allclose(message.latitudes, latitudes) or not np.allclose(message.longitudes, longitudes):
-            raise ValueError("ECMWF GRIB contains inconsistent grid coordinates across messages.")
-
-        delta_seconds = int((message.valid_time - prev_valid_time).total_seconds())
-        if delta_seconds < 0 or delta_seconds % 3600 != 0:
-            raise ValueError(
-                "ECMWF GRIB valid times are not monotonic hourly multiples; cannot harmonize to MGB hourly input."
-            )
-
-        delta_hours = delta_seconds // 3600
-        increment = message.values_mm - prev_cumulative
-        increment = np.where(np.isfinite(increment), increment, np.nan)
-        increment[increment < 0.0] = 0.0
-        if delta_hours > 0:
-            per_hour = increment / float(delta_hours)
-            for hour_offset in range(delta_hours):
-                hourly_lookup[prev_valid_time + timedelta(hours=hour_offset + 1)] = per_hour
-
-        prev_valid_time = message.valid_time
-        prev_cumulative = message.values_mm
-
-    required_times = [forecast_start_time + timedelta(hours=offset) for offset in range(forecast_nt)]
-    missing_times = [dt for dt in required_times if dt not in hourly_lookup]
-    if missing_times:
-        raise ValueError(
-            "ECMWF GRIB does not cover the full requested forecast window. "
-            f"First missing hour: {missing_times[0].isoformat(timespec='seconds')}"
-        )
-
-    hourly_grids = np.stack([hourly_lookup[dt] for dt in required_times], axis=0)
-    return latitudes, longitudes, hourly_grids
+    return load_forecast_precipitation_grid(
+        netcdf_path,
+        forecast_start_time_utc=build_forecast_start_time_utc(forecast_start_time),
+        forecast_nt=forecast_nt,
+    )
 
 
 def prepare_mgb_rainfall(
@@ -676,7 +633,7 @@ def prepare_mgb_rainfall(
     if use_forecast_data and window.forecast_nt > 0:
         if forecast_asset_path is None:
             raise ValueError("forecast_asset_path is required when use_forecast_data is true.")
-        forecast_latitudes, forecast_longitudes, forecast_hourly_grids = build_hourly_forecast_grid_series(
+        forecast_latitudes, forecast_longitudes, forecast_hourly_grids = load_required_forecast_precipitation_grid(
             forecast_asset_path,
             forecast_start_time=window.forecast_start_time,
             forecast_nt=window.forecast_nt,

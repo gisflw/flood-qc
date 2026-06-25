@@ -68,7 +68,9 @@ loading from these CSVs.
 
 ### `asset`
 
-Generic registry of external files. Forecast-grid assets are registered by `provider_code` and `asset_kind`; ECMWF remains the default forecast product configuration.
+Generic registry of external files. Operational forecast grids are canonical CF-style NetCDF assets registered by `provider_code` and `asset_kind`, with ECMWF as the default forecast product configuration. ECMWF GRIB2 files are source-adapter inputs and are not registered as operational forecast assets.
+
+The canonical forecast precipitation asset uses `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and `.nc` relative paths. Its time coordinates and `time_bounds` are UTC, while the operational local timezone remains recorded as `America/Sao_Paulo` metadata.
 
 ### `qc_flag`
 

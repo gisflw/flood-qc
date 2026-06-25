@@ -18,10 +18,15 @@ from mgb_ops.common.grib2 import (
 )
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
+from mgb_ops.model.forecast_grid import (
+    FORECAST_GRID_FORMAT,
+    FORECAST_PRECIPITATION_GRID_ASSET_KIND,
+    write_forecast_precipitation_grid,
+)
 from mgb_ops.storage.history_repository import HistoryRepository
 
 LOGGER_NAME = "adapters.forecast_ecmwf"
-ECMWF_ASSET_KIND = "forecast_grib_buffered"
+ECMWF_ASSET_KIND = FORECAST_PRECIPITATION_GRID_ASSET_KIND
 ECMWF_MODEL = "ifs"
 ECMWF_PRODUCT_TYPE = "fc"
 ECMWF_RESOLUTION = "0p25"
@@ -137,12 +142,18 @@ def build_output_path(
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> Path:
     directory = downloads_root / product_config.provider_code
-    file_name = f"{product_config.product_type}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_{product_config.model.upper()}_buffered.grib2"
+    file_name = (
+        f"{product_config.product_type}_{cycle_time.strftime('%Y-%m-%d')}_{cycle_time:%H}_"
+        f"{product_config.model.upper()}_precipitation_grid.nc"
+    )
     return directory / file_name
 
 
 def build_asset_id(cycle_time: datetime, product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> str:
-    return f"{product_config.provider_code}.{product_config.model}.{product_config.product_type}.{cycle_time.strftime('%Y%m%dT%H%M%SZ')}.buffered"
+    return (
+        f"{product_config.provider_code}.{product_config.model}.{product_config.product_type}."
+        f"{cycle_time.strftime('%Y%m%dT%H%M%SZ')}.precipitation_grid"
+    )
 
 
 def crop_grib_to_bbox(
@@ -191,6 +202,76 @@ def crop_grib_to_bbox(
 def extract_valid_time_bounds(grib_path: Path) -> tuple[datetime, datetime]:
     messages = read_tp_grib_messages(grib_path)
     return messages[0].valid_time, messages[-1].valid_time
+
+
+def build_hourly_precipitation_from_cumulative_messages(
+    messages: list[TpGribMessage],
+) -> tuple[tuple[datetime, ...], np.ndarray, np.ndarray, np.ndarray]:
+    if not messages:
+        raise ValueError("No ECMWF precipitation messages were provided.")
+
+    ordered_messages = sorted(messages, key=lambda item: (item.valid_time, item.step_hours))
+    first_message = ordered_messages[0]
+    cycle_time = min(message.valid_time - timedelta(hours=message.step_hours) for message in ordered_messages)
+    prev_valid_time = cycle_time
+    prev_cumulative = np.zeros_like(first_message.values_mm, dtype=np.float64)
+    latitudes = first_message.latitudes
+    longitudes = first_message.longitudes
+    hourly_times: list[datetime] = []
+    hourly_grids: list[np.ndarray] = []
+
+    for message in ordered_messages:
+        if message.values_mm.shape != prev_cumulative.shape:
+            raise ValueError("ECMWF GRIB contains inconsistent grid shapes across messages.")
+        if not np.allclose(message.latitudes, latitudes) or not np.allclose(message.longitudes, longitudes):
+            raise ValueError("ECMWF GRIB contains inconsistent grid coordinates across messages.")
+
+        delta_seconds = int((message.valid_time - prev_valid_time).total_seconds())
+        if delta_seconds < 0 or delta_seconds % 3600 != 0:
+            raise ValueError(
+                "ECMWF GRIB valid times are not monotonic hourly multiples; cannot build canonical hourly grid."
+            )
+
+        delta_hours = delta_seconds // 3600
+        increment = message.values_mm - prev_cumulative
+        increment = np.where(np.isfinite(increment), increment, np.nan)
+        increment[increment < 0.0] = 0.0
+        if delta_hours > 0:
+            per_hour = increment / float(delta_hours)
+            for hour_offset in range(delta_hours):
+                hourly_times.append(prev_valid_time + timedelta(hours=hour_offset + 1))
+                hourly_grids.append(per_hour.copy())
+
+        prev_valid_time = message.valid_time
+        prev_cumulative = np.asarray(message.values_mm, dtype=np.float64)
+
+    if not hourly_grids:
+        raise ValueError("ECMWF GRIB did not contain any positive-length accumulation interval.")
+    return tuple(hourly_times), latitudes, longitudes, np.stack(hourly_grids, axis=0)
+
+
+def write_canonical_forecast_grid_from_grib(
+    grib_path: Path,
+    netcdf_path: Path,
+    *,
+    cycle_time: datetime,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> tuple[datetime, datetime]:
+    hourly_times, latitudes, longitudes, hourly_grids = build_hourly_precipitation_from_cumulative_messages(
+        read_tp_grib_messages(grib_path)
+    )
+    write_forecast_precipitation_grid(
+        netcdf_path,
+        times_utc=hourly_times,
+        latitudes=latitudes,
+        longitudes=longitudes,
+        precipitation_mm=hourly_grids,
+        provider_code=product_config.provider_code,
+        source_format="GRIB2",
+        source_cycle_time=cycle_time,
+        title="ECMWF IFS hourly precipitation forecast grid",
+    )
+    return hourly_times[0], hourly_times[-1]
 
 
 
@@ -260,17 +341,27 @@ def ingest_forecast_grids(
     with tempfile.TemporaryDirectory(prefix="ecmwf_download_") as temp_dir_name:
         temp_dir = Path(temp_dir_name)
         temp_grib_path = temp_dir / "download.grib2"
+        cropped_grib_path = temp_dir / "cropped.grib2"
         download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time, product_config=product_config)
-        crop_grib_to_bbox(temp_grib_path, target_path, bbox=buffered_bbox)
+        crop_grib_to_bbox(temp_grib_path, cropped_grib_path, bbox=buffered_bbox)
+        valid_from, valid_to = write_canonical_forecast_grid_from_grib(
+            cropped_grib_path,
+            target_path,
+            cycle_time=cycle_time,
+            product_config=product_config,
+        )
 
-    valid_from, valid_to = extract_valid_time_bounds(target_path)
     relative_path = build_relative_asset_path(target_path, asset_base_dir=asset_base_dir)
     metadata = {
+        "provider": product_config.provider_code,
         "model": product_config.model,
         "product_type": product_config.product_type,
         "resolution": product_config.resolution,
+        "param": product_config.param,
         "reference_time": reference_time.isoformat(timespec="seconds"),
+        "source_cycle_time": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cycle_time": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "source_format": "GRIB2",
         "bbox": list(buffered_bbox),
         "source_bbox": list(bbox),
         "buffer_fraction": buffer_fraction,
@@ -280,7 +371,7 @@ def ingest_forecast_grids(
         asset = repository.upsert_asset(
             asset_id=build_asset_id(cycle_time, product_config),
             asset_kind=product_config.asset_kind,
-            format="GRIB2",
+            format=FORECAST_GRID_FORMAT,
             relative_path=relative_path,
             provider_code=product_config.provider_code,
             valid_from=valid_from.isoformat(timespec="seconds"),
@@ -328,7 +419,7 @@ def collect_forecast_grids(
         RasterAsset(
             name=summary.asset_id,
             relative_path=build_relative_asset_path(summary.asset_path, asset_base_dir=asset_base_dir),
-            format="GRIB2",
+            format=FORECAST_GRID_FORMAT,
             state=DataState.RAW,
             crs="EPSG:4326",
         )

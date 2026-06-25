@@ -1,17 +1,15 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from mgb_ops.common.grib2 import TpGribMessage
+from mgb_ops.model.forecast_grid import write_forecast_precipitation_grid
 from mgb_ops.model.prepare_mgb_rainfall import (
-    build_hourly_forecast_grid_series,
     extend_station_matrix_with_forecast,
+    load_required_forecast_precipitation_grid,
     prepare_mgb_rainfall,
 )
 
@@ -150,11 +148,11 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
     parhig_path = tmp_path / "PARHIG.hig"
     mini_gtp_path = tmp_path / "MINI.gtp"
     output_path = tmp_path / "CHUVABIN.hig"
-    forecast_grib = tmp_path / "forecast.grib2"
+    forecast_netcdf = tmp_path / "forecast.nc"
     parhig_path.write_text(PARHIG_TEMPLATE, encoding="latin-1")
     mini_gtp_path.write_text(MINI_TEMPLATE, encoding="latin-1")
     history_db.write_bytes(b"sqlite placeholder")
-    forecast_grib.write_bytes(b"grib placeholder")
+    forecast_netcdf.write_bytes(b"netcdf placeholder")
 
     monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.build_execution_id", lambda: "20260311T230000")
 
@@ -198,7 +196,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
     hourly_grids[:, 0, 0] = 10.0
     hourly_grids[:, 1, 1] = 20.0
     monkeypatch.setattr(
-        "mgb_ops.model.prepare_mgb_rainfall.build_hourly_forecast_grid_series",
+        "mgb_ops.model.prepare_mgb_rainfall.load_required_forecast_precipitation_grid",
         lambda *args, **kwargs: (
             np.array([-29.5, -30.5], dtype=np.float64),
             np.array([-51.5, -52.5], dtype=np.float64),
@@ -223,7 +221,7 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
         input_days_before=2,
         forecast_horizon_days=2,
         use_forecast_data=True,
-        forecast_asset_path=forecast_grib,
+        forecast_asset_path=forecast_netcdf,
         nearest_stations=1,
         power=2.0,
         chunk_hours=24,
@@ -239,29 +237,21 @@ def test_prepare_mgb_rainfall_loads_ecmwf_forecast_asset(tmp_path, monkeypatch) 
     assert output_path.exists()
 
 
-def test_build_hourly_forecast_grid_series_converts_grib_valid_times_from_utc_to_brt(monkeypatch) -> None:
-    grid = np.array([[3.0]], dtype=np.float64)
-    messages = [
-        TpGribMessage(
-            valid_time=datetime(2026, 3, 18, 0, 0, 0),
-            step_hours=0,
-            latitudes=np.array([-29.5], dtype=np.float64),
-            longitudes=np.array([-51.5], dtype=np.float64),
-            values_mm=np.array([[0.0]], dtype=np.float64),
-        ),
-        TpGribMessage(
-            valid_time=datetime(2026, 3, 18, 3, 0, 0),
-            step_hours=3,
-            latitudes=np.array([-29.5], dtype=np.float64),
-            longitudes=np.array([-51.5], dtype=np.float64),
-            values_mm=grid,
-        ),
-    ]
+def test_load_required_forecast_precipitation_grid_matches_local_window_to_utc_netcdf(tmp_path) -> None:
+    netcdf_path = tmp_path / "forecast.nc"
+    write_forecast_precipitation_grid(
+        netcdf_path,
+        times_utc=[datetime(2026, 3, 18, 3, 0, 0)],
+        latitudes=np.array([-29.5], dtype=np.float64),
+        longitudes=np.array([-51.5], dtype=np.float64),
+        precipitation_mm=np.array([[[1.0]]], dtype=np.float64),
+        provider_code="ecmwf",
+        source_format="GRIB2",
+        source_cycle_time=datetime(2026, 3, 18, 0, 0, 0),
+    )
 
-    monkeypatch.setattr("mgb_ops.model.prepare_mgb_rainfall.read_tp_grib_messages", lambda _: messages)
-
-    latitudes, longitudes, hourly_grids = build_hourly_forecast_grid_series(
-        Path("unused.grib2"),
+    latitudes, longitudes, hourly_grids = load_required_forecast_precipitation_grid(
+        netcdf_path,
         forecast_start_time=datetime(2026, 3, 18, 0, 0, 0),
         forecast_nt=1,
     )

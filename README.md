@@ -11,7 +11,7 @@ The repository already provides a functional base for:
 
 - bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/runs/<run_id>.sqlite`;
 - ingesting ANA observations for `rain`, `level`, and `flow`;
-- ingesting ECMWF grids and registering the canonical GRIB in the history database;
+- ingesting ECMWF source GRIB internally and registering canonical CF-style NetCDF precipitation grids in the history database;
 - preparing metadata and hourly rainfall inputs for MGB;
 - running the real MGB runner or a dry-run.
 

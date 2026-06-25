@@ -27,8 +27,8 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
         "ingest_forecast_grids",
         lambda *args, **kwargs: forecast_grid_module.ForecastGridSummary(
             run_id="20260310T120000",
-            asset_id="ecmwf.ifs.fc.20260310T000000Z.buffered",
-            asset_path=Path("/tmp/fc_2026-03-10_00_IFS_buffered.grib2"),
+            asset_id="ecmwf.ifs.fc.20260310T000000Z.precipitation_grid",
+            asset_path=Path("/tmp/fc_2026-03-10_00_IFS_precipitation_grid.nc"),
             valid_from=forecast_grid_module.datetime(2026, 3, 10, 3, 0, 0),
             valid_to=forecast_grid_module.datetime(2026, 3, 25, 0, 0, 0),
         ),
@@ -45,5 +45,5 @@ def test_collect_forecast_grids_returns_registered_asset(run_metadata: RunMetada
     )
 
     assert len(assets) == 1
-    assert assets[0].format == "GRIB2"
-    assert assets[0].relative_path == "fc_2026-03-10_00_IFS_buffered.grib2"
+    assert assets[0].format == "NetCDF"
+    assert assets[0].relative_path == "fc_2026-03-10_00_IFS_precipitation_grid.nc"
