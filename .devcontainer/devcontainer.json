@@ -12,7 +12,7 @@
         "openai.chatgpt",
         "ms-python.python",
         "ms-toolsai.jupyter",
-        "alexcvzz.vscode-sqlite"
+        "zknpr.sqlite-explorer"
       ]
     }
   },
