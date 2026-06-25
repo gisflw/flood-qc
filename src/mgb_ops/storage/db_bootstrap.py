@@ -14,7 +14,17 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.executescript(schema_sql)
+        _migrate_station_mini_id(connection)
         connection.commit()
+
+
+def _migrate_station_mini_id(connection: sqlite3.Connection) -> None:
+    station_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(station)").fetchall()
+    }
+    if station_columns and "mini_id" not in station_columns:
+        connection.execute("ALTER TABLE station ADD COLUMN mini_id INTEGER")
 
 
 def _normalize_station_name(name: str) -> str:
@@ -67,6 +77,7 @@ def load_history_station_inventory(
         "provider_code",
         "station_code",
         "station_name",
+        "mini_id",
         "latitude",
         "longitude",
         "altitude_m",
@@ -87,6 +98,7 @@ def load_history_station_inventory(
             provider_code = raw_row["provider_code"].strip().lower()
             station_code = _normalize_station_code(provider_code, raw_row["station_code"])
             station_name = _normalize_station_name(raw_row["station_name"])
+            mini_id = _parse_nullable_int(raw_row["mini_id"])
             latitude = _parse_nullable_coordinate(raw_row["latitude"])
             longitude = _parse_nullable_coordinate(raw_row["longitude"])
             altitude_m = _parse_nullable_int(raw_row["altitude_m"])
@@ -107,6 +119,7 @@ def load_history_station_inventory(
                     station_code,
                     station_name,
                     provider_code,
+                    mini_id,
                     latitude,
                     longitude,
                     altitude_m,
@@ -121,12 +134,14 @@ def load_history_station_inventory(
                 station_code,
                 station_name,
                 provider_code,
+                mini_id,
                 latitude,
                 longitude,
                 altitude_m
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider_code, station_code) DO UPDATE SET
                 station_name = excluded.station_name,
+                mini_id = excluded.mini_id,
                 latitude = excluded.latitude,
                 longitude = excluded.longitude,
                 altitude_m = excluded.altitude_m

@@ -70,6 +70,7 @@ def test_initialize_history_db(tmp_path) -> None:
         "station_code",
         "station_name",
         "provider_code",
+        "mini_id",
         "latitude",
         "longitude",
         "altitude_m",
@@ -79,7 +80,11 @@ def test_initialize_history_db(tmp_path) -> None:
         altitude_type = connection.execute(
             "SELECT type FROM pragma_table_info('station') WHERE name = 'altitude_m'"
         ).fetchone()[0]
+        mini_id_type = connection.execute(
+            "SELECT type FROM pragma_table_info('station') WHERE name = 'mini_id'"
+        ).fetchone()[0]
     assert altitude_type == "INTEGER"
+    assert mini_id_type == "INTEGER"
 
     assert {"ana", "inmet", "ecmwf"}.issubset(providers)
     assert {"rain", "level", "flow"}.issubset(variables)
@@ -176,15 +181,19 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
             "SELECT COUNT(DISTINCT provider_code || '|' || station_code) FROM station"
         ).fetchone()[0]
         ana_sample = connection.execute(
-            "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
+            "SELECT station_name, mini_id, typeof(mini_id), latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'ana' AND station_code = '2650035'"
         ).fetchone()
         fallback_sample = connection.execute(
-            "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
+            "SELECT station_name, mini_id, typeof(mini_id), latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'ana' AND station_code = '74320000'"
         ).fetchone()
+        mapped_sample = connection.execute(
+            "SELECT mini_id, typeof(mini_id) FROM station "
+            "WHERE provider_code = 'ana' AND station_code = '74100000'"
+        ).fetchone()
         inmet_sample = connection.execute(
-            "SELECT station_name, latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
+            "SELECT station_name, mini_id, typeof(mini_id), latitude, longitude, altitude_m, typeof(altitude_m) FROM station "
             "WHERE provider_code = 'inmet' AND station_code = 'A840'"
         ).fetchone()
         computed_ids = dict(
@@ -202,9 +211,10 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
     assert inmet_total == 3
     assert distinct_id == total
     assert distinct_station == total
-    assert ana_sample == ("UHE ITA CACADOR PLU", -26.8192, -50.9856, 960, "integer")
-    assert fallback_sample == ("PONTE DO SARGENTO", -26.6822, -53.2861, None, "null")
-    assert inmet_sample == ("BENTO GONCALVES", -29.1645, -51.5342, 623, "integer")
+    assert ana_sample == ("UHE ITA CACADOR PLU", None, "null", -26.8192, -50.9856, 960, "integer")
+    assert fallback_sample == ("PONTE DO SARGENTO", 6693, "integer", -26.6822, -53.2861, None, "null")
+    assert mapped_sample == (8504, "integer")
+    assert inmet_sample == ("BENTO GONCALVES", None, "null", -29.1645, -51.5342, 623, "integer")
     assert computed_ids == {
         "71200000": "ana:71200000",
         "2650035": "ana:2650035",
@@ -212,6 +222,56 @@ def test_history_station_inventory_csv_loads(tmp_path) -> None:
         "B807": "inmet:B807",
     }
     assert padded_code == 0
+
+
+def test_history_station_inventory_requires_mini_id_column(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    inventory_path = tmp_path / "inventory_without_mini_id.csv"
+    inventory_path.write_text(
+        "\n".join(
+            [
+                "provider_code,station_code,station_name,latitude,longitude,altitude_m",
+                "ana,74100000,ANA TEST STATION,-29.1234,-51.1234,10",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing columns \\['mini_id'\\]"):
+        initialize_history_db(db_path, inventory_path, SQL_DIR / "history_schema.sql")
+
+
+def test_initialize_history_db_adds_mini_id_to_existing_station_table(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE station (
+                station_id TEXT PRIMARY KEY,
+                station_code TEXT NOT NULL,
+                station_name TEXT NOT NULL,
+                provider_code TEXT NOT NULL,
+                latitude REAL,
+                longitude REAL,
+                altitude_m INTEGER,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (provider_code, station_code)
+            )
+            """
+        )
+
+    initialize_history_db(db_path, TEST_INVENTORY_CSV, SQL_DIR / "history_schema.sql")
+
+    with sqlite3.connect(db_path) as connection:
+        mini_id_type = connection.execute(
+            "SELECT type FROM pragma_table_info('station') WHERE name = 'mini_id'"
+        ).fetchone()[0]
+        mapped_sample = connection.execute(
+            "SELECT mini_id FROM station WHERE provider_code = 'ana' AND station_code = '74100000'"
+        ).fetchone()[0]
+
+    assert mini_id_type == "INTEGER"
+    assert mapped_sample == 8504
 
 
 def test_initialize_run_db(tmp_path) -> None:

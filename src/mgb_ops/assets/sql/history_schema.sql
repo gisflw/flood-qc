@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS station (
     station_code TEXT NOT NULL,
     station_name TEXT NOT NULL,
     provider_code TEXT NOT NULL REFERENCES provider(provider_code),
+    mini_id INTEGER,
     latitude REAL,
     longitude REAL,
     altitude_m INTEGER,
