@@ -56,7 +56,7 @@ python -m pip install -e ".[forecast]"
 1. Resolve the cycle from `reference_time`.
 2. Download the configured ECMWF GRIB source inside the adapter.
 3. Clip the source grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
-4. Convert cumulative precipitation to hourly UTC precipitation increments and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)` and `time_bounds(time, bounds)`.
+4. Convert cumulative precipitation to hourly UTC precipitation increments and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)` and `time_bounds(time, bounds)`, using zlib compression level 4 for payload variables.
 5. Register only the canonical NetCDF asset in the explicitly supplied history database, using `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and an explicitly supplied asset base directory for relative paths.
 6. Register logs in `logs/forecast_ecmwf/`.
 

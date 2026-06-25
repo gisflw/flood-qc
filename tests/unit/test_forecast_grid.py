@@ -5,8 +5,10 @@ from datetime import datetime
 import numpy as np
 import pytest
 import xarray as xr
+from netCDF4 import Dataset
 
 from mgb_ops.model.forecast_grid import (
+    NETCDF_ZLIB_COMPLEVEL,
     read_forecast_precipitation_grid,
     write_forecast_precipitation_grid,
 )
@@ -40,6 +42,13 @@ def test_forecast_precipitation_grid_writes_canonical_netcdf_and_round_trips(tmp
         assert dataset["time"].attrs["standard_name"] == "time"
         assert dataset["time"].attrs["bounds"] == "time_bounds"
         assert dataset["precipitation"].attrs["units"] == "mm"
+    with Dataset(netcdf_path) as dataset:
+        precipitation_filters = dataset.variables["precipitation"].filters()
+        time_bounds_filters = dataset.variables["time_bounds"].filters()
+        assert precipitation_filters["zlib"] is True
+        assert precipitation_filters["complevel"] == NETCDF_ZLIB_COMPLEVEL
+        assert time_bounds_filters["zlib"] is True
+        assert time_bounds_filters["complevel"] == NETCDF_ZLIB_COMPLEVEL
 
     grid = read_forecast_precipitation_grid(netcdf_path)
 

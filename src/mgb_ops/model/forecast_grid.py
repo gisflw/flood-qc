@@ -14,6 +14,7 @@ FORECAST_PRECIPITATION_GRID_ASSET_KIND = "forecast_precipitation_grid"
 FORECAST_GRID_FORMAT = "NetCDF"
 FORECAST_TIME_ZONE = "UTC"
 OPERATIONAL_TIME_ZONE = "America/Sao_Paulo"
+NETCDF_ZLIB_COMPLEVEL = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,8 +138,14 @@ def write_forecast_precipitation_grid(
     )
 
     encoding = {
+        "precipitation": {"zlib": True, "complevel": NETCDF_ZLIB_COMPLEVEL},
         "time": {"units": "hours since 1970-01-01 00:00:00", "calendar": "proleptic_gregorian"},
-        "time_bounds": {"units": "hours since 1970-01-01 00:00:00", "calendar": "proleptic_gregorian"},
+        "time_bounds": {
+            "units": "hours since 1970-01-01 00:00:00",
+            "calendar": "proleptic_gregorian",
+            "zlib": True,
+            "complevel": NETCDF_ZLIB_COMPLEVEL,
+        },
     }
     netcdf_path.parent.mkdir(parents=True, exist_ok=True)
     dataset.to_netcdf(netcdf_path, engine="netcdf4", encoding=encoding)
