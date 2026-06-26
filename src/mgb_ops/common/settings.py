@@ -8,16 +8,23 @@ from typing import Any
 import yaml
 
 from mgb_ops.common.paths import runtime_paths
+from mgb_ops.common.time_utils import validate_timestep_hours
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "run": {
         "reference_time": "yesterday",
+        "timestep_hours": 1,
     },
     "ingest": {
         "request_days": 90,
         "timeout_seconds": 15,
         "fetch_window_days": 30,
+        "observed_aggregation": {
+            "rain": "sum",
+            "level": "mean",
+            "flow": "mean",
+        },
     },
     "forecast_grid": {
         "bbox": None,
@@ -89,6 +96,13 @@ def _validate_positive_int(value: Any, context: str) -> None:
         raise ValueError(f"{context} must be an integer >= 1.")
 
 
+def _validate_timestep_hours(value: Any, context: str) -> None:
+    try:
+        validate_timestep_hours(value)
+    except ValueError as exc:
+        raise ValueError(f"{context} {exc}") from exc
+
+
 def _validate_positive_number(value: Any, context: str) -> None:
     if not isinstance(value, (int, float)) or isinstance(value, bool) or value <= 0:
         raise ValueError(f"{context} must be a number > 0.")
@@ -136,6 +150,24 @@ def _validate_selected_mini_ids(value: Any, context: str) -> None:
             raise ValueError(f"{context} cannot contain empty values.")
 
 
+def _validate_observed_aggregation(value: Any, context: str) -> None:
+    if not isinstance(value, dict):
+        raise ValueError(f"{context} must be a YAML object.")
+    required_variables = {"rain", "level", "flow"}
+    extra_keys = sorted(set(value) - required_variables)
+    missing_keys = sorted(required_variables - set(value))
+    if extra_keys:
+        raise ValueError(f"{context} contains unsupported keys: {extra_keys}")
+    if missing_keys:
+        raise ValueError(f"{context} is missing required keys: {missing_keys}")
+    allowed_methods = {"sum", "mean", "last"}
+    for variable_code, method in value.items():
+        if not isinstance(method, str) or method.strip().lower() not in allowed_methods:
+            raise ValueError(
+                f"{context}.{variable_code} must be one of {sorted(allowed_methods)}."
+            )
+
+
 def _validate_section(config: dict[str, Any], schema: dict[str, Any], context: str) -> None:
     extra_keys = sorted(set(config) - set(schema))
     missing_keys = sorted(set(schema) - set(config))
@@ -157,11 +189,13 @@ def _validate_settings(settings: dict[str, Any]) -> None:
     schema: dict[str, Any] = {
         "run": {
             "reference_time": _validate_reference_time,
+            "timestep_hours": _validate_timestep_hours,
         },
         "ingest": {
             "request_days": _validate_positive_int,
             "timeout_seconds": _validate_positive_number,
             "fetch_window_days": _validate_positive_int,
+            "observed_aggregation": _validate_observed_aggregation,
         },
         "forecast_grid": {
             "bbox": _validate_optional_bbox,

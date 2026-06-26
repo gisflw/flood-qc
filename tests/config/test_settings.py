@@ -6,6 +6,9 @@ from mgb_ops.common import settings as settings_module
 
 
 CUSTOM_CONFIG = """\
+run:
+  timestep_hours: 3
+
 ingest:
   timeout_seconds: 30
   fetch_window_days: 14
@@ -37,8 +40,10 @@ def test_load_settings_uses_in_code_defaults_without_workspace_config(tmp_path) 
 
     assert settings == settings_module.DEFAULT_SETTINGS
     assert settings["run"]["reference_time"] == "yesterday"
+    assert settings["run"]["timestep_hours"] == 1
     assert settings["ingest"]["request_days"] == 90
     assert settings["ingest"]["fetch_window_days"] == 30
+    assert settings["ingest"]["observed_aggregation"] == {"rain": "sum", "level": "mean", "flow": "mean"}
     assert settings["mgb"]["use_forecast_data"] is True
 
 
@@ -48,6 +53,7 @@ def test_load_settings_merges_workspace_custom_yaml(tmp_path) -> None:
     settings = settings_module.load_settings(workspace=tmp_path)
 
     assert settings["run"]["reference_time"] == "yesterday"
+    assert settings["run"]["timestep_hours"] == 3
     assert settings["ingest"]["request_days"] == 90
     assert settings["ingest"]["timeout_seconds"] == 30
     assert settings["ingest"]["fetch_window_days"] == 14
@@ -95,6 +101,30 @@ run:
   reference_time: ""
 """,
             "cannot be empty",
+        ),
+        (
+            """\
+run:
+  timestep_hours: 0
+""",
+            "integer >= 1",
+        ),
+        (
+            """\
+run:
+  timestep_hours: 5
+""",
+            "divide 24",
+        ),
+        (
+            """\
+ingest:
+  observed_aggregation:
+    rain: median
+    level: mean
+    flow: mean
+""",
+            "one of",
         ),
         (
             """\

@@ -267,7 +267,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         "stations_error": 0,
     }
     assert series_rows == [("inmet:A801.rain.raw", "rain")]
-    assert rain_values == [("2026-03-10 21:00", 2.0), ("2026-03-10 23:00", 3.5)]
+    assert rain_values == [("2026-03-10 21:00", 3.0), ("2026-03-10 23:00", 3.5)]
     assert len(raw_payload_files) == 1
     assert len(normalized_csv_files) == 1
     assert raw_payload_files[0].name == "20260311__20260311.json"

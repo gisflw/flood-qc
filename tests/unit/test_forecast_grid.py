@@ -9,6 +9,7 @@ from netCDF4 import Dataset
 
 from mgb_ops.model.forecast_grid import (
     NETCDF_ZLIB_COMPLEVEL,
+    aggregate_hourly_precipitation_to_timestep,
     read_forecast_precipitation_grid,
     write_forecast_precipitation_grid,
 )
@@ -39,6 +40,7 @@ def test_forecast_precipitation_grid_writes_canonical_netcdf_and_round_trips(tmp
         assert dataset.attrs["time_zone"] == "UTC"
         assert dataset.attrs["operational_time_zone"] == "America/Sao_Paulo"
         assert dataset.attrs["source_format"] == "GRIB2"
+        assert dataset.attrs["timestep_hours"] == 1
         assert dataset["time"].attrs["standard_name"] == "time"
         assert dataset["time"].attrs["bounds"] == "time_bounds"
         assert dataset["precipitation"].attrs["units"] == "mm"
@@ -58,6 +60,47 @@ def test_forecast_precipitation_grid_writes_canonical_netcdf_and_round_trips(tmp
     assert np.array_equal(grid.latitudes, latitudes)
     assert np.array_equal(grid.longitudes, longitudes)
     assert np.array_equal(grid.hourly_grids, precipitation)
+    assert grid.timestep_hours == 1
+
+
+def test_forecast_precipitation_grid_writes_configured_timestep(tmp_path) -> None:
+    netcdf_path = tmp_path / "forecast_3h.nc"
+    hourly_times = [
+        datetime(2026, 3, 11, 1, 0, 0),
+        datetime(2026, 3, 11, 2, 0, 0),
+        datetime(2026, 3, 11, 3, 0, 0),
+        datetime(2026, 3, 11, 4, 0, 0),
+        datetime(2026, 3, 11, 5, 0, 0),
+        datetime(2026, 3, 11, 6, 0, 0),
+    ]
+    hourly_precipitation = np.arange(6, dtype=np.float64).reshape(6, 1, 1)
+    times, precipitation = aggregate_hourly_precipitation_to_timestep(
+        hourly_times,
+        hourly_precipitation,
+        timestep_hours=3,
+    )
+
+    write_forecast_precipitation_grid(
+        netcdf_path,
+        times_utc=times,
+        latitudes=np.array([-29.5], dtype=np.float64),
+        longitudes=np.array([-51.5], dtype=np.float64),
+        precipitation_mm=precipitation,
+        provider_code="ecmwf",
+        source_format="GRIB2",
+        source_cycle_time=datetime(2026, 3, 11, 0, 0, 0),
+        timestep_hours=3,
+    )
+
+    grid = read_forecast_precipitation_grid(netcdf_path)
+
+    assert grid.timestep_hours == 3
+    assert grid.times_utc == (datetime(2026, 3, 11, 3, 0), datetime(2026, 3, 11, 6, 0))
+    assert grid.time_bounds_utc == (
+        (datetime(2026, 3, 11, 0, 0), datetime(2026, 3, 11, 3, 0)),
+        (datetime(2026, 3, 11, 3, 0), datetime(2026, 3, 11, 6, 0)),
+    )
+    assert grid.hourly_grids[:, 0, 0].tolist() == [3.0, 12.0]
 
 
 def test_forecast_precipitation_grid_rejects_missing_precipitation(tmp_path) -> None:
@@ -113,5 +156,5 @@ def test_forecast_precipitation_grid_rejects_non_hourly_bounds(tmp_path) -> None
     )
     edited.to_netcdf(netcdf_path, engine="netcdf4")
 
-    with pytest.raises(ValueError, match="intervals must be exactly one hour"):
+    with pytest.raises(ValueError, match="intervals must match timestep_hours"):
         read_forecast_precipitation_grid(netcdf_path)

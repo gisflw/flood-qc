@@ -300,9 +300,9 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
         ("ana:74100000.level.raw", "level"),
         ("ana:74100000.rain.raw", "rain"),
     ]
-    assert rain_values == [("2026-03-10 00:00", 2.0)]
-    assert level_values == [("2026-03-10 00:00", 101.0), ("2026-03-10 02:00", 105.0)]
-    assert flow_values == [("2026-03-10 00:00", 11.0), ("2026-03-10 02:00", 12.0)]
+    assert rain_values == [("2026-03-10 00:00", 3.0)]
+    assert level_values == [("2026-03-10 00:00", 100.5), ("2026-03-10 02:00", 105.0)]
+    assert flow_values == [("2026-03-10 00:00", 10.5), ("2026-03-10 02:00", 12.0)]
     assert len(raw_xml_files) == 1
     assert len(normalized_csv_files) == 1
     assert raw_xml_files[0].name == "20260311__20260311.xml"

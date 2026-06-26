@@ -21,6 +21,7 @@ from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
 from mgb_ops.model.forecast_grid import (
     FORECAST_GRID_FORMAT,
     FORECAST_PRECIPITATION_GRID_ASSET_KIND,
+    aggregate_hourly_precipitation_to_timestep,
     write_forecast_precipitation_grid,
 )
 from mgb_ops.storage.history_repository import HistoryRepository
@@ -255,23 +256,30 @@ def write_canonical_forecast_grid_from_grib(
     netcdf_path: Path,
     *,
     cycle_time: datetime,
+    timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> tuple[datetime, datetime]:
     hourly_times, latitudes, longitudes, hourly_grids = build_hourly_precipitation_from_cumulative_messages(
         read_tp_grib_messages(grib_path)
     )
+    timestep_times, timestep_grids = aggregate_hourly_precipitation_to_timestep(
+        hourly_times,
+        hourly_grids,
+        timestep_hours=timestep_hours,
+    )
     write_forecast_precipitation_grid(
         netcdf_path,
-        times_utc=hourly_times,
+        times_utc=timestep_times,
         latitudes=latitudes,
         longitudes=longitudes,
-        precipitation_mm=hourly_grids,
+        precipitation_mm=timestep_grids,
         provider_code=product_config.provider_code,
         source_format="GRIB2",
         source_cycle_time=cycle_time,
-        title="ECMWF IFS hourly precipitation forecast grid",
+        timestep_hours=timestep_hours,
+        title="ECMWF IFS precipitation forecast grid",
     )
-    return hourly_times[0], hourly_times[-1]
+    return timestep_times[0], timestep_times[-1]
 
 
 
@@ -316,6 +324,7 @@ def ingest_forecast_grids(
     downloads_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
+    timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> ForecastGridSummary:
     if not Path(database_path).exists():
@@ -348,6 +357,7 @@ def ingest_forecast_grids(
             cropped_grib_path,
             target_path,
             cycle_time=cycle_time,
+            timestep_hours=timestep_hours,
             product_config=product_config,
         )
 
@@ -365,6 +375,7 @@ def ingest_forecast_grids(
         "bbox": list(buffered_bbox),
         "source_bbox": list(bbox),
         "buffer_fraction": buffer_fraction,
+        "timestep_hours": timestep_hours,
     }
 
     with HistoryRepository(database_path) as repository:
@@ -404,6 +415,7 @@ def collect_forecast_grids(
     downloads_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
+    timestep_hours: int = 1,
 ) -> list[RasterAsset]:
     reference_time = resolve_reference_time(run.reference_time)
     summary = ingest_forecast_grids(
@@ -414,6 +426,7 @@ def collect_forecast_grids(
         downloads_dir=downloads_dir,
         logs_dir=logs_dir,
         asset_base_dir=asset_base_dir,
+        timestep_hours=timestep_hours,
     )
     return [
         RasterAsset(

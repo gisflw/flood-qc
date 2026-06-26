@@ -41,6 +41,22 @@ def resolve_reference_time(raw_value: str | None) -> datetime:
     return reference_time.replace(second=0, microsecond=0)
 
 
+def validate_timestep_hours(timestep_hours: int) -> int:
+    if not isinstance(timestep_hours, int) or isinstance(timestep_hours, bool) or timestep_hours < 1:
+        raise ValueError("timestep_hours must be an integer >= 1.")
+    if 24 % timestep_hours != 0:
+        raise ValueError("timestep_hours must divide 24.")
+    return timestep_hours
+
+
+def require_datetime_aligned_to_timestep(value: datetime, *, timestep_hours: int, name: str) -> None:
+    validate_timestep_hours(timestep_hours)
+    if value.minute != 0 or value.second != 0 or value.microsecond != 0:
+        raise ValueError(f"{name} must be aligned to the hour.")
+    if value.hour % timestep_hours != 0:
+        raise ValueError(f"{name} must be aligned to run.timestep_hours={timestep_hours}.")
+
+
 def iter_observed_request_dates(
     window_start: datetime,
     window_end: datetime,
@@ -65,24 +81,37 @@ def build_horizon_window(
     *,
     days_before: int,
     horizon_days: int = 0,
+    timestep_hours: int = 1,
 ) -> HorizonWindow:
+    timestep_hours = validate_timestep_hours(timestep_hours)
     if days_before < 0:
         raise ValueError("days_before must be >= 0.")
     if horizon_days < 0:
         raise ValueError("horizon_days must be >= 0.")
-    if reference_time.minute != 0 or reference_time.second != 0 or reference_time.microsecond != 0:
-        raise ValueError("reference_time must be aligned to the hour.")
+    require_datetime_aligned_to_timestep(
+        reference_time,
+        timestep_hours=timestep_hours,
+        name="reference_time",
+    )
 
     start_date = reference_time.date() - timedelta(days=days_before)
     start_time = datetime.combine(start_date, time.min)
-    forecast_start_time = reference_time + timedelta(hours=1)
-    forecast_nt = horizon_days * 24 + 1 if horizon_days > 0 else 0
+    step_delta = timedelta(hours=timestep_hours)
+    forecast_start_time = reference_time + step_delta
+    forecast_nt = horizon_days * (24 // timestep_hours) + 1 if horizon_days > 0 else 0
     end_time = (
-        forecast_start_time + timedelta(hours=forecast_nt - 1)
+        forecast_start_time + step_delta * (forecast_nt - 1)
         if forecast_nt > 0
         else reference_time
     )
-    nt = int((end_time - start_time).total_seconds() // DEFAULT_DT_SECONDS) + 1
+    dt_seconds = timestep_hours * DEFAULT_DT_SECONDS
+    elapsed_seconds = int((end_time - start_time).total_seconds())
+    if elapsed_seconds % dt_seconds != 0:
+        raise ValueError(
+            "Invalid timestep alignment calculated from "
+            f"reference_time={reference_time}, start_time={start_time}, timestep_hours={timestep_hours}."
+        )
+    nt = elapsed_seconds // dt_seconds + 1
     if nt < 1:
         raise ValueError(f"Invalid NT calculated from reference_time={reference_time} and start_time={start_time}.")
     return HorizonWindow(
@@ -91,7 +120,7 @@ def build_horizon_window(
         forecast_start_time=forecast_start_time,
         forecast_nt=forecast_nt,
         nt=nt,
-        dt_seconds=DEFAULT_DT_SECONDS,
+        dt_seconds=dt_seconds,
         days_before=days_before,
         horizon_days=horizon_days,
     )

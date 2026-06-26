@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
 from mgb_ops.common.time_utils import TIMEZONE
+from mgb_ops.common.time_utils import validate_timestep_hours
 from mgb_ops.storage.history_repository import HistoryRepository
 
 NORMALIZED_OBSERVED_COLUMNS = (
@@ -19,6 +20,12 @@ NORMALIZED_OBSERVED_COLUMNS = (
     "state",
 )
 ALLOWED_STATES = {"raw", "curated", "approved"}
+DEFAULT_OBSERVED_AGGREGATION = {
+    "rain": "sum",
+    "level": "mean",
+    "flow": "mean",
+}
+ALLOWED_AGGREGATIONS = {"sum", "mean", "last"}
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +37,10 @@ class ObservedCsvImportSummary:
 
 
 def normalize_observed_timestamp(value: str, *, row_label: str) -> str:
+    return _parse_observed_timestamp(value, row_label=row_label).strftime("%Y-%m-%d %H:%M")
+
+
+def _parse_observed_timestamp(value: str, *, row_label: str) -> datetime:
     text = str(value or "").strip()
     if not text:
         raise ValueError(f"{row_label}: observed_at is required.")
@@ -47,7 +58,41 @@ def normalize_observed_timestamp(value: str, *, row_label: str) -> str:
             raise ValueError(f"{row_label}: invalid observed_at {text!r}.")
     if observed_at.tzinfo is not None:
         observed_at = observed_at.astimezone(TIMEZONE).replace(tzinfo=None)
-    return observed_at.replace(second=0, microsecond=0).strftime("%Y-%m-%d %H:%M")
+    return observed_at.replace(second=0, microsecond=0)
+
+
+def _normalize_aggregation_policy(aggregation_by_variable: dict[str, str] | None) -> dict[str, str]:
+    policy = dict(DEFAULT_OBSERVED_AGGREGATION)
+    if aggregation_by_variable is not None:
+        policy.update({str(key).strip().lower(): str(value).strip().lower() for key, value in aggregation_by_variable.items()})
+    for variable_code, method in policy.items():
+        if method not in ALLOWED_AGGREGATIONS:
+            raise ValueError(
+                f"Unsupported aggregation method {method!r} for variable_code {variable_code!r}; "
+                f"expected one of {sorted(ALLOWED_AGGREGATIONS)}."
+            )
+    return policy
+
+
+def _ceil_to_timestep_end(observed_at: datetime, *, timestep_hours: int) -> datetime:
+    timestep_hours = validate_timestep_hours(timestep_hours)
+    day_start = observed_at.replace(hour=0, minute=0, second=0, microsecond=0)
+    elapsed_minutes = int((observed_at - day_start).total_seconds() // 60)
+    step_minutes = timestep_hours * 60
+    bucket_minutes = ((elapsed_minutes + step_minutes - 1) // step_minutes) * step_minutes
+    return day_start + timedelta(minutes=bucket_minutes)
+
+
+def _aggregate_values(values: list[float], *, method: str, row_label: str) -> float:
+    if not values:
+        raise ValueError(f"{row_label}: no values to aggregate.")
+    if method == "sum":
+        return float(sum(values))
+    if method == "mean":
+        return float(sum(values) / len(values))
+    if method == "last":
+        return float(values[-1])
+    raise ValueError(f"{row_label}: unsupported aggregation method {method!r}.")
 
 
 def _load_catalogs(repository: HistoryRepository) -> tuple[dict[str, dict[str, str]], set[str]]:
@@ -70,13 +115,18 @@ def _load_catalogs(repository: HistoryRepository) -> tuple[dict[str, dict[str, s
 def load_normalized_observed_csvs(
     database_path: Path,
     csv_paths: Iterable[Path],
+    *,
+    timestep_hours: int = 1,
+    aggregation_by_variable: dict[str, str] | None = None,
 ) -> ObservedCsvImportSummary:
+    timestep_hours = validate_timestep_hours(timestep_hours)
+    aggregation_policy = _normalize_aggregation_policy(aggregation_by_variable)
     paths = [Path(path) for path in csv_paths]
     if not paths:
         return ObservedCsvImportSummary(files_total=0, rows_total=0, rows_imported=0, values_by_variable={})
 
     rows_total = 0
-    deduped: dict[tuple[str, str, str, str], float] = {}
+    grouped_values: dict[tuple[str, str, str, str], list[float]] = {}
 
     with HistoryRepository(database_path) as repository:
         stations, variables = _load_catalogs(repository)
@@ -112,7 +162,13 @@ def load_normalized_observed_csvs(
                     if state not in ALLOWED_STATES:
                         raise ValueError(f"{row_label}: unsupported state {state!r}.")
 
-                    observed_at = normalize_observed_timestamp(row.get("observed_at", ""), row_label=row_label)
+                    method = aggregation_policy.get(variable_code)
+                    if method is None:
+                        raise ValueError(f"{row_label}: missing aggregation policy for variable_code {variable_code!r}.")
+
+                    observed_at = _parse_observed_timestamp(row.get("observed_at", ""), row_label=row_label)
+                    bucket_end = _ceil_to_timestep_end(observed_at, timestep_hours=timestep_hours)
+                    observed_at_text = bucket_end.strftime("%Y-%m-%d %H:%M")
                     value_text = str(row.get("value") or "").strip()
                     if not value_text:
                         raise ValueError(f"{row_label}: value is required.")
@@ -121,11 +177,15 @@ def load_normalized_observed_csvs(
                     except ValueError as exc:
                         raise ValueError(f"{row_label}: invalid numeric value {value_text!r}.") from exc
 
-                    deduped[(station_id, variable_code, state, observed_at)] = value
+                    grouped_values.setdefault((station_id, variable_code, state, observed_at_text), []).append(value)
 
         grouped: dict[tuple[str, str, str], list[tuple[str, float]]] = {}
-        for (station_id, variable_code, state, observed_at), value in deduped.items():
-            grouped.setdefault((station_id, variable_code, state), []).append((observed_at, value))
+        for (station_id, variable_code, state, observed_at), values in grouped_values.items():
+            row_label = f"{station_id} {variable_code} {state} {observed_at}"
+            method = aggregation_policy[variable_code]
+            grouped.setdefault((station_id, variable_code, state), []).append(
+                (observed_at, _aggregate_values(values, method=method, row_label=row_label))
+            )
 
         values_by_variable: dict[str, int] = {}
         rows_imported = 0
@@ -147,5 +207,13 @@ def load_normalized_observed_csvs(
 def import_normalized_observed_csvs(
     database_path: Path,
     csv_paths: Iterable[Path],
+    *,
+    timestep_hours: int = 1,
+    aggregation_by_variable: dict[str, str] | None = None,
 ) -> ObservedCsvImportSummary:
-    return load_normalized_observed_csvs(database_path, csv_paths)
+    return load_normalized_observed_csvs(
+        database_path,
+        csv_paths,
+        timestep_hours=timestep_hours,
+        aggregation_by_variable=aggregation_by_variable,
+    )

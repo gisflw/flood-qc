@@ -63,7 +63,7 @@ def test_import_normalized_observed_csv_imports_series_and_values(tmp_path) -> N
     ]
     assert values == [
         ("ana:74100000.level.raw", "2026-03-10 01:00", 100.0),
-        ("ana:74100000.rain.raw", "2026-03-10 00:00", 2.5),
+        ("ana:74100000.rain.raw", "2026-03-10 00:00", 3.5),
     ]
 
 
@@ -140,5 +140,59 @@ def test_load_normalized_observed_csv_upserts_missing_hours_and_duplicates(tmp_p
     assert values == [
         ("2026-03-10 00:00", 1.0),
         ("2026-03-10 01:00", 2.0),
-        ("2026-03-10 02:00", 4.0),
+        ("2026-03-10 02:00", 7.0),
+    ]
+
+
+def test_load_normalized_observed_csv_normalizes_to_configured_timestep(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    csv_path = tmp_path / "observed.csv"
+    write_csv(
+        csv_path,
+        [
+            valid_row(observed_at="2026-03-10 00:10", value="1.0"),
+            valid_row(observed_at="2026-03-10 02:55", value="2.0"),
+            valid_row(observed_at="2026-03-10 03:00", value="4.0"),
+        ],
+    )
+
+    summary = load_normalized_observed_csvs(db_path, [csv_path], timestep_hours=3)
+
+    with sqlite3.connect(db_path) as connection:
+        values = connection.execute(
+            "SELECT observed_at, value FROM observed_value "
+            "WHERE series_id = 'ana:74100000.rain.raw' ORDER BY observed_at"
+        ).fetchall()
+
+    assert summary.rows_total == 3
+    assert summary.rows_imported == 1
+    assert values == [("2026-03-10 03:00", 7.0)]
+
+
+def test_load_normalized_observed_csv_averages_level_and_flow_by_policy(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    csv_path = tmp_path / "observed.csv"
+    write_csv(
+        csv_path,
+        [
+            valid_row(observed_at="2026-03-10 00:10", variable_code="level", value="10.0"),
+            valid_row(observed_at="2026-03-10 00:20", variable_code="level", value="20.0"),
+            valid_row(observed_at="2026-03-10 00:10", variable_code="flow", value="100.0"),
+            valid_row(observed_at="2026-03-10 00:20", variable_code="flow", value="140.0"),
+        ],
+    )
+
+    summary = load_normalized_observed_csvs(db_path, [csv_path], timestep_hours=1)
+
+    with sqlite3.connect(db_path) as connection:
+        values = connection.execute(
+            "SELECT series_id, observed_at, value FROM observed_value ORDER BY series_id, observed_at"
+        ).fetchall()
+
+    assert summary.values_by_variable == {"flow": 1, "level": 1}
+    assert values == [
+        ("ana:74100000.flow.raw", "2026-03-10 01:00", 120.0),
+        ("ana:74100000.level.raw", "2026-03-10 01:00", 15.0),
     ]

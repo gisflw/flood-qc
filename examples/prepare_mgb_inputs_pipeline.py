@@ -96,15 +96,18 @@ if not paths.history_db.exists():
 
 # %%
 reference_time = resolve_reference_time(str(settings["run"]["reference_time"]))
+timestep_hours = int(settings["run"]["timestep_hours"])
 mgb_settings = settings["mgb"]
 fetch_window = build_horizon_window(
     reference_time,
     days_before=int(settings["ingest"]["request_days"]) - 1,
+    timestep_hours=timestep_hours,
 )
 mgb_window = build_horizon_window(
     reference_time,
     days_before=int(mgb_settings["input_days_before"]),
     horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    timestep_hours=timestep_hours,
 )
 
 print(f"reference_time: {mgb_window.reference_time.isoformat(timespec='seconds')}")
@@ -141,6 +144,8 @@ for provider_code in OBSERVED_PROVIDERS:
         station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
         timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
         fetch_window_days=int(settings["ingest"]["fetch_window_days"]),
+        timestep_hours=timestep_hours,
+        observed_aggregation=dict(settings["ingest"]["observed_aggregation"]),
         api_key=api_key,
     )
     observed_summaries.append(summary)
@@ -168,6 +173,7 @@ if use_forecast_data:
             input_days_before=int(mgb_settings["input_days_before"]),
             forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
             asset_base_dir=paths.workspace,
+            timestep_hours=timestep_hours,
         )
 
     if forecast_asset is None:
@@ -202,6 +208,7 @@ if use_forecast_data and forecast_asset is None:
         downloads_dir=paths.downloads_dir,
         logs_dir=paths.logs_dir,
         asset_base_dir=paths.workspace,
+        timestep_hours=timestep_hours,
     )
     print(f"registered ECMWF asset: {grid_summary.asset_id}")
 
@@ -212,6 +219,7 @@ if use_forecast_data and forecast_asset is None:
             input_days_before=int(mgb_settings["input_days_before"]),
             forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
             asset_base_dir=paths.workspace,
+            timestep_hours=timestep_hours,
         )
     if forecast_asset is None:
         raise RuntimeError("ECMWF ingestion finished, but no asset covers the required forecast window.")
@@ -228,6 +236,7 @@ meta_summary = rewrite_mgb_meta(
     reference_time=mgb_window.reference_time,
     input_days_before=int(mgb_settings["input_days_before"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
 )
 
@@ -255,6 +264,7 @@ rainfall_summary = prepare_mgb_rainfall(
     forecast_asset_path=forecast_asset.asset_path if forecast_asset is not None else None,
     nearest_stations=int(rainfall_settings["nearest_stations"]),
     power=float(rainfall_settings["power"]),
+    timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
 )
 

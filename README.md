@@ -12,7 +12,7 @@ The repository already provides a functional base for:
 - bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/runs/<run_id>.sqlite`;
 - ingesting ANA observations for `rain`, `level`, and `flow`;
 - ingesting ECMWF source GRIB internally and registering canonical CF-style NetCDF precipitation grids in the history database;
-- preparing metadata and hourly rainfall inputs for MGB;
+- preparing metadata and timestep-aligned rainfall inputs for MGB;
 - running the real MGB runner or a dry-run.
 
 Still pending in this phase:
@@ -100,12 +100,14 @@ paths = context.paths
 settings = context.settings
 mgb_settings = settings["mgb"]
 reference_time = resolve_reference_time(settings["run"]["reference_time"])
+timestep_hours = int(settings["run"]["timestep_hours"])
 
 rewrite_mgb_meta(
     parhig_path=paths.mgb_input_dir / "PARHIG.hig",
     reference_time=reference_time,
     input_days_before=int(mgb_settings["input_days_before"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
 )
 
@@ -120,6 +122,7 @@ prepare_mgb_rainfall(
     use_forecast_data=bool(mgb_settings["use_forecast_data"]),
     nearest_stations=int(settings["rainfall_interpolation"]["nearest_stations"]),
     power=float(settings["rainfall_interpolation"]["power"]),
+    timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
 )
 ```

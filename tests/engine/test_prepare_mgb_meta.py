@@ -47,3 +47,22 @@ def test_rewrite_mgb_meta_updates_parhig(tmp_path, monkeypatch) -> None:
     log_path = tmp_path / "logs" / "prepare_mgb_meta" / "20260311T230000.log"
     assert log_path.exists()
     assert "mgb_meta_updated" in log_path.read_text(encoding="utf-8")
+
+
+def test_rewrite_mgb_meta_uses_configured_timestep(tmp_path) -> None:
+    parhig_path = tmp_path / "PARHIG.hig"
+    parhig_path.write_text(PARHIG_TEMPLATE, encoding="latin-1")
+
+    summary = rewrite_mgb_meta(
+        parhig_path=parhig_path,
+        reference_time=datetime(2026, 3, 11, 21, 0, 0),
+        input_days_before=2,
+        forecast_horizon_days=2,
+        timestep_hours=3,
+    )
+
+    assert summary.start_time == datetime(2026, 3, 9, 0, 0, 0)
+    assert summary.nt == 41
+    assert summary.dt_seconds == 10800
+    updated_parhig = parhig_path.read_text(encoding="latin-1")
+    assert "        41     10800." in updated_parhig

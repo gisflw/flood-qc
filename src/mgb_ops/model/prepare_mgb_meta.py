@@ -134,6 +134,7 @@ def rewrite_mgb_meta(
     reference_time: datetime,
     input_days_before: int,
     forecast_horizon_days: int,
+    timestep_hours: int = 1,
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> MgbMetaUpdateSummary:
@@ -141,6 +142,7 @@ def rewrite_mgb_meta(
         reference_time,
         days_before=input_days_before,
         horizon_days=forecast_horizon_days,
+        timestep_hours=timestep_hours,
     )
     run_logger = logger
     if run_logger is None and logs_dir is not None:

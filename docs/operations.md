@@ -69,6 +69,7 @@ summary = rewrite_mgb_meta(
     reference_time=resolve_reference_time(settings["run"]["reference_time"]),
     input_days_before=int(mgb_settings["input_days_before"]),
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    timestep_hours=int(settings["run"]["timestep_hours"]),
     logs_dir=paths.logs_dir,
 )
 ```

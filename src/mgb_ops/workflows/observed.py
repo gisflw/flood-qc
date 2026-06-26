@@ -86,6 +86,8 @@ def fetch_and_load_observed_provider(
     api_key: str | None = None,
     product_code: str = DEFAULT_INMET_RAIN_PRODUCT,
     fetch_window_days: int = DEFAULT_FETCH_WINDOW_DAYS,
+    timestep_hours: int = 1,
+    observed_aggregation: dict[str, str] | None = None,
 ) -> ObservedWorkflowSummary:
     provider = provider_code.strip().lower()
     if provider not in {"ana", "inmet"}:
@@ -141,7 +143,12 @@ def fetch_and_load_observed_provider(
             fetch_window_days=fetch_window_days,
         )
 
-    import_summary = load_normalized_observed_csvs(database_path, fetch_summary.csv_paths)
+    import_summary = load_normalized_observed_csvs(
+        database_path,
+        fetch_summary.csv_paths,
+        timestep_hours=timestep_hours,
+        aggregation_by_variable=observed_aggregation,
+    )
     return ObservedWorkflowSummary(
         provider_code=provider,
         run_id=run_id,

@@ -30,6 +30,33 @@ def test_build_horizon_window_fetch_only_ends_at_reference_hour() -> None:
     assert window.nt == 2160
 
 
+def test_build_horizon_window_uses_configured_timestep() -> None:
+    window = build_horizon_window(
+        datetime(2026, 3, 11, 21, 0, 0),
+        days_before=2,
+        horizon_days=2,
+        timestep_hours=3,
+    )
+
+    assert window.start_time == datetime(2026, 3, 9, 0, 0, 0)
+    assert window.forecast_start_time == datetime(2026, 3, 12, 0, 0, 0)
+    assert window.forecast_nt == 17
+    assert window.nt == 41
+    assert window.dt_seconds == 10800
+
+
+def test_build_horizon_window_rejects_reference_time_off_timestep() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="run.timestep_hours=3"):
+        build_horizon_window(
+            datetime(2026, 3, 11, 23, 0, 0),
+            days_before=2,
+            horizon_days=2,
+            timestep_hours=3,
+        )
+
+
 def test_iter_observed_request_dates_empty_db_starts_at_window_start() -> None:
     assert list(
         iter_observed_request_dates(

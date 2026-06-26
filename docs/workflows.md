@@ -23,7 +23,7 @@ Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 2. For each station, resume from the latest raw observed day already present in SQLite, overlapping that day; stations without later data start at the configured observed request window start.
 3. Fetch hydrometeorological data by station and contiguous date window. The library workflow accepts `fetch_window_days`, defaulting to `30`; use `1` to preserve one request per day.
 4. Save provider XML as ancillary evidence per fetch window under `<workspace>/data/downloads/ana/<run_id>/<station_code>/<YYYYMMDD>__<YYYYMMDD>.xml` and write one normalized observed CSV per station per run under `<workspace>/data/downloads/ana/<run_id>/<station_code>/observed.csv`.
-5. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
+5. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`, passing `run.timestep_hours` and the observed aggregation policy so SQLite stores timestep-normalized rows.
 6. Register logs in `logs/observed_ana/`.
 
 ### 2b. INMET Rainfall Ingestion
@@ -37,7 +37,7 @@ Fill-DB workflow: `mgb_ops.workflows.observed.fetch_and_load_observed_provider`
 4. Query the operational rainfall API by station and contiguous date window, using the explicit `product_code` input that defaults to `I175`. The library workflow accepts `fetch_window_days`, defaulting to `30`; use `1` to preserve one request per day.
 5. Save each successful raw JSON response under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/<YYYYMMDD>__<YYYYMMDD>.json`, where the two dates are the request window start and end.
 6. Build one normalized observed rainfall CSV per station per run from the saved raw responses under `<workspace>/data/downloads/inmet/<run_id>/<station_code>/observed.csv`. If a later day fails after earlier days succeeded, keep the partial CSV so successful data can still be imported while the station is marked as an error.
-7. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`.
+7. Load normalized CSVs through `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` into `observed_series` and `observed_value`, passing `run.timestep_hours` and the observed aggregation policy so SQLite stores timestep-normalized rows.
 8. Register logs in `logs/observed_inmet/`.
 
 ### 3. Forecast Grid Ingestion
@@ -56,7 +56,7 @@ python -m pip install -e ".[forecast]"
 1. Resolve the cycle from `reference_time`.
 2. Download the configured ECMWF GRIB source inside the adapter.
 3. Clip the source grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
-4. Convert cumulative precipitation to hourly UTC precipitation increments and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)` and `time_bounds(time, bounds)`, using zlib compression level 4 for payload variables.
+4. Convert cumulative precipitation to hourly UTC precipitation increments, aggregate those increments to `run.timestep_hours`, and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)`, `time_bounds(time, bounds)`, and `timestep_hours` metadata, using zlib compression level 4 for payload variables.
 5. Register only the canonical NetCDF asset in the explicitly supplied history database, using `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and an explicitly supplied asset base directory for relative paths.
 6. Register logs in `logs/forecast_ecmwf/`.
 
@@ -72,10 +72,10 @@ Library modules:
 - `mgb_ops.model.prepare_mgb_meta`
 - `mgb_ops.model.prepare_mgb_rainfall`
 
-1. Rewrite `PARHIG.hig` from the current configuration.
-2. Load observed rainfall from the history database.
-3. Normalize rainfall to the hourly grid and interpolate it to the minis.
-4. When enabled, load the canonical forecast NetCDF, match the local MGB forecast window against UTC NetCDF coordinates, and incorporate hourly ECMWF rainfall into the forecast block.
+1. Rewrite `PARHIG.hig` from the current configuration, including `DT = run.timestep_hours * 3600`.
+2. Load already-normalized observed rainfall from the history database.
+3. Validate rainfall timestamps against `run.timestep_hours` and interpolate them to the minis.
+4. When enabled, load the canonical forecast NetCDF, match the local MGB forecast window against UTC NetCDF coordinates, and incorporate ECMWF rainfall at the configured timestep into the forecast block.
 5. Write `<workspace>/mgb_runner/Input/chuvabin.hig`.
 
 ### 5. Model Execution and Consumption
