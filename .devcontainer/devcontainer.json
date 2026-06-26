@@ -1,5 +1,5 @@
 {
-  "name": "mgb-vechy",
+  "name": "mgb-ops",
   "build": {
     "dockerfile": "Dockerfile",
     "context": ".."
