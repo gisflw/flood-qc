@@ -4,22 +4,25 @@
 
 The target architecture is library-first. `src/mgb_ops` is the primary product:
 an installable Python package that exposes reusable modules and functions for
-notebooks, scripts, and data-flow style orchestration. The CLI and Streamlit
-dashboard are operational adapters over that package.
+notebooks, scripts, and data-flow style orchestration.
 
 The base remains local-first, file-oriented, and organized around reproducible
 artifacts on disk:
 
 - `<workspace>/data/history.sqlite` as the persistent history database;
 - `<workspace>/data/runs/<run_id>.sqlite` as the closed context of an operational run;
-- `<workspace>/mgb_runner/Input` and `<workspace>/mgb_runner/Output` as the local mirror of the MGB runner;
-- `<workspace>/data/interim/` for collected or intermediate artifacts.
+- `<workspace>/mgb_runner/Input` and `<workspace>/mgb_runner/Output` as the direct input and output paths used by the MGB runner;
+- `<workspace>/data/source/` for immutable user-provided inputs;
+- `<workspace>/data/downloads/` for raw provider artifacts and normalized fetch outputs;
+- `<workspace>/data/cache/` for disposable analysis and intermediate artifacts;
+- `<workspace>/data/processed/` for reusable derived outputs;
+- `<workspace>/data/reports/` for report and publication artifacts.
 
 ## Layer Model
 
 ### Core Library
 
-These modules should remain usable directly from Python without CLI or UI state:
+These modules should remain usable directly from Python:
 
 - `src/mgb_ops/common/`: shared contracts, paths, settings, logging, and time utilities;
 - `src/mgb_ops/storage/`: SQLite bootstrap and repository contracts;
@@ -27,44 +30,20 @@ These modules should remain usable directly from Python without CLI or UI state:
 - `src/mgb_ops/model/`: preparation of MGB inputs, model execution, and output export;
 - `src/mgb_ops/qc/`: QC and review rules, still incomplete in this phase.
 
-Core library functions should accept explicit paths, databases, settings, and
-times where practical. They should return structured summaries or domain objects
-instead of depending on `argparse`, Streamlit session state, or console output.
+Core domain functions in `storage`, `ingest`, `qc`, and `model` accept explicit paths, databases, settings, schema paths, asset bases, and times. They should return structured summaries or domain objects instead of depending on console output, process environment, `.env`, or workspace globals.
 
-### Thin Interfaces
-
-- `src/mgb_ops/cli/`
-  Parses command-line arguments, resolves runtime paths/settings, calls library
-  functions, and prints results.
-- `apps/ops_dashboard/`
-  Owns Streamlit rendering, session state, and dashboard interaction. It should
-  call package functions rather than becoming the place where core workflow
-  behavior lives.
-
-### Transitional Dashboard Support
-
-`src/mgb_ops/reporting/` is mixed today:
-
-- `reports.py` is the placeholder for future operational report generation;
-- `ops_dashboard_data.py`, `ops_dashboard_forecast.py`, and
-  `ops_dashboard_map.py` are dashboard support modules with no Streamlit import.
-
-Those `ops_dashboard_*` modules are useful because they keep heavy dashboard
-logic out of `apps/ops_dashboard/app.py`, but they should not be treated as the
-future public reporting interface. Future reporting work should create library
-functions for operational publications and keep dashboard-specific behavior
-separate.
+`mgb_ops.common` is the only library area that may provide convenience runtime
+helpers for resolving workspaces, settings, and `.env` values.
 
 ## Implemented Status
 
 The repository currently provides:
 
 - history and run schema bootstrap;
-- operational ingestion of ANA observations;
-- ECMWF grid ingestion, spatial clipping, and GRIB registration in the history database;
+- operational ingestion of observed ANA and INMET data through normalized per-station CSV artifacts and storage-owned SQLite loading;
+- forecast grid ingestion with ECMWF defaults, spatial clipping, and generic asset registration in the history database;
 - hourly rainfall preparation for MGB from observations and ECMWF forecasts;
-- real or dry-run MGB runner execution through library functions and the CLI wrapper;
-- Streamlit dashboard for observations, MGB series, and ECMWF forecast preview/manual correction.
+- real or dry-run MGB runner execution through library functions.
 
 It does not yet provide the full end-to-end workflow for:
 
@@ -79,11 +58,8 @@ It does not yet provide the full end-to-end workflow for:
 ### Python Library as the Primary Interface
 
 New operational behavior should be implemented first as importable Python
-functions. CLI commands and dashboard interactions should be thin consumers of
-those functions.
-
-This keeps notebook exploration, automated data flows, tests, CLI use, and GUI
-use aligned around one implementation.
+functions. This keeps notebook exploration, automated data flows, and tests
+aligned around one implementation.
 
 ### SQLite as the Baseline
 
@@ -104,49 +80,40 @@ materialization is not finalized yet.
 ### Observations in Long Format
 
 Observations are stored in long format, with one series per relevant combination
-of station, variable, and state. This design is already in use in the history
-database and dashboard.
+of `station_id`, variable, and state. `station_id` is a canonical string
+`provider:station_code`, such as `ana:74100000` or `inmet:A801`. Provider
+fetchers write normalized CSV files with `station_id`, `provider_code`,
+`station_code`, `observed_at`, `variable_code`, `value`, and `state`; the shared
+CSV importer is the common persistence path into history SQLite.
 
 ### External Assets Outside the Database
 
 Rasters, vectors, and MGB binaries remain outside SQLite. The database stores
-metadata and relative paths. This applies to both ECMWF GRIB files and complete
-MGB outputs.
-
-### Streamlit as an Operational Adapter
-
-Streamlit remains useful for operational triage and manual forecast correction,
-but it is not the core architecture. Today the dashboard reads directly from:
-
-- `<workspace>/data/history.sqlite`;
-- MGB runner binaries;
-- accumulated rasters in `<workspace>/data/interim/`;
-- legacy spatial artifacts still used by the map.
-
-Dashboard code should continue to keep Streamlit-specific concerns in
-`apps/ops_dashboard/`.
+metadata and relative paths. Operational forecast grids are registered as
+canonical CF-style NetCDF files; ECMWF GRIB2 remains adapter-internal source
+material and is not the registered history asset. Complete MGB outputs also
+remain outside SQLite.
 
 ### QGIS as a Complement
 
 QGIS remains a complementary client for generated artifacts. The canonical
-layout reserves `data/spatial/` for stable processed layers, although that
-consolidation is still incomplete.
+layout reserves `data/processed/` for stable derived outputs, including
+processed spatial layers, although that consolidation is still incomplete.
 
 ### Isolated MGB Runner
 
 The MGB executable and artifacts remain isolated in `<workspace>/mgb_runner`,
 under the responsibility of the user/region, while runner and preparation logic
-lives in `src/mgb_ops/model/` and can be invoked directly from Python or through
-the `mgb-ops` CLI wrapper.
+lives in `src/mgb_ops/model/` and can be invoked directly from Python.
 
 ## Target Architecture vs Current State
 
 Some decisions remain canonical targets but are not fully materialized yet:
 
 - a mature notebook-friendly function surface for every operational workflow;
-- dashboard support code separated from future operational reporting;
-- `data/spatial/` as the location for processed spatial assets;
-- `data/timeseries/` as the location for processed operational series;
+- operational reporting as an importable library capability;
+- `data/processed/` as the location for reusable derived outputs;
+- `data/cache/` as the location for disposable analysis and intermediate artifacts;
 - `<workspace>/data/runs/` as an artifact actively used in the daily operational cycle;
 - `.toml` as a possible future configuration format, still under evaluation.
 

@@ -15,7 +15,9 @@ venv/
 .DS_Store
 
 # Tests / tooling
-scratch/
+scratch/*
+!scratch/interfaces/
+!scratch/interfaces/**
 .pytest_cache/
 .mypy_cache/
 .coverage
@@ -33,4 +35,3 @@ dist/
 .omx/
 .codex/
 .agents/
-

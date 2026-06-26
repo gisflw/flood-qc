@@ -7,10 +7,9 @@ The canonical model remains split between:
 - persistent history in `<workspace>/data/history.sqlite`;
 - one file per run in `<workspace>/data/runs/<run_id>.sqlite`.
 
-Today the history database is used operationally by ANA, ECMWF, the dashboard,
-and manual forecast corrections. These stores should be accessed through
-library functions where possible; the CLI and dashboard are consumers of the
-same data model. The run schema already exists, but its operational
+Today the history database is used operationally by ANA, ECMWF, and manual
+forecast corrections. These stores should be accessed through library functions
+where possible. The run schema already exists, but its operational
 materialization is not complete yet.
 
 ## Main History Entities
@@ -29,15 +28,15 @@ Catalog of canonical variables. In this phase, the history database works with:
 
 ### `station`
 
-Unified operational station registry. The logical identity remains `provider_code + station_code`.
+Unified operational station registry. The primary identity is `station_id`, a canonical string in the form `{provider_code}:{normalized_station_code}`. Examples include `ana:74100000` and `inmet:A801`.
 
-The initial inventory comes from `<workspace>/data/interim/history_station_inventory.csv`. Bootstrap computes `station_uid` by provider, including alphanumeric INMET codes.
+`provider_code` and `station_code` remain separate searchable columns, with duplicate detection on the provider-local code pair as well as the canonical `station_id`. The initial inventory comes from `<workspace>/data/source/history_station_inventory.csv`, and bootstrap derives `station_id` from the normalized provider and station code.
 
 ### `observed_series`
 
 Defines an observed series by combination of:
 
-- `station_uid`
+- `station_id`
 - `variable_code`
 - `state`
 
@@ -51,11 +50,27 @@ In the repository's current state, the history database in active use is still m
 
 ### `observed_value`
 
-Long-format time table, with one value per `series_id + observed_at`.
+Long-format time table, with one value per `series_id + observed_at`. Observed provider fetchers write normalized CSV artifacts first, then `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` buckets and aggregates values to `run.timestep_hours` before persisting rows into `observed_series` and `observed_value`.
+
+The normalized observed CSV columns are:
+
+- `station_id`
+- `provider_code`
+- `station_code`
+- `observed_at`
+- `variable_code`
+- `value`
+- `state`
+
+Fetchers write one normalized CSV per station per run, for example
+`data/downloads/ana/<run_id>/<station_code>/observed.csv`. Storage owns SQLite
+loading from these CSVs.
 
 ### `asset`
 
-Generic registry of external files. It is already used operationally for ECMWF assets.
+Generic registry of external files. Operational forecast grids are canonical CF-style NetCDF assets registered by `provider_code` and `asset_kind`, with ECMWF as the default forecast product configuration. ECMWF GRIB2 files are source-adapter inputs and are not registered as operational forecast assets.
+
+The canonical forecast precipitation asset uses `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and `.nc` relative paths. Its time coordinates and `time_bounds` are UTC, while the operational local timezone remains recorded as `America/Sao_Paulo` metadata. Canonical NetCDF payload variables are stored with zlib compression level 4.
 
 ### `qc_flag`
 
@@ -63,7 +78,7 @@ Canonical structure for quality flags without overwriting the original data. The
 
 ### `manual_edit`
 
-In the current history database, this table is used for manual ECMWF forecast corrections by asset and time window. There is no equivalent implemented contract yet for manual correction of observed rainfall.
+In the current history database, this table is used for manual GRIB2 forecast corrections by asset and time window. There is no equivalent implemented contract yet for manual correction of observed rainfall.
 
 ### `run_catalog`
 
@@ -90,7 +105,7 @@ Complete MGB output remains outside SQLite, in the canonical runner binaries:
 - `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB`
 - `<workspace>/mgb_runner/Output/YTUDO.MGB`
 
-The dashboard reads these binaries directly with support from:
+Library readers use these binaries with support from:
 
 - `<workspace>/mgb_runner/Input/PARHIG.hig`
 - `<workspace>/mgb_runner/Input/MINI.gtp`
@@ -104,7 +119,7 @@ The contract remains:
 - rasters and vectors live outside SQLite;
 - the database stores only metadata and relative paths.
 
-`<workspace>/data/spatial/` remains the canonical destination for processed spatial assets, but the dashboard map still depends on legacy material in `<workspace>/data/legacy/app_layers/`.
+`<workspace>/data/processed/` remains the canonical destination for reusable derived outputs, including processed spatial assets, although some spatial inputs still come from legacy material in `<workspace>/data/legacy/app_layers/`.
 
 ## Configuration
 
@@ -116,7 +131,7 @@ The repository's operational configuration remains in:
 The possible migration to `.toml` remains under evaluation and does not yet
 change the data model or the runtime contract for this phase. Library functions
 should prefer explicit path/config inputs where practical so notebooks, scripts,
-CLI commands, and dashboard flows can share the same model.
+and orchestrated data flows can share the same model.
 
 ## Canonical Schemas
 

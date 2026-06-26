@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import logging
 import sqlite3
 import sys
@@ -11,27 +10,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from mgb_ops.common.paths import history_db_path, logs_dir as default_logs_dir, mgb_input_dir, resolve_workspace_path
-from mgb_ops.common.settings import load_settings
-from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
-from mgb_ops.ingest.forecast_grid import ECMWF_ASSET_KIND, TpGribMessage, read_tp_grib_messages
-from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
-from mgb_ops.model.prepare_mgb_meta import (
-    DEFAULT_PARHIG,
-    build_mgb_window,
-    read_time_settings_from_parhig,
+from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window, validate_timestep_hours
+from mgb_ops.adapters.forecast_ecmwf import (
+    ECMWF_FORECAST_PRODUCT,
+    ForecastProductConfig,
+    build_asset_id,
+    build_ecmwf_cycle,
 )
+from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
+from mgb_ops.model.forecast_grid import load_forecast_precipitation_grid
+from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
-DEFAULT_HISTORY_DB = history_db_path()
-DEFAULT_MINI_GTP = mgb_input_dir() / "MINI.gtp"
-DEFAULT_OUTPUT_PATH = mgb_input_dir() / "chuvabin.hig"
 DEFAULT_CHUNK_HOURS = 720
-LOGGER_NAME = "floodqc.model.prepare_mgb_rainfall"
+LOGGER_NAME = "model.prepare_mgb_rainfall"
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 
 
@@ -48,6 +39,14 @@ class RainfallPreparationSummary:
     power: float
     used_hourly_normalization: bool
     forecast_hours: int
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastAssetMatch:
+    asset_id: str
+    asset_path: Path
+    valid_from: datetime
+    valid_to: datetime
 
 
 def script_stem() -> str:
@@ -94,8 +93,8 @@ def _select_preferred_series_rows(series_df: pd.DataFrame) -> pd.DataFrame:
     ranked = series_df.copy()
     ranked["state_rank"] = ranked["state"].map(STATE_PRIORITY).fillna(len(STATE_PRIORITY)).astype(int)
     ranked["created_at"] = ranked["created_at"].fillna("")
-    ranked = ranked.sort_values(["station_uid", "state_rank", "created_at"], ascending=[True, True, False])
-    preferred = ranked.drop_duplicates(subset=["station_uid"], keep="first")
+    ranked = ranked.sort_values(["station_id", "state_rank", "created_at"], ascending=[True, True, False])
+    preferred = ranked.drop_duplicates(subset=["station_id"], keep="first")
     return preferred.drop(columns=["state_rank"], errors="ignore").reset_index(drop=True)
 
 
@@ -104,13 +103,13 @@ def load_preferred_rain_stations(connection: sqlite3.Connection) -> pd.DataFrame
         """
         SELECT
             os.series_id,
-            os.station_uid,
+            os.station_id,
             os.state,
             os.created_at,
             st.latitude AS lat,
             st.longitude AS lon
         FROM observed_series os
-        JOIN station st ON st.station_uid = os.station_uid
+        JOIN station st ON st.station_id = os.station_id
         WHERE os.variable_code = 'rain'
           AND st.latitude IS NOT NULL
           AND st.longitude IS NOT NULL
@@ -120,7 +119,7 @@ def load_preferred_rain_stations(connection: sqlite3.Connection) -> pd.DataFrame
     preferred = _select_preferred_series_rows(series)
     preferred["lat"] = pd.to_numeric(preferred["lat"], errors="coerce")
     preferred["lon"] = pd.to_numeric(preferred["lon"], errors="coerce")
-    return preferred.dropna(subset=["lat", "lon"]).sort_values("station_uid").reset_index(drop=True)
+    return preferred.dropna(subset=["lat", "lon"]).sort_values("station_id").reset_index(drop=True)
 
 
 def load_rain_values(
@@ -132,7 +131,7 @@ def load_rain_values(
     batch_size: int = 400,
 ) -> pd.DataFrame:
     if preferred_stations.empty:
-        return pd.DataFrame(columns=["station_uid", "observed_at", "value"])
+        return pd.DataFrame(columns=["station_id", "observed_at", "value"])
 
     series_ids = preferred_stations["series_id"].astype(str).tolist()
     frames: list[pd.DataFrame] = []
@@ -146,7 +145,7 @@ def load_rain_values(
             pd.read_sql_query(
                 f"""
                 SELECT
-                    os.station_uid,
+                    os.station_id,
                     ov.observed_at,
                     ov.value
                 FROM observed_value ov
@@ -161,39 +160,7 @@ def load_rain_values(
             )
         )
 
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["station_uid", "observed_at", "value"])
-
-
-def temporarily_normalize_rain_to_hourly(values_df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
-    if values_df.empty:
-        return pd.DataFrame(columns=["station_uid", "observed_at", "value"]), False
-
-    frame = values_df.copy()
-    frame["station_uid"] = pd.to_numeric(frame["station_uid"], errors="coerce")
-    frame["observed_at"] = pd.to_datetime(frame["observed_at"], errors="coerce")
-    frame["value"] = pd.to_numeric(frame["value"], errors="coerce")
-    frame = frame.dropna(subset=["station_uid", "observed_at", "value"]).copy()
-    if frame.empty:
-        return pd.DataFrame(columns=["station_uid", "observed_at", "value"]), False
-
-    frame["station_uid"] = frame["station_uid"].astype(np.int64)
-    used_hourly_normalization = bool(
-        (frame["observed_at"].dt.minute != 0).any()
-        or (frame["observed_at"].dt.second != 0).any()
-        or (frame["observed_at"].dt.microsecond != 0).any()
-    )
-
-    frame["observed_at"] = frame["observed_at"].dt.ceil("h")
-    if not used_hourly_normalization:
-        used_hourly_normalization = bool(frame.duplicated(subset=["station_uid", "observed_at"]).any())
-
-    hourly = (
-        frame.groupby(["station_uid", "observed_at"], as_index=False, sort=True)["value"]
-        .sum()
-        .sort_values(["station_uid", "observed_at"])
-        .reset_index(drop=True)
-    )
-    return hourly, used_hourly_normalization
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["station_id", "observed_at", "value"])
 
 
 def read_mini_centroids(mini_gtp_path: Path, *, nc: int) -> pd.DataFrame:
@@ -247,16 +214,23 @@ def build_hourly_station_matrix(
     if hourly_values.empty:
         raise ValueError("No rainfall observations found in the requested simulation window.")
 
-    pivoted = hourly_values.pivot_table(index="observed_at", columns="station_uid", values="value", aggfunc="sum").reindex(time_index)
+    preferred_stations = preferred_stations.copy()
+    preferred_stations["station_id"] = preferred_stations["station_id"].astype(str)
+    hourly_values = hourly_values.copy()
+    hourly_values["station_id"] = hourly_values["station_id"].astype(str)
+    hourly_values["observed_at"] = pd.to_datetime(hourly_values["observed_at"], errors="coerce")
+    hourly_values["value"] = pd.to_numeric(hourly_values["value"], errors="coerce")
+    hourly_values = hourly_values.dropna(subset=["station_id", "observed_at", "value"])
+    pivoted = hourly_values.pivot_table(index="observed_at", columns="station_id", values="value", aggfunc="sum").reindex(time_index)
     available_station_ids = [
-        int(station_uid)
-        for station_uid in preferred_stations["station_uid"].tolist()
-        if station_uid in pivoted.columns and pivoted[station_uid].notna().any()
+        station_id
+        for station_id in preferred_stations["station_id"].astype(str).tolist()
+        if station_id in pivoted.columns and pivoted[station_id].notna().any()
     ]
     if not available_station_ids:
         raise ValueError("No rain stations with valid values were found for the requested simulation window.")
 
-    station_meta = preferred_stations.set_index("station_uid").loc[available_station_ids].reset_index()
+    station_meta = preferred_stations.set_index("station_id").loc[available_station_ids].reset_index()
     station_matrix = (
         pivoted.reindex(columns=available_station_ids)
         .fillna(0.0)
@@ -266,16 +240,34 @@ def build_hourly_station_matrix(
     return station_meta, station_matrix
 
 
-def _resolve_workspace_asset_path(raw_path: str, *, workspace: str | Path | None = None) -> Path:
-    return resolve_workspace_path(raw_path, workspace)
+def require_observed_values_aligned_to_timestep(values_df: pd.DataFrame, *, timestep_hours: int) -> None:
+    timestep_hours = validate_timestep_hours(timestep_hours)
+    if values_df.empty:
+        return
+    observed_at = pd.to_datetime(values_df["observed_at"], errors="coerce")
+    if observed_at.isna().any():
+        raise ValueError("Observed rainfall values contain invalid timestamps.")
+    off_grid = (
+        (observed_at.dt.minute != 0)
+        | (observed_at.dt.second != 0)
+        | (observed_at.dt.microsecond != 0)
+        | (observed_at.dt.hour % timestep_hours != 0)
+    )
+    if off_grid.any():
+        first_bad = observed_at[off_grid].iloc[0]
+        raise ValueError(
+            "Observed rainfall values must already be normalized to run.timestep_hours before MGB preparation. "
+            f"First off-grid timestamp: {first_bad.isoformat()}"
+        )
 
 
 def load_latest_ecmwf_asset_path(
     connection: sqlite3.Connection,
     *,
     reference_time: datetime,
-    workspace: str | Path | None = None,
+    asset_base_dir: Path,
 ) -> Path:
+    reference_time_utc = reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
     row = connection.execute(
         """
         SELECT relative_path
@@ -290,21 +282,85 @@ def load_latest_ecmwf_asset_path(
         LIMIT 1
         """,
         (
-            ECMWF_ASSET_KIND,
-            reference_time.isoformat(timespec="seconds"),
-            reference_time.isoformat(timespec="seconds"),
+            ECMWF_FORECAST_PRODUCT.asset_kind,
+            reference_time_utc.isoformat(timespec="seconds"),
+            reference_time_utc.isoformat(timespec="seconds"),
         ),
     ).fetchone()
     if row is None:
         raise FileNotFoundError(
             "No ECMWF forecast asset was found in history for the requested forecast window. "
-            "Run `mgb-ops ingest forecast-grid` first."
+            "Ingest forecast grids with `mgb_ops.adapters.forecast_ecmwf` first."
         )
 
-    asset_path = _resolve_workspace_asset_path(str(row["relative_path"]), workspace=workspace)
+    registered_path = Path(str(row["relative_path"]))
+    asset_path = registered_path if registered_path.is_absolute() else asset_base_dir / registered_path
     if not asset_path.exists():
         raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
     return asset_path
+
+
+def find_required_ecmwf_asset(
+    connection: sqlite3.Connection,
+    *,
+    reference_time: datetime,
+    input_days_before: int,
+    forecast_horizon_days: int,
+    asset_base_dir: Path,
+    timestep_hours: int = 1,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> ForecastAssetMatch | None:
+    window = build_horizon_window(
+        reference_time,
+        days_before=input_days_before,
+        horizon_days=forecast_horizon_days,
+        timestep_hours=timestep_hours,
+    )
+    cycle_time = build_ecmwf_cycle(reference_time)
+    expected_asset_id = build_asset_id(cycle_time, product_config)
+    forecast_end_time = window.forecast_start_time + timedelta(hours=timestep_hours * (window.forecast_nt - 1))
+    forecast_start_utc = (
+        window.forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+    )
+    forecast_end_utc = (
+        forecast_end_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+    )
+
+    row = connection.execute(
+        """
+        SELECT asset_id, relative_path, valid_from, valid_to
+        FROM asset
+        WHERE asset_id = ?
+          AND provider_code = ?
+          AND asset_kind = ?
+          AND valid_from IS NOT NULL
+          AND valid_to IS NOT NULL
+          AND valid_from <= ?
+          AND valid_to >= ?
+        LIMIT 1
+        """,
+        (
+            expected_asset_id,
+            product_config.provider_code,
+            product_config.asset_kind,
+            forecast_start_utc.isoformat(timespec="seconds"),
+            forecast_end_utc.isoformat(timespec="seconds"),
+        ),
+    ).fetchone()
+    if row is None:
+        return None
+
+    registered_path = Path(str(row[1]))
+    asset_path = registered_path if registered_path.is_absolute() else Path(asset_base_dir) / registered_path
+    if not asset_path.exists():
+        raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
+
+    return ForecastAssetMatch(
+        asset_id=str(row[0]),
+        asset_path=asset_path,
+        valid_from=datetime.fromisoformat(str(row[2])),
+        valid_to=datetime.fromisoformat(str(row[3])),
+    )
 
 
 def extend_station_matrix_with_forecast(
@@ -447,79 +503,44 @@ def write_mini_rainfall_atomic(
             temp_path.unlink(missing_ok=True)
 
 
-def build_hourly_forecast_grid_series(
-    grib_path: Path,
+def build_forecast_start_time_utc(forecast_start_time: datetime) -> datetime:
+    return forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def load_required_forecast_precipitation_grid(
+    netcdf_path: Path,
     *,
     forecast_start_time: datetime,
     forecast_nt: int,
+    timestep_hours: int = 1,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    messages = read_tp_grib_messages(grib_path)
-    first_message = messages[0]
-    local_messages: list[TpGribMessage] = [
-        TpGribMessage(
-            valid_time=message.valid_time.replace(tzinfo=timezone.utc).astimezone(TIMEZONE).replace(tzinfo=None),
-            step_hours=message.step_hours,
-            latitudes=message.latitudes,
-            longitudes=message.longitudes,
-            values_mm=message.values_mm,
-        )
-        for message in messages
-    ]
-    cycle_time = min(message.valid_time - timedelta(hours=message.step_hours) for message in local_messages)
-    prev_valid_time = cycle_time
-    prev_cumulative = np.zeros_like(first_message.values_mm, dtype=np.float64)
-    latitudes = first_message.latitudes
-    longitudes = first_message.longitudes
-    hourly_lookup: dict[datetime, np.ndarray] = {}
-
-    for message in local_messages:
-        if message.values_mm.shape != prev_cumulative.shape:
-            raise ValueError("ECMWF GRIB contains inconsistent grid shapes across messages.")
-        if not np.allclose(message.latitudes, latitudes) or not np.allclose(message.longitudes, longitudes):
-            raise ValueError("ECMWF GRIB contains inconsistent grid coordinates across messages.")
-
-        delta_seconds = int((message.valid_time - prev_valid_time).total_seconds())
-        if delta_seconds < 0 or delta_seconds % 3600 != 0:
-            raise ValueError(
-                "ECMWF GRIB valid times are not monotonic hourly multiples; cannot harmonize to MGB hourly input."
-            )
-
-        delta_hours = delta_seconds // 3600
-        increment = message.values_mm - prev_cumulative
-        increment = np.where(np.isfinite(increment), increment, np.nan)
-        increment[increment < 0.0] = 0.0
-        if delta_hours > 0:
-            per_hour = increment / float(delta_hours)
-            for hour_offset in range(delta_hours):
-                hourly_lookup[prev_valid_time + timedelta(hours=hour_offset + 1)] = per_hour
-
-        prev_valid_time = message.valid_time
-        prev_cumulative = message.values_mm
-
-    required_times = [forecast_start_time + timedelta(hours=offset) for offset in range(forecast_nt)]
-    missing_times = [dt for dt in required_times if dt not in hourly_lookup]
-    if missing_times:
-        raise ValueError(
-            "ECMWF GRIB does not cover the full requested forecast window. "
-            f"First missing hour: {missing_times[0].isoformat(timespec='seconds')}"
-        )
-
-    hourly_grids = np.stack([hourly_lookup[dt] for dt in required_times], axis=0)
-    return latitudes, longitudes, hourly_grids
+    return load_forecast_precipitation_grid(
+        netcdf_path,
+        forecast_start_time_utc=build_forecast_start_time_utc(forecast_start_time),
+        forecast_nt=forecast_nt,
+        timestep_hours=timestep_hours,
+    )
 
 
 def prepare_mgb_rainfall(
     *,
-    history_db: Path = DEFAULT_HISTORY_DB,
-    parhig_path: Path = DEFAULT_PARHIG,
-    mini_gtp_path: Path = DEFAULT_MINI_GTP,
-    output_path: Path = DEFAULT_OUTPUT_PATH,
+    history_db: Path,
+    parhig_path: Path,
+    mini_gtp_path: Path,
+    output_path: Path,
+    reference_time: datetime,
+    input_days_before: int,
+    forecast_horizon_days: int,
+    use_forecast_data: bool,
     nearest_stations: int,
     power: float,
+    timestep_hours: int = 1,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
-    logs_dir: Path = default_logs_dir(),
-    workspace: str | Path | None = None,
+    forecast_asset_path: Path | None = None,
+    logs_dir: Path | None = None,
+    logger: logging.Logger | None = None,
 ) -> RainfallPreparationSummary:
+    timestep_hours = validate_timestep_hours(timestep_hours)
     if not history_db.exists():
         raise FileNotFoundError(f"History database not found: {history_db}")
     if not parhig_path.exists():
@@ -527,21 +548,27 @@ def prepare_mgb_rainfall(
     if not mini_gtp_path.exists():
         raise FileNotFoundError(f"MINI.gtp not found: {mini_gtp_path}")
 
-    execution_id = build_execution_id()
-    logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
-    start_time, nt, dt_seconds = read_time_settings_from_parhig(parhig_path)
-    if dt_seconds != 3600:
-        raise ValueError(f"Only hourly rainfall input is currently supported; PARHIG DT={dt_seconds}.")
+    run_logger = logger
+    if run_logger is None and logs_dir is not None:
+        execution_id = build_execution_id()
+        run_logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
+    if run_logger is None:
+        run_logger = logging.getLogger(LOGGER_NAME)
 
-    settings = load_settings(workspace=workspace, require_custom=False if workspace is not None else None)
-    reference_time = resolve_reference_time(settings["run"]["reference_time"])
-    mgb_settings = settings["mgb"]
-    window = build_mgb_window(
+    start_time, nt, dt_seconds = read_time_settings_from_parhig(parhig_path)
+    expected_dt_seconds = timestep_hours * 3600
+    if dt_seconds != expected_dt_seconds:
+        raise ValueError(
+            f"PARHIG DT={dt_seconds} does not match run.timestep_hours={timestep_hours} "
+            f"(expected {expected_dt_seconds})."
+        )
+
+    window = build_horizon_window(
         reference_time,
-        input_days_before=int(mgb_settings["input_days_before"]),
-        forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        days_before=input_days_before,
+        horizon_days=forecast_horizon_days,
+        timestep_hours=timestep_hours,
     )
-    use_forecast_data = bool(mgb_settings["use_forecast_data"])
     if start_time != window.start_time or nt != window.nt:
         raise ValueError(
             "PARHIG timing does not match current settings. "
@@ -552,10 +579,10 @@ def prepare_mgb_rainfall(
     end_time_exclusive = start_time + timedelta(seconds=nt * dt_seconds)
     nc = read_nc_from_parhig(parhig_path)
     mini_df = read_mini_centroids(mini_gtp_path, nc=nc)
-    query_start = start_time - timedelta(hours=1)
+    query_start = start_time
     observed_end_exclusive = window.forecast_start_time
 
-    logger.info(
+    run_logger.info(
         "rainfall_prepare_start history_db=%s parhig=%s mini_gtp=%s output=%s start_time=%s nt=%s nc=%s nearest=%s power=%s reference_time=%s forecast_start_time=%s forecast_nt=%s use_forecast_data=%s",
         history_db,
         parhig_path,
@@ -584,21 +611,13 @@ def prepare_mgb_rainfall(
             query_start=query_start,
             query_end_exclusive=observed_end_exclusive,
         )
-        forecast_asset_path = (
-            load_latest_ecmwf_asset_path(
-                connection,
-                reference_time=window.forecast_start_time,
-                workspace=workspace,
-            )
-            if use_forecast_data and window.forecast_nt > 0
-            else None
-        )
 
-    hourly_values, used_hourly_normalization = temporarily_normalize_rain_to_hourly(raw_values)
-    observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq="h")
+    require_observed_values_aligned_to_timestep(raw_values, timestep_hours=timestep_hours)
+    used_hourly_normalization = False
+    observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq=f"{timestep_hours}h")
     station_meta, station_matrix = build_hourly_station_matrix(
         preferred_stations,
-        hourly_values,
+        raw_values,
         time_index=observed_time_index,
     )
     observed_nearest_idx, observed_weights = build_idw_neighbors(
@@ -615,11 +634,13 @@ def prepare_mgb_rainfall(
     )
 
     if use_forecast_data and window.forecast_nt > 0:
-        assert forecast_asset_path is not None
-        forecast_latitudes, forecast_longitudes, forecast_hourly_grids = build_hourly_forecast_grid_series(
+        if forecast_asset_path is None:
+            raise ValueError("forecast_asset_path is required when use_forecast_data is true.")
+        forecast_latitudes, forecast_longitudes, forecast_hourly_grids = load_required_forecast_precipitation_grid(
             forecast_asset_path,
             forecast_start_time=window.forecast_start_time,
             forecast_nt=window.forecast_nt,
+            timestep_hours=timestep_hours,
         )
         forecast_grid_matrix = forecast_hourly_grids.reshape(window.forecast_nt, -1).transpose()
         forecast_nearest_idx, forecast_weights = build_grid_idw_neighbors(
@@ -648,7 +669,7 @@ def prepare_mgb_rainfall(
         chunk_hours=chunk_hours,
     )
 
-    logger.info(
+    run_logger.info(
         "rainfall_prepare_done output=%s station_count=%s nt=%s nc=%s forecast_nt=%s used_hourly_normalization=%s",
         output_path,
         len(station_meta),
@@ -670,41 +691,3 @@ def prepare_mgb_rainfall(
         used_hourly_normalization=used_hourly_normalization,
         forecast_hours=window.forecast_nt,
     )
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Interpolate observed rainfall to MGB minis and write chuvabin.hig.")
-    parser.add_argument("--history-db", type=Path, default=DEFAULT_HISTORY_DB, help="SQLite history database.")
-    parser.add_argument("--parhig", type=Path, default=DEFAULT_PARHIG, help="PARHIG.hig file.")
-    parser.add_argument("--mini-gtp", type=Path, default=DEFAULT_MINI_GTP, help="MINI.gtp file.")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_PATH, help="Binary chuvabin.hig file.")
-    parser.add_argument("--chunk-hours", type=int, default=DEFAULT_CHUNK_HOURS, help="Hours per interpolation/write chunk.")
-    return parser
-
-
-def main() -> int:
-    args = build_parser().parse_args()
-    settings = load_settings()
-    rainfall_settings = settings["rainfall_interpolation"]
-    summary = prepare_mgb_rainfall(
-        history_db=args.history_db,
-        parhig_path=args.parhig,
-        mini_gtp_path=args.mini_gtp,
-        output_path=args.output,
-        nearest_stations=int(rainfall_settings["nearest_stations"]),
-        power=float(rainfall_settings["power"]),
-        chunk_hours=int(args.chunk_hours),
-    )
-    print(
-        "chuvabin_ready "
-        f"output={summary.output_path} "
-        f"station_count={summary.station_count} "
-        f"nt={summary.nt} "
-        f"nc={summary.nc} "
-        f"used_hourly_normalization={summary.used_hourly_normalization}"
-    )
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

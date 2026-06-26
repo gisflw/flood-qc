@@ -1,30 +1,10 @@
 from __future__ import annotations
 
-import argparse
 import csv
 import sqlite3
-import sys
 import unicodedata
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[2]
-SRC_DIR = REPO_ROOT / "src"
-if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))
-
-from mgb_ops.common.paths import (
-    SQL_DIR,
-    build_run_db_path,
-    history_db_path,
-    history_station_inventory_csv_path,
-)
-
-
-PROVIDER_UID_BASES = {
-    "ana": 1_000_000_000,
-    "inmet": 2_000_000_000,
-}
 
 
 def apply_schema(database_path: Path, schema_path: Path) -> None:
@@ -34,7 +14,17 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.executescript(schema_sql)
+        _migrate_station_mini_id(connection)
         connection.commit()
+
+
+def _migrate_station_mini_id(connection: sqlite3.Connection) -> None:
+    station_columns = {
+        row[1]
+        for row in connection.execute("PRAGMA table_info(station)").fetchall()
+    }
+    if station_columns and "mini_id" not in station_columns:
+        connection.execute("ALTER TABLE station ADD COLUMN mini_id INTEGER")
 
 
 def _normalize_station_name(name: str) -> str:
@@ -68,44 +58,18 @@ def _parse_nullable_coordinate(value: str) -> float | None:
     return float(Decimal(normalized).quantize(Decimal("0.0001"), rounding=ROUND_DOWN))
 
 
-def _station_code_to_int(station_code: str) -> int:
-    pieces: list[str] = []
-    for char in station_code.strip().upper():
-        if char.isdigit():
-            pieces.append(char)
-        elif "A" <= char <= "Z":
-            pieces.append(str(ord(char) - ord("A") + 1))
-        else:
-            raise ValueError(f"Invalid character in station_code: {station_code!r}")
-    if not pieces:
-        raise ValueError("Empty station_code is not supported.")
-    return int("".join(pieces))
 
-
-def build_station_uid(provider_code: str, station_code: str) -> int:
-    try:
-        provider_base = PROVIDER_UID_BASES[provider_code]
-    except KeyError as exc:
-        raise ValueError(f"Unsupported provider_code for station_uid: {provider_code!r}") from exc
-    return provider_base + _station_code_to_int(station_code)
+def build_station_id(provider_code: str, station_code: str) -> str:
+    normalized_provider = provider_code.strip().lower()
+    normalized_station_code = _normalize_station_code(normalized_provider, station_code)
+    return f"{normalized_provider}:{normalized_station_code}"
 
 
 def load_history_station_inventory(
     database_path: Path,
-    inventory_csv_path: Path | None = None,
+    inventory_csv_path: Path,
 ) -> int:
-    inventory_path = inventory_csv_path or history_station_inventory_csv_path()
-    if inventory_csv_path is None and not inventory_path.exists():
-        development_inventory_path = (
-            Path(__file__).resolve().parents[3]
-            / "examples"
-            / "rs_hydro"
-            / "data"
-            / "interim"
-            / "history_station_inventory.csv"
-        )
-        if development_inventory_path.exists():
-            inventory_path = development_inventory_path
+    inventory_path = Path(inventory_csv_path)
     if not inventory_path.exists():
         raise FileNotFoundError(f"Inventory CSV not found: {inventory_path}")
 
@@ -113,13 +77,14 @@ def load_history_station_inventory(
         "provider_code",
         "station_code",
         "station_name",
+        "mini_id",
         "latitude",
         "longitude",
         "altitude_m",
     }
     rows_to_insert: list[tuple[object, ...]] = []
     seen_keys: set[tuple[str, str]] = set()
-    seen_uids: set[int] = set()
+    seen_station_ids: set[str] = set()
 
     with inventory_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -133,6 +98,7 @@ def load_history_station_inventory(
             provider_code = raw_row["provider_code"].strip().lower()
             station_code = _normalize_station_code(provider_code, raw_row["station_code"])
             station_name = _normalize_station_name(raw_row["station_name"])
+            mini_id = _parse_nullable_int(raw_row["mini_id"])
             latitude = _parse_nullable_coordinate(raw_row["latitude"])
             longitude = _parse_nullable_coordinate(raw_row["longitude"])
             altitude_m = _parse_nullable_int(raw_row["altitude_m"])
@@ -142,17 +108,18 @@ def load_history_station_inventory(
                 raise ValueError(f"Duplicate station in inventory CSV: {row_key}")
             seen_keys.add(row_key)
 
-            station_uid = build_station_uid(provider_code, station_code)
-            if station_uid in seen_uids:
-                raise ValueError(f"Duplicate calculated station_uid for {row_key}: {station_uid}")
-            seen_uids.add(station_uid)
+            station_id = build_station_id(provider_code, station_code)
+            if station_id in seen_station_ids:
+                raise ValueError(f"Duplicate station_id in inventory CSV for {row_key}: {station_id}")
+            seen_station_ids.add(station_id)
 
             rows_to_insert.append(
                 (
-                    station_uid,
+                    station_id,
                     station_code,
                     station_name,
                     provider_code,
+                    mini_id,
                     latitude,
                     longitude,
                     altitude_m,
@@ -163,16 +130,18 @@ def load_history_station_inventory(
         connection.executemany(
             """
             INSERT INTO station (
-                station_uid,
+                station_id,
                 station_code,
                 station_name,
                 provider_code,
+                mini_id,
                 latitude,
                 longitude,
                 altitude_m
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider_code, station_code) DO UPDATE SET
                 station_name = excluded.station_name,
+                mini_id = excluded.mini_id,
                 latitude = excluded.latitude,
                 longitude = excluded.longitude,
                 altitude_m = excluded.altitude_m
@@ -185,18 +154,19 @@ def load_history_station_inventory(
 
 
 def initialize_history_db(
-    database_path: Path | None = None,
-    inventory_csv_path: Path | None = None,
+    database_path: Path,
+    inventory_csv_path: Path,
+    schema_path: Path,
 ) -> Path:
-    target = database_path or history_db_path()
-    apply_schema(target, SQL_DIR / "history_schema.sql")
+    target = Path(database_path)
+    apply_schema(target, Path(schema_path))
     load_history_station_inventory(target, inventory_csv_path)
     return target
 
 
-def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
-    target = database_path or build_run_db_path(run_id)
-    apply_schema(target, SQL_DIR / "run_schema.sql")
+def initialize_run_db(run_id: str, database_path: Path, schema_path: Path) -> Path:
+    target = Path(database_path)
+    apply_schema(target, Path(schema_path))
     with sqlite3.connect(target) as connection:
         connection.execute(
             "INSERT OR IGNORE INTO run (run_id, reference_time, run_kind, status, parent_run_id, operator, note) "
@@ -205,40 +175,3 @@ def initialize_run_db(run_id: str, database_path: Path | None = None) -> Path:
         )
         connection.commit()
     return target
-
-
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Initialize repository SQLite databases.")
-    parser.add_argument("--history", action="store_true", help="Initialize `<workspace>/data/history.sqlite`.")
-    parser.add_argument("--history-path", type=Path, default=None, help="Alternative path for the history database.")
-    parser.add_argument(
-        "--inventory-csv",
-        type=Path,
-        default=None,
-        help="Station inventory CSV to load into the history database.",
-    )
-    parser.add_argument("--run-id", type=str, default=None, help="Identifier of the run to create.")
-    parser.add_argument("--run-path", type=Path, default=None, help="Alternative path for the run database.")
-    return parser
-
-
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
-
-    if args.history:
-        path = initialize_history_db(args.history_path, args.inventory_csv)
-        print(path)
-
-    if args.run_id:
-        path = initialize_run_db(args.run_id, args.run_path)
-        print(path)
-
-    if not args.history and not args.run_id:
-        parser.error("Provide --history and/or --run-id.")
-
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

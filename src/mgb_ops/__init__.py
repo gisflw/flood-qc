@@ -1,2 +1,1 @@
-"""Installable command package for MGB operational tooling."""
-
+"""Installable Python package for MGB operational tooling."""

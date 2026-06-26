@@ -1,1 +1,1 @@
-"""Bootstrap dos bancos SQLite e stubs de repositorios."""
+"""SQLite bootstrap and repository helpers."""

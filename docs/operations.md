@@ -1,47 +1,51 @@
 # Operations and Conventions
 
-Operational use can happen either through direct Python calls or through the
-`mgb-ops` CLI wrapper. The preferred architecture is still library-first: CLI
-commands should resolve local runtime details, call `mgb_ops` functions, and
-report results.
+Operational use should happen through direct Python calls. Import the relevant
+`mgb_ops` module, pass explicit workspace/database/path inputs, and compose the
+returned summaries or domain objects in a notebook, script, or orchestrated data
+flow.
 
 ## Local Setup
 
-1. Create a virtual environment with `Python 3.11+`.
-2. Install dependencies with `pip install -e .[dev,data,geo,ui]`.
-3. Use `<workspace>/config/custom.yaml` for optional regional overrides.
+1. Use the current root Python environment with `Python 3.11+`.
+2. Install dependencies with `python -m pip install -e '.[dev,data,geo]'`.
+3. Use `<workspace>/config/custom.yaml` for optional regional settings overrides.
+4. Use `<workspace>/.env` only for runtime convenience values consumed by `mgb_ops.common`.
 
 Typical Linux/macOS setup:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev,data,geo,ui]
+python -m pip install -e '.[dev,data,geo]'
 ```
 
 Typical Windows PowerShell setup:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev,data,geo,ui]
+python -m pip install -e ".[dev,data,geo]"
 ```
 
 ## Operational Configuration
 
-The runtime reads:
+Common runtime helpers read:
 
 - module-owned in-code defaults;
-- `<workspace>/config/custom.yaml` when present.
+- `<workspace>/config/custom.yaml` when present;
+- `<workspace>/.env` for runtime convenience values such as `INMET_API_KEY` and `MGB_OPS_REMOTE_WORKSPACE`.
+
+Precedence is explicit Python arguments first, process environment second,
+`.env` third, and defaults last. `.env` loading is intentionally limited to
+`mgb_ops.common`. Domain modules under `storage`, `ingest`, `qc`, and `model`
+require explicit inputs and must not inspect process environment or workspace
+state.
 
 The regional workspace is provided through explicit Python arguments,
-`mgb-ops --workspace PATH`, `MGB_OPS_WORKSPACE`, or the current directory. Each
-workspace must contain `data/`, `logs/`, and `mgb_runner/`. The possible
-migration to `.toml` remains under evaluation.
+`MGB_OPS_WORKSPACE`, workspace `.env`, or the current directory. Each workspace
+must contain `data/`, `logs/`, and `mgb_runner/`. The possible migration to
+`.toml` remains under evaluation.
 
-For library calls, prefer passing explicit `Path` values for the workspace,
-history database, MGB input/output files, interim directories, and log
-directories whenever the function supports them.
+For core library calls, pass explicit `Path` values for database paths, schema
+paths, station inventory CSVs, MGB input/output files, asset base directories,
+download directories, and log directories.
 
 ## Python-First Operation
 
@@ -51,46 +55,35 @@ library function directly. For example:
 ```python
 from pathlib import Path
 
-from mgb_ops.common.paths import runtime_paths
-from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta_from_config
+from mgb_ops.common.runtime import build_runtime_context
+from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
-workspace = Path("examples/rs_hydro")
-paths = runtime_paths(workspace)
+context = build_runtime_context(workspace=Path("scratch/rs_hydro"))
+paths = context.paths
+settings = context.settings
+mgb_settings = settings["mgb"]
 
-summary = rewrite_mgb_meta_from_config(
+summary = rewrite_mgb_meta(
     parhig_path=paths.mgb_input_dir / "PARHIG.hig",
+    reference_time=resolve_reference_time(settings["run"]["reference_time"]),
+    input_days_before=int(mgb_settings["input_days_before"]),
+    forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    timestep_hours=int(settings["run"]["timestep_hours"]),
     logs_dir=paths.logs_dir,
-    workspace=workspace,
 )
 ```
 
-New operational code should preserve this shape: reusable library behavior first,
-thin CLI/dashboard exposure second.
-
-## CLI Wrapper Commands
-
-The CLI remains convenient for manual operation and automation:
-
-```bash
-mgb-ops --workspace examples/rs_hydro bootstrap history
-mgb-ops --workspace examples/rs_hydro ingest ana
-mgb-ops --workspace examples/rs_hydro ingest inmet
-mgb-ops --workspace examples/rs_hydro ingest forecast-grid
-mgb-ops --workspace examples/rs_hydro model prepare-meta
-mgb-ops --workspace examples/rs_hydro model prepare-rainfall
-mgb-ops --workspace examples/rs_hydro model run --dry-run
-mgb-ops --workspace examples/rs_hydro model export-outputs
-mgb-ops --workspace examples/rs_hydro dashboard
-```
-
-`mgb-ops ingest inmet` requires `INMET_API_KEY` in the local environment or in
-`.env`.
+New operational code should preserve this shape: reusable library behavior
+first, with explicit inputs and structured return values.
 
 ## Naming Conventions
 
 - `run_id`: preferably `YYYYMMDDTHHMMSS`
 - `history.sqlite`: single history database
 - `<workspace>/data/runs/<run_id>.sqlite`: one file per run
+- `station_id`: canonical `{provider_code}:{normalized_station_code}`, for example `ana:74100000` or `inmet:A801`
+- normalized observed CSVs, one file per station per run: `station_id,provider_code,station_code,observed_at,variable_code,value,state`
 - external assets with relative paths whenever possible
 
 ## Maturity States
@@ -99,8 +92,8 @@ mgb-ops --workspace examples/rs_hydro dashboard
 - `curated`: data processed by automatic rules or preprocessing
 - `approved`: data released for operational use
 
-The schema and dashboard consumption already respect this convention, although
-the automatic promotion flow between states is still pending.
+The schema already respects this convention, although the automatic promotion
+flow between states is still pending.
 
 ## Complete Artifact vs Run
 
@@ -118,8 +111,8 @@ context of the cycle, but that step is not complete in the current pipeline.
 
 - store relative paths in the database whenever possible
 - do not store rasters as SQLite blobs
-- preserve `data/spatial/` as the canonical destination for processed layers,
-  even if part of current consumption still uses legacy artifacts
+- preserve `data/processed/` as the canonical destination for reusable derived
+  layers, even if part of current consumption still uses legacy artifacts
 
 ## Destructive Editing and Audit
 

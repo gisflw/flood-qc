@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS run (
 CREATE TABLE IF NOT EXISTS run_input_series (
     series_id TEXT PRIMARY KEY,
     history_series_id TEXT,
-    station_uid TEXT,
+    station_id TEXT,
     provider_code TEXT,
     variable_code TEXT NOT NULL,
     unit TEXT NOT NULL,

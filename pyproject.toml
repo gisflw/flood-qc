@@ -3,9 +3,9 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "flood-qc-ops"
+name = "mgb-ops"
 version = "0.1.0"
-description = "Base operacional local-first para hidrologia e previsao."
+description = "Operational base for setting and evaluating MGB hydrological model."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -17,20 +17,25 @@ data = [
   "numpy>=1.26",
   "pandas>=2.1",
   "requests>=2.32",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
+]
+forecast = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "requests>=2.32",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
+  "ecmwf-opendata",
+  "eccodes",
 ]
 geo = [
   "rasterio>=1.3",
 ]
-ui = [
-  "streamlit>=1.40",
-  "plotly>=5.20",
-  "folium>=0.18",
-  "streamlit-folium>=0.24",
-  "branca>=0.8",
-  "affine>=2.4",
-]
 dev = [
   "pytest>=8.0",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
 ]
 
 [tool.setuptools]
@@ -41,9 +46,6 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 "mgb_ops.assets" = ["sql/*.sql"]
-
-[project.scripts]
-mgb-ops = "mgb_ops.cli.main:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

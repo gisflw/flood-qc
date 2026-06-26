@@ -1,10 +1,9 @@
-﻿# Operational Hydrology and Forecasting Library
+# Operational Hydrology and Forecasting Library
 
 Local-first Python package for hydrology, rainfall, quality control, and MGB
 forecasting workflows. The primary interface is the installable `mgb_ops`
 library: users should be able to import modules and functions from notebooks,
-scripts, and data-flow style orchestration. The CLI and Streamlit dashboard are
-thin operational layers over those library functions.
+scripts, and data-flow style orchestration.
 
 ## Current Status
 
@@ -12,10 +11,9 @@ The repository already provides a functional base for:
 
 - bootstrapping `<workspace>/data/history.sqlite` and `<workspace>/data/runs/<run_id>.sqlite`;
 - ingesting ANA observations for `rain`, `level`, and `flow`;
-- ingesting ECMWF grids and registering the canonical GRIB in the history database;
-- preparing metadata and hourly rainfall inputs for MGB;
-- running the real MGB runner or a dry-run;
-- using a Streamlit dashboard for monitoring, MGB series, and ECMWF forecast preview/manual correction.
+- ingesting ECMWF source GRIB internally and registering canonical CF-style NetCDF precipitation grids in the history database;
+- preparing metadata and timestep-aligned rainfall inputs for MGB;
+- running the real MGB runner or a dry-run.
 
 Still pending in this phase:
 
@@ -28,32 +26,26 @@ Still pending in this phase:
 ## Principles
 
 - Python library first;
-- CLI and GUI as thin wrappers over library modules;
 - local artifacts first;
 - SQLite as the operational baseline;
 - one persistent history database at `<workspace>/data/history.sqlite`;
 - one SQLite file per run in `<workspace>/data/runs/`;
 - rasters and vectors outside the database, with relative paths and metadata;
-- Streamlit as an operational dashboard, not the core architecture;
 - QGIS as a complementary client for generated artifacts.
 
 ## Main Layout
 
 ```text
 .
-|-- apps/
-|   `-- ops_dashboard/
 |-- docs/
 |-- src/
 |   `-- mgb_ops/
 |       |-- assets/
 |       |   `-- sql/
-|       |-- cli/
 |       |-- common/
 |       |-- ingest/
 |       |-- model/
 |       |-- qc/
-|       |-- reporting/
 |       `-- storage/
 `-- tests/
 ```
@@ -65,16 +57,9 @@ Important: the user is responsible for providing a regional workspace containing
 
 - `src/mgb_ops/common/`, `storage/`, `ingest/`, `qc/`, and `model/`
   Core library modules for notebook and data-flow use.
-- `src/mgb_ops/cli/`
-  Thin command-line wrapper that resolves arguments/settings and calls library
-  functions.
-- `apps/ops_dashboard/`
-  Streamlit dashboard layer for operational monitoring and manual forecast
-  correction.
-- `src/mgb_ops/reporting/`
-  Transitional area. `reports.py` is the future operational reporting library
-  surface, while the current `ops_dashboard_*` modules are dashboard support
-  code with no Streamlit dependency.
+
+Future operational reporting should be added as a library capability only when
+the reporting workflow is designed.
 
 ## Runtime and Configuration
 
@@ -82,25 +67,22 @@ Important: the user is responsible for providing a regional workspace containing
 - Canonical configuration in this phase:
   - module-owned in-code defaults;
   - `<workspace>/config/custom.yaml` as the only editable regional override.
-- Library calls should prefer explicit workspace, database, path, and time inputs when available.
+- `.env` files are loaded only by `mgb_ops.common` runtime helpers. Core domain modules do not load `.env` or inspect process environment.
+- Library calls should pass explicit workspace, database, schema, asset, settings, path, and time inputs into `storage`, `ingest`, `qc`, and `model` functions.
 - The evaluation of migrating configuration to `.toml` remains open, with no contract change for now.
 
 ## Local Setup
 
-Create a virtual environment and install dependencies for full local use:
+Install dependencies into the current root Python environment for full local use:
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .[dev,data,geo,ui]
+python -m pip install -e '.[dev,data,geo]'
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -e .[dev,data,geo,ui]
+python -m pip install -e ".[dev,data,geo]"
 ```
 
 ## Library Usage
@@ -108,18 +90,25 @@ pip install -e .[dev,data,geo,ui]
 ```python
 from pathlib import Path
 
-from mgb_ops.ingest.fetch_observed_ana import ingest_observed_ana
-from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta_from_config
+from mgb_ops.common.runtime import build_runtime_context
+from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
-from mgb_ops.common.paths import runtime_paths
 
-workspace = Path("examples/rs_hydro")
-paths = runtime_paths(workspace)
+context = build_runtime_context(workspace=Path("scratch/rs_hydro"))
+paths = context.paths
+settings = context.settings
+mgb_settings = settings["mgb"]
+reference_time = resolve_reference_time(settings["run"]["reference_time"])
+timestep_hours = int(settings["run"]["timestep_hours"])
 
-rewrite_mgb_meta_from_config(
+rewrite_mgb_meta(
     parhig_path=paths.mgb_input_dir / "PARHIG.hig",
+    reference_time=reference_time,
+    input_days_before=int(mgb_settings["input_days_before"]),
+    forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
-    workspace=workspace,
 )
 
 prepare_mgb_rainfall(
@@ -127,42 +116,24 @@ prepare_mgb_rainfall(
     parhig_path=paths.mgb_input_dir / "PARHIG.hig",
     mini_gtp_path=paths.mgb_input_dir / "MINI.gtp",
     output_path=paths.mgb_input_dir / "chuvabin.hig",
+    reference_time=reference_time,
+    input_days_before=int(mgb_settings["input_days_before"]),
+    forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+    use_forecast_data=bool(mgb_settings["use_forecast_data"]),
+    nearest_stations=int(settings["rainfall_interpolation"]["nearest_stations"]),
+    power=float(settings["rainfall_interpolation"]["power"]),
+    timestep_hours=timestep_hours,
     logs_dir=paths.logs_dir,
-    workspace=workspace,
 )
 ```
 
 The exact callable surface is still maturing. When adding new operational
-behavior, prefer a reusable library function first, then expose it through the
-CLI or dashboard only as needed.
-
-## CLI Wrapper
-
-The CLI remains useful for repeatable local operations, but it is a wrapper over
-the Python modules:
-
-```bash
-mgb-ops --workspace examples/rs_hydro bootstrap history
-mgb-ops --workspace examples/rs_hydro ingest ana
-mgb-ops --workspace examples/rs_hydro ingest inmet
-mgb-ops --workspace examples/rs_hydro ingest forecast-grid
-mgb-ops --workspace examples/rs_hydro model prepare-meta
-mgb-ops --workspace examples/rs_hydro model prepare-rainfall
-mgb-ops --workspace examples/rs_hydro model run --dry-run
-mgb-ops --workspace examples/rs_hydro model export-outputs
-mgb-ops --workspace examples/rs_hydro dashboard
-```
-
-To run INMET ingestion, set `INMET_API_KEY` in the environment or fill `.env`
-from `.env.example`.
+behavior, prefer a reusable library function first.
 
 ## Main Components
 
 - `src/mgb_ops/`
-  Installable package containing the core library and CLI wrapper.
-- `apps/ops_dashboard/`
-  Operational Streamlit dashboard for monitoring, observed series, MGB series,
-  and ECMWF forecast preview/correction.
+  Installable package containing the core library.
 - `<workspace>/mgb_runner/`
   Regional MGB artifacts (`Input`, `Output`, and `.exe`) provided by the user.
   Runner code lives in `src/mgb_ops/model/`.
