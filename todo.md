@@ -5,3 +5,5 @@
 - Data analysis module
 
 - mini id assignment
+
+- normalize time based on global time step!
