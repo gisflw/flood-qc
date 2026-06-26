@@ -16,8 +16,6 @@ venv/
 
 # Tests / tooling
 scratch/*
-!scratch/interfaces/
-!scratch/interfaces/**
 .pytest_cache/
 .mypy_cache/
 .coverage
