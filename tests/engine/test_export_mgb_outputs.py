@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 import xarray as xr
+from netCDF4 import Dataset
 
-from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
+from mgb_ops.model.export_mgb_outputs import NETCDF_ZLIB_COMPLEVEL, export_mgb_outputs
 
 
 def configure_export_logging(tmp_path: Path, monkeypatch) -> Path:
@@ -153,6 +154,14 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         assert float(exported["q"].isel(time=744, mini=0)) == 1920.0
         assert float(exported["y"].isel(time=0, mini=0)) == 200432.0
         assert float(exported["y"].isel(time=744, mini=0)) == 201920.0
+
+    with Dataset(output_nc_path) as exported:
+        q_filters = exported.variables["q"].filters()
+        y_filters = exported.variables["y"].filters()
+        assert q_filters["zlib"] is True
+        assert q_filters["complevel"] == NETCDF_ZLIB_COMPLEVEL
+        assert y_filters["zlib"] is True
+        assert y_filters["complevel"] == NETCDF_ZLIB_COMPLEVEL
 
 
 def test_export_mgb_outputs_uses_explicit_reference_time(tmp_path, monkeypatch) -> None:

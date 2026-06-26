@@ -13,6 +13,7 @@ import numpy as np
 import xarray as xr
 
 DEFAULT_CHUNK_HOURS = 720
+NETCDF_ZLIB_COMPLEVEL = 4
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 LOGGER_NAME = "model.export_mgb_outputs"
 
@@ -516,7 +517,7 @@ def write_output_netcdf(
         ),
     )
     encoding = {
-        spec.variable_code: {"_FillValue": np.float32(np.nan), "zlib": True, "complevel": 4}
+        spec.variable_code: {"_FillValue": np.float32(np.nan), "zlib": True, "complevel": NETCDF_ZLIB_COMPLEVEL}
         for spec in VARIABLE_SPECS
         if spec.variable_code in data_vars
     }
