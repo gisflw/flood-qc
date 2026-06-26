@@ -16,7 +16,11 @@ from mgb_ops.common.paths import SQL_DIR, ensure_standard_dirs
 from mgb_ops.common.runtime import build_runtime_context
 from mgb_ops.common.time_utils import build_horizon_window, resolve_reference_time
 from mgb_ops.adapters.forecast_ecmwf import build_ecmwf_cycle, ingest_forecast_grids
-from mgb_ops.workflows.observed import fetch_and_load_observed_provider
+from mgb_ops.workflows.observed import (
+    discover_observed_provider_csvs,
+    fetch_observed_provider,
+    load_observed_provider_csvs,
+)
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import find_required_ecmwf_asset, prepare_mgb_rainfall
 from mgb_ops.storage.db_bootstrap import initialize_history_db
@@ -37,6 +41,8 @@ OBSERVED_STATION_CODES_BY_PROVIDER = {
     "ana": None,
     "inmet": None,
 }
+FETCH_OBSERVED_PROVIDERS = True
+OBSERVED_DOWNLOAD_RUN_ID = None
 
 INITIALIZE_HISTORY = False
 HISTORY_STATION_INVENTORY_CSV = WORKSPACE / "data" / "source" / "history_station_inventory.csv"
@@ -118,11 +124,12 @@ print(f"forecast hours: {mgb_window.forecast_nt}")
 print(f"total MGB hours: {mgb_window.nt}")
 
 # %% [markdown]
-# ## 5. Fetch and load observed providers into SQLite
+# ## 5. Fetch/load observed providers into SQLite
 #
-# Each provider fetch writes normalized CSVs under `data/downloads/`, then imports
-# them into `history.sqlite`. ANA includes rain, level, and flow series. INMET
-# imports rain.
+# Fetch writes normalized CSVs under `data/downloads/`. Loading is separate so
+# existing CSVs can be re-imported after load logic or timestep settings change.
+# Set `FETCH_OBSERVED_PROVIDERS=False` to skip provider requests and load already
+# downloaded CSVs. ANA includes rain, level, and flow series. INMET imports rain.
 
 # %%
 observed_summaries = []
@@ -131,27 +138,44 @@ for provider_code in OBSERVED_PROVIDERS:
     api_key = None
     if provider == "inmet":
         api_key = context.env.get(INMET_API_KEY_ENV)
-        if not api_key:
+        if FETCH_OBSERVED_PROVIDERS and not api_key:
             raise RuntimeError(f"Set {INMET_API_KEY_ENV} before enabling INMET ingestion.")
 
-    summary = fetch_and_load_observed_provider(
+    if FETCH_OBSERVED_PROVIDERS:
+        fetch_summary = fetch_observed_provider(
+            provider,
+            database_path=paths.history_db,
+            window_start=fetch_window.start_time,
+            window_end=fetch_window.reference_time,
+            downloads_dir=paths.downloads_dir,
+            logs_dir=paths.logs_dir,
+            station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
+            timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
+            fetch_window_days=int(settings["ingest"]["fetch_window_days"]),
+            api_key=api_key,
+        )
+        csv_paths = fetch_summary.csv_paths
+        run_id = fetch_summary.run_id
+    else:
+        csv_paths = discover_observed_provider_csvs(
+            paths.downloads_dir,
+            provider,
+            run_id=OBSERVED_DOWNLOAD_RUN_ID,
+            station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
+        )
+        run_id = OBSERVED_DOWNLOAD_RUN_ID or "existing"
+
+    import_summary = load_observed_provider_csvs(
         provider,
         database_path=paths.history_db,
-        window_start=fetch_window.start_time,
-        window_end=fetch_window.reference_time,
-        downloads_dir=paths.downloads_dir,
-        logs_dir=paths.logs_dir,
-        station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
-        timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
-        fetch_window_days=int(settings["ingest"]["fetch_window_days"]),
+        csv_paths=csv_paths,
         timestep_hours=timestep_hours,
         observed_aggregation=dict(settings["ingest"]["observed_aggregation"]),
-        api_key=api_key,
     )
-    observed_summaries.append(summary)
+    observed_summaries.append((provider, run_id, len(csv_paths), import_summary))
     print(
-        f"{provider}: fetched {len(summary.fetch_summary.csv_paths)} CSV files; "
-        f"imported {summary.import_summary.rows_imported} rows"
+        f"{provider}: loaded {len(csv_paths)} CSV files; "
+        f"imported {import_summary.rows_imported} rows"
     )
 
 # %% [markdown]
@@ -284,11 +308,11 @@ print(f"- {PARHIG_PATH}")
 print(f"- {CHUVABIN_PATH}")
 
 print("database updates")
-for summary in observed_summaries:
+for provider, run_id, csv_file_count, import_summary in observed_summaries:
     print(
-        f"- {summary.provider_code}: run={summary.run_id}, "
-        f"csv_files={len(summary.fetch_summary.csv_paths)}, "
-        f"rows_imported={summary.import_summary.rows_imported}"
+        f"- {provider}: run={run_id}, "
+        f"csv_files={csv_file_count}, "
+        f"rows_imported={import_summary.rows_imported}"
     )
 if forecast_asset is not None:
     print(f"- ecmwf: asset={forecast_asset.asset_id}, file={forecast_asset.asset_path}")

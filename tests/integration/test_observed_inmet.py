@@ -206,12 +206,12 @@ def test_fetch_observed_inmet_rejects_invalid_fetch_window_days(tmp_path) -> Non
 
 
 
-def test_fetch_and_load_observed_inmet_requires_explicit_api_key(tmp_path) -> None:
+def test_fetch_observed_inmet_requires_explicit_api_key(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     with pytest.raises(ValueError, match="api_key"):
-        observed_workflow.fetch_and_load_observed_provider(
+        observed_workflow.fetch_observed_provider(
             "inmet",
             database_path=db_path,
             window_start=datetime(2026, 3, 11, 0, 0, 0),
@@ -224,14 +224,14 @@ def test_fetch_and_load_observed_inmet_requires_explicit_api_key(tmp_path) -> No
             base_url="https://example.test/v1",
         )
 
-def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -> None:
+def test_fetch_then_load_observed_inmet_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     session = FakeSession(responses=[FakeResponse(SAMPLE_INMET_PAYLOAD)])
     monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
 
-    summary = observed_workflow.fetch_and_load_observed_provider(
+    fetch_summary = observed_workflow.fetch_observed_provider(
         "inmet",
         database_path=db_path,
         window_start=datetime(2026, 3, 11, 0, 0, 0),
@@ -243,6 +243,11 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         logs_dir=tmp_path / "logs",
         base_url="https://example.test/v1",
         fetch_window_days=1,
+    )
+    import_summary = observed_workflow.load_observed_provider_csvs(
+        "inmet",
+        database_path=db_path,
+        csv_paths=fetch_summary.csv_paths,
     )
 
     with sqlite3.connect(db_path) as connection:
@@ -259,7 +264,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
     log_file = tmp_path / "logs" / "observed_inmet" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
-    assert summary.fetch_summary.legacy_counts() == {
+    assert fetch_summary.legacy_counts() == {
         "run_id": "20260311T134500",
         "stations_total": 1,
         "stations_ok": 1,
@@ -267,6 +272,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
         "stations_error": 0,
     }
     assert series_rows == [("inmet:A801.rain.raw", "rain")]
+    assert import_summary.rows_imported == 2
     assert rain_values == [("2026-03-10 21:00", 3.0), ("2026-03-10 23:00", 3.5)]
     assert len(raw_payload_files) == 1
     assert len(normalized_csv_files) == 1
@@ -279,7 +285,7 @@ def test_fetch_and_load_observed_inmet_persists_values_and_logs(tmp_path, monkey
     assert "normalized_csv=" in log_text
 
 
-def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_failure(tmp_path, monkeypatch) -> None:
+def test_fetch_then_load_observed_inmet_imports_partial_station_data_after_later_failure(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -298,7 +304,7 @@ def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_
     monkeypatch.setattr(observed_inmet.requests, "Session", lambda: session)
     monkeypatch.setattr(observed_inmet.time, "sleep", lambda _seconds: None)
 
-    summary = observed_workflow.fetch_and_load_observed_provider(
+    fetch_summary = observed_workflow.fetch_observed_provider(
         "inmet",
         database_path=db_path,
         window_start=datetime(2026, 3, 10, 0, 0, 0),
@@ -311,6 +317,11 @@ def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_
         base_url="https://example.test/v1",
         fetch_window_days=1,
     )
+    import_summary = observed_workflow.load_observed_provider_csvs(
+        "inmet",
+        database_path=db_path,
+        csv_paths=fetch_summary.csv_paths,
+    )
 
     with sqlite3.connect(db_path) as connection:
         rain_values = connection.execute(
@@ -318,13 +329,13 @@ def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_
             "WHERE series_id = 'inmet:A801.rain.raw' ORDER BY observed_at"
         ).fetchall()
 
-    station_summary = summary.fetch_summary.stations[0]
+    station_summary = fetch_summary.stations[0]
     raw_payload_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.json"))
     normalized_csv_files = list((tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801").glob("*.csv"))
     log_text = (tmp_path / "logs" / "observed_inmet" / "20260311T134500.log").read_text(encoding="utf-8")
 
-    assert summary.fetch_summary.legacy_counts()["stations_error"] == 1
-    assert summary.import_summary.rows_imported == 2
+    assert fetch_summary.legacy_counts()["stations_error"] == 1
+    assert import_summary.rows_imported == 2
     assert station_summary.csv_path == tmp_path / "downloads" / "inmet" / "20260311T134500" / "A801" / "observed.csv"
     assert station_summary.rows_parsed == 2
     assert rain_values == [("2026-03-10 00:00", 1.0), ("2026-03-10 01:00", 2.0)]
@@ -333,7 +344,7 @@ def test_fetch_and_load_observed_inmet_imports_partial_station_data_after_later_
     assert "partial_csv=" in log_text
 
 
-def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, monkeypatch) -> None:
+def test_fetch_observed_inmet_counts_no_data_when_payload_is_empty(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -343,7 +354,7 @@ def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_
         lambda: FakeSession(responses=[FakeResponse({"data": {"data": []}})]),
     )
 
-    summary = observed_workflow.fetch_and_load_observed_provider(
+    summary = observed_workflow.fetch_observed_provider(
         "inmet",
         database_path=db_path,
         window_start=datetime(2026, 3, 11, 0, 0, 0),
@@ -356,11 +367,11 @@ def test_fetch_and_load_observed_inmet_counts_no_data_when_payload_is_empty(tmp_
         base_url="https://example.test/v1",
     )
 
-    assert summary.fetch_summary.legacy_counts()["stations_no_data"] == 1
-    assert summary.fetch_summary.legacy_counts()["stations_ok"] == 0
+    assert summary.legacy_counts()["stations_no_data"] == 1
+    assert summary.legacy_counts()["stations_ok"] == 0
 
 
-def test_fetch_and_load_observed_inmet_marks_station_error_after_final_failure(tmp_path, monkeypatch) -> None:
+def test_fetch_observed_inmet_marks_station_error_after_final_failure(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -371,7 +382,7 @@ def test_fetch_and_load_observed_inmet_marks_station_error_after_final_failure(t
         lambda: FakeSession(side_effects=[observed_inmet.requests.Timeout("timeout")] * 5),
     )
 
-    summary = observed_workflow.fetch_and_load_observed_provider(
+    summary = observed_workflow.fetch_observed_provider(
         "inmet",
         database_path=db_path,
         window_start=datetime(2026, 3, 11, 0, 0, 0),
@@ -384,16 +395,16 @@ def test_fetch_and_load_observed_inmet_marks_station_error_after_final_failure(t
         base_url="https://example.test/v1",
     )
 
-    assert summary.fetch_summary.legacy_counts()["stations_error"] == 1
-    assert summary.fetch_summary.legacy_counts()["stations_ok"] == 0
+    assert summary.legacy_counts()["stations_error"] == 1
+    assert summary.legacy_counts()["stations_ok"] == 0
 
 
-def test_fetch_and_load_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypatch) -> None:
+def test_fetch_observed_inmet_rejects_unknown_station_filter(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
     with pytest.raises(ValueError, match="No INMET station found"):
-        observed_workflow.fetch_and_load_observed_provider(
+        observed_workflow.fetch_observed_provider(
             "inmet",
             database_path=db_path,
             window_start=datetime(2026, 3, 11, 0, 0, 0),

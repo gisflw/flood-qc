@@ -236,7 +236,7 @@ def test_history_repository_get_latest_observed_at_per_station(tmp_path) -> None
     assert latest_missing is None
 
 
-def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
+def test_fetch_then_load_observed_ana_persists_values_and_logs(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
 
@@ -253,7 +253,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
     stale_station_dir.mkdir(parents=True, exist_ok=True)
     (stale_station_dir / "old.xml").write_text("obsolete", encoding="utf-8")
 
-    summary = observed_workflow.fetch_and_load_observed_provider(
+    fetch_summary = observed_workflow.fetch_observed_provider(
         "ana",
         database_path=db_path,
         base_url="http://example.test/ana",
@@ -263,6 +263,11 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
         station_codes=["74100000"],
         downloads_dir=tmp_path / "downloads",
         logs_dir=tmp_path / "logs",
+    )
+    import_summary = observed_workflow.load_observed_provider_csvs(
+        "ana",
+        database_path=db_path,
+        csv_paths=fetch_summary.csv_paths,
     )
 
     with sqlite3.connect(db_path) as connection:
@@ -287,7 +292,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
     log_file = tmp_path / "logs" / "observed_ana" / "20260311T134500.log"
     log_text = log_file.read_text(encoding="utf-8")
 
-    assert summary.fetch_summary.legacy_counts() == {
+    assert fetch_summary.legacy_counts() == {
         "run_id": "20260311T134500",
         "stations_total": 1,
         "stations_ok": 1,
@@ -295,6 +300,7 @@ def test_fetch_and_load_observed_ana_persists_values_and_logs(tmp_path, monkeypa
         "stations_error": 0,
     }
     assert requested_params == [{"codEstacao": "74100000", "dataInicio": "11/03/2026", "dataFim": "11/03/2026"}]
+    assert import_summary.rows_imported == 5
     assert series_rows == [
         ("ana:74100000.flow.raw", "flow"),
         ("ana:74100000.level.raw", "level"),

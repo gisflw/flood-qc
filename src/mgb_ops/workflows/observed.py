@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
@@ -23,14 +22,6 @@ from mgb_ops.adapters.observed_inmet import (
 )
 from mgb_ops.storage.history_repository import HistoryRepository
 from mgb_ops.storage.observed_csv import ObservedCsvImportSummary, load_normalized_observed_csvs
-
-
-@dataclass(frozen=True, slots=True)
-class ObservedWorkflowSummary:
-    provider_code: str
-    run_id: str
-    fetch_summary: AnaFetchSummary | InmetFetchSummary
-    import_summary: ObservedCsvImportSummary
 
 
 def _filter_stations(stations: list[dict], station_codes: Iterable[str] | None, *, provider_code: str) -> list[dict]:
@@ -71,7 +62,65 @@ def _request_dates_by_station(
     return request_dates
 
 
-def fetch_and_load_observed_provider(
+def _normalize_provider(provider_code: str) -> str:
+    provider = provider_code.strip().lower()
+    if provider not in {"ana", "inmet"}:
+        raise ValueError(f"Unsupported observed provider_code {provider_code!r}.")
+    return provider
+
+
+def discover_observed_provider_csvs(
+    downloads_dir: Path,
+    provider_code: str,
+    *,
+    run_id: str | None = None,
+    station_codes: Iterable[str] | None = None,
+) -> list[Path]:
+    provider = _normalize_provider(provider_code)
+    provider_dir = Path(downloads_dir) / provider
+    if not provider_dir.exists():
+        return []
+
+    requested_stations = None
+    if station_codes is not None:
+        requested_stations = {
+            str(station_code).strip().upper()
+            for station_code in station_codes
+            if str(station_code).strip()
+        }
+
+    run_dirs = [provider_dir / run_id] if run_id is not None else sorted(path for path in provider_dir.iterdir() if path.is_dir())
+    csv_paths: list[Path] = []
+    for run_dir in run_dirs:
+        if not run_dir.is_dir():
+            continue
+        for station_dir in sorted(path for path in run_dir.iterdir() if path.is_dir()):
+            if requested_stations is not None and station_dir.name.upper() not in requested_stations:
+                continue
+            csv_path = station_dir / "observed.csv"
+            if csv_path.exists():
+                csv_paths.append(csv_path)
+    return csv_paths
+
+
+def load_observed_provider_csvs(
+    provider_code: str,
+    *,
+    database_path: Path,
+    csv_paths: Iterable[Path],
+    timestep_hours: int = 1,
+    observed_aggregation: dict[str, str] | None = None,
+) -> ObservedCsvImportSummary:
+    _normalize_provider(provider_code)
+    return load_normalized_observed_csvs(
+        database_path,
+        csv_paths,
+        timestep_hours=timestep_hours,
+        aggregation_by_variable=observed_aggregation,
+    )
+
+
+def fetch_observed_provider(
     provider_code: str,
     *,
     database_path: Path,
@@ -86,13 +135,8 @@ def fetch_and_load_observed_provider(
     api_key: str | None = None,
     product_code: str = DEFAULT_INMET_RAIN_PRODUCT,
     fetch_window_days: int = DEFAULT_FETCH_WINDOW_DAYS,
-    timestep_hours: int = 1,
-    observed_aggregation: dict[str, str] | None = None,
-) -> ObservedWorkflowSummary:
-    provider = provider_code.strip().lower()
-    if provider not in {"ana", "inmet"}:
-        raise ValueError(f"Unsupported observed provider_code {provider_code!r}.")
-
+) -> AnaFetchSummary | InmetFetchSummary:
+    provider = _normalize_provider(provider_code)
     run_id = run_id or build_run_id(window_end)
     logger = None
     if logs_dir is not None:
@@ -117,7 +161,7 @@ def fetch_and_load_observed_provider(
         )
 
     if provider == "ana":
-        fetch_summary = fetch_observed_ana(
+        return fetch_observed_ana(
             stations,
             request_dates_by_station=request_dates,
             downloads_dir=downloads_dir,
@@ -130,7 +174,7 @@ def fetch_and_load_observed_provider(
     else:
         if not api_key:
             raise ValueError("api_key is required for INMET/BNDMET observed ingestion.")
-        fetch_summary = fetch_observed_inmet(
+        return fetch_observed_inmet(
             stations,
             request_dates_by_station=request_dates,
             downloads_dir=downloads_dir,
@@ -142,16 +186,3 @@ def fetch_and_load_observed_provider(
             logger=logger,
             fetch_window_days=fetch_window_days,
         )
-
-    import_summary = load_normalized_observed_csvs(
-        database_path,
-        fetch_summary.csv_paths,
-        timestep_hours=timestep_hours,
-        aggregation_by_variable=observed_aggregation,
-    )
-    return ObservedWorkflowSummary(
-        provider_code=provider,
-        run_id=run_id,
-        fetch_summary=fetch_summary,
-        import_summary=import_summary,
-    )
