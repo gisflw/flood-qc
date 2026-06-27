@@ -53,12 +53,17 @@ def build_file_version(path: Path) -> str:
     return f"{target.as_posix()}:{stat.st_mtime_ns}:{stat.st_size}"
 
 
+def build_sqlite_version(path: Path) -> str:
+    target = Path(path)
+    return "|".join(build_file_version(candidate) for candidate in (target, Path(f"{target}-wal")))
+
+
 def build_map_cache_key(
     *,
     selected_layer_name: str | None,
     opacity: float,
     history_version: str,
-    rivers_version: str,
+    spatial_version: str,
     raster_version: str,
     station_id: str | None = None,
     mini_id: int | None = None,
@@ -67,7 +72,7 @@ def build_map_cache_key(
         "selected_layer_name": selected_layer_name,
         "opacity": round(float(opacity), 4),
         "history_version": history_version,
-        "rivers_version": rivers_version,
+        "spatial_version": spatial_version,
         "raster_version": raster_version,
     }
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
@@ -247,7 +252,8 @@ def build_ops_map(
     selected_layer_name: Optional[str],
     opacity: float,
     stations: pd.DataFrame,
-    rivers_geojson: Optional[dict],
+    segments_geojson: Optional[dict],
+    catchments_geojson: Optional[dict],
     raster_catalog: dict[str, dict[str, object]],
 ) -> folium.Map:
     center = [stations["lat"].mean(), stations["lon"].mean()] if not stations.empty else [-29.7, -53.3]
@@ -270,10 +276,24 @@ def build_ops_map(
                 show=True,
             )
 
-    if rivers_geojson and rivers_geojson.get("features"):
+    if catchments_geojson and catchments_geojson.get("features"):
+        catchments_layer = folium.FeatureGroup(name="MGB mini catchments", show=True)
+        folium.GeoJson(
+            catchments_geojson,
+            style_function=lambda _: {
+                "color": "#74c0fc", "weight": 0.7, "opacity": 0.65,
+                "fillColor": "#d0ebff", "fillOpacity": 0.08,
+            },
+            highlight_function=lambda _: {"color": "#0b7285", "weight": 1.8, "fillOpacity": 0.2},
+            tooltip=folium.GeoJsonTooltip(fields=["click_id"], aliases=[""], labels=False, sticky=False),
+            name="MGB mini catchments",
+        ).add_to(catchments_layer)
+        catchments_layer.add_to(fmap)
+
+    if segments_geojson and segments_geojson.get("features"):
         rivers_layer = folium.FeatureGroup(name="MGB rivers", show=True)
         folium.GeoJson(
-            rivers_geojson,
+            segments_geojson,
             style_function=lambda _: {"color": "#1971c2", "weight": 1.2, "opacity": 0.45},
             highlight_function=lambda _: {"color": "#0b7285", "weight": 2.2, "opacity": 0.9},
             tooltip=folium.GeoJsonTooltip(fields=["click_id"], aliases=[""], labels=False, sticky=False),

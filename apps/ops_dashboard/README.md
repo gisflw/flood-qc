@@ -18,7 +18,8 @@ The dashboard consumes:
 - `<workspace>/data/processed/model_outputs.nc` for MGB series;
 - registered canonical forecast NetCDF assets for forecast precipitation;
 - observed rainfall in `history.sqlite`, accumulated and interpolated in memory;
-- `<workspace>/data/legacy/app_layers/rios_mini.geojson` for clicking MGB minis.
+- the GeoPackage configured by `spatial.gpkg_path` (default
+  `<workspace>/data/source/rs_hydro.gpkg`) for clickable mini segments and catchments.
 
 Set `forecast_grid.bbox: [west, south, east, north]` in
 `<workspace>/config/custom.yaml`. The common map resolution is controlled by

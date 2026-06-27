@@ -14,6 +14,7 @@ from apps.ops_dashboard.support import data as ops_dashboard_data
 from mgb_ops.analysis import forecast as forecast_analysis
 from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec
 from mgb_ops.edit.forcing import apply_corrections
+from mgb_ops.common.time_utils import DashboardWindow
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,13 +76,31 @@ class ForecastMapComparisonArtifacts:
     corrected: ForecastMapPanelArtifacts | None = None
 
 
-def list_forecast_assets(database_path: Path, workspace_path: Path) -> pd.DataFrame:
-    return forecast_analysis.list_forecast_assets(database_path, workspace_path=workspace_path)
+def list_forecast_assets(
+    database_path: Path,
+    workspace_path: Path,
+    *,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    return forecast_analysis.list_expected_ecmwf_assets(
+        database_path,
+        workspace_path=workspace_path,
+        reference_time=window.cutoff_time,
+    )
 
 
-def list_forecast_steps(asset_id: str, *, database_path: Path, workspace_path: Path) -> pd.DataFrame:
-    frame = forecast_analysis.list_forecast_intervals(
-        asset_id, database_path=database_path, workspace_path=workspace_path
+def list_forecast_steps(
+    asset_id: str,
+    *,
+    database_path: Path,
+    workspace_path: Path,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    frame = forecast_analysis.list_dashboard_forecast_intervals(
+        asset_id,
+        database_path=database_path,
+        workspace_path=workspace_path,
+        window=window,
     )
     if frame.empty:
         return pd.DataFrame(columns=["step_hours", "valid_time", "label"])

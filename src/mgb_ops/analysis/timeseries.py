@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Iterable, Literal
 
 import numpy as np
 import pandas as pd
 import xarray as xr
+
+from mgb_ops.common.time_utils import DashboardWindow
 
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 MGB_VARIABLE_METADATA = {
@@ -64,16 +66,24 @@ def derive_station_kind(variable_codes: Iterable[str]) -> str:
     return "no_data"
 
 
-def summarize_station_status(values: pd.DataFrame, *, days: int) -> dict[str, object]:
+class StaleModelOutputsError(ValueError):
+    """Raised when canonical model output metadata differs from the requested run."""
+
+
+def summarize_station_status(values: pd.DataFrame) -> dict[str, object]:
     if values.empty:
-        return {"status": "no_data", "status_reason": f"no records in the last {days} days", "rows_recent": 0}
+        return {"status": "no_data", "status_reason": "no records in the dashboard window", "rows_recent": 0}
     valid = int(pd.to_numeric(values["value"], errors="coerce").notna().sum())
     if valid == 0:
         return {"status": "data_issue", "status_reason": "only null values in the period", "rows_recent": len(values)}
     return {"status": "ok", "status_reason": "", "rows_recent": len(values)}
 
 
-def compute_rain_summary(values: pd.DataFrame) -> dict[str, float]:
+def compute_rain_summary(
+    values: pd.DataFrame,
+    *,
+    cutoff_time: datetime | pd.Timestamp,
+) -> dict[str, float]:
     empty = {"rain_mean_mm_h": np.nan, "rain_acc_24h_mm": np.nan, "rain_p90_mm_h": np.nan}
     if values.empty:
         return empty
@@ -83,8 +93,11 @@ def compute_rain_summary(values: pd.DataFrame) -> dict[str, float]:
     frame = frame.dropna(subset=["datetime", "value"])
     if frame.empty:
         return empty
-    latest = frame["datetime"].max()
-    accumulated = frame.loc[frame["datetime"] >= latest - pd.Timedelta(hours=24), "value"].sum()
+    cutoff = pd.Timestamp(cutoff_time)
+    frame = frame[frame["datetime"] <= cutoff]
+    if frame.empty:
+        return empty
+    accumulated = frame.loc[frame["datetime"] > cutoff - pd.Timedelta(hours=24), "value"].sum()
     return {
         "rain_mean_mm_h": float(frame["value"].mean()),
         "rain_acc_24h_mm": float(accumulated),
@@ -95,13 +108,12 @@ def compute_rain_summary(values: pd.DataFrame) -> dict[str, float]:
 def load_station_catalog(
     database_path: Path,
     *,
-    days: int = 30,
-    now: datetime | None = None,
+    start_time: datetime,
+    end_time: datetime,
 ) -> pd.DataFrame:
-    """Load mapped stations, preferred-series coverage, and recent availability."""
-    if days < 1:
-        raise ValueError("days must be >= 1.")
-    cutoff = (now or datetime.utcnow()) - timedelta(days=days)
+    """Load mapped stations and preferred-series availability in [start, end]."""
+    if end_time < start_time:
+        raise ValueError("end_time must be >= start_time.")
     with _connect_read_only(database_path) as connection:
         stations = pd.read_sql_query(
             """SELECT station_id, station_code, provider_code, station_name,
@@ -118,9 +130,12 @@ def load_station_catalog(
             """SELECT os.series_id, os.station_id, os.variable_code,
                       ov.observed_at AS datetime, ov.value
                FROM observed_series os JOIN observed_value ov USING (series_id)
-               WHERE ov.observed_at >= ?""",
+               WHERE ov.observed_at >= ? AND ov.observed_at <= ?""",
             connection,
-            params=(cutoff.strftime("%Y-%m-%d %H:%M:%S"),),
+            params=(
+                start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            ),
         )
     columns = [
         "station_id", "station_code", "provider_code", "station_name", "mini_id",
@@ -141,7 +156,7 @@ def load_station_catalog(
     for station_id in stations["station_id"]:
         station_values = values[values["station_id"] == station_id]
         rain = station_values[station_values["variable_code"] == "rain"]
-        rows.append({"station_id": station_id, **summarize_station_status(station_values, days=days), **compute_rain_summary(rain)})
+        rows.append({"station_id": station_id, **summarize_station_status(station_values), **compute_rain_summary(rain, cutoff_time=end_time)})
     result = stations.merge(coverage.rename("kind"), left_on="station_id", right_index=True, how="left")
     result = result.merge(pd.DataFrame(rows), on="station_id", how="left")
     result["kind"] = result["kind"].fillna("no_data")
@@ -152,11 +167,12 @@ def load_observed_series(
     station_id: str,
     database_path: Path,
     *,
-    days: int = 30,
-    now: datetime | None = None,
+    start_time: datetime,
+    end_time: datetime,
 ) -> pd.DataFrame:
     """Load preferred observed rainfall, level, and flow values for a station."""
-    cutoff = (now or datetime.utcnow()) - timedelta(days=days)
+    if end_time < start_time:
+        raise ValueError("end_time must be >= start_time.")
     with _connect_read_only(database_path) as connection:
         series = pd.read_sql_query(
             """SELECT series_id, station_id, variable_code, state, created_at
@@ -172,17 +188,22 @@ def load_observed_series(
         values = pd.read_sql_query(
             f"""SELECT os.variable_code, ov.observed_at AS datetime, ov.value
                 FROM observed_value ov JOIN observed_series os USING (series_id)
-                WHERE ov.series_id IN ({placeholders}) AND ov.observed_at >= ?
+                WHERE ov.series_id IN ({placeholders})
+                  AND ov.observed_at >= ? AND ov.observed_at <= ?
                 ORDER BY ov.observed_at, os.variable_code""",
             connection,
-            params=(*ids, cutoff.strftime("%Y-%m-%d %H:%M:%S")),
+            params=(
+                *ids,
+                start_time.strftime("%Y-%m-%d %H:%M:%S"),
+                end_time.strftime("%Y-%m-%d %H:%M:%S"),
+            ),
         )
     values["datetime"] = pd.to_datetime(values["datetime"], errors="coerce")
     values["value"] = pd.to_numeric(values["value"], errors="coerce")
     return values.dropna(subset=["datetime"]).reset_index(drop=True)
 
 
-def compute_observed_metrics(values: pd.DataFrame) -> dict[str, object]:
+def compute_observed_metrics(values: pd.DataFrame, *, cutoff_time: datetime | pd.Timestamp) -> dict[str, object]:
     result: dict[str, object] = {
         "latest_time": None, "rain_12h": np.nan, "rain_24h": np.nan,
         "rain_72h": np.nan, "level_current": np.nan, "flow_current": np.nan,
@@ -195,12 +216,16 @@ def compute_observed_metrics(values: pd.DataFrame) -> dict[str, object]:
     frame = frame.dropna(subset=["datetime"]).sort_values("datetime")
     if frame.empty:
         return result
+    cutoff = pd.Timestamp(cutoff_time)
+    frame = frame[frame["datetime"] <= cutoff]
+    if frame.empty:
+        return result
     latest = frame["datetime"].max()
     result["latest_time"] = latest
     rain = frame[(frame["variable_code"] == "rain") & frame["value"].notna()]
     for hours in (12, 24, 72):
         if not rain.empty:
-            result[f"rain_{hours}h"] = float(rain.loc[rain["datetime"] >= latest - pd.Timedelta(hours=hours), "value"].sum())
+            result[f"rain_{hours}h"] = float(rain.loc[rain["datetime"] > cutoff - pd.Timedelta(hours=hours), "value"].sum())
     for code in ("level", "flow"):
         selected = frame[(frame["variable_code"] == code) & frame["value"].notna()]
         if not selected.empty:
@@ -208,7 +233,24 @@ def compute_observed_metrics(values: pd.DataFrame) -> dict[str, object]:
     return result
 
 
-def validate_model_outputs_netcdf(path: Path) -> dict[str, object]:
+def _required_model_time_attr(dataset: xr.Dataset, name: str) -> pd.Timestamp:
+    raw = dataset.attrs.get(name)
+    if raw in (None, ""):
+        raise ValueError(f"MGB NetCDF missing required global attribute {name!r}.")
+    try:
+        value = pd.Timestamp(raw)
+    except Exception as exc:
+        raise ValueError(f"MGB NetCDF has invalid global attribute {name!r}: {raw!r}.") from exc
+    if value.tzinfo is not None:
+        value = value.tz_convert(None)
+    return value
+
+
+def validate_model_outputs_netcdf(
+    path: Path,
+    *,
+    expected_window: DashboardWindow | None = None,
+) -> dict[str, object]:
     """Validate the canonical MGB dashboard contract and return its metadata."""
     source = Path(path)
     if not source.exists():
@@ -241,6 +283,21 @@ def validate_model_outputs_netcdf(path: Path) -> dict[str, object]:
         times = pd.to_datetime(dataset["time"].values, errors="coerce")
         if pd.isna(times).any() or not pd.DatetimeIndex(times).is_monotonic_increasing:
             raise ValueError("MGB NetCDF time must be valid and monotonically increasing.")
+        model_window = DashboardWindow(
+            start_time=_required_model_time_attr(dataset, "window_start").to_pydatetime(),
+            cutoff_time=_required_model_time_attr(dataset, "reference_time").to_pydatetime(),
+            forecast_end_exclusive=_required_model_time_attr(dataset, "window_end_exclusive").to_pydatetime(),
+        )
+        if expected_window is not None and model_window != expected_window:
+            raise StaleModelOutputsError(
+                "Stale model_outputs.nc metadata: "
+                f"expected start={expected_window.start_time.isoformat()}, "
+                f"reference={expected_window.cutoff_time.isoformat()}, "
+                f"end_exclusive={expected_window.forecast_end_exclusive.isoformat()}; "
+                f"actual start={model_window.start_time.isoformat()}, "
+                f"reference={model_window.cutoff_time.isoformat()}, "
+                f"end_exclusive={model_window.forecast_end_exclusive.isoformat()}."
+            )
         return {
             "path": source,
             "mini_count": int(dataset.sizes["mini"]),
@@ -249,6 +306,7 @@ def validate_model_outputs_netcdf(path: Path) -> dict[str, object]:
             "mini_ids": tuple(int(value) for value in mini_ids),
             "start_time": pd.Timestamp(times[0]) if len(times) else None,
             "end_time": pd.Timestamp(times[-1]) if len(times) else None,
+            "window": model_window,
         }
 
 
@@ -268,10 +326,10 @@ def load_mgb_series(
     mini_id: int,
     variable_code: str,
     time_segment: TimeSegment | int | None = "all",
-    days_window: int | None = None,
+    window: DashboardWindow | None = None,
 ) -> pd.DataFrame:
     """Select one mini/variable from canonical model_outputs.nc."""
-    validate_model_outputs_netcdf(path)
+    validate_model_outputs_netcdf(path, expected_window=window)
     code = str(variable_code).strip().lower()
     if code not in MGB_VARIABLE_METADATA:
         raise ValueError("variable_code must be 'q' or 'y'.")
@@ -300,12 +358,11 @@ def load_mgb_series(
         if flag not in (0, 1):
             raise ValueError("time_segment must be 'all', 'current', 'forecast', 0, or 1.")
         frame = frame[frame["prev_flag"] == flag]
-    elif days_window is not None and days_window > 0:
-        current = frame[frame["prev_flag"] == 0]
-        forecast = frame[frame["prev_flag"] == 1]
-        if not current.empty:
-            current = current[current["dt"] >= current["dt"].max() - pd.Timedelta(days=days_window)]
-        frame = pd.concat([current, forecast])
+    if window is not None:
+        frame = frame[
+            (frame["dt"] >= pd.Timestamp(window.start_time))
+            & (frame["dt"] < pd.Timestamp(window.forecast_end_exclusive))
+        ]
     meta = MGB_VARIABLE_METADATA[code]
     frame["variable_code"] = code
     frame["display_name"] = meta["display_name"]
@@ -313,26 +370,32 @@ def load_mgb_series(
     return frame.sort_values("dt").reset_index(drop=True)
 
 
-def summarize_mini_peaks(values: pd.DataFrame, *, days: int = 7) -> dict[str, object]:
+def summarize_mini_peaks(
+    values: pd.DataFrame,
+    *,
+    cutoff_time: datetime | pd.Timestamp,
+    forecast_end_exclusive: datetime | pd.Timestamp,
+) -> dict[str, object]:
     """Summarize current value and current/forecast peaks for a selected mini."""
     empty = {"current_value": np.nan, "current_time": None, "current_peak": np.nan, "forecast_peak": np.nan}
     if values.empty:
         return empty
     frame = values.copy()
     frame["dt"] = pd.to_datetime(frame["dt"], errors="coerce")
-    current = frame[frame["prev_flag"] == 0].dropna(subset=["dt", "value"]).sort_values("dt")
-    forecast = frame[frame["prev_flag"] == 1].dropna(subset=["dt", "value"]).sort_values("dt")
+    cutoff = pd.Timestamp(cutoff_time)
+    forecast_end = pd.Timestamp(forecast_end_exclusive)
+    current = frame[(frame["prev_flag"] == 0) & (frame["dt"] <= cutoff)].dropna(subset=["dt", "value"]).sort_values("dt")
+    forecast = frame[
+        (frame["prev_flag"] == 1) & (frame["dt"] > cutoff) & (frame["dt"] < forecast_end)
+    ].dropna(subset=["dt", "value"]).sort_values("dt")
     if current.empty:
         return empty
     end = current.iloc[-1]
-    reference = pd.Timestamp(end["dt"])
-    recent = current[current["dt"] >= reference - pd.Timedelta(days=days)]
-    future = forecast[forecast["dt"] <= reference + pd.Timedelta(days=days)]
     return {
         "current_value": float(end["value"]),
-        "current_time": reference,
-        "current_peak": float(recent["value"].max()) if not recent.empty else np.nan,
-        "forecast_peak": float(future["value"].max()) if not future.empty else np.nan,
+        "current_time": pd.Timestamp(end["dt"]),
+        "current_peak": float(current["value"].max()),
+        "forecast_peak": float(forecast["value"].max()) if not forecast.empty else np.nan,
     }
 
 
@@ -341,15 +404,22 @@ def summarize_network_peaks(
     *,
     variable_code: str = "q",
     mini_ids: Iterable[int] | None = None,
-    days: int = 7,
+    window: DashboardWindow,
 ) -> pd.DataFrame:
     """Return current and forecast peak summaries for every requested mini."""
     metadata = validate_model_outputs_netcdf(path)
     selected = list(mini_ids) if mini_ids is not None else list(metadata["mini_ids"])
     rows = []
     for mini_id in selected:
-        series = load_mgb_series(path, mini_id=int(mini_id), variable_code=variable_code)
-        rows.append({"mini_id": int(mini_id), **summarize_mini_peaks(series, days=days)})
+        series = load_mgb_series(path, mini_id=int(mini_id), variable_code=variable_code, window=window)
+        rows.append({
+            "mini_id": int(mini_id),
+            **summarize_mini_peaks(
+                series,
+                cutoff_time=window.cutoff_time,
+                forecast_end_exclusive=window.forecast_end_exclusive,
+            ),
+        })
     return pd.DataFrame(rows)
 
 

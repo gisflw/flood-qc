@@ -11,6 +11,8 @@ import xarray as xr
 
 from apps.ops_dashboard.support import data as ops_dashboard_data
 from mgb_ops.storage.db_bootstrap import apply_schema
+from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.analysis.timeseries import StaleModelOutputsError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -104,7 +106,9 @@ def test_load_station_catalog_classifies_status_from_observed_values(tmp_path) -
         insert_observed_value(connection, series_id="1003.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
         connection.commit()
 
-    catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
+    catalog = ops_dashboard_data.load_station_catalog(
+        db_path, start_time=datetime(2026, 2, 15), end_time=now
+    )
     status_by_station = dict(zip(catalog["station_id"], catalog["status"]))
 
     assert status_by_station == {
@@ -127,7 +131,9 @@ def test_load_station_catalog_handles_all_stations_without_recent_values(tmp_pat
         insert_observed_value(connection, series_id="1001.rain.raw", observed_at="2026-01-01 00:00:00", value=2.0)
         connection.commit()
 
-    catalog = ops_dashboard_data.load_station_catalog(db_path, days=30, now=now)
+    catalog = ops_dashboard_data.load_station_catalog(
+        db_path, start_time=datetime(2026, 2, 15), end_time=now
+    )
 
     assert catalog["station_id"].tolist() == ["1001"]
     assert catalog["kind"].tolist() == ["rain"]
@@ -164,7 +170,9 @@ def test_load_observed_series_returns_only_preferred_state_for_station(tmp_path)
         insert_observed_value(connection, series_id="1001.level.raw", observed_at="2026-03-16 01:00:00", value=120.0)
         connection.commit()
 
-    observed = ops_dashboard_data.load_observed_series(1001, db_path, days=30, now=now)
+    observed = ops_dashboard_data.load_observed_series(
+        1001, db_path, start_time=datetime(2026, 2, 15), end_time=now
+    )
 
     assert observed.to_dict(orient="records") == [
         {"datetime": pd.Timestamp("2026-03-16 01:00:00"), "variable_code": "level", "value": 120.0},
@@ -181,6 +189,11 @@ def write_model_outputs(path: Path) -> Path:
             "time_segment": (("time",), np.r_[np.zeros(48, dtype=np.int8), np.ones(24, dtype=np.int8)]),
         },
         coords={"time": times, "mini": [0, 1], "mini_id": ("mini", [101, 539])},
+        attrs={
+            "window_start": "2026-02-01T00:00:00",
+            "reference_time": "2026-02-02T23:00:00",
+            "window_end_exclusive": "2026-02-04T00:00:00",
+        },
     )
     dataset.to_netcdf(path)
     return path
@@ -188,18 +201,16 @@ def write_model_outputs(path: Path) -> Path:
 
 def test_load_mgb_series_splits_current_and_forecast(tmp_path) -> None:
     source = write_model_outputs(tmp_path / "model_outputs.nc")
-    series = ops_dashboard_data.load_mgb_series(
-        source, mini_id=539, variable_code="q", days_window=1
-    )
+    series = ops_dashboard_data.load_mgb_series(source, mini_id=539, variable_code="q")
 
-    assert series["prev_flag"].tolist() == ([0] * 25) + ([1] * 24)
-    assert series["value"].tolist()[0] == 1023.0
+    assert series["prev_flag"].tolist() == ([0] * 48) + ([1] * 24)
+    assert series["value"].tolist()[0] == 1000.0
     assert series["value"].tolist()[-1] == 1071.0
     assert series["display_name"].tolist()[0] == "QTUDO"
     assert series["unit"].tolist()[0] == "m3/s"
-    assert series["dt"].iloc[0] == pd.Timestamp("2026-02-01 23:00:00")
-    assert series["dt"].iloc[24] == pd.Timestamp("2026-02-02 23:00:00")
-    assert series["dt"].iloc[25] == pd.Timestamp("2026-02-03 00:00:00")
+    assert series["dt"].iloc[0] == pd.Timestamp("2026-02-01 00:00:00")
+    assert series["dt"].iloc[47] == pd.Timestamp("2026-02-02 23:00:00")
+    assert series["dt"].iloc[48] == pd.Timestamp("2026-02-03 00:00:00")
 
 
 def test_list_model_variables_returns_static_mgb_catalog() -> None:
@@ -215,3 +226,17 @@ def test_load_mgb_series_rejects_unknown_mini_id(tmp_path) -> None:
     source = write_model_outputs(tmp_path / "model_outputs.nc")
     with pytest.raises(ValueError, match="Mini 999 was not found"):
         ops_dashboard_data.load_mgb_series(source, mini_id=999, variable_code="q")
+
+
+def test_model_outputs_metadata_mismatch_is_blocked(tmp_path) -> None:
+    source = write_model_outputs(tmp_path / "model_outputs.nc")
+    expected = DashboardWindow(
+        start_time=datetime(2026, 2, 1),
+        cutoff_time=datetime(2026, 2, 3),
+        forecast_end_exclusive=datetime(2026, 2, 4),
+    )
+
+    with pytest.raises(StaleModelOutputsError, match="expected.*actual"):
+        ops_dashboard_data.validate_model_outputs_netcdf(
+            source, expected_window=expected
+        )

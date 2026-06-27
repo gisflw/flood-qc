@@ -8,7 +8,7 @@ def test_build_map_cache_key_ignores_series_selection() -> None:
         selected_layer_name="accum_24h",
         opacity=0.6,
         history_version="history:v1",
-        rivers_version="rivers:v1",
+        spatial_version="spatial:v1",
         raster_version="raster:v1",
         station_id=1001,
         mini_id=10,
@@ -17,7 +17,7 @@ def test_build_map_cache_key_ignores_series_selection() -> None:
         selected_layer_name="accum_24h",
         opacity=0.6,
         history_version="history:v1",
-        rivers_version="rivers:v1",
+        spatial_version="spatial:v1",
         raster_version="raster:v1",
         station_id=2002,
         mini_id=20,
@@ -31,21 +31,21 @@ def test_build_map_cache_key_changes_with_visual_state() -> None:
         selected_layer_name="accum_24h",
         opacity=0.6,
         history_version="history:v1",
-        rivers_version="rivers:v1",
+        spatial_version="spatial:v1",
         raster_version="raster:v1",
     )
     other_raster = ops_dashboard_map.build_map_cache_key(
         selected_layer_name="accum_72h",
         opacity=0.6,
         history_version="history:v1",
-        rivers_version="rivers:v1",
+        spatial_version="spatial:v1",
         raster_version="raster:v2",
     )
     other_opacity = ops_dashboard_map.build_map_cache_key(
         selected_layer_name="accum_24h",
         opacity=0.75,
         history_version="history:v1",
-        rivers_version="rivers:v1",
+        spatial_version="spatial:v1",
         raster_version="raster:v1",
     )
 

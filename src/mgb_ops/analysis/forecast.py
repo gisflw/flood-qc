@@ -9,11 +9,105 @@ import numpy as np
 import pandas as pd
 
 from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec, resample_regular_grid
+from mgb_ops.adapters.forecast_ecmwf import build_ecmwf_cycle
+from mgb_ops.common.time_utils import DashboardWindow, TIMEZONE
 from mgb_ops.model.forecast_grid import (
     FORECAST_PRECIPITATION_GRID_ASSET_KIND,
     ForecastPrecipitationGrid,
     read_forecast_precipitation_grid,
 )
+
+
+class ForecastIntegrityError(RuntimeError):
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _metadata_cycle(metadata_json: object) -> datetime | None:
+    try:
+        metadata = json.loads(str(metadata_json)) if metadata_json else {}
+        raw = metadata.get("cycle_time") or metadata.get("source_cycle_time")
+        if not raw:
+            return None
+        timestamp = pd.Timestamp(raw)
+        if timestamp.tzinfo is None:
+            return timestamp.to_pydatetime()
+        return timestamp.tz_convert("UTC").tz_localize(None).to_pydatetime()
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return None
+
+
+def resolve_expected_ecmwf_asset(
+    database_path: Path,
+    *,
+    workspace_path: Path,
+    reference_time: datetime,
+) -> tuple[dict[str, object], Path]:
+    expected_cycle = build_ecmwf_cycle(reference_time)
+    assets = list_forecast_assets(database_path, workspace_path=workspace_path)
+    if not assets.empty:
+        assets = assets[assets["provider_code"] == "ecmwf"]
+    matching = (
+        assets[assets["metadata_json"].map(_metadata_cycle).map(lambda value: value == expected_cycle)]
+        if not assets.empty
+        else assets
+    )
+    if matching.empty:
+        raise ForecastIntegrityError(
+            "unregistered_cycle",
+            "ECMWF integrity error: canonical NetCDF for expected cycle "
+            f"{expected_cycle.isoformat(timespec='seconds')}Z is not registered in history.sqlite.",
+        )
+    row = matching.iloc[0].to_dict()
+    path = Path(row["asset_path"])
+    if not path.exists():
+        raise ForecastIntegrityError(
+            "missing_registered_file",
+            "ECMWF integrity error: expected cycle "
+            f"{expected_cycle.isoformat(timespec='seconds')}Z is registered as "
+            f"{row['relative_path']!r}, but that canonical NetCDF is missing.",
+        )
+    return row, path
+
+
+def list_expected_ecmwf_assets(
+    database_path: Path,
+    *,
+    workspace_path: Path,
+    reference_time: datetime,
+) -> pd.DataFrame:
+    row, _ = resolve_expected_ecmwf_asset(
+        database_path,
+        workspace_path=workspace_path,
+        reference_time=reference_time,
+    )
+    return pd.DataFrame([row])
+
+
+def _local_naive_to_utc(value: datetime) -> pd.Timestamp:
+    return pd.Timestamp(value.replace(tzinfo=TIMEZONE)).tz_convert("UTC").tz_localize(None)
+
+
+def list_dashboard_forecast_intervals(
+    asset_id: str,
+    *,
+    database_path: Path,
+    workspace_path: Path,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    frame = list_forecast_intervals(
+        asset_id,
+        database_path=database_path,
+        workspace_path=workspace_path,
+    )
+    if frame.empty:
+        return frame
+    cutoff_utc = _local_naive_to_utc(window.cutoff_time)
+    end_utc = _local_naive_to_utc(window.forecast_end_exclusive)
+    starts = pd.to_datetime(frame["start_time"]).dt.tz_localize(None)
+    ends = pd.to_datetime(frame["end_time"]).dt.tz_localize(None)
+    return frame[(starts >= cutoff_utc) & (ends <= end_utc)].reset_index(drop=True)
 
 
 def list_forecast_assets(database_path: Path, *, workspace_path: Path | None = None) -> pd.DataFrame:

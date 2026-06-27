@@ -1,11 +1,42 @@
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Iterable, Mapping
 
 import numpy as np
 
 from mgb_ops.analysis.spatial import PrecipitationGrid
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastCorrectionInstruction:
+    asset_id: str
+    t0_step: int
+    t1_step: int
+    shift_lat: float = 0.0
+    shift_lon: float = 0.0
+    rotation_deg: float = 0.0
+    multiplication_factor: float = 1.0
+    editor: str | None = None
+    reason: str = ""
+
+
+def validate_instruction(
+    instruction: ForecastCorrectionInstruction,
+) -> ForecastCorrectionInstruction:
+    if instruction.t1_step < instruction.t0_step:
+        raise ValueError("t1_step must be >= t0_step.")
+    numeric = (
+        instruction.shift_lat,
+        instruction.shift_lon,
+        instruction.rotation_deg,
+        instruction.multiplication_factor,
+    )
+    if not all(np.isfinite(float(value)) for value in numeric):
+        raise ValueError("Correction parameters must be finite.")
+    if instruction.multiplication_factor <= 0:
+        raise ValueError("multiplication_factor must be > 0.")
+    return instruction
 
 
 def shift_pixels(values: np.ndarray, *, row_shift: int = 0, column_shift: int = 0, fill_value: float = 0.0) -> np.ndarray:
@@ -79,12 +110,26 @@ def apply_corrections(
     values = grid.values.copy()
     for correction in corrections:
         getter = correction.get if isinstance(correction, Mapping) else lambda key, default: getattr(correction, key, default)
+        instruction = (
+            correction
+            if isinstance(correction, ForecastCorrectionInstruction)
+            else ForecastCorrectionInstruction(
+                asset_id=str(getter("asset_id", "")),
+                t0_step=int(getter("t0_step", 0)),
+                t1_step=int(getter("t1_step", 0)),
+                shift_lat=float(getter("shift_lat", 0.0)),
+                shift_lon=float(getter("shift_lon", 0.0)),
+                rotation_deg=float(getter("rotation_deg", 0.0)),
+                multiplication_factor=float(getter("multiplication_factor", 1.0)),
+            )
+        )
+        instruction = validate_instruction(instruction)
         values = apply_forcing_correction(
             values,
-            shift_lat=float(getter("shift_lat", 0.0)),
-            shift_lon=float(getter("shift_lon", 0.0)),
-            rotation_deg=float(getter("rotation_deg", 0.0)),
-            multiplication_factor=float(getter("multiplication_factor", 1.0)),
+            shift_lat=instruction.shift_lat,
+            shift_lon=instruction.shift_lon,
+            rotation_deg=instruction.rotation_deg,
+            multiplication_factor=instruction.multiplication_factor,
         )
     return replace(grid, values=values, source=f"{grid.source}:corrected")
 

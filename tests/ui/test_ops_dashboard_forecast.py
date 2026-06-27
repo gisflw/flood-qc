@@ -6,15 +6,17 @@ import folium
 import folium.plugins
 import numpy as np
 
-from mgb_ops.qc import grib2_forecast_correction
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.model.forecast_grid import (
     FORECAST_PRECIPITATION_GRID_ASSET_KIND,
     write_forecast_precipitation_grid,
 )
 from mgb_ops.analysis.spatial import RegularGridSpec
+from mgb_ops.common.time_utils import DashboardWindow
 from apps.ops_dashboard.support import forecast as ops_dashboard_forecast
 from db_helpers import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.analysis.forecast import ForecastIntegrityError
 
 
 def _preview(title: str, data: np.ndarray | None = None) -> ops_dashboard_forecast.ForecastPreview:
@@ -59,9 +61,17 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
             metadata={"cycle_time": "2026-03-11T00:00:00Z"},
         )
 
-    assets = ops_dashboard_forecast.list_forecast_assets(db_path, tmp_path)
+    window = DashboardWindow(
+        start_time=datetime(2026, 3, 1),
+        cutoff_time=datetime(2026, 3, 10, 23),
+        forecast_end_exclusive=datetime(2026, 3, 13),
+    )
+    assets = ops_dashboard_forecast.list_forecast_assets(db_path, tmp_path, window=window)
     steps = ops_dashboard_forecast.list_forecast_steps(
-        "ecmwf.ifs.fc.20260311T000000Z.buffered", database_path=db_path, workspace_path=tmp_path
+        "ecmwf.ifs.fc.20260311T000000Z.buffered",
+        database_path=db_path,
+        workspace_path=tmp_path,
+        window=window,
     )
     accum_preview = ops_dashboard_forecast.build_forecast_preview(
         "ecmwf.ifs.fc.20260311T000000Z.buffered",
@@ -81,14 +91,14 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
     )
 
     assert assets["asset_id"].tolist() == ["ecmwf.ifs.fc.20260311T000000Z.buffered"]
-    assert steps["step_hours"].tolist() == [0, 3, 6]
+    assert steps["step_hours"].tolist() == [3, 6]
     assert np.allclose(accum_preview.data, 6.0)
     assert np.allclose(incr_preview.data, 4.0)
 
 
 def test_ops_dashboard_forecast_applies_preview_correction() -> None:
     preview = _preview("teste")
-    instruction = grib2_forecast_correction.ForecastCorrectionInstruction(
+    instruction = ForecastCorrectionInstruction(
         asset_id="asset",
         t0_step=0,
         t1_step=3,
@@ -104,9 +114,56 @@ def test_ops_dashboard_forecast_applies_preview_correction() -> None:
     assert corrected.data[1, 0] == 2.0
 
 
-def test_build_forecast_map_returns_single_map_with_raster_inspector(monkeypatch) -> None:
-    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda *args, **kwargs: None)
+def test_expected_ecmwf_cycle_reports_unregistered_cycle(tmp_path) -> None:
+    db_path = initialize_history_db(tmp_path / "history.sqlite")
+    window = DashboardWindow(
+        start_time=datetime(2026, 3, 1),
+        cutoff_time=datetime(2026, 3, 10, 23),
+        forecast_end_exclusive=datetime(2026, 3, 13),
+    )
 
+    try:
+        ops_dashboard_forecast.list_forecast_assets(
+            db_path, tmp_path, window=window
+        )
+    except ForecastIntegrityError as exc:
+        assert exc.code == "unregistered_cycle"
+        assert "2026-03-11T00:00:00Z" in str(exc)
+    else:
+        raise AssertionError("Expected an unregistered-cycle integrity error.")
+
+
+def test_expected_ecmwf_cycle_reports_missing_registered_file(tmp_path) -> None:
+    db_path = initialize_history_db(tmp_path / "history.sqlite")
+    with HistoryRepository(db_path) as repository:
+        repository.upsert_asset(
+            asset_id="ecmwf.ifs.fc.20260311T000000Z.buffered",
+            asset_kind=FORECAST_PRECIPITATION_GRID_ASSET_KIND,
+            format="NetCDF",
+            relative_path="data/downloads/ecmwf/missing.nc",
+            provider_code="ecmwf",
+            valid_from="2026-03-11T00:00:00",
+            valid_to="2026-03-12T00:00:00",
+            metadata={"cycle_time": "2026-03-11T00:00:00Z"},
+        )
+    window = DashboardWindow(
+        start_time=datetime(2026, 3, 1),
+        cutoff_time=datetime(2026, 3, 10, 23),
+        forecast_end_exclusive=datetime(2026, 3, 13),
+    )
+
+    try:
+        ops_dashboard_forecast.list_forecast_assets(
+            db_path, tmp_path, window=window
+        )
+    except ForecastIntegrityError as exc:
+        assert exc.code == "missing_registered_file"
+        assert "missing.nc" in str(exc)
+    else:
+        raise AssertionError("Expected a missing-file integrity error.")
+
+
+def test_build_forecast_map_returns_single_map_with_raster_inspector() -> None:
     fmap = ops_dashboard_forecast.build_forecast_map(_preview("Mapa original"), opacity=0.65)
 
     child_names = {child._name for child in fmap._children.values()}
@@ -115,8 +172,7 @@ def test_build_forecast_map_returns_single_map_with_raster_inspector(monkeypatch
     assert "LayerControl" not in child_names
 
 
-def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> None:
-    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda *args, **kwargs: None)
+def test_build_forecast_map_returns_dual_map_with_synced_layers() -> None:
     original = _preview("Mapa original")
     corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
 
@@ -129,8 +185,7 @@ def test_build_forecast_map_returns_dual_map_with_synced_layers(monkeypatch) -> 
     assert "LayerControl" not in {child._name for child in fmap.m2._children.values()}
 
 
-def test_build_forecast_map_artifacts_returns_external_legends(monkeypatch) -> None:
-    monkeypatch.setattr(ops_dashboard_forecast.ops_dashboard_data, "load_rivers_layer_geojson", lambda *args, **kwargs: None)
+def test_build_forecast_map_artifacts_returns_external_legends() -> None:
     original = _preview("Mapa original")
     corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
 

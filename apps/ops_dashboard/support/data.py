@@ -1,8 +1,9 @@
 """Thin, UI-facing adapters around canonical library APIs."""
 from __future__ import annotations
 
-import json
 from pathlib import Path
+
+import geopandas as gpd
 
 from mgb_ops.analysis.timeseries import (
     compute_observed_metrics,
@@ -17,21 +18,16 @@ from mgb_ops.analysis.timeseries import (
     summarize_station_status,
     validate_model_outputs_netcdf,
 )
+from mgb_ops.analysis.spatial_layers import MiniSpatialLayers, read_mini_layer, read_mini_layers
 
 
-def load_rivers_layer_geojson(path: Path) -> dict | None:
-    if not Path(path).exists():
-        return None
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if payload.get("type") != "FeatureCollection":
-        return None
-    for feature in payload.get("features", []):
-        properties = feature.setdefault("properties", {})
-        try:
-            mini_id = int(properties.get("mini_id"))
-        except (TypeError, ValueError):
-            properties["click_id"] = "MINI|"
-        else:
-            properties["mini_id"] = mini_id
-            properties["click_id"] = f"MINI|{mini_id}"
-    return payload
+def layer_geojson(frame: gpd.GeoDataFrame) -> dict:
+    return frame.__geo_interface__
+
+
+__all__ = [
+    "MiniSpatialLayers",
+    "layer_geojson",
+    "read_mini_layer",
+    "read_mini_layers",
+]

@@ -28,7 +28,13 @@ except ModuleNotFoundError as exc:
 
 from mgb_ops.common.paths import runtime_paths, set_workspace
 from mgb_ops.common.runtime import build_runtime_context, resolve_workspace_from_runtime_env
+from mgb_ops.common.time_utils import (
+    DashboardWindow,
+    resolve_dashboard_window,
+    resolve_workspace_path,
+)
 from mgb_ops.analysis.spatial import RegularGridSpec, observed_rainfall_grid
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 
 
@@ -61,6 +67,15 @@ def _model_outputs_path() -> Path:
     return _runtime_paths().processed_dir / "model_outputs.nc"
 
 
+def _dashboard_window() -> DashboardWindow:
+    return resolve_dashboard_window(_runtime_context().settings)
+
+
+def _mini_gpkg_path() -> Path:
+    context = _runtime_context()
+    return resolve_workspace_path(context.paths.workspace, context.settings["spatial"]["gpkg_path"])
+
+
 def _analysis_grid() -> RegularGridSpec:
     settings = _runtime_context().settings
     bbox = settings["forecast_grid"]["bbox"]
@@ -72,13 +87,11 @@ def _analysis_grid() -> RegularGridSpec:
     )
 
 
-from mgb_ops.qc.grib2_forecast_correction import ForecastCorrectionInstruction
 from apps.ops_dashboard.support import data as ops_dashboard_data
 from apps.ops_dashboard.support import forecast as ops_dashboard_forecast
 from apps.ops_dashboard.support import map as ops_dashboard_map
 from apps.ops_dashboard import map_component
 
-DAYS_WINDOW = 30
 MGB_COLORS = {"q": "#1864ab", "y": "#0b7285"}
 NO_LAYER_OPTION = "(none)"
 REFRESH_TS_FORMAT = "%d/%m/%Y %H:%M:%S"
@@ -108,38 +121,74 @@ st.set_page_config(
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def get_station_catalog(days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_station_catalog(_history_db_path(), days=days)
+def get_station_catalog(
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    del workspace, source_version
+    return ops_dashboard_data.load_station_catalog(
+        _history_db_path(),
+        start_time=window.start_time,
+        end_time=window.cutoff_time,
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
-def get_observed_series(station_id: str, days: int) -> pd.DataFrame:
-    return ops_dashboard_data.load_observed_series(station_id=station_id, database_path=_history_db_path(), days=days)
+def get_observed_series(
+    station_id: str,
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    del workspace, source_version
+    return ops_dashboard_data.load_observed_series(
+        station_id=station_id,
+        database_path=_history_db_path(),
+        start_time=window.start_time,
+        end_time=window.cutoff_time,
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def get_model_variables() -> pd.DataFrame:
+def get_model_variables(workspace: str, source_version: str, window: DashboardWindow) -> pd.DataFrame:
+    del workspace, source_version
+    ops_dashboard_data.validate_model_outputs_netcdf(_model_outputs_path(), expected_window=window)
     return ops_dashboard_data.list_model_variables(_model_outputs_path())
 
 
 @st.cache_data(show_spinner=False, max_entries=256)
-def get_mgb_series(mini_id: int, variable_code: str, days_window: int) -> pd.DataFrame:
+def get_mgb_series(
+    mini_id: int,
+    variable_code: str,
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    del workspace, source_version
     return ops_dashboard_data.load_mgb_series(
         _model_outputs_path(),
         mini_id=mini_id,
         variable_code=variable_code,
-        days_window=days_window,
+        window=window,
     )
 
 
 @st.cache_data(show_spinner=False, max_entries=16)
-def get_observed_accumulation(horizon_hours: int, end_time_iso: str):
+def get_observed_accumulation(
+    horizon_hours: int,
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+):
+    del workspace, source_version
+    end_time_iso = window.cutoff_time.isoformat()
     end_time = pd.Timestamp(end_time_iso).to_pydatetime()
     settings = _runtime_context().settings
     return observed_rainfall_grid(
         _history_db_path(),
         grid=_analysis_grid(),
-        start_time=end_time - pd.Timedelta(hours=int(horizon_hours)),
+        start_time=max(window.start_time, end_time - pd.Timedelta(hours=int(horizon_hours))),
         end_time=end_time,
         nearest_stations=int(settings["rainfall_interpolation"]["nearest_stations"]),
         power=float(settings["rainfall_interpolation"]["power"]),
@@ -147,34 +196,59 @@ def get_observed_accumulation(horizon_hours: int, end_time_iso: str):
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
-def get_accumulation_rasters() -> list[dict[str, object]]:
+def get_accumulation_rasters(
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> list[dict[str, object]]:
     settings = _runtime_context().settings
-    end_time = pd.Timestamp.now().floor("h")
     return [
         {
             "name": f"accum_{int(hours)}h",
             "horizon_hours": int(hours),
             "horizon_label": f"{int(hours)}h",
-            "grid": get_observed_accumulation(int(hours), end_time.isoformat()),
+            "grid": get_observed_accumulation(
+                int(hours), workspace, source_version, window
+            ),
         }
         for hours in settings["summaries"]["accum_hours"]
     ]
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
-def get_rivers_geojson() -> dict | None:
-    return ops_dashboard_data.load_rivers_layer_geojson(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
+def get_mini_layers(
+    workspace: str,
+    source_version: str,
+) -> ops_dashboard_data.MiniSpatialLayers:
+    del workspace, source_version
+    return ops_dashboard_data.read_mini_layers(_mini_gpkg_path())
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
-def get_forecast_assets() -> pd.DataFrame:
-    return ops_dashboard_forecast.list_forecast_assets(_history_db_path(), _runtime_paths().workspace)
+def get_forecast_assets(
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    del source_version
+    return ops_dashboard_forecast.list_forecast_assets(
+        _history_db_path(), Path(workspace), window=window
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
-def get_forecast_steps(asset_id: str) -> pd.DataFrame:
+def get_forecast_steps(
+    asset_id: str,
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> pd.DataFrame:
+    del source_version
     return ops_dashboard_forecast.list_forecast_steps(
-        asset_id, database_path=_history_db_path(), workspace_path=_runtime_paths().workspace
+        asset_id,
+        database_path=_history_db_path(),
+        workspace_path=Path(workspace),
+        window=window,
     )
 
 
@@ -189,13 +263,21 @@ def get_saved_forecast_edits(asset_id: str) -> pd.DataFrame:
 
 
 @st.cache_data(show_spinner=False, max_entries=128)
-def get_forecast_preview(asset_id: str, t0_step: int, t1_step: int) -> ops_dashboard_forecast.ForecastPreview:
+def get_forecast_preview(
+    asset_id: str,
+    t0_step: int,
+    t1_step: int,
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
+) -> ops_dashboard_forecast.ForecastPreview:
+    del source_version, window
     return ops_dashboard_forecast.build_forecast_preview(
         asset_id,
         t0_step=t0_step,
         t1_step=t1_step,
         database_path=_history_db_path(),
-        workspace_path=_runtime_paths().workspace,
+        workspace_path=Path(workspace),
         target_grid=_analysis_grid(),
     )
 
@@ -210,6 +292,9 @@ def get_forecast_map_artifacts(
     rotation_deg: float,
     multiplication_factor: float,
     opacity: float,
+    workspace: str,
+    source_version: str,
+    window: DashboardWindow,
 ) -> ops_dashboard_forecast.ForecastMapComparisonArtifacts:
     request = ops_dashboard_forecast.ForecastPreviewRequest(
         asset_id=asset_id,
@@ -221,7 +306,9 @@ def get_forecast_map_artifacts(
         multiplication_factor=float(multiplication_factor),
         opacity=float(opacity),
     )
-    preview = get_forecast_preview(asset_id, int(t0_step), int(t1_step))
+    preview = get_forecast_preview(
+        asset_id, int(t0_step), int(t1_step), workspace, source_version, window
+    )
     corrected_preview = (
         ops_dashboard_forecast.apply_preview_corrections(
             preview, [build_forecast_instruction_from_request(request)]
@@ -247,23 +334,36 @@ def get_map_artifacts(
     map_cache_key: str,
     selected_layer_name: Optional[str],
     opacity: float,
+    workspace: str,
+    history_version: str,
+    spatial_version: str,
+    window: DashboardWindow,
 ) -> map_component.MapRenderArtifacts:
     del map_cache_key
     stations_df = (
-        ops_dashboard_data.load_station_catalog(_history_db_path(), days=DAYS_WINDOW)
+        get_station_catalog(workspace, history_version, window)
         if _history_db_path().exists()
         else pd.DataFrame(columns=["lat", "lon"])
     )
-    rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
     try:
-        raster_catalog = {str(item["name"]): item for item in get_accumulation_rasters()}
+        mini_layers = get_mini_layers(workspace, spatial_version)
+        segments_geojson = ops_dashboard_data.layer_geojson(mini_layers.mini_segments)
+        catchments_geojson = ops_dashboard_data.layer_geojson(mini_layers.mini_catchments)
+    except (FileNotFoundError, ValueError):
+        segments_geojson = catchments_geojson = None
+    try:
+        raster_catalog = {
+            str(item["name"]): item
+            for item in get_accumulation_rasters(workspace, history_version, window)
+        }
     except (FileNotFoundError, sqlite3.Error, ValueError):
         raster_catalog = {}
     base_map = ops_dashboard_map.build_ops_map(
         selected_layer_name,
         opacity,
         stations_df,
-        rivers_geojson,
+        segments_geojson,
+        catchments_geojson,
         raster_catalog,
     )
     return map_component.build_map_render_artifacts(base_map)
@@ -284,7 +384,7 @@ def initialize_session_state() -> None:
 def trigger_manual_refresh() -> None:
     st.cache_data.clear()
     st.cache_resource.clear()
-    st.session_state["last_refresh_at"] = pd.Timestamp.now().strftime(REFRESH_TS_FORMAT)
+    st.session_state["last_refresh_at"] = _dashboard_window().cutoff_time.strftime(REFRESH_TS_FORMAT)
     st.rerun()
 
 
@@ -550,7 +650,12 @@ def render_header_and_summary(stations: pd.DataFrame) -> None:
             render_compact_summary_item(col, label, value)
 
 
-def render_station_summary_panel(row: Optional[pd.Series], observed_df: pd.DataFrame) -> None:
+def render_station_summary_panel(
+    row: Optional[pd.Series],
+    observed_df: pd.DataFrame,
+    *,
+    window: DashboardWindow,
+) -> None:
     with st.container(border=True):
         st.subheader("Station Summary")
         if row is None:
@@ -566,7 +671,9 @@ def render_station_summary_panel(row: Optional[pd.Series], observed_df: pd.DataF
             st.info("No observed data for this station in the selected window.")
             return
 
-        metrics = ops_dashboard_data.compute_observed_metrics(observed_df)
+        metrics = ops_dashboard_data.compute_observed_metrics(
+            observed_df, cutoff_time=window.cutoff_time
+        )
         st.caption(f"{provider}:{station_code}")
         st.markdown(
             "Latest reading: {latest} | Rainfall 12h: {rain_12h} | Rainfall 24h: {rain_24h}".format(
@@ -584,81 +691,40 @@ def render_station_summary_panel(row: Optional[pd.Series], observed_df: pd.DataF
         )
 
 
-def compute_mini_level_summary(df: pd.DataFrame, days: int) -> dict[str, float | pd.Timestamp | None]:
-    if df.empty:
-        return {
-            "current_level": np.nan,
-            "current_time": None,
-            "recent_peak": np.nan,
-            "forecast_peak": np.nan,
-        }
-
-    current_df = df[df["prev_flag"] == 0].copy().sort_values("dt")
-    forecast_df = df[df["prev_flag"] == 1].copy().sort_values("dt")
-    if current_df.empty:
-        return {
-            "current_level": np.nan,
-            "current_time": None,
-            "recent_peak": np.nan,
-            "forecast_peak": np.nan,
-        }
-
-    latest_current = current_df.iloc[-1]
-    current_time = pd.Timestamp(latest_current["dt"])
-    recent_start = current_time - pd.Timedelta(days=days)
-    forecast_end = current_time + pd.Timedelta(days=days)
-
-    recent_window = current_df[current_df["dt"] >= recent_start]
-    forecast_window = forecast_df[forecast_df["dt"] <= forecast_end]
-
-    return {
-        "current_level": float(latest_current["value"]) if pd.notna(latest_current["value"]) else np.nan,
-        "current_time": current_time,
-        "recent_peak": float(recent_window["value"].max()) if not recent_window.empty else np.nan,
-        "forecast_peak": float(forecast_window["value"].max()) if not forecast_window.empty else np.nan,
-    }
-
-
 def render_mini_summary_panel(
     mini_id: Optional[int],
     y_series: pd.DataFrame,
     *,
-    summary_days: int,
-) -> int:
+    window: DashboardWindow,
+) -> None:
     with st.container(border=True):
         st.subheader("Mini Summary")
         if mini_id is None:
             st.caption("Click a river geometry on the map to load the model series.")
-            return summary_days
+            return
 
         st.markdown(f"**Mini {mini_id}**")
-        summary_days = st.selectbox(
-            "Summary window (days)",
-            options=[3, 5, 7, 10, 15, 30],
-            index=[3, 5, 7, 10, 15, 30].index(summary_days),
-            key="mini_summary_days",
-        )
-
         if y_series.empty:
             st.info("No level series for the selected mini.")
-            return summary_days
+            return
 
-        summary = compute_mini_level_summary(y_series, summary_days)
+        summary = ops_dashboard_data.summarize_mini_peaks(
+            y_series,
+            cutoff_time=window.cutoff_time,
+            forecast_end_exclusive=window.forecast_end_exclusive,
+        )
         st.markdown(
-            "Current level: {current_level} | Highest level in last {days} days: {recent_peak}".format(
-                current_level=format_value(summary["current_level"], "m"),
-                days=summary_days,
-                recent_peak=format_value(summary["recent_peak"], "m"),
+            "Current level: {current_level} | Highest level in the observed window: {recent_peak}".format(
+                current_level=format_value(summary["current_value"], "m"),
+                recent_peak=format_value(summary["current_peak"], "m"),
             )
         )
         st.markdown(
-            "Highest level in next {days} days: {forecast_peak} | Current reference: {current_time}".format(
-                days=summary_days,
+            "Highest level in the forecast window: {forecast_peak} | Current reference: {current_time}".format(
                 forecast_peak=format_value(summary["forecast_peak"], "m"),
                 current_time=format_timestamp(summary["current_time"], include_year=True),
             )
         )
-        return summary_days
 
 
 def lookup_variable_metadata(model_variables: pd.DataFrame, variable_code: Optional[str]) -> tuple[str, str]:
@@ -673,7 +739,7 @@ def lookup_variable_metadata(model_variables: pd.DataFrame, variable_code: Optio
     return str(row["display_name"]), str(row["unit"])
 
 
-def time_series_chart(df: pd.DataFrame, station_id: str, days: int) -> None:
+def time_series_chart(df: pd.DataFrame, station_id: str, window: DashboardWindow) -> None:
     if df.empty:
         st.info("No data for this station/interval.")
         return
@@ -743,7 +809,7 @@ def time_series_chart(df: pd.DataFrame, station_id: str, days: int) -> None:
         xaxis=dict(title=""),
         xaxis2=dict(title="Date/time"),
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"chart-{station_id}-{days}")
+    st.plotly_chart(fig, use_container_width=True, key=f"chart-{station_id}-{window.cache_key()}")
 
 
 def mgb_time_series_chart(
@@ -752,7 +818,7 @@ def mgb_time_series_chart(
     variable_code: str,
     variable_display: str,
     unit: str,
-    days_window: int,
+    window: DashboardWindow,
     *,
     height: int = 420,
 ) -> None:
@@ -797,12 +863,20 @@ def mgb_time_series_chart(
         xaxis=dict(title="Date/time"),
         yaxis=dict(title=f"{variable_display} ({unit})"),
     )
-    st.plotly_chart(fig, use_container_width=True, key=f"mgb-chart-{variable_code}-{mini_id}-{days_window}")
+    st.plotly_chart(fig, use_container_width=True, key=f"mgb-chart-{variable_code}-{mini_id}-{window.cache_key()}")
 
 
-def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) -> str:
+def compute_map_cache_key(
+    selected_layer_name: Optional[str],
+    opacity: float,
+    *,
+    workspace: str,
+    history_version: str,
+    spatial_version: str,
+    window: DashboardWindow,
+) -> str:
     try:
-        accumulation_rasters = get_accumulation_rasters()
+        accumulation_rasters = get_accumulation_rasters(workspace, history_version, window)
     except (FileNotFoundError, sqlite3.Error, ValueError):
         accumulation_rasters = []
     raster_catalog = {str(item["name"]): item for item in accumulation_rasters}
@@ -819,8 +893,8 @@ def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) ->
     return ops_dashboard_map.build_map_cache_key(
         selected_layer_name=selected_layer_name,
         opacity=opacity,
-        history_version=ops_dashboard_map.build_file_version(_history_db_path()),
-        rivers_version=ops_dashboard_map.build_file_version(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson"),
+        history_version=history_version,
+        spatial_version=spatial_version,
         raster_version=raster_version,
         station_id=st.session_state.get("station_id"),
         mini_id=st.session_state.get("mini_id"),
@@ -888,26 +962,50 @@ def render_sidebar_controls(
 
 def render_monitoring_tab(
     stations_df: pd.DataFrame,
-    rivers_geojson: dict | None,
     model_variables: pd.DataFrame,
     selected_layer_name: Optional[str],
     opacity: float,
+    *,
+    workspace: str,
+    history_version: str,
+    spatial_version: str,
+    model_version: str,
+    window: DashboardWindow,
 ) -> None:
-    map_cache_key = compute_map_cache_key(selected_layer_name, opacity)
+    map_cache_key = compute_map_cache_key(
+        selected_layer_name,
+        opacity,
+        workspace=workspace,
+        history_version=history_version,
+        spatial_version=spatial_version,
+        window=window,
+    )
     map_warning: Optional[str] = None
     try:
-        map_artifacts = get_map_artifacts(map_cache_key, selected_layer_name, opacity)
-    except RuntimeError as exc:
+        map_artifacts = get_map_artifacts(
+            map_cache_key, selected_layer_name, opacity,
+            workspace, history_version, spatial_version, window,
+        )
+    except (FileNotFoundError, RuntimeError, ValueError) as exc:
         map_warning = str(exc)
-        fallback_key = compute_map_cache_key(None, opacity)
-        map_artifacts = get_map_artifacts(fallback_key, None, opacity)
+        fallback_key = compute_map_cache_key(
+            None, opacity, workspace=workspace, history_version=history_version,
+            spatial_version=spatial_version, window=window,
+        )
+        map_artifacts = get_map_artifacts(
+            fallback_key, None, opacity,
+            workspace, history_version, spatial_version, window,
+        )
 
     station_id = st.session_state.get("station_id")
     station_id = str(station_id) if station_id is not None else None
     mini_id = st.session_state.get("mini_id")
     mini_id = int(mini_id) if mini_id is not None else None
 
-    observed_series = get_observed_series(station_id, DAYS_WINDOW) if station_id is not None else pd.DataFrame()
+    observed_series = (
+        get_observed_series(station_id, workspace, history_version, window)
+        if station_id is not None else pd.DataFrame()
+    )
     selected_station_row: Optional[pd.Series] = None
     if station_id is not None and not stations_df.empty:
         selected = stations_df[stations_df["station_id"] == station_id]
@@ -919,8 +1017,6 @@ def render_monitoring_tab(
         st.caption("Click a station for observed data or a river segment for MGB series.")
         if map_warning:
             st.warning(map_warning)
-        if rivers_geojson is None:
-            st.warning("River layer not found at <workspace>/data/legacy/app_layers/rios_mini.geojson.")
         render_map_fragment(map_artifacts)
 
     lower_left, lower_right = st.columns(2)
@@ -934,15 +1030,15 @@ def render_monitoring_tab(
         y_series = q_series = empty_model_series
     else:
         try:
-            y_series = get_mgb_series(mini_id=mini_id, variable_code="y", days_window=DAYS_WINDOW)
-            q_series = get_mgb_series(mini_id=mini_id, variable_code="q", days_window=DAYS_WINDOW)
+            y_series = get_mgb_series(mini_id, "y", workspace, model_version, window)
+            q_series = get_mgb_series(mini_id, "q", workspace, model_version, window)
         except (FileNotFoundError, OSError, ValueError) as exc:
             y_series = q_series = empty_model_series
             model_warning = str(exc)
 
     with lower_left:
         st.subheader("Station Data")
-        render_station_summary_panel(selected_station_row, observed_series)
+        render_station_summary_panel(selected_station_row, observed_series, window=window)
 
     with lower_right:
         st.subheader("Mini Data")
@@ -951,7 +1047,7 @@ def render_monitoring_tab(
         render_mini_summary_panel(
             mini_id,
             y_series,
-            summary_days=st.session_state.get("mini_summary_days", 7),
+            window=window,
         )
 
     chart_left, chart_right = st.columns(2)
@@ -961,7 +1057,7 @@ def render_monitoring_tab(
             if station_id is None:
                 st.info("Select a station on the map.")
             else:
-                time_series_chart(observed_series, station_id, DAYS_WINDOW)
+                time_series_chart(observed_series, station_id, window)
 
     with chart_right:
         with st.container(border=True):
@@ -975,7 +1071,7 @@ def render_monitoring_tab(
                     variable_code="y",
                     variable_display=y_display,
                     unit=y_unit,
-                    days_window=DAYS_WINDOW,
+                    window=window,
                     height=320,
                 )
                 mgb_time_series_chart(
@@ -984,7 +1080,7 @@ def render_monitoring_tab(
                     variable_code="q",
                     variable_display=q_display,
                     unit=q_unit,
-                    days_window=DAYS_WINDOW,
+                    window=window,
                     height=320,
                 )
 
@@ -1189,10 +1285,13 @@ def render_forecast_tab() -> None:
         "Select a canonical ECMWF cycle, adjust the time window and correction parameters, "
         "then click Load maps to update the synchronized preview."
     )
+    workspace = str(_runtime_paths().workspace)
+    history_version = ops_dashboard_map.build_sqlite_version(_history_db_path())
+    window = _dashboard_window()
     try:
-        assets_df = get_forecast_assets()
-    except (FileNotFoundError, sqlite3.Error, ValueError) as exc:
-        st.warning(f"Forecast catalog unavailable: {exc}")
+        assets_df = get_forecast_assets(workspace, history_version, window)
+    except (FileNotFoundError, sqlite3.Error, RuntimeError, ValueError) as exc:
+        st.warning(str(exc))
         return
     if assets_df.empty:
         st.info("No canonical ECMWF asset was found in <workspace>/data/history.sqlite.")
@@ -1206,9 +1305,15 @@ def render_forecast_tab() -> None:
         format_func=lambda asset_id: asset_lookup.get(asset_id, asset_id),
         key="forecast_asset_id",
     )
+    selected_asset_path = Path(
+        assets_df.loc[assets_df["asset_id"] == selected_asset_id, "asset_path"].iloc[0]
+    )
+    forecast_version = ops_dashboard_map.build_file_version(selected_asset_path)
 
     try:
-        steps_df = get_forecast_steps(selected_asset_id)
+        steps_df = get_forecast_steps(
+            selected_asset_id, workspace, history_version, window
+        )
     except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
         st.warning(str(exc))
         return
@@ -1283,7 +1388,14 @@ def render_forecast_tab() -> None:
         st.info("Adjust the parameters and click `Load maps` to build the preview for this ECMWF cycle.")
     else:
         try:
-            preview = get_forecast_preview(current_request.asset_id, int(current_request.t0_step), int(current_request.t1_step))
+            preview = get_forecast_preview(
+                current_request.asset_id,
+                int(current_request.t0_step),
+                int(current_request.t1_step),
+                workspace,
+                forecast_version,
+                window,
+            )
             map_artifacts = get_forecast_map_artifacts(
                 current_request.asset_id,
                 int(current_request.t0_step),
@@ -1293,6 +1405,9 @@ def render_forecast_tab() -> None:
                 float(current_request.rotation_deg),
                 float(current_request.multiplication_factor),
                 float(current_request.opacity),
+                workspace,
+                forecast_version,
+                window,
             )
         except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
             st.warning(str(exc))
@@ -1351,11 +1466,16 @@ def render_forecast_tab() -> None:
 def main() -> None:
     initialize_session_state()
 
+    workspace = str(_runtime_paths().workspace)
+    window = _dashboard_window()
     history_path = _history_db_path()
+    history_version = ops_dashboard_map.build_sqlite_version(history_path)
+    spatial_version = ops_dashboard_map.build_file_version(_mini_gpkg_path())
+    model_version = ops_dashboard_map.build_file_version(_model_outputs_path())
     source_warnings: list[str] = []
     if history_path.exists():
         try:
-            stations_df = get_station_catalog(DAYS_WINDOW)
+            stations_df = get_station_catalog(workspace, history_version, window)
         except (sqlite3.Error, RuntimeError, ValueError) as exc:
             stations_df = pd.DataFrame()
             source_warnings.append(f"Observed database could not be read: {exc}")
@@ -1364,14 +1484,20 @@ def main() -> None:
         source_warnings.append(
             f"History database not found: {history_path}. Observed stations and forecast registration are unavailable."
         )
-    rivers_geojson = get_rivers_geojson()
     try:
-        model_variables = get_model_variables()
+        get_mini_layers(workspace, spatial_version)
+    except (FileNotFoundError, ValueError) as exc:
+        source_warnings.append(f"Mini spatial layers unavailable: {exc}")
+    try:
+        model_variables = get_model_variables(workspace, model_version, window)
     except (FileNotFoundError, OSError, ValueError) as exc:
         model_variables = ops_dashboard_data.list_model_variables()
         source_warnings.append(str(exc))
     try:
-        accumulation_rasters = get_accumulation_rasters() if history_path.exists() else []
+        accumulation_rasters = (
+            get_accumulation_rasters(workspace, history_version, window)
+            if history_path.exists() else []
+        )
     except (FileNotFoundError, sqlite3.Error, ValueError) as exc:
         accumulation_rasters = []
         source_warnings.append(f"Observed rainfall maps unavailable: {exc}")
@@ -1387,10 +1513,14 @@ def main() -> None:
     with monitoring_tab:
         render_monitoring_tab(
             stations_df,
-            rivers_geojson,
             model_variables,
             selected_layer_name,
             opacity,
+            workspace=workspace,
+            history_version=history_version,
+            spatial_version=spatial_version,
+            model_version=model_version,
+            window=window,
         )
     with forecast_tab:
         render_forecast_tab()
