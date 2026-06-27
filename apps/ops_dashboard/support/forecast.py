@@ -169,7 +169,7 @@ def apply_preview_corrections(preview: ForecastPreview, instructions: list[objec
 
 def _add_preview(fmap: folium.Map, preview: ForecastPreview, opacity: float) -> None:
     ops_dashboard_map.add_raster_overlay(
-        fmap, data=preview.data, bounds=preview.bounds, layer_name=preview.title,
+        fmap, data=preview.data, latitudes=preview.latitudes, bounds=preview.bounds, layer_name=preview.title,
         opacity=opacity, horizon_label=preview.title, show=True, include_legend=False,
     )
 

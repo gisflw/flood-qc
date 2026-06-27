@@ -142,6 +142,26 @@ def build_raster_legend_spec(data: np.ndarray, *, caption: str) -> RasterLegendS
     return RasterLegendSpec(caption=caption, vmin=float(vmin), vmax=float(vmax))
 
 
+def north_first_raster_values(data: np.ndarray, latitudes: np.ndarray) -> np.ndarray:
+    """Return raster rows in Leaflet's north-to-south display order."""
+    values = np.asarray(data, dtype=np.float64)
+    latitude_values = np.asarray(latitudes, dtype=np.float64)
+    if values.ndim != 2:
+        raise ValueError("Raster values must be a two-dimensional array.")
+    if latitude_values.ndim != 1:
+        raise ValueError("Raster latitudes must be a one-dimensional array.")
+    if latitude_values.size != values.shape[0]:
+        raise ValueError(
+            f"Raster latitude length ({latitude_values.size}) must match raster rows ({values.shape[0]})."
+        )
+    if not np.all(np.isfinite(latitude_values)):
+        raise ValueError("Raster latitudes must contain only finite values.")
+    latitude_deltas = np.diff(latitude_values)
+    if not (np.all(latitude_deltas > 0) or np.all(latitude_deltas < 0)):
+        raise ValueError("Raster latitudes must be strictly monotonic.")
+    return np.flipud(values) if np.all(latitude_deltas > 0) else values
+
+
 def build_raster_legend_html(spec: RasterLegendSpec) -> str:
     colors_hex = ["#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255)) for r, g, b in BLUES]
     gradient = ", ".join(
@@ -215,6 +235,7 @@ def add_raster_overlay(
     fmap: folium.Map,
     *,
     data: np.ndarray,
+    latitudes: np.ndarray,
     bounds: tuple[float, float, float, float],
     layer_name: str,
     opacity: float,
@@ -223,7 +244,8 @@ def add_raster_overlay(
     show: bool = True,
     include_legend: bool = True,
 ) -> bool:
-    legend_spec = build_raster_legend_spec(np.asarray(data, dtype=np.float64), caption=horizon_label or layer_name)
+    north_first_data = north_first_raster_values(data, latitudes)
+    legend_spec = build_raster_legend_spec(north_first_data, caption=horizon_label or layer_name)
     if legend_spec is None:
         return False
 
@@ -231,7 +253,7 @@ def add_raster_overlay(
     vmin, vmax = legend_spec.vmin, legend_spec.vmax
     overlay = ImageOverlay(
         name=layer_name,
-        image=np.asarray(data, dtype=np.float64),
+        image=north_first_data,
         bounds=[[south, west], [north, east]],
         opacity=float(opacity),
         interactive=False,
@@ -244,7 +266,7 @@ def add_raster_overlay(
     raster_group.add_to(fmap)
     if include_legend:
         add_legend(fmap, float(vmin), float(vmax), horizon_label=horizon_label or layer_name)
-    RasterClickPopup(np.asarray(data, dtype=np.float64), bounds, layer_name).add_to(fmap)
+    RasterClickPopup(north_first_data, bounds, layer_name).add_to(fmap)
     return True
 
 
@@ -268,6 +290,7 @@ def build_ops_map(
             add_raster_overlay(
                 fmap,
                 data=grid.values,
+                latitudes=grid.latitudes,
                 bounds=grid.bounds,
                 layer_name=f"Raster {meta['horizon_label']}",
                 opacity=opacity,
