@@ -85,6 +85,13 @@ On Windows PowerShell:
 python -m pip install -e ".[dev,data,geo]"
 ```
 
+For the operational dashboard:
+
+```bash
+python -m pip install -e '.[dashboard]'
+python -m streamlit run apps/ops_dashboard/app.py -- --workspace scratch/rs_hydro
+```
+
 ## Library Usage
 
 ```python

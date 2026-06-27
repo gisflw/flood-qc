@@ -55,6 +55,7 @@ def test_build_map_cache_key_changes_with_visual_state() -> None:
 
 def test_parse_click_token_recognizes_station_and_mini() -> None:
     assert ops_dashboard_map.parse_click_token("POSTO|1001 - TESTE") == "POSTO|1001"
+    assert ops_dashboard_map.parse_click_token("POSTO|ana:74100000 - TESTE") == "POSTO|ana:74100000"
     assert ops_dashboard_map.parse_click_token("MINI|539") == "MINI|539"
     assert ops_dashboard_map.parse_click_token("sem token") is None
 

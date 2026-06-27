@@ -5,19 +5,24 @@ correction. The dashboard should stay thin: Streamlit rendering and session
 state live here, while reusable data access, model, ingestion, and correction
 logic should live in `mgb_ops` library modules.
 
-Expected usage:
+Install and run:
 
 ```bash
-mgb-ops --workspace examples/rs_hydro dashboard
+python -m pip install -e '.[dashboard]'
+python -m streamlit run apps/ops_dashboard/app.py -- --workspace scratch/rs_hydro
 ```
 
 The dashboard consumes:
 
 - `<workspace>/data/history.sqlite` for station registry and observed series;
-- `<workspace>/mgb_runner/Output/QTUDO_Inercial_Atual.MGB` and `<workspace>/mgb_runner/Output/YTUDO.MGB` for MGB series;
-- `<workspace>/mgb_runner/Input/PARHIG.hig` and `<workspace>/mgb_runner/Input/MINI.gtp` for mini metadata and mapping;
-- `<workspace>/data/interim/accum_*h.tif` for accumulated rainfall rasters;
+- `<workspace>/data/processed/model_outputs.nc` for MGB series;
+- registered canonical forecast NetCDF assets for forecast precipitation;
+- observed rainfall in `history.sqlite`, accumulated and interpolated in memory;
 - `<workspace>/data/legacy/app_layers/rios_mini.geojson` for clicking MGB minis.
+
+Set `forecast_grid.bbox: [west, south, east, north]` in
+`<workspace>/config/custom.yaml`. The common map resolution is controlled by
+`summaries.grid_resolution_degrees` and defaults to `0.1`.
 
 Additional behavior:
 

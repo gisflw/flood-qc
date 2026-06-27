@@ -15,13 +15,13 @@ import numpy as np
 import pandas as pd
 from folium.raster_layers import ImageOverlay
 
-from apps.ops_dashboard.support import data as ops_dashboard_data
+from mgb_ops.analysis.spatial import PrecipitationGrid
 
 
 NO_DATA_COLOR = "#e64980"
 DATA_ISSUE_COLOR = "#f08c00"
 KIND_COLORS = {"level": "#0b7285", "rain": "#364fc7", "mixed": "#2b8a3e", "no_data": "#868e96"}
-CLICK_TOKEN_PATTERN = re.compile(r"(POSTO\|\d+|MINI\|\d+)")
+CLICK_TOKEN_PATTERN = re.compile(r"(POSTO\|[A-Za-z0-9_.:-]+|MINI\|\d+)")
 MAP_RETURNED_OBJECTS = ("last_object_clicked_tooltip",)
 BLUES = np.array(
     [
@@ -256,11 +256,13 @@ def build_ops_map(
     if selected_layer_name:
         meta = raster_catalog.get(selected_layer_name)
         if meta:
-            data, bounds = ops_dashboard_data.load_raster_data(Path(str(meta["path"])))
+            grid = meta.get("grid")
+            if not isinstance(grid, PrecipitationGrid):
+                raise TypeError("Rainfall map catalog entries must contain a PrecipitationGrid.")
             add_raster_overlay(
                 fmap,
-                data=data,
-                bounds=bounds,
+                data=grid.values,
+                bounds=grid.bounds,
                 layer_name=f"Raster {meta['horizon_label']}",
                 opacity=opacity,
                 horizon_label=str(meta["horizon_label"]),

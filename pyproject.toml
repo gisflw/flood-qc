@@ -32,6 +32,17 @@ forecast = [
 geo = [
   "rasterio>=1.3",
 ]
+dashboard = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "xarray>=2024.1",
+  "netCDF4>=1.6",
+  "streamlit>=1.40",
+  "plotly>=5.20",
+  "folium>=0.17",
+  "streamlit-folium>=0.23",
+  "branca>=0.7",
+]
 dev = [
   "pytest>=8.0",
   "xarray>=2024.1",

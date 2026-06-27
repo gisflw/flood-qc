@@ -23,12 +23,13 @@ try:
 except ModuleNotFoundError as exc:
     raise SystemExit(
         "UI dependencies not found. Install them with: "
-        "pip install streamlit plotly folium streamlit-folium branca rasterio"
+        "python -m pip install -e '.[dashboard]'"
     ) from exc
 
 from mgb_ops.common.paths import runtime_paths, set_workspace
 from mgb_ops.common.runtime import build_runtime_context, resolve_workspace_from_runtime_env
-from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.analysis.spatial import RegularGridSpec, observed_rainfall_grid
+from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 
 
 def _configure_workspace_from_argv(argv: list[str]) -> None:
@@ -55,12 +56,27 @@ def _runtime_paths():
 def _history_db_path() -> Path:
     return _runtime_paths().history_db
 
-from mgb_ops.storage.history_repository import HistoryRepository
-from mgb_ops.qc.ecmwf_forecast_correction import ForecastCorrectionInstruction
+
+def _model_outputs_path() -> Path:
+    return _runtime_paths().processed_dir / "model_outputs.nc"
+
+
+def _analysis_grid() -> RegularGridSpec:
+    settings = _runtime_context().settings
+    bbox = settings["forecast_grid"]["bbox"]
+    if bbox is None:
+        raise ValueError("Set forecast_grid.bbox in <workspace>/config/custom.yaml to enable rainfall maps.")
+    return RegularGridSpec(
+        bbox=tuple(float(value) for value in bbox),
+        resolution=float(settings["summaries"]["grid_resolution_degrees"]),
+    )
+
+
+from mgb_ops.qc.grib2_forecast_correction import ForecastCorrectionInstruction
 from apps.ops_dashboard.support import data as ops_dashboard_data
 from apps.ops_dashboard.support import forecast as ops_dashboard_forecast
 from apps.ops_dashboard.support import map as ops_dashboard_map
-import map_component
+from apps.ops_dashboard import map_component
 
 DAYS_WINDOW = 30
 MGB_COLORS = {"q": "#1864ab", "y": "#0b7285"}
@@ -103,28 +119,46 @@ def get_observed_series(station_id: str, days: int) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=2)
 def get_model_variables() -> pd.DataFrame:
-    return ops_dashboard_data.list_model_variables()
+    return ops_dashboard_data.list_model_variables(_model_outputs_path())
 
 
 @st.cache_data(show_spinner=False, max_entries=256)
 def get_mgb_series(mini_id: int, variable_code: str, days_window: int) -> pd.DataFrame:
-    context = _runtime_context()
-    paths = context.paths
-    settings = context.settings
     return ops_dashboard_data.load_mgb_series(
+        _model_outputs_path(),
         mini_id=mini_id,
         variable_code=variable_code,
-        parhig_path=paths.mgb_input_dir / "PARHIG.hig",
-        mini_gtp_path=paths.mgb_input_dir / "MINI.gtp",
-        output_dir=paths.mgb_output_dir,
-        reference_time=resolve_reference_time(settings["run"]["reference_time"]),
         days_window=days_window,
+    )
+
+
+@st.cache_data(show_spinner=False, max_entries=16)
+def get_observed_accumulation(horizon_hours: int, end_time_iso: str):
+    end_time = pd.Timestamp(end_time_iso).to_pydatetime()
+    settings = _runtime_context().settings
+    return observed_rainfall_grid(
+        _history_db_path(),
+        grid=_analysis_grid(),
+        start_time=end_time - pd.Timedelta(hours=int(horizon_hours)),
+        end_time=end_time,
+        nearest_stations=int(settings["rainfall_interpolation"]["nearest_stations"]),
+        power=float(settings["rainfall_interpolation"]["power"]),
     )
 
 
 @st.cache_data(show_spinner=False, max_entries=4)
 def get_accumulation_rasters() -> list[dict[str, object]]:
-    return ops_dashboard_data.list_accumulation_rasters(_runtime_paths().interim_dir)
+    settings = _runtime_context().settings
+    end_time = pd.Timestamp.now().floor("h")
+    return [
+        {
+            "name": f"accum_{int(hours)}h",
+            "horizon_hours": int(hours),
+            "horizon_label": f"{int(hours)}h",
+            "grid": get_observed_accumulation(int(hours), end_time.isoformat()),
+        }
+        for hours in settings["summaries"]["accum_hours"]
+    ]
 
 
 @st.cache_data(show_spinner=False, max_entries=2)
@@ -134,18 +168,19 @@ def get_rivers_geojson() -> dict | None:
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def get_forecast_assets() -> pd.DataFrame:
-    return ops_dashboard_forecast.list_forecast_assets()
+    return ops_dashboard_forecast.list_forecast_assets(_history_db_path(), _runtime_paths().workspace)
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
 def get_forecast_steps(asset_id: str) -> pd.DataFrame:
-    return ops_dashboard_forecast.list_forecast_steps(asset_id)
+    return ops_dashboard_forecast.list_forecast_steps(
+        asset_id, database_path=_history_db_path(), workspace_path=_runtime_paths().workspace
+    )
 
 
 @st.cache_data(show_spinner=False, max_entries=64)
 def get_saved_forecast_edits(asset_id: str) -> pd.DataFrame:
-    with HistoryRepository(_history_db_path()) as repository:
-        rows = repository.list_forecast_manual_edits(asset_id)
+    rows = list_forecast_corrections(_history_db_path(), asset_id)
     if not rows:
         return pd.DataFrame(columns=FORECAST_EDIT_COLUMNS)
     frame = pd.DataFrame(rows)
@@ -155,7 +190,14 @@ def get_saved_forecast_edits(asset_id: str) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False, max_entries=128)
 def get_forecast_preview(asset_id: str, t0_step: int, t1_step: int) -> ops_dashboard_forecast.ForecastPreview:
-    return ops_dashboard_forecast.build_forecast_preview(asset_id, t0_step=t0_step, t1_step=t1_step)
+    return ops_dashboard_forecast.build_forecast_preview(
+        asset_id,
+        t0_step=t0_step,
+        t1_step=t1_step,
+        database_path=_history_db_path(),
+        workspace_path=_runtime_paths().workspace,
+        target_grid=_analysis_grid(),
+    )
 
 
 @st.cache_resource(show_spinner=False, max_entries=128)
@@ -179,7 +221,13 @@ def get_forecast_map_artifacts(
         multiplication_factor=float(multiplication_factor),
         opacity=float(opacity),
     )
-    preview, corrected_preview = ops_dashboard_forecast.build_preview_pair_from_request(request)
+    preview = get_forecast_preview(asset_id, int(t0_step), int(t1_step))
+    corrected_preview = (
+        ops_dashboard_forecast.apply_preview_corrections(
+            preview, [build_forecast_instruction_from_request(request)]
+        )
+        if request.has_correction else None
+    )
     component_key = (
         f"forecast-map-{asset_id}-{int(t0_step)}-{int(t1_step)}-"
         f"{round(float(shift_lat), 4)}-{round(float(shift_lon), 4)}-"
@@ -201,9 +249,16 @@ def get_map_artifacts(
     opacity: float,
 ) -> map_component.MapRenderArtifacts:
     del map_cache_key
-    stations_df = ops_dashboard_data.load_station_catalog(_history_db_path(), days=DAYS_WINDOW)
+    stations_df = (
+        ops_dashboard_data.load_station_catalog(_history_db_path(), days=DAYS_WINDOW)
+        if _history_db_path().exists()
+        else pd.DataFrame(columns=["lat", "lon"])
+    )
     rivers_geojson = ops_dashboard_data.load_rivers_layer_geojson(_runtime_paths().workspace / "data" / "legacy" / "app_layers" / "rios_mini.geojson")
-    raster_catalog = {str(item["name"]): item for item in ops_dashboard_data.list_accumulation_rasters(_runtime_paths().interim_dir)}
+    try:
+        raster_catalog = {str(item["name"]): item for item in get_accumulation_rasters()}
+    except (FileNotFoundError, sqlite3.Error, ValueError):
+        raster_catalog = {}
     base_map = ops_dashboard_map.build_ops_map(
         selected_layer_name,
         opacity,
@@ -746,13 +801,20 @@ def mgb_time_series_chart(
 
 
 def compute_map_cache_key(selected_layer_name: Optional[str], opacity: float) -> str:
-    accumulation_rasters = get_accumulation_rasters()
+    try:
+        accumulation_rasters = get_accumulation_rasters()
+    except (FileNotFoundError, sqlite3.Error, ValueError):
+        accumulation_rasters = []
     raster_catalog = {str(item["name"]): item for item in accumulation_rasters}
     raster_version = "no-raster"
     if selected_layer_name:
         meta = raster_catalog.get(selected_layer_name)
         if meta:
-            raster_version = ops_dashboard_map.build_file_version(Path(str(meta["path"])))
+            grid = meta["grid"]
+            raster_version = (
+                f"{getattr(grid, 'start_time', '')}:{getattr(grid, 'end_time', '')}:"
+                f"{np.nansum(getattr(grid, 'values', np.array([]))):.6f}"
+            )
 
     return ops_dashboard_map.build_map_cache_key(
         selected_layer_name=selected_layer_name,
@@ -864,16 +926,19 @@ def render_monitoring_tab(
     lower_left, lower_right = st.columns(2)
     y_display, y_unit = lookup_variable_metadata(model_variables, "y")
     q_display, q_unit = lookup_variable_metadata(model_variables, "q")
-    y_series = (
-        get_mgb_series(mini_id=mini_id, variable_code="y", days_window=DAYS_WINDOW)
-        if mini_id is not None
-        else pd.DataFrame(columns=["dt", "prev_flag", "value", "variable_code", "display_name", "unit"])
+    empty_model_series = pd.DataFrame(
+        columns=["dt", "prev_flag", "value", "variable_code", "display_name", "unit"]
     )
-    q_series = (
-        get_mgb_series(mini_id=mini_id, variable_code="q", days_window=DAYS_WINDOW)
-        if mini_id is not None
-        else pd.DataFrame(columns=["dt", "prev_flag", "value", "variable_code", "display_name", "unit"])
-    )
+    model_warning = None
+    if mini_id is None:
+        y_series = q_series = empty_model_series
+    else:
+        try:
+            y_series = get_mgb_series(mini_id=mini_id, variable_code="y", days_window=DAYS_WINDOW)
+            q_series = get_mgb_series(mini_id=mini_id, variable_code="q", days_window=DAYS_WINDOW)
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            y_series = q_series = empty_model_series
+            model_warning = str(exc)
 
     with lower_left:
         st.subheader("Station Data")
@@ -881,6 +946,8 @@ def render_monitoring_tab(
 
     with lower_right:
         st.subheader("Mini Data")
+        if model_warning:
+            st.warning(model_warning)
         render_mini_summary_panel(
             mini_id,
             y_series,
@@ -1070,8 +1137,9 @@ def render_forecast_corrections_fragment(
     if save_clicked:
         try:
             rows_to_persist = validate_forecast_edit_draft(selected_asset_id, edited_draft)
-            with HistoryRepository(_history_db_path()) as repository:
-                persisted_rows = repository.replace_forecast_manual_edits(selected_asset_id, rows_to_persist)
+            persisted_rows = replace_forecast_corrections(
+                _history_db_path(), selected_asset_id, rows_to_persist
+            )
             clear_saved_forecast_edits_cache(selected_asset_id)
             st.session_state["forecast_edit_draft"] = normalize_forecast_edit_frame(pd.DataFrame(persisted_rows))
             st.session_state["forecast_edit_draft"]["asset_id"] = selected_asset_id
@@ -1116,12 +1184,16 @@ def resolve_default_forecast_window(
 
 
 def render_forecast_tab() -> None:
-    assets_df = get_forecast_assets()
     st.subheader("ECMWF Forecast Rainfall")
     st.caption(
         "Select a canonical ECMWF cycle, adjust the time window and correction parameters, "
         "then click Load maps to update the synchronized preview."
     )
+    try:
+        assets_df = get_forecast_assets()
+    except (FileNotFoundError, sqlite3.Error, ValueError) as exc:
+        st.warning(f"Forecast catalog unavailable: {exc}")
+        return
     if assets_df.empty:
         st.info("No canonical ECMWF asset was found in <workspace>/data/history.sqlite.")
         return
@@ -1280,19 +1352,35 @@ def main() -> None:
     initialize_session_state()
 
     history_path = _history_db_path()
-    if not history_path.exists():
-        st.error(f"History database not found: {history_path}")
-        st.info("Set MGB_OPS_WORKSPACE or run the dashboard with `-- --workspace <workspace>`.")
-        return
-
-    stations_df = get_station_catalog(DAYS_WINDOW)
+    source_warnings: list[str] = []
+    if history_path.exists():
+        try:
+            stations_df = get_station_catalog(DAYS_WINDOW)
+        except (sqlite3.Error, RuntimeError, ValueError) as exc:
+            stations_df = pd.DataFrame()
+            source_warnings.append(f"Observed database could not be read: {exc}")
+    else:
+        stations_df = pd.DataFrame()
+        source_warnings.append(
+            f"History database not found: {history_path}. Observed stations and forecast registration are unavailable."
+        )
     rivers_geojson = get_rivers_geojson()
-    model_variables = get_model_variables()
-    accumulation_rasters = get_accumulation_rasters()
+    try:
+        model_variables = get_model_variables()
+    except (FileNotFoundError, OSError, ValueError) as exc:
+        model_variables = ops_dashboard_data.list_model_variables()
+        source_warnings.append(str(exc))
+    try:
+        accumulation_rasters = get_accumulation_rasters() if history_path.exists() else []
+    except (FileNotFoundError, sqlite3.Error, ValueError) as exc:
+        accumulation_rasters = []
+        source_warnings.append(f"Observed rainfall maps unavailable: {exc}")
     raster_catalog = {str(item["name"]): item for item in accumulation_rasters}
 
     ensure_default_selection(stations_df)
     render_header_and_summary(stations_df)
+    for warning in source_warnings:
+        st.warning(warning)
     selected_layer_name, opacity = render_sidebar_controls(accumulation_rasters, raster_catalog)
 
     monitoring_tab, forecast_tab = st.tabs(["Monitoring", "ECMWF Forecast Rainfall"])
