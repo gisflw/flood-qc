@@ -19,6 +19,7 @@ def _monitoring_view(controller: DashboardState) -> pn.viewable.Viewable:
     artifacts = controller.map_artifacts
     map_pane = pn.pane.DeckGL(
         artifacts.spec,
+        tooltips=artifacts.tooltips,
         height=590,
         sizing_mode="stretch_width",
         name="Operational map",
@@ -26,6 +27,7 @@ def _monitoring_view(controller: DashboardState) -> pn.viewable.Viewable:
 
     def update_map(event: Any) -> None:
         map_pane.object = event.new.spec
+        map_pane.tooltips = event.new.tooltips
 
     controller.param.watch(update_map, "map_artifacts")
     map_pane.param.watch(
@@ -111,4 +113,3 @@ def _monitoring_view(controller: DashboardState) -> pn.viewable.Viewable:
         ),
         sizing_mode="stretch_width",
     )
-

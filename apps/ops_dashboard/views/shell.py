@@ -59,8 +59,8 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
         ],
         main=[
             pn.pane.Markdown(
-                "# RS Flood Alert System\n"
-                "Observed stations, MGB output, rainfall rasters, and ECMWF correction workflows."
+                "# Operational MGB System\n"
+                "Observed and forecasted hydrological data for the operation of MGB results."
             ),
             pn.bind(_network_summary, state.param.stations),
             tabs,

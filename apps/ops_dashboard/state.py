@@ -25,7 +25,7 @@ from apps.ops_dashboard.services.loaders import (
     _forecast_preview,
     _forecast_steps,
     _mgb_series,
-    _mini_layers,
+    _mini_segments,
     _model_variables,
     _observed_series,
     _station_catalog,
@@ -96,7 +96,7 @@ class DashboardState(param.Parameterized):
         self.history_path = self.context.paths.history_db
         self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
         self.gpkg_path = resolve_workspace_path(
-            self.context.settings["spatial"]["gpkg_path"], self.workspace
+            self.workspace, self.context.settings["spatial"]["gpkg_path"]
         )
         super().__init__(**params)
         self.refresh()
@@ -139,11 +139,11 @@ class DashboardState(param.Parameterized):
                 f"History database not found: {self.history_path}",
             ]
 
-        segments = catchments = None
+        segments = None
         try:
-            minis = _mini_layers(str(self.gpkg_path), workspace, versions.spatial)
-            segments = minis.mini_segments.__geo_interface__
-            catchments = minis.mini_catchments.__geo_interface__
+            segments = _mini_segments(
+                str(self.gpkg_path), workspace, versions.spatial
+            ).__geo_interface__
         except (FileNotFoundError, ValueError) as exc:
             self.warnings = [
                 *self.warnings,
@@ -201,7 +201,7 @@ class DashboardState(param.Parameterized):
             preferred = self.stations[self.stations["status"] != "no_data"]
             row = preferred.iloc[0] if not preferred.empty else self.stations.iloc[0]
             self.station_id = str(row["station_id"])
-        self._rebuild_map(segments=segments, catchments=catchments)
+        self._rebuild_map(segments=segments)
         self._refresh_forecast_assets()
         self.last_refresh_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
@@ -210,19 +210,16 @@ class DashboardState(param.Parameterized):
         self,
         *_: Any,
         segments: dict[str, Any] | None = None,
-        catchments: dict[str, Any] | None = None,
     ) -> None:
-        if segments is None or catchments is None:
+        if segments is None:
             try:
-                minis = _mini_layers(
+                segments = _mini_segments(
                     str(self.gpkg_path),
                     str(self.workspace),
                     self.source_versions.get("spatial", ""),
-                )
-                segments = minis.mini_segments.__geo_interface__
-                catchments = minis.mini_catchments.__geo_interface__
+                ).__geo_interface__
             except (FileNotFoundError, ValueError):
-                segments = catchments = None
+                segments = None
         catalog = {
             str(item["name"]): item for item in self.accumulation_rasters
         }
@@ -231,12 +228,14 @@ class DashboardState(param.Parameterized):
             self.raster_opacity,
             self.stations,
             segments,
-            catchments,
             catalog,
         )
 
     def handle_map_click(self, click_state: Mapping[str, Any] | None) -> None:
-        selection = dashboard_map.decode_click_state(click_state)
+        selection = dashboard_map.decode_click_state(
+            click_state,
+            self.map_artifacts.pick_lookups if self.map_artifacts else {},
+        )
         if selection.station_id is not None:
             self.station_id = selection.station_id
         if selection.mini_id is not None:

@@ -43,17 +43,21 @@ def _network_summary(stations: pd.DataFrame) -> pn.viewable.Viewable:
         ("Mean rainfall 24h", _format_number(values[4], "mm")),
         ("P90 rainfall 24h", _format_number(values[5], "mm")),
     ]
-    return pn.FlexBox(
+    return pn.Row(
         *[
             pn.Card(
-                pn.pane.Markdown(f"## {value}\n{label}"),
+                pn.pane.HTML(
+                    f"<div style='font-size:0.78rem;line-height:1.15'>"
+                    f"<strong style='font-size:1.15rem'>{value}</strong><br>{label}</div>"
+                ),
                 hide_header=True,
-                min_width=150,
-                sizing_mode="stretch_width",
+                width=145,
+                margin=3,
             )
             for label, value in cards
         ],
         sizing_mode="stretch_width",
+        styles={"overflow-x": "auto", "flex-wrap": "nowrap"},
     )
 
 
@@ -104,4 +108,3 @@ def _mini_summary(state: DashboardState) -> pn.viewable.Viewable:
         f"Observed-window peak: {_format_number(summary['current_peak'], 'm', 2)} · "
         f"Forecast-window peak: {_format_number(summary['forecast_peak'], 'm', 2)}"
     )
-

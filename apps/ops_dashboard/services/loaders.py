@@ -5,11 +5,12 @@ from pathlib import Path
 
 import pandas as pd
 import panel as pn
+import geopandas as gpd
 
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.spatial import RegularGridSpec, observed_rainfall_grid
-from mgb_ops.analysis.spatial_layers import MiniSpatialLayers, read_mini_layers
+from mgb_ops.analysis.spatial_layers import read_mini_layer
 from mgb_ops.common.time_utils import DashboardWindow
 
 
@@ -46,11 +47,11 @@ def _observed_series(
 
 
 @pn.cache(max_items=8)
-def _mini_layers(
+def _mini_segments(
     gpkg_path: str, workspace: str, source_version: str
-) -> MiniSpatialLayers:
+) -> gpd.GeoDataFrame:
     del workspace, source_version
-    return read_mini_layers(Path(gpkg_path))
+    return read_mini_layer(Path(gpkg_path), "mini_segments")
 
 
 @pn.cache(max_items=8)
@@ -183,7 +184,7 @@ __all__ = [
     "_forecast_preview",
     "_forecast_steps",
     "_mgb_series",
-    "_mini_layers",
+    "_mini_segments",
     "_model_variables",
     "_observed_series",
     "_station_catalog",

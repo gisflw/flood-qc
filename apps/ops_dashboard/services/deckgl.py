@@ -62,6 +62,8 @@ class RasterLookup:
 class DeckGLArtifacts:
     spec: dict[str, Any]
     raster_lookups: dict[str, RasterLookup]
+    pick_lookups: dict[str, tuple[MapSelection, ...]]
+    tooltips: dict[str, dict[str, str]]
     legends: tuple[RasterLegendSpec, ...] = ()
 
 
@@ -314,11 +316,11 @@ def build_ops_map(
     opacity: float,
     stations: pd.DataFrame,
     segments_geojson: dict[str, Any] | None,
-    catchments_geojson: dict[str, Any] | None,
     raster_catalog: dict[str, dict[str, object]],
 ) -> DeckGLArtifacts:
     layers: list[dict[str, Any]] = []
     lookups: dict[str, RasterLookup] = {}
+    pick_lookups: dict[str, tuple[MapSelection, ...]] = {}
     legends: list[RasterLegendSpec] = []
     raster_bounds = None
     if selected_layer_name and selected_layer_name in raster_catalog:
@@ -341,14 +343,7 @@ def build_ops_map(
 
     for layer in (
         _geojson_layer(
-            "mini-catchments",
-            catchments_geojson,
-            line_color=[116, 192, 252, 180],
-            fill_color=[208, 235, 255, 30],
-            line_width=1,
-        ),
-        _geojson_layer(
-            "mini-rivers",
+            "mini-segments",
             segments_geojson,
             line_color=[25, 113, 194, 190],
             fill_color=[0, 0, 0, 0],
@@ -357,6 +352,11 @@ def build_ops_map(
     ):
         if layer is not None:
             layers.append(layer)
+            features = layer["data"].get("features", [])
+            pick_lookups[layer["id"]] = tuple(
+                MapSelection(mini_id=int(feature["properties"]["mini_id"]))
+                for feature in features
+            )
 
     station_data = _station_records(stations)
     if station_data:
@@ -377,20 +377,36 @@ def build_ops_map(
                 "autoHighlight": True,
             }
         )
+        pick_lookups["stations"] = tuple(
+            MapSelection(station_id=str(record["station_id"]))
+            for record in station_data
+        )
 
     spec = {
         "initialViewState": default_view_state(stations=stations, bounds=raster_bounds),
         "controller": True,
         "mapStyle": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
         "layers": layers,
-        "tooltip": {
+    }
+    tooltips = {
+        "stations": {
             "html": "<b>{station_name}</b><br/>{provider_code}:{station_code}<br/>{status}"
         },
+        "mini-segments": {"html": "<b>Mini {properties.mini_id}</b>"},
     }
-    return DeckGLArtifacts(spec=spec, raster_lookups=lookups, legends=tuple(legends))
+    return DeckGLArtifacts(
+        spec=spec,
+        raster_lookups=lookups,
+        pick_lookups=pick_lookups,
+        tooltips=tooltips,
+        legends=tuple(legends),
+    )
 
 
-def decode_click_state(click_state: Mapping[str, Any] | None) -> MapSelection:
+def decode_click_state(
+    click_state: Mapping[str, Any] | None,
+    pick_lookups: Mapping[str, tuple[MapSelection, ...]] | None = None,
+) -> MapSelection:
     if not click_state:
         return MapSelection()
     layer = click_state.get("layer") or click_state.get("layer_id") or {}
@@ -405,6 +421,20 @@ def decode_click_state(click_state: Mapping[str, Any] | None) -> MapSelection:
 
     station_id = properties.get("station_id") if isinstance(properties, Mapping) else None
     mini_id = properties.get("mini_id") if isinstance(properties, Mapping) else None
+    index = click_state.get("index")
+    indexed_selection = None
+    if (
+        station_id is None
+        and mini_id is None
+        and pick_lookups
+        and layer_id in pick_lookups
+        and isinstance(index, int)
+        and not isinstance(index, bool)
+        and 0 <= index < len(pick_lookups[layer_id])
+    ):
+        indexed_selection = pick_lookups[layer_id][index]
+        station_id = indexed_selection.station_id
+        mini_id = indexed_selection.mini_id
     if station_id is not None or layer_id == "stations":
         station_id = str(station_id) if station_id is not None else None
     if mini_id is not None:

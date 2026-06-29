@@ -52,19 +52,6 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
             }
         ]
     )
-    catchments = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {"mini_id": np.int64(7)},
-                "geometry": {
-                    "type": "Polygon",
-                    "coordinates": [[[-52, -31], [-51, -31], [-51, -30], [-52, -31]]],
-                },
-            }
-        ],
-    }
     rivers = {
         "type": "FeatureCollection",
         "features": [
@@ -80,20 +67,23 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
         0.6,
         stations,
         rivers,
-        catchments,
         {"accum_24h": {"grid": _grid(), "horizon_label": "24h"}},
     )
 
     layer_ids = [layer["id"] for layer in artifacts.spec["layers"]]
     assert layer_ids == [
         "rainfall-raster:accum_24h",
-        "mini-catchments",
-        "mini-rivers",
+        "mini-segments",
         "stations",
     ]
     assert artifacts.spec["layers"][0]["image"].startswith("data:image/png;base64,")
     json.dumps(artifacts.spec)
     assert set(artifacts.raster_lookups) == {"rainfall-raster:accum_24h"}
+    assert set(artifacts.tooltips) == {
+        "stations",
+        "mini-segments",
+    }
+    assert "tooltip" not in artifacts.spec
 
 
 def test_decode_station_mini_and_raster_clicks() -> None:
@@ -102,7 +92,7 @@ def test_decode_station_mini_and_raster_clicks() -> None:
     )
     mini = ops_dashboard_map.decode_click_state(
         {
-            "layer": "mini-catchments",
+            "layer": "mini-segments",
             "object": {"properties": {"mini_id": "7"}},
         }
     )
@@ -117,6 +107,23 @@ def test_decode_station_mini_and_raster_clicks() -> None:
     assert mini.mini_id == 7
     assert raster.raster_layer_id == "rainfall-raster:accum_24h"
     assert raster.coordinate == (-51.1, -30.1)
+
+
+def test_decode_panel_index_only_clicks() -> None:
+    lookups = {
+        "stations": (ops_dashboard_map.MapSelection(station_id="1001"),),
+        "mini-segments": (ops_dashboard_map.MapSelection(mini_id=7),),
+    }
+
+    station = ops_dashboard_map.decode_click_state(
+        {"layer": "stations", "index": 0}, lookups
+    )
+    mini = ops_dashboard_map.decode_click_state(
+        {"layer": "mini-segments", "index": 0}, lookups
+    )
+
+    assert station.station_id == "1001"
+    assert mini.mini_id == 7
 
 
 def test_raster_coordinate_lookup_returns_original_array_value() -> None:
@@ -136,10 +143,11 @@ def test_raster_coordinate_lookup_returns_original_array_value() -> None:
 
 def test_empty_sources_build_an_empty_but_usable_map() -> None:
     artifacts = ops_dashboard_map.build_ops_map(
-        None, 0.5, pd.DataFrame(), None, None, {}
+        None, 0.5, pd.DataFrame(), None, {}
     )
     assert artifacts.spec["layers"] == []
     assert artifacts.raster_lookups == {}
+    assert artifacts.pick_lookups == {}
 
 
 def test_raster_layer_keeps_missing_values_transparent() -> None:

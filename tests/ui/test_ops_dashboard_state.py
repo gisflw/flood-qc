@@ -40,6 +40,7 @@ def _preview() -> dashboard_forecast.ForecastPreview:
 
 def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
     state = dashboard_state.DashboardState(tmp_path)
+    assert state.gpkg_path == tmp_path / "data" / "source" / "rs_hydro.gpkg"
     grid = PrecipitationGrid(
         values=np.array([[1.0, 2.0], [3.0, 4.0]]),
         latitudes=np.array([-31.0, -30.0]),
@@ -55,14 +56,19 @@ def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
     state.map_artifacts = dashboard_map.DeckGLArtifacts(
         spec={"layers": [layer]},
         raster_lookups={lookup.layer_id: lookup},
+        pick_lookups={
+            "stations": (dashboard_map.MapSelection(station_id="1001"),),
+            "mini-segments": (dashboard_map.MapSelection(mini_id=7),),
+        },
+        tooltips={},
         legends=(legend,),
     )
 
     state.handle_map_click(
-        {"layer": "stations", "object": {"station_id": "1001"}}
+        {"layer": "stations", "index": 0}
     )
     state.handle_map_click(
-        {"layer": "mini-rivers", "object": {"properties": {"mini_id": 7}}}
+        {"layer": "mini-segments", "index": 0}
     )
     state.handle_map_click(
         {
