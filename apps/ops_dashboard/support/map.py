@@ -1,28 +1,29 @@
-﻿from __future__ import annotations
+"""JSON-only DeckGL builders for the operations dashboard."""
+from __future__ import annotations
 
+import base64
 import hashlib
 import json
-import re
+import struct
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import MutableMapping, Optional
+from typing import Any, Mapping
 
-import branca
-import folium
-import folium.elements
-import folium.plugins
 import numpy as np
 import pandas as pd
-from folium.raster_layers import ImageOverlay
 
 from mgb_ops.analysis.spatial import PrecipitationGrid
 
 
-NO_DATA_COLOR = "#e64980"
-DATA_ISSUE_COLOR = "#f08c00"
-KIND_COLORS = {"level": "#0b7285", "rain": "#364fc7", "mixed": "#2b8a3e", "no_data": "#868e96"}
-CLICK_TOKEN_PATTERN = re.compile(r"(POSTO\|[A-Za-z0-9_.:-]+|MINI\|\d+)")
-MAP_RETURNED_OBJECTS = ("last_object_clicked_tooltip",)
+NO_DATA_COLOR = [230, 73, 128, 180]
+DATA_ISSUE_COLOR = [240, 140, 0, 210]
+KIND_COLORS = {
+    "level": [11, 114, 133, 230],
+    "rain": [54, 79, 199, 230],
+    "mixed": [43, 138, 62, 230],
+    "no_data": [134, 142, 150, 180],
+}
 BLUES = np.array(
     [
         (239, 243, 255),
@@ -35,7 +36,7 @@ BLUES = np.array(
         (8, 48, 107),
     ],
     dtype=float,
-) / 255.0
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,6 +44,43 @@ class RasterLegendSpec:
     caption: str
     vmin: float
     vmax: float
+
+
+@dataclass(frozen=True, slots=True)
+class RasterLookup:
+    """Metadata needed to map a geographic click back to a raster cell."""
+
+    layer_id: str
+    layer_name: str
+    values: np.ndarray
+    latitudes: np.ndarray
+    longitudes: np.ndarray
+    bounds: tuple[float, float, float, float]
+
+
+@dataclass(frozen=True, slots=True)
+class DeckGLArtifacts:
+    spec: dict[str, Any]
+    raster_lookups: dict[str, RasterLookup]
+    legends: tuple[RasterLegendSpec, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
+class MapSelection:
+    station_id: str | None = None
+    mini_id: int | None = None
+    raster_layer_id: str | None = None
+    coordinate: tuple[float, float] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RasterValue:
+    layer_name: str
+    longitude: float
+    latitude: float
+    row: int
+    column: int
+    value: float | None
 
 
 def build_file_version(path: Path) -> str:
@@ -55,7 +93,9 @@ def build_file_version(path: Path) -> str:
 
 def build_sqlite_version(path: Path) -> str:
     target = Path(path)
-    return "|".join(build_file_version(candidate) for candidate in (target, Path(f"{target}-wal")))
+    return "|".join(
+        build_file_version(candidate) for candidate in (target, Path(f"{target}-wal"))
+    )
 
 
 def build_map_cache_key(
@@ -68,6 +108,8 @@ def build_map_cache_key(
     station_id: str | None = None,
     mini_id: int | None = None,
 ) -> str:
+    # Selections update summaries/charts and intentionally do not rebuild the map.
+    del station_id, mini_id
     payload = {
         "selected_layer_name": selected_layer_name,
         "opacity": round(float(opacity), 4),
@@ -75,75 +117,10 @@ def build_map_cache_key(
         "spatial_version": spatial_version,
         "raster_version": raster_version,
     }
-    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
-
-
-def parse_click_token(tooltip_value: Optional[str]) -> Optional[str]:
-    if not tooltip_value:
-        return None
-    match = CLICK_TOKEN_PATTERN.search(str(tooltip_value))
-    if not match:
-        return None
-    return match.group(1)
-
-
-def update_selection_from_click_token(click_token: Optional[str], session_state: MutableMapping[str, object]) -> bool:
-    if not click_token:
-        return False
-
-    changed = False
-    if click_token.startswith("POSTO|"):
-        station_id = click_token.split("|", 1)[1].strip()
-        if session_state.get("station_id") != station_id:
-            session_state["station_id"] = station_id
-            changed = True
-
-    if click_token.startswith("MINI|"):
-        mini_id = int(click_token.split("|", 1)[1].strip())
-        if session_state.get("mini_id") != mini_id:
-            session_state["mini_id"] = mini_id
-            changed = True
-
-    return changed
-
-
-def color_ramp_factory(vmin: float, vmax: float, alpha: float):
-    stops = np.linspace(0, 1, len(BLUES))
-
-    def cmap(val: float):
-        if val is None or np.isnan(val):
-            return (0, 0, 0, 0)
-        span = vmax - vmin
-        t = 0.5 if span <= 0 else (val - vmin) / span
-        t = float(np.clip(t, 0.0, 1.0))
-        r = float(np.interp(t, stops, BLUES[:, 0]))
-        g = float(np.interp(t, stops, BLUES[:, 1]))
-        b = float(np.interp(t, stops, BLUES[:, 2]))
-        return (r, g, b, alpha)
-
-    return cmap
-
-
-def add_legend(fmap: folium.Map, vmin: float, vmax: float, *, horizon_label: Optional[str]) -> None:
-    colors_hex = ["#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255)) for r, g, b in BLUES]
-    colormap = branca.colormap.LinearColormap(colors=colors_hex, vmin=float(vmin), vmax=float(vmax))
-    horizon_text = horizon_label or "selected period"
-    colormap.caption = f"Accumulated rainfall over the last {horizon_text}"
-    colormap.add_to(fmap)
-
-
-def build_raster_legend_spec(data: np.ndarray, *, caption: str) -> RasterLegendSpec | None:
-    finite_values = np.asarray(data, dtype=np.float64)
-    finite_values = finite_values[np.isfinite(finite_values)]
-    if finite_values.size == 0:
-        return None
-
-    vmin, vmax = np.nanpercentile(finite_values, [5, 95])
-    return RasterLegendSpec(caption=caption, vmin=float(vmin), vmax=float(vmax))
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
 
 def north_first_raster_values(data: np.ndarray, latitudes: np.ndarray) -> np.ndarray:
-    """Return raster rows in Leaflet's north-to-south display order."""
     values = np.asarray(data, dtype=np.float64)
     latitude_values = np.asarray(latitudes, dtype=np.float64)
     if values.ndim != 2:
@@ -156,212 +133,316 @@ def north_first_raster_values(data: np.ndarray, latitudes: np.ndarray) -> np.nda
         )
     if not np.all(np.isfinite(latitude_values)):
         raise ValueError("Raster latitudes must contain only finite values.")
-    latitude_deltas = np.diff(latitude_values)
-    if not (np.all(latitude_deltas > 0) or np.all(latitude_deltas < 0)):
+    deltas = np.diff(latitude_values)
+    if not (np.all(deltas > 0) or np.all(deltas < 0)):
         raise ValueError("Raster latitudes must be strictly monotonic.")
-    return np.flipud(values) if np.all(latitude_deltas > 0) else values
+    return np.flipud(values) if np.all(deltas > 0) else values
+
+
+def build_raster_legend_spec(data: np.ndarray, *, caption: str) -> RasterLegendSpec | None:
+    finite = np.asarray(data, dtype=np.float64)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return None
+    vmin, vmax = np.nanpercentile(finite, [5, 95])
+    return RasterLegendSpec(caption=caption, vmin=float(vmin), vmax=float(vmax))
 
 
 def build_raster_legend_html(spec: RasterLegendSpec) -> str:
-    colors_hex = ["#{:02x}{:02x}{:02x}".format(int(r * 255), int(g * 255), int(b * 255)) for r, g, b in BLUES]
+    colors = ["#{:02x}{:02x}{:02x}".format(*row.astype(int)) for row in BLUES]
     gradient = ", ".join(
-        f"{color} {int(round(index * 100 / max(1, len(colors_hex) - 1)))}%"
-        for index, color in enumerate(colors_hex)
+        f"{color} {round(index * 100 / (len(colors) - 1))}%"
+        for index, color in enumerate(colors)
     )
     return (
-        "<div style=\"padding:0.35rem 0 0.15rem 0;\">"
-        f"<div style=\"font-size:0.9rem;font-weight:600;margin-bottom:0.35rem;\">{spec.caption}</div>"
-        f"<div style=\"height:12px;border-radius:999px;background:linear-gradient(90deg, {gradient});\"></div>"
-        "<div style=\"display:flex;justify-content:space-between;font-size:0.8rem;color:#495057;margin-top:0.25rem;\">"
-        f"<span>{spec.vmin:.1f} mm</span>"
-        f"<span>{spec.vmax:.1f} mm</span>"
-        "</div>"
-        "</div>"
+        f"**{spec.caption}**  \n"
+        f"<div style='height:12px;border-radius:8px;background:linear-gradient(90deg,{gradient})'></div>"
+        f"<small>{spec.vmin:.1f} mm — {spec.vmax:.1f} mm</small>"
     )
 
 
-class RasterClickPopup(branca.element.MacroElement):
-    def __init__(self, data: np.ndarray, bounds: tuple[float, float, float, float], layer_name: str) -> None:
-        super().__init__()
-        west, south, east, north = bounds
-        payload = np.where(np.isnan(data), None, data).tolist()
-        self._name = "RasterClickPopup"
-        self.data = json.dumps(payload)
-        self.south = south
-        self.west = west
-        self.north = north
-        self.east = east
-        self.layer_name = json.dumps(layer_name)
-        self._template = branca.element.Template(
-            """
-            {% macro script(this, kwargs) %}
-            var rasterData = {{this.data}};
-            var rasterBounds = {south: {{this.south}}, west: {{this.west}}, north: {{this.north}}, east: {{this.east}}};
-            (function attachRasterClick() {
-                var mapRef = {{this._parent.get_name()}};
-                if (!mapRef) {
-                    setTimeout(attachRasterClick, 50);
-                    return;
-                }
-                if (mapRef._rasterClickHandler) {
-                    mapRef.off('click', mapRef._rasterClickHandler);
-                }
-                mapRef._rasterClickHandler = function(e) {
-                    var lat = e.latlng.lat;
-                    var lng = e.latlng.lng;
-                    if (lat < rasterBounds.south || lat > rasterBounds.north || lng < rasterBounds.west || lng > rasterBounds.east) {
-                        return;
-                    }
-                    var rows = rasterData.length;
-                    var cols = rasterData[0].length;
-                    var row = Math.floor((rasterBounds.north - lat) / (rasterBounds.north - rasterBounds.south) * (rows - 1));
-                    var col = Math.floor((lng - rasterBounds.west) / (rasterBounds.east - rasterBounds.west) * (cols - 1));
-                    var val = rasterData[row][col];
-                    if (val === null || isNaN(val) || val <= 0) {
-                        return;
-                    }
-                    var layerName = {{this.layer_name}};
-                    var html = `<b>${layerName}</b><br>Lat: ${lat.toFixed(4)}<br>Lon: ${lng.toFixed(4)}<br>Valor: ${val.toFixed(1)} mm`;
-                    L.popup().setLatLng(e.latlng).setContent(html).openOn(mapRef);
-                };
-                mapRef.on('click', mapRef._rasterClickHandler);
-            })();
-            {% endmacro %}
-            """
-        )
+def _png_chunk(kind: bytes, payload: bytes) -> bytes:
+    return (
+        struct.pack(">I", len(payload))
+        + kind
+        + payload
+        + struct.pack(">I", zlib.crc32(kind + payload) & 0xFFFFFFFF)
+    )
 
 
-def add_raster_overlay(
-    fmap: folium.Map,
+def _rgba_png_data_uri(rgba: np.ndarray) -> str:
+    image = np.asarray(rgba, dtype=np.uint8)
+    height, width, channels = image.shape
+    if channels != 4:
+        raise ValueError("RGBA image must have four channels.")
+    scanlines = b"".join(b"\x00" + image[row].tobytes() for row in range(height))
+    png = (
+        b"\x89PNG\r\n\x1a\n"
+        + _png_chunk(b"IHDR", struct.pack(">IIBBBBB", width, height, 8, 6, 0, 0, 0))
+        + _png_chunk(b"IDAT", zlib.compress(scanlines, 9))
+        + _png_chunk(b"IEND", b"")
+    )
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def _raster_image(values: np.ndarray, legend: RasterLegendSpec, opacity: float) -> str:
+    finite = np.isfinite(values)
+    span = legend.vmax - legend.vmin
+    scaled = np.full(values.shape, 0.5) if span <= 0 else (values - legend.vmin) / span
+    scaled = np.clip(scaled, 0, 1)
+    scaled = np.where(finite, scaled, 0)
+    positions = scaled * (len(BLUES) - 1)
+    low = np.floor(positions).astype(int)
+    high = np.ceil(positions).astype(int)
+    weight = (positions - low)[..., None]
+    rgb = BLUES[low] * (1 - weight) + BLUES[high] * weight
+    alpha = np.where(finite, round(np.clip(opacity, 0, 1) * 255), 0)
+    return _rgba_png_data_uri(np.dstack((rgb, alpha)))
+
+
+def build_raster_layer(
+    grid: PrecipitationGrid,
     *,
-    data: np.ndarray,
-    latitudes: np.ndarray,
-    bounds: tuple[float, float, float, float],
+    layer_id: str,
     layer_name: str,
     opacity: float,
-    horizon_label: Optional[str] = None,
-    feature_group_name: Optional[str] = None,
-    show: bool = True,
-    include_legend: bool = True,
-) -> bool:
-    north_first_data = north_first_raster_values(data, latitudes)
-    legend_spec = build_raster_legend_spec(north_first_data, caption=horizon_label or layer_name)
-    if legend_spec is None:
-        return False
-
-    west, south, east, north = bounds
-    vmin, vmax = legend_spec.vmin, legend_spec.vmax
-    overlay = ImageOverlay(
-        name=layer_name,
-        image=north_first_data,
-        bounds=[[south, west], [north, east]],
-        opacity=float(opacity),
-        interactive=False,
-        cross_origin=False,
-        mercator_project=False,
-        colormap=color_ramp_factory(float(vmin), float(vmax), float(opacity)),
+) -> tuple[dict[str, Any] | None, RasterLookup, RasterLegendSpec | None]:
+    values = np.asarray(grid.values, dtype=float)
+    display_values = north_first_raster_values(values, grid.latitudes)
+    legend = build_raster_legend_spec(display_values, caption=layer_name)
+    lookup = RasterLookup(
+        layer_id=layer_id,
+        layer_name=layer_name,
+        values=values.copy(),
+        latitudes=np.asarray(grid.latitudes, dtype=float).copy(),
+        longitudes=np.asarray(grid.longitudes, dtype=float).copy(),
+        bounds=tuple(float(value) for value in grid.bounds),
     )
-    raster_group = folium.FeatureGroup(name=feature_group_name or layer_name, show=show)
-    overlay.add_to(raster_group)
-    raster_group.add_to(fmap)
-    if include_legend:
-        add_legend(fmap, float(vmin), float(vmax), horizon_label=horizon_label or layer_name)
-    RasterClickPopup(north_first_data, bounds, layer_name).add_to(fmap)
-    return True
+    if legend is None:
+        return None, lookup, None
+    west, south, east, north = lookup.bounds
+    layer = {
+        "@@type": "BitmapLayer",
+        "id": layer_id,
+        "image": _raster_image(display_values, legend, opacity),
+        "bounds": [west, south, east, north],
+        "pickable": True,
+    }
+    return layer, lookup, legend
+
+
+def _json_compatible(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {str(key): _json_compatible(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_compatible(item) for item in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    if pd.isna(value):
+        return None
+    return value
+
+
+def _station_records(stations: pd.DataFrame) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for row in stations.itertuples():
+        status = str(getattr(row, "status", "no_data"))
+        color = (
+            NO_DATA_COLOR
+            if status == "no_data"
+            else DATA_ISSUE_COLOR
+            if status == "data_issue"
+            else KIND_COLORS.get(str(getattr(row, "kind", "no_data")), KIND_COLORS["no_data"])
+        )
+        records.append(
+            {
+                "station_id": str(row.station_id),
+                "station_name": str(getattr(row, "station_name", "")),
+                "provider_code": str(getattr(row, "provider_code", "")).upper(),
+                "station_code": str(getattr(row, "station_code", "")),
+                "position": [float(row.lon), float(row.lat)],
+                "color": color,
+                "status": status,
+            }
+        )
+    return records
+
+
+def _geojson_layer(
+    layer_id: str,
+    data: dict[str, Any] | None,
+    *,
+    line_color: list[int],
+    fill_color: list[int],
+    line_width: float,
+) -> dict[str, Any] | None:
+    if not data or not data.get("features"):
+        return None
+    return {
+        "@@type": "GeoJsonLayer",
+        "id": layer_id,
+        "data": _json_compatible(data),
+        "pickable": True,
+        "stroked": True,
+        "filled": True,
+        "getLineColor": line_color,
+        "getFillColor": fill_color,
+        "getLineWidth": line_width,
+        "lineWidthMinPixels": 1,
+        "autoHighlight": True,
+    }
+
+
+def default_view_state(
+    *,
+    stations: pd.DataFrame | None = None,
+    bounds: tuple[float, float, float, float] | None = None,
+) -> dict[str, float]:
+    if bounds is not None:
+        west, south, east, north = bounds
+        longitude, latitude = (west + east) / 2, (south + north) / 2
+    elif stations is not None and not stations.empty:
+        longitude = float(stations["lon"].mean())
+        latitude = float(stations["lat"].mean())
+    else:
+        longitude, latitude = -53.3, -29.7
+    return {"longitude": longitude, "latitude": latitude, "zoom": 6.5, "pitch": 0, "bearing": 0}
 
 
 def build_ops_map(
-    selected_layer_name: Optional[str],
+    selected_layer_name: str | None,
     opacity: float,
     stations: pd.DataFrame,
-    segments_geojson: Optional[dict],
-    catchments_geojson: Optional[dict],
+    segments_geojson: dict[str, Any] | None,
+    catchments_geojson: dict[str, Any] | None,
     raster_catalog: dict[str, dict[str, object]],
-) -> folium.Map:
-    center = [stations["lat"].mean(), stations["lon"].mean()] if not stations.empty else [-29.7, -53.3]
-    fmap = folium.Map(location=center, zoom_start=7, tiles="CartoDB Positron", control_scale=True)
+) -> DeckGLArtifacts:
+    layers: list[dict[str, Any]] = []
+    lookups: dict[str, RasterLookup] = {}
+    legends: list[RasterLegendSpec] = []
+    raster_bounds = None
+    if selected_layer_name and selected_layer_name in raster_catalog:
+        meta = raster_catalog[selected_layer_name]
+        grid = meta.get("grid")
+        if not isinstance(grid, PrecipitationGrid):
+            raise TypeError("Rainfall map catalog entries must contain a PrecipitationGrid.")
+        raster_bounds = grid.bounds
+        layer, lookup, legend = build_raster_layer(
+            grid,
+            layer_id=f"rainfall-raster:{selected_layer_name}",
+            layer_name=str(meta.get("horizon_label", selected_layer_name)),
+            opacity=opacity,
+        )
+        lookups[lookup.layer_id] = lookup
+        if layer is not None:
+            layers.append(layer)
+        if legend is not None:
+            legends.append(legend)
 
-    if selected_layer_name:
-        meta = raster_catalog.get(selected_layer_name)
-        if meta:
-            grid = meta.get("grid")
-            if not isinstance(grid, PrecipitationGrid):
-                raise TypeError("Rainfall map catalog entries must contain a PrecipitationGrid.")
-            add_raster_overlay(
-                fmap,
-                data=grid.values,
-                latitudes=grid.latitudes,
-                bounds=grid.bounds,
-                layer_name=f"Raster {meta['horizon_label']}",
-                opacity=opacity,
-                horizon_label=str(meta["horizon_label"]),
-                feature_group_name="Accumulated rainfall",
-                show=True,
-            )
-
-    if catchments_geojson and catchments_geojson.get("features"):
-        catchments_layer = folium.FeatureGroup(name="MGB mini catchments", show=True)
-        folium.GeoJson(
+    for layer in (
+        _geojson_layer(
+            "mini-catchments",
             catchments_geojson,
-            style_function=lambda _: {
-                "color": "#74c0fc", "weight": 0.7, "opacity": 0.65,
-                "fillColor": "#d0ebff", "fillOpacity": 0.08,
-            },
-            highlight_function=lambda _: {"color": "#0b7285", "weight": 1.8, "fillOpacity": 0.2},
-            tooltip=folium.GeoJsonTooltip(fields=["click_id"], aliases=[""], labels=False, sticky=False),
-            name="MGB mini catchments",
-        ).add_to(catchments_layer)
-        catchments_layer.add_to(fmap)
-
-    if segments_geojson and segments_geojson.get("features"):
-        rivers_layer = folium.FeatureGroup(name="MGB rivers", show=True)
-        folium.GeoJson(
+            line_color=[116, 192, 252, 180],
+            fill_color=[208, 235, 255, 30],
+            line_width=1,
+        ),
+        _geojson_layer(
+            "mini-rivers",
             segments_geojson,
-            style_function=lambda _: {"color": "#1971c2", "weight": 1.2, "opacity": 0.45},
-            highlight_function=lambda _: {"color": "#0b7285", "weight": 2.2, "opacity": 0.9},
-            tooltip=folium.GeoJsonTooltip(fields=["click_id"], aliases=[""], labels=False, sticky=False),
-            name="MGB rivers",
-        ).add_to(rivers_layer)
-        rivers_layer.add_to(fmap)
+            line_color=[25, 113, 194, 190],
+            fill_color=[0, 0, 0, 0],
+            line_width=2,
+        ),
+    ):
+        if layer is not None:
+            layers.append(layer)
 
-    station_layer = folium.FeatureGroup(name="Stations with data", show=True)
-    no_data_layer = folium.FeatureGroup(name="Stations without data", show=True)
+    station_data = _station_records(stations)
+    if station_data:
+        layers.append(
+            {
+                "@@type": "ScatterplotLayer",
+                "id": "stations",
+                "data": station_data,
+                "pickable": True,
+                "getPosition": "@@=position",
+                "getFillColor": "@@=color",
+                "getLineColor": [255, 255, 255, 220],
+                "lineWidthMinPixels": 1,
+                "stroked": True,
+                "getRadius": 4500,
+                "radiusMinPixels": 5,
+                "radiusMaxPixels": 10,
+                "autoHighlight": True,
+            }
+        )
 
-    for row in stations.itertuples():
-        tooltip = f"POSTO|{row.station_id} - {row.station_name} ({str(row.provider_code).upper()} {row.station_code})"
-        status = getattr(row, "status", "no_data")
+    spec = {
+        "initialViewState": default_view_state(stations=stations, bounds=raster_bounds),
+        "controller": True,
+        "mapStyle": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        "layers": layers,
+        "tooltip": {
+            "html": "<b>{station_name}</b><br/>{provider_code}:{station_code}<br/>{status}"
+        },
+    }
+    return DeckGLArtifacts(spec=spec, raster_lookups=lookups, legends=tuple(legends))
 
-        if status == "no_data":
-            folium.CircleMarker(
-                location=[row.lat, row.lon],
-                radius=6,
-                color=NO_DATA_COLOR,
-                fill=True,
-                fill_color=NO_DATA_COLOR,
-                weight=1,
-                fill_opacity=0.55,
-                tooltip=tooltip,
-                bubbling_mouse_events=False,
-            ).add_to(no_data_layer)
-            continue
 
-        marker_color = KIND_COLORS.get(getattr(row, "kind", "no_data"), "#364fc7")
-        if status == "data_issue":
-            marker_color = DATA_ISSUE_COLOR
+def decode_click_state(click_state: Mapping[str, Any] | None) -> MapSelection:
+    if not click_state:
+        return MapSelection()
+    layer = click_state.get("layer") or click_state.get("layer_id") or {}
+    layer_id = layer.get("id") if isinstance(layer, Mapping) else layer
+    layer_id = str(layer_id or "")
+    obj = click_state.get("object") or {}
+    properties = obj.get("properties", obj) if isinstance(obj, Mapping) else {}
+    coordinate = click_state.get("coordinate")
+    parsed_coordinate = None
+    if isinstance(coordinate, (list, tuple)) and len(coordinate) >= 2:
+        parsed_coordinate = (float(coordinate[0]), float(coordinate[1]))
 
-        folium.CircleMarker(
-            location=[row.lat, row.lon],
-            radius=6,
-            color=marker_color,
-            fill=True,
-            fill_color=marker_color,
-            weight=1,
-            fill_opacity=0.9 if status == "ok" else 0.75,
-            tooltip=tooltip,
-            bubbling_mouse_events=False,
-        ).add_to(station_layer)
+    station_id = properties.get("station_id") if isinstance(properties, Mapping) else None
+    mini_id = properties.get("mini_id") if isinstance(properties, Mapping) else None
+    if station_id is not None or layer_id == "stations":
+        station_id = str(station_id) if station_id is not None else None
+    if mini_id is not None:
+        mini_id = int(mini_id)
+    raster_id = layer_id if layer_id.startswith("rainfall-raster:") else None
+    return MapSelection(station_id, mini_id, raster_id, parsed_coordinate)
 
-    station_layer.add_to(fmap)
-    no_data_layer.add_to(fmap)
-    folium.LayerControl(collapsed=False).add_to(fmap)
-    return fmap
+
+def lookup_raster_value(
+    lookup: RasterLookup,
+    longitude: float,
+    latitude: float,
+) -> RasterValue | None:
+    lon, lat = float(longitude), float(latitude)
+    west, south, east, north = lookup.bounds
+    if not (west <= lon <= east and south <= lat <= north):
+        return None
+    column = int(np.argmin(np.abs(lookup.longitudes - lon)))
+    row = int(np.argmin(np.abs(lookup.latitudes - lat)))
+    raw = float(lookup.values[row, column])
+    return RasterValue(
+        layer_name=lookup.layer_name,
+        longitude=lon,
+        latitude=lat,
+        row=row,
+        column=column,
+        value=raw if np.isfinite(raw) else None,
+    )
+
+
+def inspect_raster_click(
+    click_state: Mapping[str, Any] | None,
+    lookups: Mapping[str, RasterLookup],
+) -> RasterValue | None:
+    selection = decode_click_state(click_state)
+    if selection.raster_layer_id is None or selection.coordinate is None:
+        return None
+    lookup = lookups.get(selection.raster_layer_id)
+    if lookup is None:
+        return None
+    return lookup_raster_value(lookup, *selection.coordinate)

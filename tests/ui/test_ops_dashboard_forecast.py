@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-import folium
-import folium.plugins
 import numpy as np
 
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
@@ -163,26 +161,28 @@ def test_expected_ecmwf_cycle_reports_missing_registered_file(tmp_path) -> None:
         raise AssertionError("Expected a missing-file integrity error.")
 
 
-def test_build_forecast_map_returns_single_map_with_raster_inspector() -> None:
-    fmap = ops_dashboard_forecast.build_forecast_map(_preview("Mapa original"), opacity=0.65)
+def test_build_forecast_map_returns_single_deckgl_spec_with_raster() -> None:
+    specs = ops_dashboard_forecast.build_forecast_map(
+        _preview("Mapa original"), opacity=0.65
+    )
 
-    child_names = {child._name for child in fmap._children.values()}
-    assert isinstance(fmap, folium.Map)
-    assert "RasterClickPopup" in child_names
-    assert "LayerControl" not in child_names
+    assert len(specs) == 1
+    assert specs[0]["layers"][0]["@@type"] == "BitmapLayer"
+    assert specs[0]["layers"][0]["id"] == "forecast-original"
 
 
-def test_build_forecast_map_returns_dual_map_with_synced_layers() -> None:
+def test_build_forecast_map_returns_two_specs_with_synced_view() -> None:
     original = _preview("Mapa original")
     corrected = _preview("Mapa corrigido", data=np.array([[2.0, 3.0], [4.0, 5.0]], dtype=np.float64))
 
-    fmap = ops_dashboard_forecast.build_forecast_map(original, corrected_preview=corrected, opacity=0.8)
+    specs = ops_dashboard_forecast.build_forecast_map(
+        original, corrected_preview=corrected, opacity=0.8
+    )
 
-    assert isinstance(fmap, folium.plugins.DualMap)
-    assert "RasterClickPopup" in {child._name for child in fmap.m1._children.values()}
-    assert "RasterClickPopup" in {child._name for child in fmap.m2._children.values()}
-    assert "LayerControl" not in {child._name for child in fmap.m1._children.values()}
-    assert "LayerControl" not in {child._name for child in fmap.m2._children.values()}
+    assert len(specs) == 2
+    assert specs[0]["initialViewState"] == specs[1]["initialViewState"]
+    assert specs[0]["layers"][0]["id"] == "forecast-original"
+    assert specs[1]["layers"][0]["id"] == "forecast-corrected"
 
 
 def test_build_forecast_map_artifacts_returns_external_legends() -> None:
@@ -199,3 +199,25 @@ def test_build_forecast_map_artifacts_returns_external_legends() -> None:
     assert artifacts.corrected is not None
     assert "Mapa original" in artifacts.original.legend_html
     assert "Mapa corrigido" in artifacts.corrected.legend_html
+    assert artifacts.original.spec["initialViewState"] == artifacts.corrected.spec["initialViewState"]
+
+
+def test_synchronize_view_state_copies_only_portable_values() -> None:
+    state = ops_dashboard_forecast.synchronize_view_state(
+        {
+            "longitude": -51,
+            "latitude": -30,
+            "zoom": 8,
+            "pitch": 20,
+            "bearing": 4,
+            "transitionDuration": 100,
+        }
+    )
+
+    assert state == {
+        "longitude": -51.0,
+        "latitude": -30.0,
+        "zoom": 8.0,
+        "pitch": 20.0,
+        "bearing": 4.0,
+    }

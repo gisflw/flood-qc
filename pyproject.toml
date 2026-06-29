@@ -38,15 +38,14 @@ dashboard = [
   "pandas>=2.1",
   "xarray>=2024.1",
   "netCDF4>=1.6",
-  "streamlit>=1.40",
+  "panel>=1.5",
   "plotly>=5.20",
-  "folium>=0.17",
-  "streamlit-folium>=0.23",
-  "branca>=0.7",
   "geopandas>=1.0",
 ]
 dev = [
   "pytest>=8.0",
+  "playwright>=1.49",
+  "pytest-playwright>=0.6",
   "xarray>=2024.1",
   "netCDF4>=1.6",
 ]

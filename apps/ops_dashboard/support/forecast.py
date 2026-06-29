@@ -1,20 +1,18 @@
-"""Forecast map rendering; forecast reads and edits live in ``mgb_ops``."""
+"""Forecast reads and JSON-only DeckGL preview builders."""
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Any, Mapping
 
-import folium
-import folium.plugins
 import numpy as np
 import pandas as pd
 
-from apps.ops_dashboard.support import map as ops_dashboard_map
-from apps.ops_dashboard.support import data as ops_dashboard_data
+from apps.ops_dashboard.support import map as dashboard_map
 from mgb_ops.analysis import forecast as forecast_analysis
 from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec
-from mgb_ops.edit.forcing import apply_corrections
 from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.edit.forcing import apply_corrections
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,8 +35,10 @@ class ForecastPreview:
         if self.source_grid is not None:
             return self.source_grid.bounds
         return (
-            float(np.min(self.longitudes)), float(np.min(self.latitudes)),
-            float(np.max(self.longitudes)), float(np.max(self.latitudes)),
+            float(np.min(self.longitudes)),
+            float(np.min(self.latitudes)),
+            float(np.max(self.longitudes)),
+            float(np.max(self.latitudes)),
         )
 
 
@@ -55,37 +55,44 @@ class ForecastPreviewRequest:
 
     @property
     def has_correction(self) -> bool:
-        return any((
-            abs(self.shift_lat) > 1e-9,
-            abs(self.shift_lon) > 1e-9,
-            abs(self.rotation_deg) > 1e-9,
-            abs(self.multiplication_factor - 1.0) > 1e-9,
-        ))
+        return any(
+            (
+                abs(self.shift_lat) > 1e-9,
+                abs(self.shift_lon) > 1e-9,
+                abs(self.rotation_deg) > 1e-9,
+                abs(self.multiplication_factor - 1.0) > 1e-9,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class ForecastMapPanelArtifacts:
     title: str
-    legend_html: str
+    spec: dict[str, Any]
+    lookup: dashboard_map.RasterLookup
+    legend: dashboard_map.RasterLegendSpec | None
+
+    @property
+    def legend_html(self) -> str:
+        return (
+            dashboard_map.build_raster_legend_html(self.legend)
+            if self.legend is not None
+            else "No valid precipitation."
+        )
 
 
 @dataclass(frozen=True, slots=True)
 class ForecastMapComparisonArtifacts:
-    map_figure: folium.MacroElement
     original: ForecastMapPanelArtifacts
     corrected: ForecastMapPanelArtifacts | None = None
+    view_state: dict[str, float] | None = None
 
 
 def list_forecast_assets(
-    database_path: Path,
-    workspace_path: Path,
-    *,
-    window: DashboardWindow,
+    database_path: Path, workspace_path: Path, *, window: DashboardWindow
 ) -> pd.DataFrame:
     return forecast_analysis.list_expected_ecmwf_assets(
-        database_path,
-        workspace_path=workspace_path,
-        reference_time=window.cutoff_time,
+        database_path, workspace_path=workspace_path, reference_time=window.cutoff_time
     )
 
 
@@ -104,17 +111,31 @@ def list_forecast_steps(
     )
     if frame.empty:
         return pd.DataFrame(columns=["step_hours", "valid_time", "label"])
-    first = pd.DataFrame([{
-        "step_hours": int(frame.iloc[0]["start_step_hours"]),
-        "valid_time": frame.iloc[0]["start_time"],
-        "label": f"t={int(frame.iloc[0]['start_step_hours'])}h | {pd.Timestamp(frame.iloc[0]['start_time']):%d/%m %H:%M}",
-    }])
-    ends = frame.rename(columns={"end_step_hours": "step_hours", "end_time": "valid_time"}).copy()
+    first = pd.DataFrame(
+        [
+            {
+                "step_hours": int(frame.iloc[0]["start_step_hours"]),
+                "valid_time": frame.iloc[0]["start_time"],
+                "label": (
+                    f"t={int(frame.iloc[0]['start_step_hours'])}h | "
+                    f"{pd.Timestamp(frame.iloc[0]['start_time']):%d/%m %H:%M}"
+                ),
+            }
+        ]
+    )
+    ends = frame.rename(
+        columns={"end_step_hours": "step_hours", "end_time": "valid_time"}
+    ).copy()
     ends["label"] = ends.apply(
-        lambda row: f"t={int(row['step_hours'])}h | {pd.Timestamp(row['valid_time']):%d/%m %H:%M}",
+        lambda row: (
+            f"t={int(row['step_hours'])}h | "
+            f"{pd.Timestamp(row['valid_time']):%d/%m %H:%M}"
+        ),
         axis=1,
     )
-    return pd.concat([first, ends[["step_hours", "valid_time", "label"]]], ignore_index=True).drop_duplicates("step_hours")
+    return pd.concat(
+        [first, ends[["step_hours", "valid_time", "label"]]], ignore_index=True
+    ).drop_duplicates("step_hours")
 
 
 def build_forecast_preview(
@@ -153,7 +174,9 @@ def build_forecast_preview(
     )
 
 
-def apply_preview_corrections(preview: ForecastPreview, instructions: list[object]) -> ForecastPreview:
+def apply_preview_corrections(
+    preview: ForecastPreview, instructions: list[object]
+) -> ForecastPreview:
     source_grid = preview.source_grid or PrecipitationGrid(
         values=preview.data,
         latitudes=preview.latitudes,
@@ -164,14 +187,54 @@ def apply_preview_corrections(preview: ForecastPreview, instructions: list[objec
         source="forecast",
     )
     corrected = apply_corrections(source_grid, instructions)
-    return replace(preview, data=corrected.values, source_grid=corrected, title=f"{preview.title} | corrected")
-
-
-def _add_preview(fmap: folium.Map, preview: ForecastPreview, opacity: float) -> None:
-    ops_dashboard_map.add_raster_overlay(
-        fmap, data=preview.data, latitudes=preview.latitudes, bounds=preview.bounds, layer_name=preview.title,
-        opacity=opacity, horizon_label=preview.title, show=True, include_legend=False,
+    return replace(
+        preview,
+        data=corrected.values,
+        source_grid=corrected,
+        title=f"{preview.title} | corrected",
     )
+
+
+def synchronize_view_state(
+    view_state: Mapping[str, Any] | None,
+    fallback: Mapping[str, Any] | None = None,
+) -> dict[str, float]:
+    """Return the portable DeckGL view fields shared by both forecast panes."""
+    source = view_state or fallback or {}
+    defaults = {"longitude": -53.3, "latitude": -29.7, "zoom": 6.5, "pitch": 0, "bearing": 0}
+    return {
+        key: float(source.get(key, default))
+        for key, default in defaults.items()
+        if source.get(key, default) is not None
+    }
+
+
+def _panel(
+    preview: ForecastPreview,
+    *,
+    layer_id: str,
+    opacity: float,
+    view_state: Mapping[str, Any],
+) -> ForecastMapPanelArtifacts:
+    grid = preview.source_grid or PrecipitationGrid(
+        values=preview.data,
+        latitudes=preview.latitudes,
+        longitudes=preview.longitudes,
+        bounds=preview.bounds,
+        start_time=preview.start_time or pd.Timestamp("1970-01-01"),
+        end_time=preview.end_time or pd.Timestamp("1970-01-01 01:00"),
+        source="forecast",
+    )
+    layer, lookup, legend = dashboard_map.build_raster_layer(
+        grid, layer_id=layer_id, layer_name=preview.title, opacity=opacity
+    )
+    spec = {
+        "initialViewState": dict(view_state),
+        "controller": True,
+        "mapStyle": "https://basemaps.cartocdn.com/gl/positron-gl-style/style.json",
+        "layers": [layer] if layer is not None else [],
+    }
+    return ForecastMapPanelArtifacts(preview.title, spec, lookup, legend)
 
 
 def build_forecast_map(
@@ -179,17 +242,19 @@ def build_forecast_map(
     *,
     corrected_preview: ForecastPreview | None = None,
     opacity: float = 0.7,
-) -> folium.Map | folium.plugins.DualMap:
-    west, south, east, north = preview.bounds
-    center = [(south + north) / 2, (west + east) / 2]
-    if corrected_preview is None:
-        fmap = folium.Map(location=center, zoom_start=7, tiles="CartoDB Positron")
-        _add_preview(fmap, preview, opacity)
-        return fmap
-    fmap = folium.plugins.DualMap(location=center, zoom_start=7, tiles="CartoDB Positron")
-    _add_preview(fmap.m1, preview, opacity)
-    _add_preview(fmap.m2, corrected_preview, opacity)
-    return fmap
+    view_state: Mapping[str, Any] | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """Build one or two synchronized, JSON-compatible DeckGL specifications."""
+    artifacts = build_forecast_map_artifacts(
+        preview,
+        corrected_preview=corrected_preview,
+        opacity=opacity,
+        view_state=view_state,
+    )
+    specs = [artifacts.original.spec]
+    if artifacts.corrected is not None:
+        specs.append(artifacts.corrected.spec)
+    return tuple(specs)
 
 
 def build_forecast_map_artifacts(
@@ -198,14 +263,24 @@ def build_forecast_map_artifacts(
     corrected_preview: ForecastPreview | None = None,
     opacity: float = 0.7,
     component_key: str = "forecast-preview-map",
+    view_state: Mapping[str, Any] | None = None,
 ) -> ForecastMapComparisonArtifacts:
     del component_key
-    def panel(item: ForecastPreview) -> ForecastMapPanelArtifacts:
-        spec = ops_dashboard_map.build_raster_legend_spec(item.data, caption=item.title)
-        legend = ops_dashboard_map.build_raster_legend_html(spec) if spec else "No valid precipitation."
-        return ForecastMapPanelArtifacts(item.title, legend)
+    fallback = dashboard_map.default_view_state(bounds=preview.bounds)
+    shared_view = synchronize_view_state(view_state, fallback)
     return ForecastMapComparisonArtifacts(
-        map_figure=build_forecast_map(preview, corrected_preview=corrected_preview, opacity=opacity),
-        original=panel(preview),
-        corrected=panel(corrected_preview) if corrected_preview else None,
+        original=_panel(
+            preview, layer_id="forecast-original", opacity=opacity, view_state=shared_view
+        ),
+        corrected=(
+            _panel(
+                corrected_preview,
+                layer_id="forecast-corrected",
+                opacity=opacity,
+                view_state=shared_view,
+            )
+            if corrected_preview is not None
+            else None
+        ),
+        view_state=shared_view,
     )

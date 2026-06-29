@@ -1,95 +1,164 @@
 from __future__ import annotations
 
-import folium
+import json
+
 import numpy as np
+import pandas as pd
 import pytest
 
 from apps.ops_dashboard.support import map as ops_dashboard_map
+from mgb_ops.analysis.spatial import PrecipitationGrid
+
+
+def _grid(values: np.ndarray | None = None) -> PrecipitationGrid:
+    return PrecipitationGrid(
+        values=np.array([[1.0, 2.0], [3.0, 4.0]]) if values is None else values,
+        latitudes=np.array([-31.0, -30.0]),
+        longitudes=np.array([-52.0, -51.0]),
+        bounds=(-52.5, -31.5, -50.5, -29.5),
+        start_time=pd.Timestamp("2026-01-01"),
+        end_time=pd.Timestamp("2026-01-02"),
+        source="test",
+    )
 
 
 def test_build_map_cache_key_ignores_series_selection() -> None:
-    key_a = ops_dashboard_map.build_map_cache_key(
+    kwargs = dict(
         selected_layer_name="accum_24h",
         opacity=0.6,
-        history_version="history:v1",
-        spatial_version="spatial:v1",
-        raster_version="raster:v1",
-        station_id=1001,
-        mini_id=10,
+        history_version="history-v1",
+        spatial_version="spatial-v1",
+        raster_version="raster-v1",
     )
-    key_b = ops_dashboard_map.build_map_cache_key(
-        selected_layer_name="accum_24h",
-        opacity=0.6,
-        history_version="history:v1",
-        spatial_version="spatial:v1",
-        raster_version="raster:v1",
-        station_id=2002,
-        mini_id=20,
+    assert ops_dashboard_map.build_map_cache_key(
+        **kwargs, station_id="1", mini_id=2
+    ) == ops_dashboard_map.build_map_cache_key(
+        **kwargs, station_id="9", mini_id=99
     )
 
-    assert key_a == key_b
 
-
-def test_build_map_cache_key_changes_with_visual_state() -> None:
-    base_key = ops_dashboard_map.build_map_cache_key(
-        selected_layer_name="accum_24h",
-        opacity=0.6,
-        history_version="history:v1",
-        spatial_version="spatial:v1",
-        raster_version="raster:v1",
+def test_deckgl_layers_are_separate_and_json_compatible() -> None:
+    stations = pd.DataFrame(
+        [
+            {
+                "station_id": "1001",
+                "station_name": "Test",
+                "provider_code": "ana",
+                "station_code": "A1",
+                "lat": -30.0,
+                "lon": -52.0,
+                "kind": "rain",
+                "status": "ok",
+            }
+        ]
     )
-    other_raster = ops_dashboard_map.build_map_cache_key(
-        selected_layer_name="accum_72h",
-        opacity=0.6,
-        history_version="history:v1",
-        spatial_version="spatial:v1",
-        raster_version="raster:v2",
+    catchments = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"mini_id": np.int64(7)},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[-52, -31], [-51, -31], [-51, -30], [-52, -31]]],
+                },
+            }
+        ],
+    }
+    rivers = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"mini_id": 7},
+                "geometry": {"type": "LineString", "coordinates": [[-52, -31], [-51, -30]]},
+            }
+        ],
+    }
+    artifacts = ops_dashboard_map.build_ops_map(
+        "accum_24h",
+        0.6,
+        stations,
+        rivers,
+        catchments,
+        {"accum_24h": {"grid": _grid(), "horizon_label": "24h"}},
     )
-    other_opacity = ops_dashboard_map.build_map_cache_key(
-        selected_layer_name="accum_24h",
-        opacity=0.75,
-        history_version="history:v1",
-        spatial_version="spatial:v1",
-        raster_version="raster:v1",
+
+    layer_ids = [layer["id"] for layer in artifacts.spec["layers"]]
+    assert layer_ids == [
+        "rainfall-raster:accum_24h",
+        "mini-catchments",
+        "mini-rivers",
+        "stations",
+    ]
+    assert artifacts.spec["layers"][0]["image"].startswith("data:image/png;base64,")
+    json.dumps(artifacts.spec)
+    assert set(artifacts.raster_lookups) == {"rainfall-raster:accum_24h"}
+
+
+def test_decode_station_mini_and_raster_clicks() -> None:
+    station = ops_dashboard_map.decode_click_state(
+        {"layer": {"id": "stations"}, "object": {"station_id": 1001}}
+    )
+    mini = ops_dashboard_map.decode_click_state(
+        {
+            "layer": "mini-catchments",
+            "object": {"properties": {"mini_id": "7"}},
+        }
+    )
+    raster = ops_dashboard_map.decode_click_state(
+        {
+            "layer": {"id": "rainfall-raster:accum_24h"},
+            "coordinate": [-51.1, -30.1],
+        }
     )
 
-    assert base_key != other_raster
-    assert base_key != other_opacity
+    assert station.station_id == "1001"
+    assert mini.mini_id == 7
+    assert raster.raster_layer_id == "rainfall-raster:accum_24h"
+    assert raster.coordinate == (-51.1, -30.1)
 
 
-def test_parse_click_token_recognizes_station_and_mini() -> None:
-    assert ops_dashboard_map.parse_click_token("POSTO|1001 - TESTE") == "POSTO|1001"
-    assert ops_dashboard_map.parse_click_token("POSTO|ana:74100000 - TESTE") == "POSTO|ana:74100000"
-    assert ops_dashboard_map.parse_click_token("MINI|539") == "MINI|539"
-    assert ops_dashboard_map.parse_click_token("sem token") is None
+def test_raster_coordinate_lookup_returns_original_array_value() -> None:
+    _, lookup, _ = ops_dashboard_map.build_raster_layer(
+        _grid(),
+        layer_id="rain",
+        layer_name="24h",
+        opacity=0.7,
+    )
+
+    result = ops_dashboard_map.lookup_raster_value(lookup, -51.05, -30.05)
+
+    assert result is not None
+    assert (result.row, result.column, result.value) == (1, 1, 4.0)
+    assert ops_dashboard_map.lookup_raster_value(lookup, 0, 0) is None
 
 
-def test_update_selection_from_click_token_updates_only_changed_values() -> None:
-    session_state: dict[str, object] = {"station_id": "1001", "mini_id": 10}
+def test_empty_sources_build_an_empty_but_usable_map() -> None:
+    artifacts = ops_dashboard_map.build_ops_map(
+        None, 0.5, pd.DataFrame(), None, None, {}
+    )
+    assert artifacts.spec["layers"] == []
+    assert artifacts.raster_lookups == {}
 
-    changed = ops_dashboard_map.update_selection_from_click_token("POSTO|1001", session_state)
-    assert changed is False
-    assert session_state == {"station_id": "1001", "mini_id": 10}
 
-    changed = ops_dashboard_map.update_selection_from_click_token("MINI|20", session_state)
-    assert changed is True
-    assert session_state == {"station_id": "1001", "mini_id": 20}
+def test_raster_layer_keeps_missing_values_transparent() -> None:
+    layer, _, _ = ops_dashboard_map.build_raster_layer(
+        _grid(np.array([[1.0, np.nan], [np.inf, 4.0]])),
+        layer_id="rain",
+        layer_name="Rain",
+        opacity=0.5,
+    )
+    assert layer is not None
+    assert layer["image"].startswith("data:image/png;base64,")
 
 
 def test_north_first_raster_values_flips_ascending_latitudes_once() -> None:
     values = np.array([[1.0, 2.0], [3.0, 4.0]])
-
-    normalized = ops_dashboard_map.north_first_raster_values(values, np.array([-31.0, -30.0]))
-
-    np.testing.assert_array_equal(normalized, np.array([[3.0, 4.0], [1.0, 2.0]]))
-
-
-def test_north_first_raster_values_leaves_descending_latitudes_unchanged() -> None:
-    values = np.array([[1.0, 2.0], [3.0, 4.0]])
-
-    normalized = ops_dashboard_map.north_first_raster_values(values, np.array([-30.0, -31.0]))
-
-    np.testing.assert_array_equal(normalized, values)
+    normalized = ops_dashboard_map.north_first_raster_values(
+        values, np.array([-31.0, -30.0])
+    )
+    np.testing.assert_array_equal(normalized, np.flipud(values))
 
 
 @pytest.mark.parametrize(
@@ -106,37 +175,3 @@ def test_north_first_raster_values_rejects_invalid_latitudes(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         ops_dashboard_map.north_first_raster_values(np.ones((2, 2)), latitudes)
-
-
-def test_add_raster_overlay_shares_north_first_values_with_click_popup(monkeypatch) -> None:
-    captured: dict[str, np.ndarray] = {}
-
-    class CapturingOverlay:
-        def __init__(self, *, image, **kwargs):
-            captured["overlay"] = image
-
-        def add_to(self, parent):
-            return self
-
-    original_popup = ops_dashboard_map.RasterClickPopup
-
-    class CapturingPopup(original_popup):
-        def __init__(self, data, bounds, layer_name):
-            captured["popup"] = data
-            super().__init__(data, bounds, layer_name)
-
-    monkeypatch.setattr(ops_dashboard_map, "ImageOverlay", CapturingOverlay)
-    monkeypatch.setattr(ops_dashboard_map, "RasterClickPopup", CapturingPopup)
-    values = np.array([[1.0, 2.0], [3.0, 4.0]])
-
-    assert ops_dashboard_map.add_raster_overlay(
-        folium.Map(),
-        data=values,
-        latitudes=np.array([-31.0, -30.0]),
-        bounds=(-52.0, -31.0, -51.0, -30.0),
-        layer_name="rain",
-        opacity=0.7,
-        include_legend=False,
-    )
-    np.testing.assert_array_equal(captured["overlay"], captured["popup"])
-    np.testing.assert_array_equal(captured["overlay"], np.flipud(values))

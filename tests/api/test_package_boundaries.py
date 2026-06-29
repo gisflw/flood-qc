@@ -7,11 +7,16 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_package_does_not_import_streamlit() -> None:
+def test_package_does_not_import_ui_frameworks() -> None:
     offenders: list[str] = []
     for path in (REPO_ROOT / "src").rglob("*.py"):
         text = path.read_text(encoding="utf-8-sig")
-        if "import streamlit" in text or "streamlit_folium" in text:
+        if (
+            "import streamlit" in text
+            or "streamlit_folium" in text
+            or "import panel" in text
+            or "import param" in text
+        ):
             offenders.append(path.relative_to(REPO_ROOT).as_posix())
 
     assert offenders == []

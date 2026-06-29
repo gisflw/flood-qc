@@ -1,15 +1,15 @@
 # Ops Dashboard
 
-Streamlit interface layer for operational monitoring and manual ECMWF forecast
-correction. The dashboard should stay thin: Streamlit rendering and session
-state live here, while reusable data access, model, ingestion, and correction
-logic should live in `mgb_ops` library modules.
+Panel interface layer for operational monitoring and manual ECMWF forecast
+correction. The dashboard uses native Panel reactivity, DeckGL maps, Plotly
+charts, and Tabulator editing. UI/session behavior stays here while reusable
+data access, model, ingestion, and correction logic lives in `mgb_ops`.
 
 Install and run:
 
 ```bash
 python -m pip install -e '.[dashboard]'
-python -m streamlit run apps/ops_dashboard/app.py -- --workspace scratch/rs_hydro
+panel serve apps/ops_dashboard/app.py --show --args --workspace scratch/rs_hydro
 ```
 
 The dashboard consumes:
@@ -27,7 +27,20 @@ Set `forecast_grid.bbox: [west, south, east, north]` in
 
 Additional behavior:
 
-- Streamlit theme in `.streamlit/config.toml`;
-- manual refresh through the `Refresh data` button in the sidebar to clear caches and reload operational artifacts.
+- each browser session owns its selections, forecast draft, messages, and applied preview;
+- manual refresh re-versions source files and refreshes only the active session;
+- original and corrected forecast maps share their DeckGL view state.
+
+Behind a reverse proxy, allow the public origin and forward WebSocket upgrades:
+
+```bash
+panel serve apps/ops_dashboard/app.py \
+  --allow-websocket-origin dashboard.example.org \
+  --prefix /hydrology \
+  --args --workspace /srv/rs_hydro
+```
+
+The reverse proxy must preserve the `/hydrology` prefix (or rewrite it
+consistently) and forward `Upgrade` and `Connection` headers.
 
 Dashboard support helpers live in `apps/ops_dashboard/support/`.

@@ -89,8 +89,14 @@ For the operational dashboard:
 
 ```bash
 python -m pip install -e '.[dashboard]'
-python -m streamlit run apps/ops_dashboard/app.py -- --workspace scratch/rs_hydro
+panel serve apps/ops_dashboard/app.py --show --args --workspace scratch/rs_hydro
 ```
+
+For a reverse proxy, pass its public host with
+`--allow-websocket-origin dashboard.example.org` (including the port when it is
+non-standard). If the app is mounted below a path, also pass Panel's
+`--prefix /that-path` option and configure the proxy to forward WebSocket
+upgrade headers.
 
 ## Library Usage
 

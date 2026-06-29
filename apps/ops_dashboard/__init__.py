@@ -1,2 +1,1 @@
-"""Streamlit dashboard package for MGB operations."""
-
+"""Panel dashboard package for MGB operations."""
