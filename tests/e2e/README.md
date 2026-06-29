@@ -1,6 +1,12 @@
 # End-to-End Tests
 
-No true end-to-end tests are defined yet.
+The Panel dashboard smoke test is opt-in because it launches a browser and a
+local Bokeh server. Install the development dependencies and Chromium, then run:
 
-Use this directory for tests that exercise complete operator workflows across
-the library and persisted workspace artifacts.
+```bash
+python -m playwright install chromium
+RUN_DASHBOARD_BROWSER_TESTS=1 pytest tests/e2e
+```
+
+The test creates a controlled workspace, serves the dashboard, clicks its known
+station on the DeckGL map, and checks the corresponding summary and chart.

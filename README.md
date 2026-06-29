@@ -85,6 +85,19 @@ On Windows PowerShell:
 python -m pip install -e ".[dev,data,geo]"
 ```
 
+For the operational dashboard:
+
+```bash
+python -m pip install -e '.[dashboard]'
+panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hydro
+```
+
+For a reverse proxy, pass its public host with
+`--allow-websocket-origin dashboard.example.org` (including the port when it is
+non-standard). If the app is mounted below a path, also pass Panel's
+`--prefix /that-path` option and configure the proxy to forward WebSocket
+upgrade headers.
+
 ## Library Usage
 
 ```python

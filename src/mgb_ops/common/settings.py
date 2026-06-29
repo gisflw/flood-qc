@@ -30,10 +30,14 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "bbox": None,
         "buffer_fraction": None,
     },
+    "spatial": {
+        "gpkg_path": "data/source/rs_hydro.gpkg",
+    },
     "summaries": {
         "forecast_days": [1, 3, 7, 14],
         "accum_hours": [24, 72, 240, 720],
         "selected_mini_ids": [],
+        "grid_resolution_degrees": 0.1,
     },
     "mgb": {
         "input_days_before": 56,
@@ -120,6 +124,11 @@ def _validate_bool(value: Any, context: str) -> None:
         raise ValueError(f"{context} must be boolean.")
 
 
+def _validate_nonempty_path(value: Any, context: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"{context} must be a non-empty path string.")
+
+
 def _validate_optional_bbox(value: Any, context: str) -> None:
     if value is None:
         return
@@ -201,10 +210,14 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "bbox": _validate_optional_bbox,
             "buffer_fraction": _validate_optional_nonnegative_number,
         },
+        "spatial": {
+            "gpkg_path": _validate_nonempty_path,
+        },
         "summaries": {
             "forecast_days": _validate_positive_int_list,
             "accum_hours": _validate_positive_int_list,
             "selected_mini_ids": _validate_selected_mini_ids,
+            "grid_resolution_degrees": _validate_positive_number,
         },
         "mgb": {
             "input_days_before": _validate_positive_int,

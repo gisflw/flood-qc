@@ -10,6 +10,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from mgb_ops.analysis.spatial import (
+    build_grid_idw_neighbors,
+    build_idw_neighbors,
+    interpolate_station_chunk,
+)
 from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window, validate_timestep_hours
 from mgb_ops.adapters.forecast_ecmwf import (
     ECMWF_FORECAST_PRODUCT,
@@ -406,78 +411,6 @@ def interpolate_source_matrix(
             weights=weights,
         )
     return out
-
-
-def build_idw_neighbors(
-    mini_df: pd.DataFrame,
-    station_df: pd.DataFrame,
-    *,
-    nearest_stations: int,
-    power: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    if station_df.empty:
-        raise ValueError("At least one rain station is required for interpolation.")
-    k = min(int(nearest_stations), len(station_df))
-    if k < 1:
-        raise ValueError("nearest_stations must be >= 1.")
-
-    mini_lat = mini_df["lat"].to_numpy(dtype=np.float64)
-    mini_lon = mini_df["lon"].to_numpy(dtype=np.float64)
-    station_lat = station_df["lat"].to_numpy(dtype=np.float64)
-    station_lon = station_df["lon"].to_numpy(dtype=np.float64)
-
-    distances = np.hypot(mini_lat[:, None] - station_lat[None, :], mini_lon[:, None] - station_lon[None, :])
-    nearest_idx = np.argsort(distances, axis=1)[:, :k]
-    nearest_dist = np.take_along_axis(distances, nearest_idx, axis=1)
-    safe_dist = np.where(nearest_dist == 0.0, 1e-12, nearest_dist)
-    weights = 1.0 / np.power(safe_dist, float(power))
-    return nearest_idx.astype(np.int32, copy=False), weights.astype(np.float64, copy=False)
-
-
-def build_grid_idw_neighbors(
-    mini_df: pd.DataFrame,
-    *,
-    latitudes: np.ndarray,
-    longitudes: np.ndarray,
-    nearest_points: int,
-    power: float,
-) -> tuple[np.ndarray, np.ndarray]:
-    if latitudes.size < 1 or longitudes.size < 1:
-        raise ValueError("Forecast grid must contain at least one latitude and one longitude.")
-
-    lon_grid, lat_grid = np.meshgrid(longitudes, latitudes)
-    point_df = pd.DataFrame(
-        {
-            "lat": lat_grid.reshape(-1),
-            "lon": lon_grid.reshape(-1),
-        }
-    )
-    return build_idw_neighbors(
-        mini_df,
-        point_df,
-        nearest_stations=min(int(nearest_points), len(point_df)),
-        power=power,
-    )
-
-
-def interpolate_station_chunk(
-    station_chunk: np.ndarray,
-    *,
-    nearest_idx: np.ndarray,
-    weights: np.ndarray,
-) -> np.ndarray:
-    n_mini, k = nearest_idx.shape
-    chunk_size = station_chunk.shape[1]
-
-    gathered = station_chunk[nearest_idx.reshape(-1), :].reshape(n_mini, k, chunk_size)
-    valid = np.isfinite(gathered)
-    weighted_values = np.where(valid, gathered * weights[:, :, None], 0.0)
-    weight_sum = np.where(valid, weights[:, :, None], 0.0).sum(axis=1)
-    if np.any(weight_sum <= 0):
-        missing_positions = int((weight_sum <= 0).sum())
-        raise ValueError(f"Interpolation left {missing_positions} mini/hour positions without rainfall coverage.")
-
-    return np.divide(weighted_values.sum(axis=1), weight_sum)
 
 
 def write_mini_rainfall_atomic(
