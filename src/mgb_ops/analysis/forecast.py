@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec, resample_regular_grid
-from mgb_ops.adapters.forecast_ecmwf import build_ecmwf_cycle
+from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
 from mgb_ops.common.time_utils import DashboardWindow, TIMEZONE
 from mgb_ops.assets.forecast_grid import (
     ForecastPrecipitationGrid,
@@ -26,46 +26,49 @@ class ForecastIntegrityError(RuntimeError):
         self.code = code
 
 
-def resolve_expected_ecmwf_asset(
+def resolve_expected_forecast_asset(
     database_path: Path,
     *,
     workspace_path: Path,
     reference_time: datetime,
+    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
 ) -> tuple[dict[str, object], Path]:
-    expected_cycle = build_ecmwf_cycle(reference_time)
+    expected_cycle = adapter.cycle_time(reference_time)
     match = find_forecast_asset_by_cycle(
         database_path,
         workspace_path=workspace_path,
-        provider_code="ecmwf",
+        provider_code=adapter.provider_code,
         cycle_time=expected_cycle,
     )
     if match is None:
         raise ForecastIntegrityError(
             "unregistered_cycle",
-            "ECMWF integrity error: canonical NetCDF for expected cycle "
+            f"Forecast integrity error for {adapter.provider_code}: canonical NetCDF for expected cycle "
             f"{expected_cycle.isoformat(timespec='seconds')}Z is not registered in history.sqlite.",
         )
     row, path = match
     if not path.exists():
         raise ForecastIntegrityError(
             "missing_registered_file",
-            "ECMWF integrity error: expected cycle "
+            f"Forecast integrity error for {adapter.provider_code}: expected cycle "
             f"{expected_cycle.isoformat(timespec='seconds')}Z is registered as "
             f"{row['relative_path']!r}, but that canonical NetCDF is missing.",
         )
     return row, path
 
 
-def list_expected_ecmwf_assets(
+def list_expected_forecast_assets(
     database_path: Path,
     *,
     workspace_path: Path,
     reference_time: datetime,
+    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
 ) -> pd.DataFrame:
-    row, _ = resolve_expected_ecmwf_asset(
+    row, _ = resolve_expected_forecast_asset(
         database_path,
         workspace_path=workspace_path,
         reference_time=reference_time,
+        adapter=adapter,
     )
     return pd.DataFrame([row])
 

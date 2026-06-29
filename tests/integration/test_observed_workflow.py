@@ -59,7 +59,11 @@ def test_fetch_observed_provider_empty_db_starts_at_window_start_without_import(
             ),
         )
 
-    monkeypatch.setattr(observed_workflow, "fetch_observed_ana", fake_fetch)
+    monkeypatch.setattr(
+        observed_workflow.get_observation_adapter("ana"),
+        "fetch_function",
+        fake_fetch,
+    )
 
     summary = observed_workflow.fetch_observed_provider(
         "ana",
@@ -110,7 +114,11 @@ def test_fetch_observed_provider_resumes_from_latest_day_with_overlap(tmp_path, 
             ),
         )
 
-    monkeypatch.setattr(observed_workflow, "fetch_observed_ana", fake_fetch)
+    monkeypatch.setattr(
+        observed_workflow.get_observation_adapter("ana"),
+        "fetch_function",
+        fake_fetch,
+    )
 
     observed_workflow.fetch_observed_provider(
         "ana",

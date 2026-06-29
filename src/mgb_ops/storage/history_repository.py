@@ -102,15 +102,10 @@ class HistoryRepository:
                 "`mgb_ops.storage.db_bootstrap`."
             )
 
-        provider_codes = {
-            row["provider_code"]
-            for row in self.connection.execute("SELECT provider_code FROM provider").fetchall()
-        }
-        expected_providers = {"ana", "inmet", "ecmwf"}
-        if not expected_providers.issubset(provider_codes):
+        provider_count = self.connection.execute("SELECT COUNT(*) FROM provider").fetchone()[0]
+        if provider_count == 0:
             raise RuntimeError(
-                "History database is incompatible with the current provider catalog. "
-                f"Expected at least {sorted(expected_providers)}, found {sorted(provider_codes)}. "
+                "History database is incompatible with the current provider catalog: it is empty. "
                 f"Delete {self.database_path} and recreate the database with "
                 "`mgb_ops.storage.db_bootstrap`."
             )
@@ -296,9 +291,6 @@ class HistoryRepository:
         ).fetchall()
         return [dict(row) for row in rows]
 
-    def list_ecmwf_assets(self, *, asset_kind: str) -> list[dict[str, Any]]:
-        return self.list_assets(provider_code="ecmwf", asset_kind=asset_kind)
-
     def upsert_asset(
         self,
         *,
@@ -398,9 +390,6 @@ class HistoryRepository:
         if row is None:
             return None
         return dict(row)
-
-    def find_latest_ecmwf_asset(self, reference_time: datetime | str, *, asset_kind: str) -> dict[str, Any] | None:
-        return self.find_latest_asset(reference_time, provider_code="ecmwf", asset_kind=asset_kind)
 
     def _normalize_forecast_manual_edit_row(self, asset_id: str, row: dict[str, Any], row_number: int) -> dict[str, Any]:
         if row.get("asset_id") not in (None, "", asset_id):

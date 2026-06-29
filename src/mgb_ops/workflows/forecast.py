@@ -4,8 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-from mgb_ops.adapters import forecast_ecmwf
-from mgb_ops.adapters.forecast_ecmwf import ForecastProductConfig
+from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
 from mgb_ops.assets.forecast_grid import FORECAST_GRID_FORMAT
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.time_utils import resolve_reference_time
@@ -31,21 +30,21 @@ def ingest_forecast_grids(
     logs_dir: Path,
     asset_base_dir: Path,
     timestep_hours: int = 1,
-    product_config: ForecastProductConfig = forecast_ecmwf.ECMWF_FORECAST_PRODUCT,
+    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
 ) -> ForecastGridSummary:
     if not Path(database_path).exists():
         raise FileNotFoundError(f"History database not found: {database_path}")
 
-    normalized = forecast_ecmwf.store_normalized_forecast_grid(
+    normalized = adapter.store_grid(
         reference_time=reference_time,
         bbox=bbox,
         buffer_fraction=buffer_fraction,
         downloads_dir=downloads_dir,
         logs_dir=logs_dir,
         timestep_hours=timestep_hours,
-        product_config=product_config,
     )
-    asset_id = forecast_ecmwf.build_asset_id(normalized.cycle_time, product_config)
+    product_config = adapter.product_config
+    asset_id = adapter.asset_id(normalized.cycle_time)
     metadata = {
         "provider": product_config.provider_code,
         "model": product_config.model,

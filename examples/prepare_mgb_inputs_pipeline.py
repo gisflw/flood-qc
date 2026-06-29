@@ -11,7 +11,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from mgb_ops.common.env import INMET_API_KEY_ENV
+from mgb_ops.adapters.observed_inmet import INMET_API_KEY_ENV
 from mgb_ops.common.paths import SQL_DIR, ensure_standard_dirs
 from mgb_ops.common.runtime import build_runtime_context
 from mgb_ops.common.time_utils import build_horizon_window, resolve_reference_time
@@ -23,7 +23,7 @@ from mgb_ops.workflows.observed import (
     load_observed_provider_csvs,
 )
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
-from mgb_ops.model.prepare_mgb_rainfall import find_required_ecmwf_asset, prepare_mgb_rainfall
+from mgb_ops.model.prepare_mgb_rainfall import find_required_forecast_asset, prepare_mgb_rainfall
 from mgb_ops.storage.db_bootstrap import initialize_history_db
 
 # %% [markdown]
@@ -136,10 +136,10 @@ print(f"total MGB hours: {mgb_window.nt}")
 observed_summaries = []
 for provider_code in OBSERVED_PROVIDERS:
     provider = provider_code.strip().lower()
-    api_key = None
+    credential = None
     if provider == "inmet":
-        api_key = context.env.get(INMET_API_KEY_ENV)
-        if FETCH_OBSERVED_PROVIDERS and not api_key:
+        credential = context.env.get(INMET_API_KEY_ENV)
+        if FETCH_OBSERVED_PROVIDERS and not credential:
             raise RuntimeError(f"Set {INMET_API_KEY_ENV} before enabling INMET ingestion.")
 
     if FETCH_OBSERVED_PROVIDERS:
@@ -153,7 +153,7 @@ for provider_code in OBSERVED_PROVIDERS:
             station_codes=OBSERVED_STATION_CODES_BY_PROVIDER.get(provider),
             timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
             fetch_window_days=int(settings["ingest"]["fetch_window_days"]),
-            api_key=api_key,
+            credential=credential,
         )
         csv_paths = fetch_summary.csv_paths
         run_id = fetch_summary.run_id
@@ -192,7 +192,7 @@ forecast_cycle = build_ecmwf_cycle(mgb_window.reference_time)
 
 if use_forecast_data:
     with sqlite3.connect(paths.history_db) as connection:
-        forecast_asset = find_required_ecmwf_asset(
+        forecast_asset = find_required_forecast_asset(
             connection,
             reference_time=mgb_window.reference_time,
             input_days_before=int(mgb_settings["input_days_before"]),
@@ -238,7 +238,7 @@ if use_forecast_data and forecast_asset is None:
     print(f"registered ECMWF asset: {grid_summary.asset_id}")
 
     with sqlite3.connect(paths.history_db) as connection:
-        forecast_asset = find_required_ecmwf_asset(
+        forecast_asset = find_required_forecast_asset(
             connection,
             reference_time=mgb_window.reference_time,
             input_days_before=int(mgb_settings["input_days_before"]),

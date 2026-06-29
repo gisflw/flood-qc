@@ -91,7 +91,7 @@ class ForecastMapComparisonArtifacts:
 def list_forecast_assets(
     database_path: Path, workspace_path: Path, *, window: DashboardWindow
 ) -> pd.DataFrame:
-    return forecast_analysis.list_expected_ecmwf_assets(
+    return forecast_analysis.list_expected_forecast_assets(
         database_path, workspace_path=workspace_path, reference_time=window.cutoff_time
     )
 

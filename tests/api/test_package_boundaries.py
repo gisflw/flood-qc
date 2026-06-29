@@ -63,7 +63,6 @@ FORBIDDEN_DOMAIN_RUNTIME_NAMES = {
     "parse_dotenv",
     "load_workspace_env",
     "resolve_env_value",
-    "resolve_inmet_api_key",
     "build_runtime_context",
     "load_runtime_env",
     "resolve_workspace_from_runtime_env",
@@ -116,6 +115,35 @@ def test_domain_modules_do_not_call_or_read_ambient_runtime_state() -> None:
                     offenders.append(f"{rel_path}:{node.lineno} reads os.environ")
             elif isinstance(node, ast.Name) and node.id == "SQL_DIR":
                 offenders.append(f"{rel_path}:{node.lineno} uses SQL_DIR")
+
+    assert offenders == []
+
+
+def test_provider_specific_symbols_are_confined_to_adapters() -> None:
+    provider_names = ("ana", "inmet", "ecmwf")
+    offenders: list[str] = []
+    roots = (REPO_ROOT / "src" / "mgb_ops", REPO_ROOT / "apps")
+    for root in roots:
+        for path in root.rglob("*.py"):
+            if (REPO_ROOT / "src" / "mgb_ops" / "adapters") in path.parents:
+                continue
+            tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+            for node in ast.walk(tree):
+                names: list[str] = []
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                    names.append(node.name)
+                elif isinstance(node, ast.Name):
+                    names.append(node.id)
+                elif isinstance(node, ast.Attribute):
+                    names.append(node.attr)
+                elif isinstance(node, ast.alias):
+                    names.extend((node.name, node.asname or ""))
+                for name in names:
+                    name_parts = name.lower().replace(".", "_").split("_")
+                    if any(provider in name_parts for provider in provider_names):
+                        offenders.append(
+                            f"{path.relative_to(REPO_ROOT).as_posix()}:{getattr(node, 'lineno', 0)} uses {name}"
+                        )
 
     assert offenders == []
 

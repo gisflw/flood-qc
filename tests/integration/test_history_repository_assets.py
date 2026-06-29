@@ -33,11 +33,12 @@ def test_history_repository_upserts_and_finds_ecmwf_asset(tmp_path) -> None:
             valid_to="2026-03-27T00:00:00",
             metadata={"cycle_time": "2026-03-11T00:00:00Z", "bbox": [-72.0, -44.0, -36.0, -17.0]},
         )
-        found = repository.find_latest_ecmwf_asset(
+        found = repository.find_latest_asset(
             datetime(2026, 3, 11, 12, 0, 0),
+            provider_code="ecmwf",
             asset_kind="forecast_precipitation_grid",
         )
-        listed = repository.list_ecmwf_assets(asset_kind="forecast_precipitation_grid")
+        listed = repository.list_assets(provider_code="ecmwf", asset_kind="forecast_precipitation_grid")
 
     assert asset["asset_id"] == "ecmwf.ifs.fc.20260311T000000Z.precipitation_grid"
     assert same_path["valid_to"] == "2026-03-27T00:00:00"

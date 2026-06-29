@@ -7,9 +7,6 @@ from pathlib import Path
 from typing import Mapping
 
 
-INMET_API_KEY_ENV = "INMET_API_KEY"
-
-
 def _normalize_env_value(value: object | None) -> str | None:
     if value is None:
         return None
@@ -66,16 +63,17 @@ def resolve_env_value(
     return None
 
 
-def resolve_inmet_api_key(
+def require_env_value(
+    name: str,
     *,
     explicit: object | None = None,
     env: Mapping[str, str] | None = None,
     dotenv_values: Mapping[str, str] | None = None,
 ) -> str:
-    api_key = resolve_env_value(INMET_API_KEY_ENV, explicit=explicit, env=env, dotenv_values=dotenv_values)
-    if not api_key:
-        raise RuntimeError(f"Missing INMET/BNDMET API key. Set {INMET_API_KEY_ENV} in the environment or workspace .env.")
-    return api_key
+    value = resolve_env_value(name, explicit=explicit, env=env, dotenv_values=dotenv_values)
+    if not value:
+        raise RuntimeError(f"Missing required environment value. Set {name} in the environment or workspace .env.")
+    return value
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,5 +83,5 @@ class RuntimeEnv:
     def get(self, name: str, default: object | None = None) -> str | None:
         return resolve_env_value(name, dotenv_values=self.values, default=default)
 
-    def require_inmet_api_key(self, explicit: object | None = None) -> str:
-        return resolve_inmet_api_key(explicit=explicit, dotenv_values=self.values)
+    def require(self, name: str, explicit: object | None = None) -> str:
+        return require_env_value(name, explicit=explicit, dotenv_values=self.values)

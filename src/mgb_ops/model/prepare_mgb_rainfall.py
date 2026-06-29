@@ -16,12 +16,7 @@ from mgb_ops.analysis.spatial import (
     interpolate_station_chunk,
 )
 from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window, validate_timestep_hours
-from mgb_ops.adapters.forecast_ecmwf import (
-    ECMWF_FORECAST_PRODUCT,
-    ForecastProductConfig,
-    build_asset_id,
-    build_ecmwf_cycle,
-)
+from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
 from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
@@ -266,18 +261,19 @@ def require_observed_values_aligned_to_timestep(values_df: pd.DataFrame, *, time
         )
 
 
-def load_latest_ecmwf_asset_path(
+def load_latest_forecast_asset_path(
     connection: sqlite3.Connection,
     *,
     reference_time: datetime,
     asset_base_dir: Path,
+    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
 ) -> Path:
     reference_time_utc = reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
     row = connection.execute(
         """
         SELECT relative_path
         FROM asset
-        WHERE provider_code = 'ecmwf'
+        WHERE provider_code = ?
           AND asset_kind = ?
           AND valid_from IS NOT NULL
           AND valid_to IS NOT NULL
@@ -287,25 +283,26 @@ def load_latest_ecmwf_asset_path(
         LIMIT 1
         """,
         (
-            ECMWF_FORECAST_PRODUCT.asset_kind,
+            adapter.provider_code,
+            adapter.product_config.asset_kind,
             reference_time_utc.isoformat(timespec="seconds"),
             reference_time_utc.isoformat(timespec="seconds"),
         ),
     ).fetchone()
     if row is None:
         raise FileNotFoundError(
-            "No ECMWF forecast asset was found in history for the requested forecast window. "
-            "Ingest forecast grids with `mgb_ops.adapters.forecast_ecmwf` first."
+            f"No forecast asset for provider {adapter.provider_code!r} was found in history "
+            "for the requested forecast window."
         )
 
     registered_path = Path(str(row["relative_path"]))
     asset_path = registered_path if registered_path.is_absolute() else asset_base_dir / registered_path
     if not asset_path.exists():
-        raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
+        raise FileNotFoundError(f"Forecast asset registered in history does not exist on disk: {asset_path}")
     return asset_path
 
 
-def find_required_ecmwf_asset(
+def find_required_forecast_asset(
     connection: sqlite3.Connection,
     *,
     reference_time: datetime,
@@ -313,7 +310,7 @@ def find_required_ecmwf_asset(
     forecast_horizon_days: int,
     asset_base_dir: Path,
     timestep_hours: int = 1,
-    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
 ) -> ForecastAssetMatch | None:
     window = build_horizon_window(
         reference_time,
@@ -321,8 +318,9 @@ def find_required_ecmwf_asset(
         horizon_days=forecast_horizon_days,
         timestep_hours=timestep_hours,
     )
-    cycle_time = build_ecmwf_cycle(reference_time)
-    expected_asset_id = build_asset_id(cycle_time, product_config)
+    cycle_time = adapter.cycle_time(reference_time)
+    expected_asset_id = adapter.asset_id(cycle_time)
+    product_config = adapter.product_config
     forecast_end_time = window.forecast_start_time + timedelta(hours=timestep_hours * (window.forecast_nt - 1))
     forecast_start_utc = (
         window.forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
@@ -358,7 +356,7 @@ def find_required_ecmwf_asset(
     registered_path = Path(str(row[1]))
     asset_path = registered_path if registered_path.is_absolute() else Path(asset_base_dir) / registered_path
     if not asset_path.exists():
-        raise FileNotFoundError(f"ECMWF asset registered in history does not exist on disk: {asset_path}")
+        raise FileNotFoundError(f"Forecast asset registered in history does not exist on disk: {asset_path}")
 
     return ForecastAssetMatch(
         asset_id=str(row[0]),
