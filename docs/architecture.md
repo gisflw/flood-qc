@@ -20,20 +20,50 @@ artifacts on disk:
 
 ## Layer Model
 
-### Core Library
+The package is split by responsibility rather than by user interface:
 
-These modules should remain usable directly from Python:
+| Module | Architectural boundary |
+| --- | --- |
+| `mgb_ops.common` | Shared domain types, paths, settings, runtime conveniences, logging, and time utilities |
+| `mgb_ops.assets` | Contracts, validation, and I/O for external file formats, including packaged SQL schemas, canonical forecast NetCDF, and spatial GeoPackage layers |
+| `mgb_ops.adapters` | Provider-specific acquisition and translation, such as ANA, INMET, and ECMWF |
+| `mgb_ops.storage` | SQLite bootstrap, repositories, observed CSV persistence, and external-asset registration/resolution |
+| `mgb_ops.analysis` | Reusable read-only queries, projections, interpolation, resampling, and aggregation |
+| `mgb_ops.edit` | Forecast correction operations and correction persistence |
+| `mgb_ops.qc` | Validation rules, checks, and structured QC results |
+| `mgb_ops.model` | MGB input preparation, execution, and output production |
+| `mgb_ops.workflows` | Use-case orchestration across adapters, storage, assets, and model capabilities |
+| `apps/ops_dashboard` | Panel rendering, callbacks, session state, caching, and UI-specific presentation |
 
-- `src/mgb_ops/common/`: shared contracts, paths, settings, logging, and time utilities;
-- `src/mgb_ops/storage/`: SQLite bootstrap and repository contracts;
-- `src/mgb_ops/ingest/`: collection and registration of observations and forecasts;
-- `src/mgb_ops/model/`: preparation of MGB inputs, model execution, and output export;
-- `src/mgb_ops/qc/`: QC and review rules, still incomplete in this phase.
+An asset module owns the shape and serialization of a file, not its database
+registration or operational use. Storage owns persistence and registry lookups.
+Analysis owns read-only derivation from explicit inputs. Thus GeoPackage
+validation/loading and the forecast NetCDF contract live in `assets`, while
+rainfall interpolation and grid accumulation live in `analysis`.
 
-Core domain functions in `storage`, `ingest`, `qc`, and `model` accept explicit paths, databases, settings, schema paths, asset bases, and times. They should return structured summaries or domain objects instead of depending on console output, process environment, `.env`, or workspace globals.
+The existing `analysis.forecast` and `analysis.timeseries` surfaces combine
+explicit read-only loading with computation. They remain supported read-only
+analysis APIs; database writes and registry ownership still belong to
+`storage`.
 
-`mgb_ops.common` is the only library area that may provide convenience runtime
-helpers for resolving workspaces, settings, and `.env` values.
+Core domain functions accept explicit paths, databases, settings, schema paths,
+asset bases, credentials, and times. They return structured summaries or domain
+objects instead of depending on console output, process environment, `.env`, or
+workspace globals. `mgb_ops.common` is the only library area that may provide
+convenience runtime helpers for resolving workspaces, settings, and `.env`
+values.
+
+### Dependency Direction
+
+Apps call workflows or focused library APIs. Workflows compose provider
+adapters and domain modules. Adapters, storage, analysis, edit, QC, and model
+code may depend on common types and asset contracts, but library code must not
+depend on the app. Provider access stays out of storage and assets, UI state
+stays out of the library, and peer-module cycles should be avoided.
+
+Subprocess execution is a model capability when exposed through an explicit
+plan and structured result. CLI parsing, Panel state, and interface-only output
+remain in wrappers.
 
 ## Implemented Status
 

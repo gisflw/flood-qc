@@ -44,6 +44,10 @@ The reverse proxy must preserve the `/hydrology` prefix (or rewrite it
 consistently) and forward `Upgrade` and `Connection` headers.
 
 `factory.py` creates session state and the responsive shell. Cached reads and
-pure domain transforms live in `services/`; Panel composition and callbacks
-live in `views/`. The package-level `create_dashboard` export is the supported
-Python embedding interface.
+presentation adapters live in `services/`; Panel composition and callbacks live
+in `views/`. Reusable file contracts and loading belong in `mgb_ops.assets`,
+read-only hydrological calculations and projections in `mgb_ops.analysis`, and
+persistence in `mgb_ops.storage`. Dashboard services may cache or reshape those
+results for widgets, but must not become the owner of domain rules. The
+package-level `create_dashboard` export is the supported Python embedding
+interface.

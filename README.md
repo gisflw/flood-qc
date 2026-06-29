@@ -40,13 +40,18 @@ Still pending in this phase:
 |-- docs/
 |-- src/
 |   `-- mgb_ops/
+|       |-- adapters/
+|       |-- analysis/
 |       |-- assets/
 |       |   `-- sql/
 |       |-- common/
-|       |-- ingest/
+|       |-- edit/
 |       |-- model/
 |       |-- qc/
-|       `-- storage/
+|       |-- storage/
+|       `-- workflows/
+|-- apps/
+|   `-- ops_dashboard/
 `-- tests/
 ```
 
@@ -55,8 +60,16 @@ Important: the user is responsible for providing a regional workspace containing
 
 ## Layer Model
 
-- `src/mgb_ops/common/`, `storage/`, `ingest/`, `qc/`, and `model/`
-  Core library modules for notebook and data-flow use.
+- `common`: shared types and explicit runtime/configuration helpers.
+- `assets`: external-file contracts and readers/writers, including SQL schemas,
+  forecast NetCDF, and spatial GeoPackage layers.
+- `adapters`: provider-specific collection and normalization.
+- `storage`: SQLite persistence and asset registry operations.
+- `analysis`: read-only queries, projections, interpolation, and aggregation.
+- `edit` and `qc`: auditable corrections and validation rules.
+- `model`: MGB preparation, execution, and output production.
+- `workflows`: Python-first orchestration across those capabilities.
+- `apps/ops_dashboard`: thin Panel UI, session state, and presentation services.
 
 Future operational reporting should be added as a library capability only when
 the reporting workflow is designed.
@@ -68,7 +81,9 @@ the reporting workflow is designed.
   - module-owned in-code defaults;
   - `<workspace>/config/custom.yaml` as the only editable regional override.
 - `.env` files are loaded only by `mgb_ops.common` runtime helpers. Core domain modules do not load `.env` or inspect process environment.
-- Library calls should pass explicit workspace, database, schema, asset, settings, path, and time inputs into `storage`, `ingest`, `qc`, and `model` functions.
+- Library calls should pass explicit workspace, database, schema, asset,
+  settings, path, and time inputs into adapters, storage, analysis, edit, QC,
+  model, and workflow functions.
 - The evaluation of migrating configuration to `.toml` remains open, with no contract change for now.
 
 ## Local Setup

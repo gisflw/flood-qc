@@ -31,7 +31,7 @@ def test_root_sql_and_config_directories_are_not_present() -> None:
 def _domain_library_paths() -> list[Path]:
     roots = [
         REPO_ROOT / "src" / "mgb_ops" / name
-        for name in ("storage", "adapters", "workflows", "analysis", "edit", "qc", "model")
+        for name in ("assets", "storage", "adapters", "workflows", "analysis", "edit", "qc", "model")
     ]
     return [path for root in roots for path in root.rglob("*.py")]
 

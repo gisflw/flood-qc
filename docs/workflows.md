@@ -49,7 +49,8 @@ Workflow helpers: `mgb_ops.workflows.observed.fetch_observed_provider`,
 Library modules:
 
 - `mgb_ops.adapters.forecast_ecmwf`
-- `mgb_ops.model.forecast_grid`
+- `mgb_ops.assets.forecast_grid`
+- `mgb_ops.workflows.forecast`
 
 Install the optional forecast dependencies in the operational environment:
 
@@ -64,9 +65,11 @@ python -m pip install -e ".[forecast]"
 5. Register only the canonical NetCDF asset in the explicitly supplied history database, using `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and an explicitly supplied asset base directory for relative paths.
 6. Register logs in `logs/forecast_ecmwf/`.
 
-Python callers pass `bbox=(west, south, east, north)` and `buffer_fraction=...`
-directly to `mgb_ops.adapters.forecast_ecmwf.ingest_forecast_grids`. These values
-can also be set as `forecast_grid.bbox` and `forecast_grid.buffer_fraction` in
+Python callers pass `bbox=(west, south, east, north)` and
+`buffer_fraction=...` to `mgb_ops.workflows.forecast.collect_forecast_grids`
+or `ingest_forecast_grids`, together with explicit storage and output paths.
+These values can also be resolved by a thin runtime wrapper from
+`forecast_grid.bbox` and `forecast_grid.buffer_fraction` in
 `<workspace>/config/custom.yaml`.
 
 ### 4. MGB Preparation

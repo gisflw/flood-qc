@@ -10,7 +10,7 @@ import geopandas as gpd
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.spatial import RegularGridSpec, observed_rainfall_grid
-from mgb_ops.analysis.spatial_layers import read_mini_layer
+from mgb_ops.assets.spatial_layers import read_mini_layer
 from mgb_ops.common.time_utils import DashboardWindow
 
 
