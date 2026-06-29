@@ -11,7 +11,7 @@ can be used directly from notebooks, scripts, and data-flow style orchestration.
   command-line parsing or UI state.
 - Keep GUI layer thin. `apps/ops_dashboard/` should handle Streamlit rendering and session state,
   then call library/dashboard-support functions.
-- Do not add Streamlit, Folium component, or UI-session dependencies to core
+- Do not add UI-session dependencies to core
   library modules. UI dependencies belong in `apps/ops_dashboard/` or in clearly
   transitional dashboard support code.
 - Avoid coupling notebook-friendly functions to `argparse`, Streamlit session
