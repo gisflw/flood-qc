@@ -7,7 +7,7 @@ import sqlite3
 import geopandas as gpd
 from shapely.geometry import LineString, Polygon
 
-from apps.ops_dashboard.support.map import build_sqlite_version
+from apps.ops_dashboard.services.deckgl import build_sqlite_version
 from mgb_ops.analysis.spatial_layers import read_mini_layer, read_mini_layers
 from mgb_ops.common.time_utils import DashboardWindow, resolve_dashboard_window
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction, validate_instruction

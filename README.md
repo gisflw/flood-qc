@@ -89,7 +89,7 @@ For the operational dashboard:
 
 ```bash
 python -m pip install -e '.[dashboard]'
-panel serve apps/ops_dashboard/app.py --show --args --workspace scratch/rs_hydro
+panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hydro
 ```
 
 For a reverse proxy, pass its public host with

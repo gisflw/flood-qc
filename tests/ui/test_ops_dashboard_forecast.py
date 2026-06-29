@@ -11,7 +11,7 @@ from mgb_ops.model.forecast_grid import (
 )
 from mgb_ops.analysis.spatial import RegularGridSpec
 from mgb_ops.common.time_utils import DashboardWindow
-from apps.ops_dashboard.support import forecast as ops_dashboard_forecast
+from apps.ops_dashboard.services import forecast as ops_dashboard_forecast
 from db_helpers import initialize_history_db
 from mgb_ops.storage.history_repository import HistoryRepository
 from mgb_ops.analysis.forecast import ForecastIntegrityError

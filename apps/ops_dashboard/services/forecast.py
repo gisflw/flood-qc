@@ -8,7 +8,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from apps.ops_dashboard.support import map as dashboard_map
+from apps.ops_dashboard.services import deckgl as dashboard_map
 from mgb_ops.analysis import forecast as forecast_analysis
 from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec
 from mgb_ops.common.time_utils import DashboardWindow

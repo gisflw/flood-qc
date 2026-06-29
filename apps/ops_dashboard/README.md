@@ -9,7 +9,7 @@ Install and run:
 
 ```bash
 python -m pip install -e '.[dashboard]'
-panel serve apps/ops_dashboard/app.py --show --args --workspace scratch/rs_hydro
+panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hydro
 ```
 
 The dashboard consumes:
@@ -34,7 +34,7 @@ Additional behavior:
 Behind a reverse proxy, allow the public origin and forward WebSocket upgrades:
 
 ```bash
-panel serve apps/ops_dashboard/app.py \
+panel serve apps/ops_dashboard/serve.py \
   --allow-websocket-origin dashboard.example.org \
   --prefix /hydrology \
   --args --workspace /srv/rs_hydro
@@ -43,4 +43,7 @@ panel serve apps/ops_dashboard/app.py \
 The reverse proxy must preserve the `/hydrology` prefix (or rewrite it
 consistently) and forward `Upgrade` and `Connection` headers.
 
-Dashboard support helpers live in `apps/ops_dashboard/support/`.
+`factory.py` creates session state and the responsive shell. Cached reads and
+pure domain transforms live in `services/`; Panel composition and callbacks
+live in `views/`. The package-level `create_dashboard` export is the supported
+Python embedding interface.

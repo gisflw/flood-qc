@@ -78,7 +78,7 @@ def live_server(tmp_path: Path):
         [
             "panel",
             "serve",
-            "apps/ops_dashboard/app.py",
+            "apps/ops_dashboard/serve.py",
             "--address",
             "127.0.0.1",
             "--port",
@@ -92,7 +92,7 @@ def live_server(tmp_path: Path):
         stderr=subprocess.STDOUT,
         text=True,
     )
-    url = f"http://127.0.0.1:{port}/app"
+    url = f"http://127.0.0.1:{port}/serve"
     try:
         for _ in range(100):
             if process.poll() is not None:

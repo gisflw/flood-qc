@@ -1,58 +1,40 @@
-"""Session-local state and transitions for the Panel dashboard."""
+"""Session-local dashboard parameters and state transitions."""
 from __future__ import annotations
 
-import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
 
-import numpy as np
 import pandas as pd
-import panel as pn
 import param
 
-from apps.ops_dashboard.support import data as dashboard_data
-from apps.ops_dashboard.support import forecast as dashboard_forecast
-from apps.ops_dashboard.support import map as dashboard_map
-from mgb_ops.analysis.spatial import RegularGridSpec, observed_rainfall_grid
+from apps.ops_dashboard.services import deckgl as dashboard_map
+from apps.ops_dashboard.services import forecast as dashboard_forecast
+from apps.ops_dashboard.services.corrections import (
+    build_forecast_edit_row,
+    build_forecast_instruction_from_request,
+    empty_forecast_edit_frame,
+    normalize_forecast_edit_frame,
+    validate_forecast_edit_draft,
+)
+from apps.ops_dashboard.services.loaders import (
+    _accumulation_rasters,
+    _forecast_assets,
+    _forecast_preview,
+    _forecast_steps,
+    _mgb_series,
+    _mini_layers,
+    _model_variables,
+    _observed_series,
+    _station_catalog,
+)
+from mgb_ops.analysis import timeseries as dashboard_data
+from mgb_ops.analysis.spatial import RegularGridSpec
 from mgb_ops.common.runtime import RuntimeContext, build_runtime_context
-from mgb_ops.common.time_utils import (
-    DashboardWindow,
-    resolve_dashboard_window,
-    resolve_workspace_path,
-)
-from mgb_ops.edit.forcing import ForecastCorrectionInstruction
-from mgb_ops.edit.sqlite import (
-    list_forecast_corrections,
-    replace_forecast_corrections,
-)
-
-
-FORECAST_EDIT_COLUMNS = [
-    "manual_edit_id",
-    "asset_id",
-    "t0_step",
-    "t1_step",
-    "shift_lat",
-    "shift_lon",
-    "rotation_deg",
-    "multiplication_factor",
-    "editor",
-    "reason",
-    "metadata_json",
-    "created_at",
-    "remove",
-]
-FORECAST_EDIT_NUMERIC_COLUMNS = [
-    "t0_step",
-    "t1_step",
-    "shift_lat",
-    "shift_lon",
-    "rotation_deg",
-    "multiplication_factor",
-]
+from mgb_ops.common.time_utils import resolve_dashboard_window, resolve_workspace_path
+from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,298 +44,7 @@ class DashboardSources:
     model: str
 
 
-def normalize_forecast_edit_frame(frame: pd.DataFrame | None) -> pd.DataFrame:
-    normalized = pd.DataFrame() if frame is None else frame.copy()
-    for column in FORECAST_EDIT_COLUMNS:
-        if column not in normalized.columns:
-            normalized[column] = pd.NA
-    normalized["manual_edit_id"] = pd.to_numeric(
-        normalized["manual_edit_id"], errors="coerce"
-    ).astype("Int64")
-    for column in FORECAST_EDIT_NUMERIC_COLUMNS:
-        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
-    for column in ("asset_id", "editor", "reason", "created_at"):
-        normalized[column] = normalized[column].fillna("").astype(str)
-    normalized["metadata_json"] = (
-        normalized["metadata_json"].fillna("{}").astype(str)
-    )
-    normalized["remove"] = normalized["remove"].fillna(False).astype(bool)
-    return normalized[FORECAST_EDIT_COLUMNS]
-
-
-def empty_forecast_edit_frame() -> pd.DataFrame:
-    return normalize_forecast_edit_frame(None)
-
-
-def build_forecast_edit_row(
-    *,
-    asset_id: str,
-    t0_step: int,
-    t1_step: int,
-    shift_lat: float,
-    shift_lon: float,
-    rotation_deg: float,
-    multiplication_factor: float,
-    editor: str,
-    reason: str,
-    metadata: dict[str, Any] | None = None,
-) -> dict[str, object]:
-    return {
-        "manual_edit_id": pd.NA,
-        "asset_id": asset_id,
-        "t0_step": int(t0_step),
-        "t1_step": int(t1_step),
-        "shift_lat": float(shift_lat),
-        "shift_lon": float(shift_lon),
-        "rotation_deg": float(rotation_deg),
-        "multiplication_factor": float(multiplication_factor),
-        "editor": str(editor),
-        "reason": str(reason),
-        "metadata_json": json.dumps(metadata or {}, sort_keys=True, ensure_ascii=True),
-        "created_at": "",
-        "remove": False,
-    }
-
-
-def validate_forecast_edit_draft(
-    asset_id: str, frame: pd.DataFrame
-) -> list[dict[str, Any]]:
-    normalized = normalize_forecast_edit_frame(frame)
-    active = normalized.loc[~normalized["remove"]].reset_index(drop=True)
-    rows: list[dict[str, Any]] = []
-    for row_index, row in enumerate(active.itertuples(index=False), start=1):
-        if pd.isna(row.t0_step) or pd.isna(row.t1_step):
-            raise ValueError(f"Row {row_index}: t0_step and t1_step are required.")
-        if pd.isna(row.multiplication_factor):
-            raise ValueError(
-                f"Row {row_index}: multiplication_factor is required."
-            )
-        t0_step, t1_step = int(row.t0_step), int(row.t1_step)
-        if t1_step < t0_step:
-            raise ValueError(f"Row {row_index}: t1_step must be >= t0_step.")
-        factor = float(row.multiplication_factor)
-        if not np.isfinite(factor) or factor <= 0:
-            raise ValueError(
-                f"Row {row_index}: multiplication_factor must be > 0."
-            )
-        reason = str(row.reason or "").strip()
-        if not reason:
-            raise ValueError(f"Row {row_index}: correction reason is required.")
-        metadata_json = str(row.metadata_json or "{}").strip() or "{}"
-        try:
-            metadata = json.loads(metadata_json)
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"Row {row_index}: invalid metadata_json.") from exc
-        rows.append(
-            {
-                "asset_id": asset_id,
-                "t0_step": t0_step,
-                "t1_step": t1_step,
-                "shift_lat": float(
-                    0.0 if pd.isna(row.shift_lat) else row.shift_lat
-                ),
-                "shift_lon": float(
-                    0.0 if pd.isna(row.shift_lon) else row.shift_lon
-                ),
-                "rotation_deg": float(
-                    0.0 if pd.isna(row.rotation_deg) else row.rotation_deg
-                ),
-                "multiplication_factor": factor,
-                "editor": str(row.editor or "").strip() or None,
-                "reason": reason,
-                "metadata": metadata,
-            }
-        )
-    rows.sort(key=lambda item: (item["t0_step"], item["t1_step"]))
-    for previous, current in zip(rows, rows[1:]):
-        if current["t0_step"] < previous["t1_step"]:
-            raise ValueError(
-                "Overlapping grid corrections: "
-                f"[{previous['t0_step']}, {previous['t1_step']}] x "
-                f"[{current['t0_step']}, {current['t1_step']}]."
-            )
-    return rows
-
-
-def build_forecast_instruction_from_request(
-    request: dashboard_forecast.ForecastPreviewRequest,
-) -> ForecastCorrectionInstruction:
-    return ForecastCorrectionInstruction(
-        asset_id=request.asset_id,
-        t0_step=request.t0_step,
-        t1_step=request.t1_step,
-        shift_lat=request.shift_lat,
-        shift_lon=request.shift_lon,
-        rotation_deg=request.rotation_deg,
-        multiplication_factor=request.multiplication_factor,
-    )
-
-
-@pn.cache(max_items=8)
-def _station_catalog(
-    database_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-) -> pd.DataFrame:
-    del workspace, source_version
-    return dashboard_data.load_station_catalog(
-        Path(database_path),
-        start_time=window.start_time,
-        end_time=window.cutoff_time,
-    )
-
-
-@pn.cache(max_items=256)
-def _observed_series(
-    station_id: str,
-    database_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-) -> pd.DataFrame:
-    del workspace, source_version
-    return dashboard_data.load_observed_series(
-        station_id,
-        Path(database_path),
-        start_time=window.start_time,
-        end_time=window.cutoff_time,
-    )
-
-
-@pn.cache(max_items=8)
-def _mini_layers(
-    gpkg_path: str, workspace: str, source_version: str
-) -> dashboard_data.MiniSpatialLayers:
-    del workspace, source_version
-    return dashboard_data.read_mini_layers(Path(gpkg_path))
-
-
-@pn.cache(max_items=8)
-def _model_variables(
-    model_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-) -> pd.DataFrame:
-    del workspace, source_version
-    dashboard_data.validate_model_outputs_netcdf(
-        Path(model_path), expected_window=window
-    )
-    return dashboard_data.list_model_variables(Path(model_path))
-
-
-@pn.cache(max_items=256)
-def _mgb_series(
-    mini_id: int,
-    variable_code: str,
-    model_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-) -> pd.DataFrame:
-    del workspace, source_version
-    return dashboard_data.load_mgb_series(
-        Path(model_path),
-        mini_id=mini_id,
-        variable_code=variable_code,
-        window=window,
-    )
-
-
-@pn.cache(max_items=32)
-def _accumulation_rasters(
-    database_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-    bbox: tuple[float, float, float, float],
-    resolution: float,
-    horizons: tuple[int, ...],
-    nearest_stations: int,
-    power: float,
-) -> tuple[dict[str, object], ...]:
-    del workspace, source_version
-    grid = RegularGridSpec(bbox=bbox, resolution=resolution)
-    result = []
-    for hours in horizons:
-        end_time = window.cutoff_time
-        rainfall = observed_rainfall_grid(
-            Path(database_path),
-            grid=grid,
-            start_time=max(
-                window.start_time,
-                end_time - pd.Timedelta(hours=int(hours)).to_pytimedelta(),
-            ),
-            end_time=end_time,
-            nearest_stations=nearest_stations,
-            power=power,
-        )
-        result.append(
-            {
-                "name": f"accum_{hours}h",
-                "horizon_hours": hours,
-                "horizon_label": f"{hours}h",
-                "grid": rainfall,
-            }
-        )
-    return tuple(result)
-
-
-@pn.cache(max_items=16)
-def _forecast_assets(
-    database_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-) -> pd.DataFrame:
-    del source_version
-    return dashboard_forecast.list_forecast_assets(
-        Path(database_path), Path(workspace), window=window
-    )
-
-
-@pn.cache(max_items=128)
-def _forecast_steps(
-    asset_id: str,
-    database_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-) -> pd.DataFrame:
-    del source_version
-    return dashboard_forecast.list_forecast_steps(
-        asset_id,
-        database_path=Path(database_path),
-        workspace_path=Path(workspace),
-        window=window,
-    )
-
-
-@pn.cache(max_items=128)
-def _forecast_preview(
-    asset_id: str,
-    t0_step: int,
-    t1_step: int,
-    database_path: str,
-    workspace: str,
-    source_version: str,
-    window: DashboardWindow,
-    bbox: tuple[float, float, float, float],
-    resolution: float,
-) -> dashboard_forecast.ForecastPreview:
-    del source_version, window
-    return dashboard_forecast.build_forecast_preview(
-        asset_id,
-        t0_step=t0_step,
-        t1_step=t1_step,
-        database_path=Path(database_path),
-        workspace_path=Path(workspace),
-        target_grid=RegularGridSpec(bbox=bbox, resolution=resolution),
-    )
-
-
-class DashboardController(param.Parameterized):
+class DashboardState(param.Parameterized):
     """All mutable dashboard state; one instance is created per Panel session."""
 
     station_id = param.String(default=None, allow_None=True)
@@ -418,7 +109,7 @@ class DashboardController(param.Parameterized):
         )
 
     def refresh(self) -> None:
-        """Re-version sources and refresh only this controller/session."""
+        """Re-version sources and refresh only this state/session."""
         versions = self._versions()
         self.source_versions = {
             "history": versions.history,
@@ -451,8 +142,8 @@ class DashboardController(param.Parameterized):
         segments = catchments = None
         try:
             minis = _mini_layers(str(self.gpkg_path), workspace, versions.spatial)
-            segments = dashboard_data.layer_geojson(minis.mini_segments)
-            catchments = dashboard_data.layer_geojson(minis.mini_catchments)
+            segments = minis.mini_segments.__geo_interface__
+            catchments = minis.mini_catchments.__geo_interface__
         except (FileNotFoundError, ValueError) as exc:
             self.warnings = [
                 *self.warnings,
@@ -528,8 +219,8 @@ class DashboardController(param.Parameterized):
                     str(self.workspace),
                     self.source_versions.get("spatial", ""),
                 )
-                segments = dashboard_data.layer_geojson(minis.mini_segments)
-                catchments = dashboard_data.layer_geojson(minis.mini_catchments)
+                segments = minis.mini_segments.__geo_interface__
+                catchments = minis.mini_catchments.__geo_interface__
             except (FileNotFoundError, ValueError):
                 segments = catchments = None
         catalog = {
@@ -787,11 +478,5 @@ class DashboardController(param.Parameterized):
 
 
 __all__ = [
-    "DashboardController",
-    "FORECAST_EDIT_COLUMNS",
-    "build_forecast_edit_row",
-    "build_forecast_instruction_from_request",
-    "empty_forecast_edit_frame",
-    "normalize_forecast_edit_frame",
-    "validate_forecast_edit_draft",
+    "DashboardState",
 ]

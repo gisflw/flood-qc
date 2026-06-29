@@ -9,7 +9,7 @@ import pandas as pd
 import pytest
 import xarray as xr
 
-from apps.ops_dashboard.support import data as ops_dashboard_data
+from mgb_ops.analysis import timeseries as ops_dashboard_data
 from mgb_ops.storage.db_bootstrap import apply_schema
 from mgb_ops.common.time_utils import DashboardWindow
 from mgb_ops.analysis.timeseries import StaleModelOutputsError

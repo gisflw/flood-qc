@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from apps.ops_dashboard.support import map as ops_dashboard_map
+from apps.ops_dashboard.services import deckgl as ops_dashboard_map
 from mgb_ops.analysis.spatial import PrecipitationGrid
 
 

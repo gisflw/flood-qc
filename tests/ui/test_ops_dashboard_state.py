@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from apps.ops_dashboard import controller as dashboard_controller
-from apps.ops_dashboard.support import forecast as dashboard_forecast
-from apps.ops_dashboard.support import map as dashboard_map
+from apps.ops_dashboard import state as dashboard_state
+from apps.ops_dashboard.services import forecast as dashboard_forecast
+from apps.ops_dashboard.services import deckgl as dashboard_map
 from db_helpers import initialize_history_db
 from mgb_ops.analysis.spatial import PrecipitationGrid
 from mgb_ops.edit.sqlite import list_forecast_corrections
@@ -38,8 +38,8 @@ def _preview() -> dashboard_forecast.ForecastPreview:
     )
 
 
-def test_controller_selection_and_raster_inspection(tmp_path: Path) -> None:
-    controller = dashboard_controller.DashboardController(tmp_path)
+def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
     grid = PrecipitationGrid(
         values=np.array([[1.0, 2.0], [3.0, 4.0]]),
         latitudes=np.array([-31.0, -30.0]),
@@ -52,74 +52,74 @@ def test_controller_selection_and_raster_inspection(tmp_path: Path) -> None:
     layer, lookup, legend = dashboard_map.build_raster_layer(
         grid, layer_id="rainfall-raster:test", layer_name="Test", opacity=0.7
     )
-    controller.map_artifacts = dashboard_map.DeckGLArtifacts(
+    state.map_artifacts = dashboard_map.DeckGLArtifacts(
         spec={"layers": [layer]},
         raster_lookups={lookup.layer_id: lookup},
         legends=(legend,),
     )
 
-    controller.handle_map_click(
+    state.handle_map_click(
         {"layer": "stations", "object": {"station_id": "1001"}}
     )
-    controller.handle_map_click(
+    state.handle_map_click(
         {"layer": "mini-rivers", "object": {"properties": {"mini_id": 7}}}
     )
-    controller.handle_map_click(
+    state.handle_map_click(
         {
             "layer": "rainfall-raster:test",
             "coordinate": [-51.05, -30.05],
         }
     )
 
-    assert controller.station_id == "1001"
-    assert controller.mini_id == 7
-    assert controller.raster_inspection.value == 4.0
+    assert state.station_id == "1001"
+    assert state.mini_id == 7
+    assert state.raster_inspection.value == 4.0
 
 
-def test_controller_refresh_recomputes_source_versions(tmp_path: Path) -> None:
-    controller = dashboard_controller.DashboardController(tmp_path)
-    before = controller.source_versions["history"]
+def test_state_refresh_recomputes_source_versions(tmp_path: Path) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
+    before = state.source_versions["history"]
     (tmp_path / "data").mkdir()
     (tmp_path / "data" / "history.sqlite").touch()
 
-    controller.refresh()
+    state.refresh()
 
-    assert controller.source_versions["history"] != before
-    assert any("could not be read" in warning for warning in controller.warnings)
+    assert state.source_versions["history"] != before
+    assert any("could not be read" in warning for warning in state.warnings)
 
 
-def test_controller_applies_preview_parameters(tmp_path: Path, monkeypatch) -> None:
+def test_state_applies_preview_parameters(tmp_path: Path, monkeypatch) -> None:
     _write_config(tmp_path)
-    controller = dashboard_controller.DashboardController(tmp_path)
-    controller.forecast_asset_id = "asset"
-    controller.forecast_t0_step = 0
-    controller.forecast_t1_step = 3
-    controller.forecast_shift_lat = 1
-    controller.forecast_multiplication_factor = 2
+    state = dashboard_state.DashboardState(tmp_path)
+    state.forecast_asset_id = "asset"
+    state.forecast_t0_step = 0
+    state.forecast_t1_step = 3
+    state.forecast_shift_lat = 1
+    state.forecast_multiplication_factor = 2
     monkeypatch.setattr(
         dashboard_forecast, "build_forecast_preview", lambda *args, **kwargs: _preview()
     )
 
-    request = controller.apply_preview()
+    request = state.apply_preview()
 
     assert request.shift_lat == 1
     assert request.multiplication_factor == 2
-    assert controller.applied_preview_request == request
-    assert controller.forecast_map_artifacts.corrected is not None
+    assert state.applied_preview_request == request
+    assert state.forecast_map_artifacts.corrected is not None
 
 
-def test_controller_draft_validation_failure_sets_status(tmp_path: Path) -> None:
-    controller = dashboard_controller.DashboardController(tmp_path)
-    controller.forecast_asset_id = "asset"
-    controller.add_forecast_correction(reason="")
+def test_state_draft_validation_failure_sets_status(tmp_path: Path) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
+    state.forecast_asset_id = "asset"
+    state.add_forecast_correction(reason="")
 
     with pytest.raises(ValueError, match="reason is required"):
-        controller.save_forecast_corrections()
+        state.save_forecast_corrections()
 
-    assert controller.message_kind == "warning"
+    assert state.message_kind == "warning"
 
 
-def test_controller_persists_transactional_replacement(tmp_path: Path) -> None:
+def test_state_persists_transactional_replacement(tmp_path: Path) -> None:
     db_path = initialize_history_db(tmp_path / "data" / "history.sqlite")
     with HistoryRepository(db_path) as repository:
         repository.upsert_asset(
@@ -129,10 +129,10 @@ def test_controller_persists_transactional_replacement(tmp_path: Path) -> None:
             relative_path="forecast.nc",
             provider_code="ecmwf",
         )
-    controller = dashboard_controller.DashboardController(tmp_path)
-    controller.forecast_asset_id = "asset"
-    controller.forecast_draft = dashboard_controller.empty_forecast_edit_frame()
-    controller.add_forecast_correction(
+    state = dashboard_state.DashboardState(tmp_path)
+    state.forecast_asset_id = "asset"
+    state.forecast_draft = dashboard_state.empty_forecast_edit_frame()
+    state.add_forecast_correction(
         t0_step=0,
         t1_step=3,
         multiplication_factor=1.2,
@@ -140,8 +140,8 @@ def test_controller_persists_transactional_replacement(tmp_path: Path) -> None:
         reason="radar alignment",
     )
 
-    persisted = controller.save_forecast_corrections()
+    persisted = state.save_forecast_corrections()
 
     assert len(persisted) == 1
     assert list_forecast_corrections(db_path, "asset")[0]["reason"] == "radar alignment"
-    assert controller.message_kind == "success"
+    assert state.message_kind == "success"
