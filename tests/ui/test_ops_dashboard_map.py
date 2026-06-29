@@ -77,6 +77,11 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
         "stations",
     ]
     assert artifacts.spec["layers"][0]["image"].startswith("data:image/png;base64,")
+    segment_layer = next(
+        layer for layer in artifacts.spec["layers"] if layer["id"] == "mini-segments"
+    )
+    assert segment_layer["lineWidthUnits"] == "pixels"
+    assert segment_layer["lineWidthMinPixels"] == 6
     json.dumps(artifacts.spec)
     assert set(artifacts.raster_lookups) == {"rainfall-raster:accum_24h"}
     assert set(artifacts.tooltips) == {

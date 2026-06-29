@@ -290,7 +290,8 @@ def _geojson_layer(
         "getLineColor": line_color,
         "getFillColor": fill_color,
         "getLineWidth": line_width,
-        "lineWidthMinPixels": 1,
+        "lineWidthUnits": "pixels",
+        "lineWidthMinPixels": 2,
         "autoHighlight": True,
     }
 
