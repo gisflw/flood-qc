@@ -22,8 +22,8 @@ from mgb_ops.adapters.forecast_ecmwf import (
     build_asset_id,
     build_ecmwf_cycle,
 )
+from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
-from mgb_ops.model.forecast_grid import load_forecast_precipitation_grid
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
 DEFAULT_CHUNK_HOURS = 720
@@ -438,6 +438,41 @@ def write_mini_rainfall_atomic(
 
 def build_forecast_start_time_utc(forecast_start_time: datetime) -> datetime:
     return forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
+
+
+def load_forecast_precipitation_grid(
+    netcdf_path: Path,
+    *,
+    forecast_start_time_utc: datetime,
+    forecast_nt: int,
+    timestep_hours: int = 1,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    timestep_hours = validate_timestep_hours(timestep_hours)
+    if forecast_nt < 0:
+        raise ValueError("forecast_nt must be >= 0.")
+    grid = read_forecast_precipitation_grid(netcdf_path)
+    if grid.timestep_hours != timestep_hours:
+        raise ValueError(
+            f"Forecast NetCDF timestep_hours={grid.timestep_hours} "
+            f"does not match requested timestep_hours={timestep_hours}."
+        )
+    if forecast_nt == 0:
+        return grid.latitudes, grid.longitudes, grid.hourly_grids[:0]
+
+    required_times = tuple(
+        forecast_start_time_utc + timedelta(hours=timestep_hours * offset)
+        for offset in range(forecast_nt)
+    )
+    index_by_time = {valid_time: idx for idx, valid_time in enumerate(grid.times_utc)}
+    missing_times = [valid_time for valid_time in required_times if valid_time not in index_by_time]
+    if missing_times:
+        raise ValueError(
+            "Forecast NetCDF does not cover the full requested UTC forecast window. "
+            f"First missing timestep: {missing_times[0].isoformat(timespec='seconds')}"
+        )
+
+    selected_indices = [index_by_time[valid_time] for valid_time in required_times]
+    return grid.latitudes, grid.longitudes, grid.hourly_grids[selected_indices, :, :]
 
 
 def load_required_forecast_precipitation_grid(

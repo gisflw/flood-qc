@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
-from mgb_ops.model.forecast_grid import (
+from mgb_ops.assets.forecast_grid import (
     FORECAST_PRECIPITATION_GRID_ASSET_KIND,
     write_forecast_precipitation_grid,
 )

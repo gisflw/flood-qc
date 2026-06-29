@@ -7,12 +7,12 @@ import pytest
 import xarray as xr
 from netCDF4 import Dataset
 
-from mgb_ops.model.forecast_grid import (
+from mgb_ops.assets.forecast_grid import (
     NETCDF_ZLIB_COMPLEVEL,
-    aggregate_hourly_precipitation_to_timestep,
     read_forecast_precipitation_grid,
     write_forecast_precipitation_grid,
 )
+from mgb_ops.adapters.forecast_ecmwf import aggregate_hourly_precipitation_to_timestep
 
 
 def test_forecast_precipitation_grid_writes_canonical_netcdf_and_round_trips(tmp_path) -> None:

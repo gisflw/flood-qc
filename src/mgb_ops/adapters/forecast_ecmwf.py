@@ -9,22 +9,18 @@ import sys
 
 import numpy as np
 
-from mgb_ops.common.grib2 import (
+from mgb_ops.adapters._grib2 import (
     TpGribMessage,
     build_grid_arrays,
     read_tp_grib_messages,
     require_eccodes,
     set_regular_ll_grid,
 )
-from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
-from mgb_ops.common.time_utils import TIMEZONE, resolve_reference_time
-from mgb_ops.model.forecast_grid import (
-    FORECAST_GRID_FORMAT,
+from mgb_ops.assets.forecast_grid import (
     FORECAST_PRECIPITATION_GRID_ASSET_KIND,
-    aggregate_hourly_precipitation_to_timestep,
     write_forecast_precipitation_grid,
 )
-from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.common.time_utils import TIMEZONE, validate_timestep_hours
 
 LOGGER_NAME = "adapters.forecast_ecmwf"
 ECMWF_ASSET_KIND = FORECAST_PRECIPITATION_GRID_ASSET_KIND
@@ -45,6 +41,16 @@ class ForecastProductConfig:
     step_schedule: tuple[int, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class NormalizedForecastGrid:
+    run_id: str
+    asset_path: Path
+    cycle_time: datetime
+    valid_from: datetime
+    valid_to: datetime
+    buffered_bbox: tuple[float, float, float, float]
+
+
 ECMWF_FORECAST_PRODUCT = ForecastProductConfig(
     provider_code="ecmwf",
     asset_kind=ECMWF_ASSET_KIND,
@@ -54,15 +60,6 @@ ECMWF_FORECAST_PRODUCT = ForecastProductConfig(
     param=ECMWF_PARAM,
     step_schedule=tuple([hour for hour in range(0, 144 + 3, 3)] + [hour for hour in range(150, 360 + 6, 6)]),
 )
-
-
-@dataclass(frozen=True, slots=True)
-class ForecastGridSummary:
-    run_id: str
-    asset_id: str
-    asset_path: Path
-    valid_from: datetime
-    valid_to: datetime
 
 
 def script_stem() -> str:
@@ -251,6 +248,42 @@ def build_hourly_precipitation_from_cumulative_messages(
     return tuple(hourly_times), latitudes, longitudes, np.stack(hourly_grids, axis=0)
 
 
+def aggregate_hourly_precipitation_to_timestep(
+    times_utc: tuple[datetime, ...] | list[datetime],
+    precipitation_mm: np.ndarray,
+    *,
+    timestep_hours: int,
+) -> tuple[tuple[datetime, ...], np.ndarray]:
+    timestep_hours = validate_timestep_hours(timestep_hours)
+    times_utc = tuple(times_utc)
+    if not times_utc:
+        raise ValueError("times_utc must contain at least one timestamp.")
+    for previous, current in zip(times_utc, times_utc[1:]):
+        if current - previous != timedelta(hours=1):
+            raise ValueError("times_utc must be a contiguous 1-hour UTC sequence.")
+
+    precipitation_values = np.asarray(precipitation_mm, dtype=np.float64)
+    if precipitation_values.shape[0] != len(times_utc):
+        raise ValueError(
+            f"precipitation_mm time dimension mismatch: expected {len(times_utc)}, "
+            f"found {precipitation_values.shape[0]}."
+        )
+    if timestep_hours == 1:
+        return times_utc, precipitation_values
+
+    full_bucket_count = len(times_utc) // timestep_hours
+    if full_bucket_count < 1:
+        raise ValueError("Not enough hourly precipitation values for one full timestep bucket.")
+    usable_count = full_bucket_count * timestep_hours
+    bucket_times = tuple(times_utc[(idx + 1) * timestep_hours - 1] for idx in range(full_bucket_count))
+    bucket_values = precipitation_values[:usable_count].reshape(
+        full_bucket_count,
+        timestep_hours,
+        *precipitation_values.shape[1:],
+    ).sum(axis=1)
+    return bucket_times, bucket_values
+
+
 def write_canonical_forecast_grid_from_grib(
     grib_path: Path,
     netcdf_path: Path,
@@ -281,18 +314,6 @@ def write_canonical_forecast_grid_from_grib(
     )
     return timestep_times[0], timestep_times[-1]
 
-
-
-
-def build_relative_asset_path(path: Path, *, asset_base_dir: Path) -> str:
-    resolved_path = Path(path).resolve()
-    resolved_base = Path(asset_base_dir).resolve()
-    try:
-        return resolved_path.relative_to(resolved_base).as_posix()
-    except ValueError:
-        return Path(path).as_posix()
-
-
 def download_ecmwf_grib_to_path(
     target_path: Path,
     *,
@@ -315,21 +336,16 @@ def download_ecmwf_grib_to_path(
     )
 
 
-def ingest_forecast_grids(
-    database_path: Path,
+def store_normalized_forecast_grid(
     *,
     reference_time: datetime,
     bbox: tuple[float, float, float, float],
     buffer_fraction: float,
     downloads_dir: Path,
     logs_dir: Path,
-    asset_base_dir: Path,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
-) -> ForecastGridSummary:
-    if not Path(database_path).exists():
-        raise FileNotFoundError(f"History database not found: {database_path}")
-
+) -> NormalizedForecastGrid:
     execution_id = build_execution_id(reference_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
     cycle_time = build_ecmwf_cycle(reference_time)
@@ -340,8 +356,7 @@ def ingest_forecast_grids(
     )
 
     logger.info(
-        "forecast_grid_start history_db=%s cycle_time=%s bbox=%s target=%s",
-        database_path,
+        "forecast_grid_start cycle_time=%s bbox=%s target=%s",
         cycle_time.strftime("%Y-%m-%dT%H:%M:%S"),
         buffered_bbox,
         target_path,
@@ -361,79 +376,17 @@ def ingest_forecast_grids(
             product_config=product_config,
         )
 
-    relative_path = build_relative_asset_path(target_path, asset_base_dir=asset_base_dir)
-    metadata = {
-        "provider": product_config.provider_code,
-        "model": product_config.model,
-        "product_type": product_config.product_type,
-        "resolution": product_config.resolution,
-        "param": product_config.param,
-        "reference_time": reference_time.isoformat(timespec="seconds"),
-        "source_cycle_time": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "cycle_time": cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "source_format": "GRIB2",
-        "bbox": list(buffered_bbox),
-        "source_bbox": list(bbox),
-        "buffer_fraction": buffer_fraction,
-        "timestep_hours": timestep_hours,
-    }
-
-    with HistoryRepository(database_path) as repository:
-        asset = repository.upsert_asset(
-            asset_id=build_asset_id(cycle_time, product_config),
-            asset_kind=product_config.asset_kind,
-            format=FORECAST_GRID_FORMAT,
-            relative_path=relative_path,
-            provider_code=product_config.provider_code,
-            valid_from=valid_from.isoformat(timespec="seconds"),
-            valid_to=valid_to.isoformat(timespec="seconds"),
-            metadata=metadata,
-        )
-
     logger.info(
-        "forecast_grid_done asset_id=%s relative_path=%s valid_from=%s valid_to=%s",
-        asset["asset_id"],
-        asset["relative_path"],
-        asset["valid_from"],
-        asset["valid_to"],
+        "forecast_grid_done path=%s valid_from=%s valid_to=%s",
+        target_path,
+        valid_from.isoformat(timespec="seconds"),
+        valid_to.isoformat(timespec="seconds"),
     )
-    return ForecastGridSummary(
+    return NormalizedForecastGrid(
         run_id=execution_id,
-        asset_id=str(asset["asset_id"]),
         asset_path=target_path,
+        cycle_time=cycle_time,
         valid_from=valid_from,
         valid_to=valid_to,
+        buffered_bbox=buffered_bbox,
     )
-
-
-def collect_forecast_grids(
-    run: RunMetadata,
-    *,
-    history_db: Path,
-    bbox: tuple[float, float, float, float],
-    buffer_fraction: float,
-    downloads_dir: Path,
-    logs_dir: Path,
-    asset_base_dir: Path,
-    timestep_hours: int = 1,
-) -> list[RasterAsset]:
-    reference_time = resolve_reference_time(run.reference_time)
-    summary = ingest_forecast_grids(
-        history_db,
-        reference_time=reference_time,
-        bbox=bbox,
-        buffer_fraction=buffer_fraction,
-        downloads_dir=downloads_dir,
-        logs_dir=logs_dir,
-        asset_base_dir=asset_base_dir,
-        timestep_hours=timestep_hours,
-    )
-    return [
-        RasterAsset(
-            name=summary.asset_id,
-            relative_path=build_relative_asset_path(summary.asset_path, asset_base_dir=asset_base_dir),
-            format=FORECAST_GRID_FORMAT,
-            state=DataState.RAW,
-            crs="EPSG:4326",
-        )
-    ]

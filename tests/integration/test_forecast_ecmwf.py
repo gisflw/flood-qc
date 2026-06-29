@@ -8,9 +8,10 @@ from pathlib import Path
 import numpy as np
 
 from mgb_ops.adapters import forecast_ecmwf
-from mgb_ops.common import grib2
-from mgb_ops.common.grib2 import TpGribMessage
-from mgb_ops.model.forecast_grid import read_forecast_precipitation_grid
+from mgb_ops.adapters import _grib2 as grib2
+from mgb_ops.adapters._grib2 import TpGribMessage
+from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
+from mgb_ops.workflows import forecast as forecast_workflow
 from db_helpers import initialize_history_db
 
 
@@ -75,7 +76,30 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
         ],
     )
 
-    summary = forecast_ecmwf.ingest_forecast_grids(
+    normalized = forecast_ecmwf.store_normalized_forecast_grid(
+        reference_time=datetime(2026, 3, 11, 23, 0, 0),
+        bbox=(-60.0, -35.0, -48.0, -26.0),
+        buffer_fraction=1.0,
+        downloads_dir=tmp_path / "data" / "downloads",
+        logs_dir=tmp_path / "logs",
+    )
+
+    assert normalized.asset_path.exists()
+    assert normalized.asset_path.suffix == ".nc"
+    assert not temp_dir.exists()
+    grid = read_forecast_precipitation_grid(normalized.asset_path)
+    assert grid.times_utc == (
+        datetime(2026, 3, 12, 1, 0, 0),
+        datetime(2026, 3, 12, 2, 0, 0),
+        datetime(2026, 3, 12, 3, 0, 0),
+    )
+    assert grid.hourly_grids[:, 0, 0].tolist() == [2.0, 2.0, 2.0]
+
+    with sqlite3.connect(history_db) as connection:
+        assert connection.execute("SELECT * FROM asset").fetchall() == []
+
+    monkeypatch.setattr(forecast_ecmwf, "store_normalized_forecast_grid", lambda **kwargs: normalized)
+    summary = forecast_workflow.ingest_forecast_grids(
         history_db,
         reference_time=datetime(2026, 3, 11, 23, 0, 0),
         bbox=(-60.0, -35.0, -48.0, -26.0),
@@ -84,17 +108,6 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
         logs_dir=tmp_path / "logs",
         asset_base_dir=tmp_path,
     )
-
-    assert summary.asset_path.exists()
-    assert summary.asset_path.suffix == ".nc"
-    assert not temp_dir.exists()
-    grid = read_forecast_precipitation_grid(summary.asset_path)
-    assert grid.times_utc == (
-        datetime(2026, 3, 12, 1, 0, 0),
-        datetime(2026, 3, 12, 2, 0, 0),
-        datetime(2026, 3, 12, 3, 0, 0),
-    )
-    assert grid.hourly_grids[:, 0, 0].tolist() == [2.0, 2.0, 2.0]
 
     with sqlite3.connect(history_db) as connection:
         rows = connection.execute(

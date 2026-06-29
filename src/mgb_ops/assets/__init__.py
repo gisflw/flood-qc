@@ -1,1 +1,1 @@
-"""Packaged SQL assets for mgb-ops."""
+"""Canonical asset contracts and packaged schemas for mgb-ops."""

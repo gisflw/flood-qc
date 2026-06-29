@@ -52,40 +52,6 @@ def _require_timestep_sequence(times: pd.DatetimeIndex, *, name: str, timestep_h
         raise ValueError(f"{name} must be a contiguous {timestep_hours}-hour UTC sequence.")
 
 
-def aggregate_hourly_precipitation_to_timestep(
-    times_utc: Iterable[datetime | np.datetime64 | pd.Timestamp],
-    precipitation_mm: np.ndarray,
-    *,
-    timestep_hours: int,
-) -> tuple[tuple[datetime, ...], np.ndarray]:
-    timestep_hours = validate_timestep_hours(timestep_hours)
-    time_index = _utc_datetime_index(times_utc, name="times_utc")
-    _require_timestep_sequence(time_index, name="times_utc", timestep_hours=1)
-    precipitation_values = np.asarray(precipitation_mm, dtype=np.float64)
-    if precipitation_values.shape[0] != len(time_index):
-        raise ValueError(
-            f"precipitation_mm time dimension mismatch: expected {len(time_index)}, "
-            f"found {precipitation_values.shape[0]}."
-        )
-    if timestep_hours == 1:
-        return _naive_utc_datetimes(time_index, name="times_utc"), precipitation_values
-
-    full_bucket_count = len(time_index) // timestep_hours
-    if full_bucket_count < 1:
-        raise ValueError("Not enough hourly precipitation values for one full timestep bucket.")
-    usable_count = full_bucket_count * timestep_hours
-    bucket_times = tuple(
-        time_index[idx * timestep_hours + timestep_hours - 1].to_pydatetime().replace(tzinfo=None)
-        for idx in range(full_bucket_count)
-    )
-    bucket_values = precipitation_values[:usable_count].reshape(
-        full_bucket_count,
-        timestep_hours,
-        *precipitation_values.shape[1:],
-    ).sum(axis=1)
-    return bucket_times, bucket_values
-
-
 def write_forecast_precipitation_grid(
     netcdf_path: Path,
     *,
@@ -278,34 +244,3 @@ def read_forecast_precipitation_grid(netcdf_path: Path) -> ForecastPrecipitation
         timestep_hours=timestep_hours,
     )
 
-
-def load_forecast_precipitation_grid(
-    netcdf_path: Path,
-    *,
-    forecast_start_time_utc: datetime,
-    forecast_nt: int,
-    timestep_hours: int = 1,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    timestep_hours = validate_timestep_hours(timestep_hours)
-    if forecast_nt < 0:
-        raise ValueError("forecast_nt must be >= 0.")
-    grid = read_forecast_precipitation_grid(netcdf_path)
-    if grid.timestep_hours != timestep_hours:
-        raise ValueError(
-            f"Forecast NetCDF timestep_hours={grid.timestep_hours} does not match requested timestep_hours={timestep_hours}."
-        )
-    if forecast_nt == 0:
-        return grid.latitudes, grid.longitudes, grid.hourly_grids[:0]
-
-    start_utc = _naive_utc_datetimes([forecast_start_time_utc], name="forecast_start_time_utc")[0]
-    required_times = tuple(start_utc + timedelta(hours=timestep_hours * offset) for offset in range(forecast_nt))
-    index_by_time = {valid_time: idx for idx, valid_time in enumerate(grid.times_utc)}
-    missing_times = [valid_time for valid_time in required_times if valid_time not in index_by_time]
-    if missing_times:
-        raise ValueError(
-            "Forecast NetCDF does not cover the full requested UTC forecast window. "
-            f"First missing timestep: {missing_times[0].isoformat(timespec='seconds')}"
-        )
-
-    selected_indices = [index_by_time[valid_time] for valid_time in required_times]
-    return grid.latitudes, grid.longitudes, grid.hourly_grids[selected_indices, :, :]

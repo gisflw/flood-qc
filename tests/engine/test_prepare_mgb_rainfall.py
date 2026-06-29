@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mgb_ops.model.forecast_grid import write_forecast_precipitation_grid
+from mgb_ops.assets.forecast_grid import write_forecast_precipitation_grid
 from mgb_ops.model.prepare_mgb_rainfall import (
     extend_station_matrix_with_forecast,
     load_required_forecast_precipitation_grid,
