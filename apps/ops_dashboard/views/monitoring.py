@@ -15,7 +15,10 @@ from apps.ops_dashboard.views.summaries import (
 )
 
 
-def _monitoring_view(controller: DashboardState) -> pn.viewable.Viewable:
+def _monitoring_view(
+    controller: DashboardState,
+    opacity_slider: pn.widgets.FloatSlider | None = None,
+) -> pn.viewable.Viewable:
     artifacts = controller.map_artifacts
     map_pane = pn.pane.DeckGL(
         artifacts.spec,
@@ -30,6 +33,22 @@ def _monitoring_view(controller: DashboardState) -> pn.viewable.Viewable:
         map_pane.tooltips = event.new.tooltips
 
     controller.param.watch(update_map, "map_artifacts")
+    if opacity_slider is not None:
+        opacity_slider.jscallback(
+            args={"deck": map_pane},
+            value="""
+            const view = Bokeh.index.find_one_by_id(deck.id)
+            if (view == null || view.deckGL == null) {
+              return
+            }
+            const layers = view.deckGL.props.layers.map((layer) =>
+              String(layer.id || "").startsWith("rainfall-raster:")
+                ? layer.clone({opacity: cb_obj.value})
+                : layer
+            )
+            view.deckGL.setProps({layers})
+            """,
+        )
     map_pane.param.watch(
         lambda event: controller.handle_map_click(event.new), "click_state"
     )

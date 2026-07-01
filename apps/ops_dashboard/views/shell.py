@@ -17,11 +17,17 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
         sizing_mode="stretch_width",
     )
     refresh.on_click(lambda _: state.refresh())
-    raster = pn.widgets.Select.from_param(
-        state.param.selected_raster,
-        name="Accumulated rainfall",
+    rainfall_hours = pn.widgets.IntInput.from_param(
+        state.param.rainfall_hours,
+        name="Previous rainfall (hours)",
         sizing_mode="stretch_width",
     )
+    apply_rainfall = pn.widgets.Button(
+        name="Apply rainfall period",
+        button_type="primary",
+        sizing_mode="stretch_width",
+    )
+    apply_rainfall.on_click(lambda _: state.apply_rainfall_hours())
     opacity = pn.widgets.FloatSlider.from_param(
         state.param.raster_opacity,
         name="Raster opacity",
@@ -41,7 +47,7 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
         state.param.warnings,
     )
     tabs = pn.Tabs(
-        ("Monitoring", _monitoring_view(state)),
+        ("Monitoring", _monitoring_view(state, opacity)),
         ("Forecast", _forecast_view(state)),
         dynamic=True,
         sizing_mode="stretch_width",
@@ -52,7 +58,8 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
             pn.pane.Markdown("## Controls"),
             refresh,
             refreshed,
-            raster,
+            rainfall_hours,
+            apply_rainfall,
             opacity,
             pn.layout.Divider(),
             warnings,

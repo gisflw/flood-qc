@@ -103,7 +103,6 @@ def build_sqlite_version(path: Path) -> str:
 def build_map_cache_key(
     *,
     selected_layer_name: str | None,
-    opacity: float,
     history_version: str,
     spatial_version: str,
     raster_version: str,
@@ -114,7 +113,6 @@ def build_map_cache_key(
     del station_id, mini_id
     payload = {
         "selected_layer_name": selected_layer_name,
-        "opacity": round(float(opacity), 4),
         "history_version": history_version,
         "spatial_version": spatial_version,
         "raster_version": raster_version,
@@ -187,7 +185,7 @@ def _rgba_png_data_uri(rgba: np.ndarray) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
 
 
-def _raster_image(values: np.ndarray, legend: RasterLegendSpec, opacity: float) -> str:
+def _raster_image(values: np.ndarray, legend: RasterLegendSpec) -> str:
     finite = np.isfinite(values)
     span = legend.vmax - legend.vmin
     scaled = np.full(values.shape, 0.5) if span <= 0 else (values - legend.vmin) / span
@@ -198,7 +196,7 @@ def _raster_image(values: np.ndarray, legend: RasterLegendSpec, opacity: float) 
     high = np.ceil(positions).astype(int)
     weight = (positions - low)[..., None]
     rgb = BLUES[low] * (1 - weight) + BLUES[high] * weight
-    alpha = np.where(finite, round(np.clip(opacity, 0, 1) * 255), 0)
+    alpha = np.where(finite, 255, 0)
     return _rgba_png_data_uri(np.dstack((rgb, alpha)))
 
 
@@ -226,8 +224,9 @@ def build_raster_layer(
     layer = {
         "@@type": "BitmapLayer",
         "id": layer_id,
-        "image": _raster_image(display_values, legend, opacity),
+        "image": _raster_image(display_values, legend),
         "bounds": [west, south, east, north],
+        "opacity": float(np.clip(opacity, 0, 1)),
         "pickable": True,
     }
     return layer, lookup, legend
@@ -401,6 +400,31 @@ def build_ops_map(
         pick_lookups=pick_lookups,
         tooltips=tooltips,
         legends=tuple(legends),
+    )
+
+
+def update_raster_opacity(
+    artifacts: DeckGLArtifacts | None, opacity: float
+) -> DeckGLArtifacts | None:
+    """Return artifacts with only BitmapLayer opacity changed."""
+    if artifacts is None:
+        return None
+    opacity = float(np.clip(opacity, 0, 1))
+    layers = artifacts.spec.get("layers", [])
+    updated_layers = [
+        {**layer, "opacity": opacity}
+        if str(layer.get("id", "")).startswith("rainfall-raster:")
+        else layer
+        for layer in layers
+    ]
+    if all(new is old for new, old in zip(updated_layers, layers, strict=True)):
+        return artifacts
+    return DeckGLArtifacts(
+        spec={**artifacts.spec, "layers": updated_layers},
+        raster_lookups=artifacts.raster_lookups,
+        pick_lookups=artifacts.pick_lookups,
+        tooltips=artifacts.tooltips,
+        legends=artifacts.legends,
     )
 
 

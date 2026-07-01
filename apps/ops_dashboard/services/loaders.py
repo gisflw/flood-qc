@@ -87,42 +87,39 @@ def _mgb_series(
 
 
 @pn.cache(max_items=32)
-def _accumulation_rasters(
+def _accumulation_raster(
     database_path: str,
     workspace: str,
     source_version: str,
     window: DashboardWindow,
     bbox: tuple[float, float, float, float],
     resolution: float,
-    horizons: tuple[int, ...],
+    hours: int,
     nearest_stations: int,
     power: float,
-) -> tuple[dict[str, object], ...]:
+) -> dict[str, object]:
     del workspace, source_version
+    if not isinstance(hours, int) or isinstance(hours, bool) or hours < 1:
+        raise ValueError("Rainfall accumulation hours must be a positive integer.")
     grid = RegularGridSpec(bbox=bbox, resolution=resolution)
-    result = []
-    for hours in horizons:
-        end_time = window.cutoff_time
-        rainfall = observed_rainfall_grid(
-            Path(database_path),
-            grid=grid,
-            start_time=max(
-                window.start_time,
-                end_time - pd.Timedelta(hours=int(hours)).to_pytimedelta(),
-            ),
-            end_time=end_time,
-            nearest_stations=nearest_stations,
-            power=power,
-        )
-        result.append(
-            {
-                "name": f"accum_{hours}h",
-                "horizon_hours": hours,
-                "horizon_label": f"{hours}h",
-                "grid": rainfall,
-            }
-        )
-    return tuple(result)
+    end_time = window.cutoff_time
+    rainfall = observed_rainfall_grid(
+        Path(database_path),
+        grid=grid,
+        start_time=max(
+            window.start_time,
+            end_time - pd.Timedelta(hours=hours).to_pytimedelta(),
+        ),
+        end_time=end_time,
+        nearest_stations=nearest_stations,
+        power=power,
+    )
+    return {
+        "name": f"accum_{hours}h",
+        "horizon_hours": hours,
+        "horizon_label": f"{hours}h",
+        "grid": rainfall,
+    }
 
 
 @pn.cache(max_items=16)
@@ -179,7 +176,7 @@ def _forecast_preview(
 
 
 __all__ = [
-    "_accumulation_rasters",
+    "_accumulation_raster",
     "_forecast_assets",
     "_forecast_preview",
     "_forecast_steps",

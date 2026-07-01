@@ -82,6 +82,39 @@ def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
     assert state.raster_inspection.value == 4.0
 
 
+def test_opacity_change_does_not_rebuild_map_or_reload_spatial_data(
+    tmp_path: Path, monkeypatch
+) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
+    layer = {
+        "@@type": "BitmapLayer",
+        "id": "rainfall-raster:test",
+        "image": "data:image/png;base64,test",
+        "opacity": 0.6,
+    }
+    state.map_artifacts = dashboard_map.DeckGLArtifacts(
+        spec={"layers": [layer]},
+        raster_lookups={},
+        pick_lookups={},
+        tooltips={},
+    )
+    monkeypatch.setattr(
+        dashboard_map,
+        "build_ops_map",
+        lambda *args, **kwargs: pytest.fail("full map rebuild"),
+    )
+    monkeypatch.setattr(
+        dashboard_state,
+        "_mini_segments",
+        lambda *args, **kwargs: pytest.fail("spatial reload"),
+    )
+
+    state.raster_opacity = 0.25
+
+    assert state.map_artifacts.spec["layers"][0] is layer
+    assert state.map_artifacts.spec["layers"][0]["opacity"] == 0.6
+
+
 def test_state_refresh_recomputes_source_versions(tmp_path: Path) -> None:
     state = dashboard_state.DashboardState(tmp_path)
     before = state.source_versions["history"]
@@ -151,3 +184,38 @@ def test_state_persists_transactional_replacement(tmp_path: Path) -> None:
     assert len(persisted) == 1
     assert list_forecast_corrections(db_path, "asset")[0]["reason"] == "radar alignment"
     assert state.message_kind == "success"
+
+
+def test_custom_rainfall_hours_apply_and_refresh(tmp_path: Path, monkeypatch) -> None:
+    _write_config(tmp_path)
+    initialize_history_db(tmp_path / "data" / "history.sqlite")
+    calls: list[int] = []
+
+    def fake_raster(*args, **kwargs):
+        hours = args[6]
+        calls.append(hours)
+        return {"name": f"accum_{hours}h", "horizon_hours": hours,
+                "horizon_label": f"{hours}h", "grid": None}
+
+    monkeypatch.setattr(dashboard_state, "_accumulation_raster", fake_raster)
+    monkeypatch.setattr(dashboard_state.DashboardState, "_rebuild_map", lambda self, **kwargs: None)
+    state = dashboard_state.DashboardState(tmp_path)
+    assert state.rainfall_hours == 24
+    assert calls == [24]
+    assert state.selected_raster == "accum_24h"
+
+    state.rainfall_hours = 100
+    state.apply_rainfall_hours()
+    assert calls[-1] == 100
+    assert state.selected_raster == "accum_100h"
+    assert len(state.accumulation_rasters) == 1
+
+    state.refresh()
+    assert state.rainfall_hours == 100
+    assert calls[-1] == 100
+
+
+def test_rainfall_hours_parameter_rejects_non_positive_values(tmp_path: Path) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
+    with pytest.raises(ValueError, match="at least 1"):
+        state.rainfall_hours = 0

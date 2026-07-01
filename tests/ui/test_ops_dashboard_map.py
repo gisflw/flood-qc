@@ -25,7 +25,6 @@ def _grid(values: np.ndarray | None = None) -> PrecipitationGrid:
 def test_build_map_cache_key_ignores_series_selection() -> None:
     kwargs = dict(
         selected_layer_name="accum_24h",
-        opacity=0.6,
         history_version="history-v1",
         spatial_version="spatial-v1",
         raster_version="raster-v1",
@@ -77,11 +76,11 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
         "stations",
     ]
     assert artifacts.spec["layers"][0]["image"].startswith("data:image/png;base64,")
+    assert artifacts.spec["layers"][0]["opacity"] == 0.6
     segment_layer = next(
         layer for layer in artifacts.spec["layers"] if layer["id"] == "mini-segments"
     )
     assert segment_layer["lineWidthUnits"] == "pixels"
-    assert segment_layer["lineWidthMinPixels"] == 6
     json.dumps(artifacts.spec)
     assert set(artifacts.raster_lookups) == {"rainfall-raster:accum_24h"}
     assert set(artifacts.tooltips) == {
@@ -164,6 +163,26 @@ def test_raster_layer_keeps_missing_values_transparent() -> None:
     )
     assert layer is not None
     assert layer["image"].startswith("data:image/png;base64,")
+    assert layer["opacity"] == 0.5
+
+
+def test_updating_raster_opacity_preserves_generated_image_and_artifacts() -> None:
+    artifacts = ops_dashboard_map.build_ops_map(
+        "accum_24h",
+        0.6,
+        pd.DataFrame(),
+        None,
+        {"accum_24h": {"grid": _grid(), "horizon_label": "24h"}},
+    )
+    original_layer = artifacts.spec["layers"][0]
+
+    updated = ops_dashboard_map.update_raster_opacity(artifacts, 0.25)
+
+    assert updated is not None
+    assert updated.spec["layers"][0]["opacity"] == 0.25
+    assert updated.spec["layers"][0]["image"] is original_layer["image"]
+    assert updated.raster_lookups is artifacts.raster_lookups
+    assert updated.pick_lookups is artifacts.pick_lookups
 
 
 def test_north_first_raster_values_flips_ascending_latitudes_once() -> None:

@@ -20,7 +20,7 @@ from apps.ops_dashboard.services.corrections import (
     validate_forecast_edit_draft,
 )
 from apps.ops_dashboard.services.loaders import (
-    _accumulation_rasters,
+    _accumulation_raster,
     _forecast_assets,
     _forecast_preview,
     _forecast_steps,
@@ -50,7 +50,8 @@ class DashboardState(param.Parameterized):
     station_id = param.String(default=None, allow_None=True)
     mini_id = param.Integer(default=None, allow_None=True)
     selected_raster = param.Selector(default=None, objects=[None])
-    raster_opacity = param.Number(default=0.6, bounds=(0, 1), step=0.05)
+    rainfall_hours = param.Integer(default=24, bounds=(1, None))
+    raster_opacity = param.Number(default=0.4, bounds=(0, 1), step=0.05)
     raster_inspection = param.Parameter(default=None, allow_None=True)
     last_refresh_at = param.String(default="")
     source_versions = param.Dict(default={})
@@ -98,6 +99,8 @@ class DashboardState(param.Parameterized):
         self.gpkg_path = resolve_workspace_path(
             self.workspace, self.context.settings["spatial"]["gpkg_path"]
         )
+        default_hours = int(self.context.settings["summaries"]["accum_hours"][0])
+        params.setdefault("rainfall_hours", default_hours)
         super().__init__(**params)
         self.refresh()
 
@@ -164,19 +167,19 @@ class DashboardState(param.Parameterized):
             try:
                 summaries = self.context.settings["summaries"]
                 interpolation = self.context.settings["rainfall_interpolation"]
-                self.accumulation_rasters = list(
-                    _accumulation_rasters(
+                self.accumulation_rasters = [
+                    _accumulation_raster(
                         str(self.history_path),
                         workspace,
                         versions.history,
                         self.window,
                         tuple(float(value) for value in bbox),
                         float(summaries["grid_resolution_degrees"]),
-                        tuple(int(value) for value in summaries["accum_hours"]),
+                        self.rainfall_hours,
                         int(interpolation["nearest_stations"]),
                         float(interpolation["power"]),
                     )
-                )
+                ]
             except (
                 FileNotFoundError,
                 sqlite3.Error,
@@ -205,7 +208,35 @@ class DashboardState(param.Parameterized):
         self._refresh_forecast_assets()
         self.last_refresh_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
-    @param.depends("selected_raster", "raster_opacity", watch=True)
+    def apply_rainfall_hours(self) -> None:
+        """Load the requested session-local rainfall accumulation period."""
+        bbox = self.context.settings["forecast_grid"]["bbox"]
+        if not self.history_path.exists() or bbox is None:
+            self.warnings = [
+                *self.warnings,
+                "Observed rainfall maps are unavailable for this workspace.",
+            ]
+            return
+        try:
+            summaries = self.context.settings["summaries"]
+            interpolation = self.context.settings["rainfall_interpolation"]
+            raster = _accumulation_raster(
+                str(self.history_path), str(self.workspace),
+                self.source_versions["history"], self.window,
+                tuple(float(value) for value in bbox),
+                float(summaries["grid_resolution_degrees"]), self.rainfall_hours,
+                int(interpolation["nearest_stations"]), float(interpolation["power"]),
+            )
+        except (FileNotFoundError, sqlite3.Error, pd.errors.DatabaseError, ValueError) as exc:
+            self.warnings = [*self.warnings, f"Observed rainfall map unavailable: {exc}"]
+            return
+        self.accumulation_rasters = [raster]
+        raster_name = str(raster["name"])
+        self.param.selected_raster.objects = [None, raster_name]
+        self.selected_raster = raster_name
+        self._rebuild_map()
+
+    @param.depends("selected_raster", watch=True)
     def _rebuild_map(
         self,
         *_: Any,
