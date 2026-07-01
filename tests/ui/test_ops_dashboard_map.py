@@ -4,6 +4,7 @@ import json
 
 import numpy as np
 import pandas as pd
+import panel as pn
 import pytest
 
 from apps.ops_dashboard.services import deckgl as ops_dashboard_map
@@ -80,7 +81,36 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
     segment_layer = next(
         layer for layer in artifacts.spec["layers"] if layer["id"] == "mini-segments"
     )
+    station_layer = next(
+        layer for layer in artifacts.spec["layers"] if layer["id"] == "stations"
+    )
     assert segment_layer["lineWidthUnits"] == "pixels"
+    assert station_layer["@@type"] == "GeoJsonLayer"
+    assert station_layer["getFillColor"] == "@@=properties.color"
+    assert station_layer["getPointRadius"] == 4500
+    assert station_layer["pointRadiusMinPixels"] == 5
+    assert station_layer["pointRadiusMaxPixels"] == 10
+    assert station_layer["data"] == {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [-52.0, -30.0],
+                },
+                "properties": {
+                    "station_id": "1001",
+                    "station_name": "Test",
+                    "provider_code": "ANA",
+                    "station_code": "A1",
+                    "color": ops_dashboard_map.KIND_COLORS["rain"],
+                    "status": "ok",
+                },
+            }
+        ],
+    }
+    assert "properties.station_name" in artifacts.tooltips["stations"]["html"]
     json.dumps(artifacts.spec)
     assert set(artifacts.raster_lookups) == {"rainfall-raster:accum_24h"}
     assert set(artifacts.tooltips) == {
@@ -90,9 +120,48 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
     assert "tooltip" not in artifacts.spec
 
 
+def test_geojson_overlays_do_not_create_panel_data_sources() -> None:
+    stations = pd.DataFrame(
+        [
+            {
+                "station_id": "1001",
+                "station_name": "Test",
+                "provider_code": "ana",
+                "station_code": "A1",
+                "lat": -30.0,
+                "lon": -52.0,
+                "kind": "rain",
+                "status": "ok",
+            }
+        ]
+    )
+    artifacts = ops_dashboard_map.build_ops_map(None, 0.4, stations, None, {})
+    pane = pn.pane.DeckGL(artifacts.spec)
+    model = pane.get_root()
+
+    assert model.data_sources == []
+    assert model.layers[0]["data"]["features"][0]["properties"]["station_id"] == "1001"
+
+    replacement = ops_dashboard_map.build_ops_map(
+        "accum_48h",
+        0.4,
+        stations,
+        None,
+        {"accum_48h": {"grid": _grid(), "horizon_label": "48h"}},
+    )
+    pane.object = replacement.spec
+
+    assert model.data_sources == []
+    station_layer = next(layer for layer in model.layers if layer["id"] == "stations")
+    assert station_layer["data"]["features"][0]["properties"]["station_id"] == "1001"
+
+
 def test_decode_station_mini_and_raster_clicks() -> None:
     station = ops_dashboard_map.decode_click_state(
-        {"layer": {"id": "stations"}, "object": {"station_id": 1001}}
+        {
+            "layer": {"id": "stations"},
+            "object": {"properties": {"station_id": 1001}},
+        }
     )
     mini = ops_dashboard_map.decode_click_state(
         {

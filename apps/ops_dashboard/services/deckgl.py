@@ -257,13 +257,21 @@ def _station_records(stations: pd.DataFrame) -> list[dict[str, Any]]:
         )
         records.append(
             {
-                "station_id": str(row.station_id),
-                "station_name": str(getattr(row, "station_name", "")),
-                "provider_code": str(getattr(row, "provider_code", "")).upper(),
-                "station_code": str(getattr(row, "station_code", "")),
-                "position": [float(row.lon), float(row.lat)],
-                "color": color,
-                "status": status,
+                "type": "Feature",
+                "geometry": {
+                    "type": "Point",
+                    "coordinates": [float(row.lon), float(row.lat)],
+                },
+                "properties": {
+                    "station_id": str(row.station_id),
+                    "station_name": str(getattr(row, "station_name", "")),
+                    "provider_code": str(
+                        getattr(row, "provider_code", "")
+                    ).upper(),
+                    "station_code": str(getattr(row, "station_code", "")),
+                    "color": color,
+                    "status": status,
+                },
             }
         )
     return records
@@ -362,24 +370,28 @@ def build_ops_map(
     if station_data:
         layers.append(
             {
-                "@@type": "ScatterplotLayer",
+                "@@type": "GeoJsonLayer",
                 "id": "stations",
-                "data": station_data,
+                "data": {
+                    "type": "FeatureCollection",
+                    "features": station_data,
+                },
                 "pickable": True,
-                "getPosition": "@@=position",
-                "getFillColor": "@@=color",
+                "pointType": "circle",
+                "getFillColor": "@@=properties.color",
                 "getLineColor": [255, 255, 255, 220],
                 "lineWidthMinPixels": 1,
                 "stroked": True,
-                "getRadius": 4500,
-                "radiusMinPixels": 5,
-                "radiusMaxPixels": 10,
+                "filled": True,
+                "getPointRadius": 4500,
+                "pointRadiusMinPixels": 5,
+                "pointRadiusMaxPixels": 10,
                 "autoHighlight": True,
             }
         )
         pick_lookups["stations"] = tuple(
-            MapSelection(station_id=str(record["station_id"]))
-            for record in station_data
+            MapSelection(station_id=str(feature["properties"]["station_id"]))
+            for feature in station_data
         )
 
     spec = {
@@ -390,7 +402,11 @@ def build_ops_map(
     }
     tooltips = {
         "stations": {
-            "html": "<b>{station_name}</b><br/>{provider_code}:{station_code}<br/>{status}"
+            "html": (
+                "<b>{properties.station_name}</b><br/>"
+                "{properties.provider_code}:{properties.station_code}<br/>"
+                "{properties.status}"
+            )
         },
         "mini-segments": {"html": "<b>Mini {properties.mini_id}</b>"},
     }

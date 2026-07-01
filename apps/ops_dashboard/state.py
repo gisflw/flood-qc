@@ -51,7 +51,7 @@ class DashboardState(param.Parameterized):
     mini_id = param.Integer(default=None, allow_None=True)
     selected_raster = param.Selector(default=None, objects=[None])
     rainfall_hours = param.Integer(default=24, bounds=(1, None))
-    raster_opacity = param.Number(default=0.4, bounds=(0, 1), step=0.05)
+    raster_opacity = param.Number(default=0.25, bounds=(0, 1), step=0.05)
     raster_inspection = param.Parameter(default=None, allow_None=True)
     last_refresh_at = param.String(default="")
     source_versions = param.Dict(default={})
@@ -228,9 +228,18 @@ class DashboardState(param.Parameterized):
             return
         self.accumulation_rasters = [raster]
         raster_name = str(raster["name"])
-        self.param.selected_raster.objects = [None, raster_name]
-        self.selected_raster = raster_name
-        self._rebuild_map()
+        # Changing a Selector's objects can temporarily coerce its value and fire
+        # the map watcher before the new raster state is complete. Suppress that
+        # intermediate event and publish one fully rebuilt map below.
+        with param.parameterized.discard_events(self):
+            self.param.selected_raster.objects = [None, raster_name]
+            self.selected_raster = raster_name
+        current_map = self.map_artifacts
+        with param.parameterized.discard_events(self):
+            self._rebuild_map()
+            replacement_map = self.map_artifacts
+            self.map_artifacts = current_map
+        self.map_artifacts = replacement_map
 
     @param.depends("selected_raster", watch=True)
     def _rebuild_map(

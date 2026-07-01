@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -247,6 +248,88 @@ def test_custom_rainfall_hours_apply_and_refresh(tmp_path: Path, monkeypatch) ->
     state.refresh()
     assert state.rainfall_hours == 100
     assert calls[-1] == 100
+
+
+def test_changing_rainfall_hours_preserves_station_map_layer(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_config(tmp_path)
+    initialize_history_db(tmp_path / "data" / "history.sqlite")
+    stations = pd.DataFrame(
+        [
+            {
+                "station_id": "ana:1001",
+                "status": "ok",
+                "kind": "rain",
+                "station_name": "Station",
+                "provider_code": "ana",
+                "station_code": "1001",
+                "lon": -51.5,
+                "lat": -30.5,
+            }
+        ]
+    )
+
+    def fake_raster(*args, **kwargs):
+        hours = args[6]
+        return {
+            "name": f"accum_{hours}h",
+            "horizon_hours": hours,
+            "horizon_label": f"{hours}h",
+            "grid": PrecipitationGrid(
+                values=np.ones((2, 2)),
+                latitudes=np.array([-31.0, -30.0]),
+                longitudes=np.array([-52.0, -51.0]),
+                bounds=(-52.5, -31.5, -50.5, -29.5),
+                start_time=pd.Timestamp("2026-01-01"),
+                end_time=pd.Timestamp("2026-01-02"),
+                source="test",
+            ),
+        }
+
+    monkeypatch.setattr(dashboard_state, "_station_catalog", lambda *args: stations)
+    monkeypatch.setattr(dashboard_state, "_accumulation_raster", fake_raster)
+    monkeypatch.setattr(
+        dashboard_state,
+        "_mini_segments",
+        lambda *args: SimpleNamespace(
+            __geo_interface__={
+                "type": "FeatureCollection",
+                "features": [
+                    {
+                        "type": "Feature",
+                        "properties": {"mini_id": 7},
+                        "geometry": {
+                            "type": "LineString",
+                            "coordinates": [[-52.0, -31.0], [-51.0, -30.0]],
+                        },
+                    }
+                ],
+            }
+        ),
+    )
+    state = dashboard_state.DashboardState(tmp_path)
+
+    for hours in (48, 72):
+        state.rainfall_hours = hours
+        state.apply_rainfall_hours()
+        layer_ids = [layer["id"] for layer in state.map_artifacts.spec["layers"]]
+        assert f"rainfall-raster:accum_{hours}h" in layer_ids
+        assert "stations" in layer_ids
+        assert state.map_artifacts.pick_lookups["stations"] == (
+            dashboard_map.MapSelection(station_id="ana:1001"),
+        )
+        assert next(
+            layer for layer in state.map_artifacts.spec["layers"]
+            if layer["id"] == "stations"
+        )["@@type"] == "GeoJsonLayer"
+        assert "mini-segments" in layer_ids
+        assert state.stations["station_id"].tolist() == ["ana:1001"]
+
+    state.refresh()
+    assert "stations" in [
+        layer["id"] for layer in state.map_artifacts.spec["layers"]
+    ]
 
 
 def test_rainfall_hours_parameter_rejects_non_positive_values(tmp_path: Path) -> None:
