@@ -235,5 +235,61 @@ def load_mgb_series(
     return frame.sort_values("dt").reset_index(drop=True)
 
 
+def load_weighted_mgb_series(
+    path: Path,
+    *,
+    mini_ids: list[int],
+    weights: np.ndarray,
+    variable_code: str,
+    window: DashboardWindow | None = None,
+) -> pd.DataFrame:
+    """Read and finite-value-renormalize one weighted multi-mini series."""
+    validate_model_outputs_netcdf(path, expected_window=window)
+    code = str(variable_code).strip().lower()
+    if code not in MGB_VARIABLE_METADATA:
+        raise ValueError("variable_code must be 'precipitation', 'level', or 'flow'.")
+    with xr.open_dataset(path, decode_times=True) as dataset:
+        if code not in dataset:
+            raise ValueError(f"MGB NetCDF does not contain variable {code!r}.")
+        available = {
+            int(value): index
+            for index, value in enumerate(np.asarray(dataset["mini_id"].values))
+        }
+        missing = sorted(set(mini_ids).difference(available))
+        if missing:
+            raise ValueError(f"Mini IDs were not found in {path}: {missing}.")
+        positions = [available[value] for value in mini_ids]
+        values = np.asarray(dataset[code].isel(mini=positions).values, dtype=float)
+        valid = np.isfinite(values)
+        effective_weights = valid * weights[np.newaxis, :]
+        weight_sums = effective_weights.sum(axis=1)
+        numerators = np.where(valid, values, 0.0) @ weights
+        means = np.divide(
+            numerators,
+            weight_sums,
+            out=np.full(values.shape[0], np.nan),
+            where=weight_sums > 0,
+        )
+        frame = pd.DataFrame(
+            {
+                "dt": pd.to_datetime(dataset["time"].values),
+                "prev_flag": np.asarray(
+                    dataset["time_segment"].values, dtype=np.int8
+                ),
+                "value": means,
+            }
+        )
+    if window is not None:
+        frame = frame[
+            (frame["dt"] >= pd.Timestamp(window.start_time))
+            & (frame["dt"] < pd.Timestamp(window.forecast_end_exclusive))
+        ]
+    meta = MGB_VARIABLE_METADATA[code]
+    frame["variable_code"] = code
+    frame["display_name"] = meta["display_name"]
+    frame["unit"] = meta["unit"]
+    return frame.sort_values("dt").reset_index(drop=True)
+
+
 read_model_outputs = validate_model_outputs_netcdf
 select_mgb_series = load_mgb_series

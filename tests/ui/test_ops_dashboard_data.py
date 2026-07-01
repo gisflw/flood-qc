@@ -214,6 +214,38 @@ def test_load_mgb_series_splits_current_and_forecast(tmp_path) -> None:
     assert series["dt"].iloc[48] == pd.Timestamp("2026-02-03 00:00:00")
 
 
+def test_load_basin_precipitation_uses_area_weights_and_renormalizes(
+    tmp_path: Path,
+) -> None:
+    source = write_model_outputs(tmp_path / "model_outputs.nc")
+    with xr.open_dataset(source) as original:
+        dataset = original.load()
+    dataset["precipitation"] = dataset["precipitation"].astype(float)
+    dataset["precipitation"][1, 1] = np.nan
+    dataset.to_netcdf(source, mode="w")
+
+    series = ops_dashboard_data.load_basin_precipitation(
+        source,
+        mini_ids=[101, 539],
+        weights=[1, 3],
+    )
+
+    assert series["value"].iloc[0] == pytest.approx(75)
+    assert series["value"].iloc[1] == pytest.approx(1)
+    assert series["display_name"].iloc[0] == "Basin precipitation"
+    assert series["prev_flag"].tolist() == ([0] * 48) + ([1] * 24)
+
+
+def test_load_basin_precipitation_rejects_unavailable_mini(tmp_path: Path) -> None:
+    source = write_model_outputs(tmp_path / "model_outputs.nc")
+    with pytest.raises(ValueError, match="999"):
+        ops_dashboard_data.load_basin_precipitation(
+            source,
+            mini_ids=[101, 999],
+            weights=[1, 1],
+        )
+
+
 def test_list_model_variables_returns_static_mgb_catalog() -> None:
     variables = ops_dashboard_data.list_model_variables()
 

@@ -120,6 +120,37 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
     assert "tooltip" not in artifacts.spec
 
 
+def test_build_map_adds_non_pickable_dissolved_basin_overlay() -> None:
+    basin = {
+        "type": "FeatureCollection",
+        "features": [
+            {
+                "type": "Feature",
+                "properties": {"outlet_mini_id": 7, "mini_count": 3},
+                "geometry": {
+                    "type": "Polygon",
+                    "coordinates": [[[-52, -31], [-51, -31], [-51, -30], [-52, -31]]],
+                },
+            }
+        ],
+    }
+
+    artifacts = ops_dashboard_map.build_ops_map(
+        None,
+        0.4,
+        pd.DataFrame(),
+        None,
+        {},
+        basin,
+    )
+
+    layer = artifacts.spec["layers"][0]
+    assert layer["id"] == "selected-basin"
+    assert layer["pickable"] is False
+    assert layer["filled"] is True
+    assert "selected-basin" not in artifacts.pick_lookups
+
+
 def test_geojson_overlays_do_not_create_panel_data_sources() -> None:
     stations = pd.DataFrame(
         [

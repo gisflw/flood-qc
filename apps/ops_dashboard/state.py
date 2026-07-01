@@ -21,6 +21,8 @@ from apps.ops_dashboard.services.corrections import (
 )
 from apps.ops_dashboard.services.loaders import (
     _accumulation_raster,
+    _basin_precipitation,
+    _basin_spatial_data,
     _forecast_assets,
     _forecast_preview,
     _forecast_steps,
@@ -29,6 +31,7 @@ from apps.ops_dashboard.services.loaders import (
     _model_variables,
     _observed_series,
     _station_catalog,
+    BasinSpatialData,
 )
 from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.spatial import RegularGridSpec
@@ -52,6 +55,7 @@ class DashboardState(param.Parameterized):
     selected_raster = param.Selector(default=None, objects=[None])
     rainfall_hours = param.Integer(default=24, bounds=(1, None))
     raster_opacity = param.Number(default=0.25, bounds=(0, 1), step=0.05)
+    show_selected_basin = param.Boolean(default=False)
     raster_inspection = param.Parameter(default=None, allow_None=True)
     last_refresh_at = param.String(default="")
     source_versions = param.Dict(default={})
@@ -110,6 +114,10 @@ class DashboardState(param.Parameterized):
             spatial=dashboard_map.build_file_version(self.gpkg_path),
             model=dashboard_map.build_file_version(self.model_path),
         )
+
+    def add_warning(self, message: str) -> None:
+        if message not in self.warnings:
+            self.warnings = [*self.warnings, message]
 
     def refresh(self) -> None:
         """Re-version sources and refresh only this state/session."""
@@ -241,7 +249,7 @@ class DashboardState(param.Parameterized):
             self.map_artifacts = current_map
         self.map_artifacts = replacement_map
 
-    @param.depends("selected_raster", watch=True)
+    @param.depends("selected_raster", "show_selected_basin", watch=True)
     def _rebuild_map(
         self,
         *_: Any,
@@ -259,13 +267,25 @@ class DashboardState(param.Parameterized):
         catalog = {
             str(item["name"]): item for item in self.accumulation_rasters
         }
+        basin_geojson = None
+        if self.show_selected_basin and self.mini_id is not None:
+            try:
+                basin_geojson = self.basin_spatial_data().geometry.__geo_interface__
+            except (FileNotFoundError, TypeError, ValueError) as exc:
+                self.add_warning(f"Selected basin unavailable: {exc}")
         self.map_artifacts = dashboard_map.build_ops_map(
             self.selected_raster,
             self.raster_opacity,
             self.stations,
             segments,
             catalog,
+            basin_geojson,
         )
+
+    @param.depends("mini_id", watch=True)
+    def _rebuild_selected_basin(self) -> None:
+        if self.show_selected_basin:
+            self._rebuild_map()
 
     def handle_map_click(self, click_state: Mapping[str, Any] | None) -> None:
         selection = dashboard_map.decode_click_state(
@@ -298,6 +318,29 @@ class DashboardState(param.Parameterized):
         return _mgb_series(
             self.mini_id,
             variable_code,
+            str(self.model_path),
+            str(self.workspace),
+            self.source_versions.get("model", ""),
+            self.window,
+        )
+
+    def basin_spatial_data(self) -> BasinSpatialData:
+        if self.mini_id is None:
+            raise ValueError("Select a mini before loading its basin.")
+        return _basin_spatial_data(
+            self.mini_id,
+            str(self.gpkg_path),
+            str(self.workspace),
+            self.source_versions.get("spatial", ""),
+        )
+
+    def basin_precipitation(self) -> pd.DataFrame:
+        if self.mini_id is None:
+            return pd.DataFrame()
+        basin = self.basin_spatial_data()
+        return _basin_precipitation(
+            basin.mini_ids,
+            basin.weights,
             str(self.model_path),
             str(self.workspace),
             self.source_versions.get("model", ""),

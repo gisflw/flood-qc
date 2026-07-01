@@ -15,6 +15,7 @@ from mgb_ops.assets.model_outputs import (
     TimeSegment,
     list_model_variables,
     load_mgb_series,
+    load_weighted_mgb_series,
     validate_model_outputs_netcdf,
 )
 
@@ -234,6 +235,36 @@ def summarize_network_peaks(
             ),
         })
     return pd.DataFrame(rows)
+
+
+def load_basin_precipitation(
+    path: Path,
+    *,
+    mini_ids: Iterable[int],
+    weights: Iterable[float],
+    window: DashboardWindow | None = None,
+) -> pd.DataFrame:
+    """Load an area-weighted precipitation series for a set of mini basins."""
+    selected_ids = [int(value) for value in mini_ids]
+    selected_weights = np.asarray(list(weights), dtype=float)
+    if not selected_ids:
+        raise ValueError("Basin precipitation requires at least one mini ID.")
+    if len(set(selected_ids)) != len(selected_ids):
+        raise ValueError("Basin precipitation mini IDs must be unique.")
+    if selected_weights.shape != (len(selected_ids),):
+        raise ValueError("Basin precipitation weights must match the mini IDs.")
+    if not np.isfinite(selected_weights).all() or (selected_weights <= 0).any():
+        raise ValueError("Basin precipitation weights must be finite and positive.")
+
+    frame = load_weighted_mgb_series(
+        path,
+        mini_ids=selected_ids,
+        weights=selected_weights,
+        variable_code="precipitation",
+        window=window,
+    )
+    frame["display_name"] = "Basin precipitation"
+    return frame
 
 
 # Clear aliases for callers that prefer noun-specific API names.

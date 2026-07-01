@@ -81,11 +81,16 @@ def _monitoring_view(
     def comparison_plot(*_: Any) -> pn.viewable.Viewable:
         observed = controller.observed_series()
         try:
-            precipitation = controller.mgb_series("precipitation")
+            precipitation = controller.basin_precipitation()
+        except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
+            precipitation = pd.DataFrame()
+            if controller.mini_id is not None:
+                controller.add_warning(f"Basin precipitation unavailable: {exc}")
+        try:
             levels = controller.mgb_series("level")
             flows = controller.mgb_series("flow")
         except (FileNotFoundError, OSError, ValueError):
-            precipitation = levels = flows = pd.DataFrame()
+            levels = flows = pd.DataFrame()
         return pn.pane.Plotly(
             _comparison_chart(
                 observed,

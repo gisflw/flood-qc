@@ -33,6 +33,11 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
         name="Raster opacity",
         sizing_mode="stretch_width",
     )
+    show_basin = pn.widgets.Checkbox.from_param(
+        state.param.show_selected_basin,
+        name="Show selected basin",
+        sizing_mode="stretch_width",
+    )
     refreshed = pn.bind(
         lambda value: pn.pane.Markdown(
             f"Last session refresh:  \n{value}" if value else "Not refreshed yet."
@@ -61,6 +66,7 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
             rainfall_hours,
             apply_rainfall,
             opacity,
+            show_basin,
             pn.layout.Divider(),
             warnings,
         ],

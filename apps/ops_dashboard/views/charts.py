@@ -100,7 +100,11 @@ def _comparison_chart(
                 if variable_code == "level"
                 else data["value"]
             )
-            name = f"Mini {mini_id} · {suffix}"
+            name = (
+                f"Basin precipitation · {suffix}"
+                if variable_code == "precipitation"
+                else f"Mini {mini_id} · {suffix}"
+            )
             if variable_code == "precipitation":
                 fig.add_bar(
                     x=data["dt"],

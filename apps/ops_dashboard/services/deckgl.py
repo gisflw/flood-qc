@@ -325,6 +325,7 @@ def build_ops_map(
     stations: pd.DataFrame,
     segments_geojson: dict[str, Any] | None,
     raster_catalog: dict[str, dict[str, object]],
+    basin_geojson: dict[str, Any] | None = None,
 ) -> DeckGLArtifacts:
     layers: list[dict[str, Any]] = []
     lookups: dict[str, RasterLookup] = {}
@@ -348,6 +349,18 @@ def build_ops_map(
             layers.append(layer)
         if legend is not None:
             legends.append(legend)
+
+    basin_layer = _geojson_layer(
+        "selected-basin",
+        basin_geojson,
+        line_color=[230, 119, 20, 230],
+        fill_color=[255, 170, 60, 65],
+        line_width=3,
+    )
+    if basin_layer is not None:
+        basin_layer["pickable"] = False
+        basin_layer["autoHighlight"] = False
+        layers.append(basin_layer)
 
     for layer in (
         _geojson_layer(
