@@ -69,7 +69,7 @@ def build_dataset(
     write_mini(input_dir / "MINI.gtp", mini_values)
 
     q_values = np.arange(nc * total_nt, dtype=np.float32).reshape(total_nt, nc)
-    y_values = (200000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(y_total_nt, nc)
+    y_values = (2000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(y_total_nt, nc)
     precipitation_values = (
         np.arange(nc * total_nt, dtype=np.float32).reshape(total_nt, nc) / 10
     )
@@ -154,15 +154,15 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         assert exported["flow"].attrs["units"] == "m3 s-1"
         assert exported["flow"].attrs["source_filename"] == "QTUDO_Inercial_Atual.MGB"
         assert exported["level"].attrs["long_name"] == "MGB river stage"
-        assert exported["level"].attrs["units"] == "m"
+        assert exported["level"].attrs["units"] == "cm"
         assert exported["level"].attrs["source_filename"] == "YTUDO.MGB"
         assert exported["precipitation"].attrs["units"] == "mm"
         assert exported["precipitation"].attrs["source_filename"] == "CHUVABIN.hig"
 
         assert float(exported["flow"].isel(time=0, mini=0)) == 432.0
         assert float(exported["flow"].isel(time=744, mini=0)) == 1920.0
-        assert float(exported["level"].isel(time=0, mini=0)) == 200432.0
-        assert float(exported["level"].isel(time=744, mini=0)) == 201920.0
+        assert float(exported["level"].isel(time=0, mini=0)) == 243200.0
+        assert float(exported["level"].isel(time=744, mini=0)) == 392000.0
         assert float(exported["precipitation"].isel(time=0, mini=0)) == 43.2
         assert float(exported["precipitation"].isel(time=744, mini=0)) == 192.0
 
@@ -171,10 +171,10 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
             variable = exported.variables[code]
             variable.set_auto_maskandscale(False)
             assert variable.dtype == np.dtype("int32")
-            assert variable.scale_factor == 0.01
+            assert variable.scale_factor == 0.001
             assert variable.filters()["zlib"] is True
             assert variable.filters()["complevel"] == NETCDF_ZLIB_COMPLEVEL
-        assert exported.variables["precipitation"][0, 0] == 4320
+        assert exported.variables["precipitation"][0, 0] == 43200
 
 
 def test_export_mgb_outputs_uses_explicit_reference_time(tmp_path, monkeypatch) -> None:
@@ -272,7 +272,7 @@ def test_export_mgb_outputs_rejects_packed_integer_overflow(tmp_path, monkeypatc
     dataset = build_dataset(tmp_path, total_nt=48)
     configure_export_logging(tmp_path, monkeypatch)
     values = np.fromfile(dataset["output_dir"] / "QTUDO_Inercial_Atual.MGB", dtype=np.float32)
-    values[0] = 30_000_000
+    values[0] = 3_000_000
     write_output(dataset["output_dir"] / "QTUDO_Inercial_Atual.MGB", values)
 
     with pytest.raises(OverflowError, match="flow exceeds the int32 packing range"):

@@ -219,7 +219,7 @@ def test_list_model_variables_returns_static_mgb_catalog() -> None:
 
     assert variables.to_dict(orient="records") == [
         {"variable_code": "flow", "display_name": "Flow", "unit": "m3/s"},
-        {"variable_code": "level", "display_name": "Level", "unit": "m"},
+        {"variable_code": "level", "display_name": "Level", "unit": "cm"},
         {"variable_code": "precipitation", "display_name": "Precipitation", "unit": "mm"},
     ]
 

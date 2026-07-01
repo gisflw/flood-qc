@@ -10,11 +10,11 @@ import xarray as xr
 from mgb_ops.common.time_utils import DashboardWindow
 
 NETCDF_ZLIB_COMPLEVEL = 4
-NETCDF_PACKING_SCALE_FACTOR = 0.01
+NETCDF_PACKING_SCALE_FACTOR = 0.001
 NETCDF_PACKED_FILL_VALUE = np.iinfo(np.int32).min
 MGB_VARIABLE_METADATA = {
     "precipitation": {"display_name": "Precipitation", "unit": "mm"},
-    "level": {"display_name": "Level", "unit": "m"},
+    "level": {"display_name": "Level", "unit": "cm"},
     "flow": {"display_name": "Flow", "unit": "m3/s"},
 }
 TimeSegment = Literal["all", "current", "forecast"]

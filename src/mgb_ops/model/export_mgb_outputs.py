@@ -79,8 +79,8 @@ VARIABLE_SPECS = (
         source_filename="YTUDO.MGB",
         variable_code="level",
         display_name="Level",
-        unit="m",
-        netcdf_unit="m",
+        unit="cm",
+        netcdf_unit="cm",
         long_name="MGB river stage",
     ),
 )
@@ -501,6 +501,8 @@ def write_output_netcdf(
                 )
         finally:
             del matrix
+        if spec.variable_code == "level":
+            values = values.astype(np.float64) * 100.0
         data_values[spec.variable_code] = values
         variable_attrs[spec.variable_code] = _build_variable_attrs(spec)
         logger.info("variable_done variable=%s", spec.variable_code)

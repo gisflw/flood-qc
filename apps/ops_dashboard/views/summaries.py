@@ -104,7 +104,7 @@ def _mini_summary(state: DashboardState) -> pn.viewable.Viewable:
     )
     return pn.pane.Markdown(
         f"### Mini {state.mini_id}\n"
-        f"Current level: {_format_number(summary['current_value'], 'm', 2)}  \n"
-        f"Observed-window peak: {_format_number(summary['current_peak'], 'm', 2)} · "
-        f"Forecast-window peak: {_format_number(summary['forecast_peak'], 'm', 2)}"
+        f"Current level: {_format_number(summary['current_value'], 'cm', 2)}  \n"
+        f"Observed-window peak: {_format_number(summary['current_peak'], 'cm', 2)} · "
+        f"Forecast-window peak: {_format_number(summary['forecast_peak'], 'cm', 2)}"
     )

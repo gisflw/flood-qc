@@ -86,7 +86,7 @@ def _comparison_chart(
             if data.empty:
                 continue
             values = (
-                data["value"] * 100
+                data["value"]
                 if variable_code == "level"
                 else data["value"]
             )
