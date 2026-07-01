@@ -12,7 +12,7 @@ from apps.ops_dashboard.services import deckgl as dashboard_map
 from db_helpers import initialize_history_db
 from mgb_ops.analysis.spatial import PrecipitationGrid
 from mgb_ops.edit.sqlite import list_forecast_corrections
-from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.assets.history import HistoryRepository
 
 
 def _write_config(workspace: Path) -> None:

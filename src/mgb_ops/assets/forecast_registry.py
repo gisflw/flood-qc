@@ -8,7 +8,7 @@ from typing import Any
 import pandas as pd
 
 from mgb_ops.assets.forecast_grid import FORECAST_PRECIPITATION_GRID_ASSET_KIND
-from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.assets.history import HistoryRepository
 
 
 def _parse_cycle_time(value: object) -> pd.Timestamp | None:

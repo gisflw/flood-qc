@@ -34,7 +34,7 @@ Common runtime helpers read:
 
 Precedence is explicit Python arguments first, process environment second,
 `.env` third, and defaults last. `.env` loading is intentionally limited to
-`mgb_ops.common`. Domain modules under `assets`, `adapters`, `storage`,
+`mgb_ops.common`. Domain modules under `assets`, `adapters`,
 `analysis`, `edit`, `qc`, `model`, and `workflows` require explicit inputs and
 must not inspect process environment or implicit workspace state. Provider
 credentials resolved by a runtime or app wrapper are passed explicitly to the

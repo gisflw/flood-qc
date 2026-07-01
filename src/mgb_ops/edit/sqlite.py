@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping
 
 from mgb_ops.qc.checks import check_correction_overlaps, check_correction_window
-from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.assets.history import HistoryRepository
 
 
 def list_forecast_corrections(database_path: Path, asset_id: str) -> list[dict[str, Any]]:

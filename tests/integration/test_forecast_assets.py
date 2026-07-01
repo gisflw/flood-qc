@@ -5,7 +5,7 @@ from datetime import datetime
 import pytest
 
 from db_helpers import initialize_history_db
-from mgb_ops.storage.forecast_assets import (
+from mgb_ops.assets.forecast_registry import (
     find_forecast_asset_by_cycle,
     list_forecast_assets,
     register_forecast_asset,

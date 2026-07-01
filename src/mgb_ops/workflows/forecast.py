@@ -8,7 +8,7 @@ from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
 from mgb_ops.assets.forecast_grid import FORECAST_GRID_FORMAT
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.time_utils import resolve_reference_time
-from mgb_ops.storage.forecast_assets import build_relative_asset_path, register_forecast_asset
+from mgb_ops.assets.forecast_registry import build_relative_asset_path, register_forecast_asset
 
 
 @dataclass(frozen=True, slots=True)

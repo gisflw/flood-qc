@@ -31,7 +31,7 @@ def test_root_sql_and_config_directories_are_not_present() -> None:
 def _domain_library_paths() -> list[Path]:
     roots = [
         REPO_ROOT / "src" / "mgb_ops" / name
-        for name in ("assets", "storage", "adapters", "workflows", "analysis", "edit", "qc", "model")
+        for name in ("assets", "adapters", "workflows", "analysis", "edit", "qc", "model")
     ]
     return [path for root in roots for path in root.rglob("*.py")]
 
@@ -171,4 +171,48 @@ def test_domain_modules_have_no_direct_script_entrypoints() -> None:
             if isinstance(node, ast.FunctionDef) and node.name == "main":
                 offenders.append(f"{rel_path}:{node.lineno} defines main()")
 
+    assert offenders == []
+
+
+def test_assets_is_the_only_canonical_persistence_layer() -> None:
+    """Canonical database/CSV/NetCDF I/O must remain behind mgb_ops.assets."""
+    forbidden_imports = {"sqlite3"}
+    forbidden_calls = {
+        "sqlite3.connect",
+        "pd.read_sql_query",
+        "pandas.read_sql_query",
+        "xr.open_dataset",
+        "xarray.open_dataset",
+        "dataset.to_netcdf",
+        "csv.DictReader",
+        "csv.DictWriter",
+    }
+    offenders: list[str] = []
+    package_root = REPO_ROOT / "src" / "mgb_ops"
+    for path in package_root.rglob("*.py"):
+        if package_root / "assets" in path.parents:
+            continue
+        rel_path = path.relative_to(REPO_ROOT).as_posix()
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name in forbidden_imports:
+                        offenders.append(f"{rel_path}:{node.lineno} imports {alias.name}")
+            elif isinstance(node, ast.Call):
+                call_name = _call_name(node.func)
+                if call_name in forbidden_calls or (
+                    call_name is not None and call_name.endswith(".to_netcdf")
+                ):
+                    offenders.append(f"{rel_path}:{node.lineno} calls {call_name}")
+    assert offenders == []
+
+
+def test_removed_storage_package_is_not_referenced() -> None:
+    package_root = REPO_ROOT / "src" / "mgb_ops"
+    assert not (package_root / "storage").exists()
+    offenders = []
+    for path in (REPO_ROOT / "src").rglob("*.py"):
+        if "mgb_ops.storage" in path.read_text(encoding="utf-8-sig"):
+            offenders.append(path.relative_to(REPO_ROOT).as_posix())
     assert offenders == []

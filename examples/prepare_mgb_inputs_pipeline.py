@@ -24,7 +24,7 @@ from mgb_ops.workflows.observed import (
 )
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import find_required_forecast_asset, prepare_mgb_rainfall
-from mgb_ops.storage.db_bootstrap import initialize_history_db
+from mgb_ops.assets.databases import initialize_history_db
 
 # %% [markdown]
 # ## 1. Choose workspace and providers

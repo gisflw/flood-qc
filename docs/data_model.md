@@ -50,7 +50,7 @@ In the repository's current state, the history database in active use is still m
 
 ### `observed_value`
 
-Long-format time table, with one value per `series_id + observed_at`. Observed provider fetchers write normalized CSV artifacts first, then `mgb_ops.storage.observed_csv.load_normalized_observed_csvs()` buckets and aggregates values to `run.timestep_hours` before persisting rows into `observed_series` and `observed_value`.
+Long-format time table, with one value per `series_id + observed_at`. Observed provider fetchers write normalized CSV artifacts first, then `mgb_ops.assets.observations.load_normalized_observed_csvs()` buckets and aggregates values to `run.timestep_hours` before persisting rows into `observed_series` and `observed_value`.
 
 The normalized observed CSV columns are:
 
@@ -63,8 +63,7 @@ The normalized observed CSV columns are:
 - `state`
 
 Fetchers write one normalized CSV per station per run, for example
-`data/downloads/ana/<run_id>/<station_code>/observed.csv`. Storage owns SQLite
-loading from these CSVs.
+`data/downloads/ana/<run_id>/<station_code>/observed.csv`. Assets owns both the CSV contract and SQLite loading.
 
 ### `asset`
 

@@ -6,7 +6,7 @@ import sqlite3
 import pytest
 
 from db_helpers import initialize_history_db
-from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS, load_normalized_observed_csvs
+from mgb_ops.assets.observations import NORMALIZED_OBSERVED_COLUMNS, load_normalized_observed_csvs
 
 
 def write_csv(path, rows, *, columns=NORMALIZED_OBSERVED_COLUMNS):

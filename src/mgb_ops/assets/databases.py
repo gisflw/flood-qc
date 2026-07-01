@@ -6,7 +6,6 @@ import unicodedata
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
-from mgb_ops.adapters import get_observation_adapter
 
 
 def apply_schema(database_path: Path, schema_path: Path) -> None:
@@ -35,10 +34,10 @@ def _normalize_station_name(name: str) -> str:
 
 
 def _normalize_station_code(provider_code: str, station_code: str) -> str:
-    normalized = get_observation_adapter(provider_code).normalize_station_code(station_code)
-    if normalized is None:
+    normalized = str(station_code).strip().upper()
+    if not normalized:
         raise ValueError("Empty station_code is not supported.")
-    return normalized
+    return normalized.lstrip("0") or "0"
 
 
 def _parse_nullable_int(value: str) -> int | None:

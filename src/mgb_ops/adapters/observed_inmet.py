@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import json
 import logging
 import sys
@@ -14,7 +13,7 @@ import requests
 
 from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS, iter_fetch_date_windows
-from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
+from mgb_ops.assets.observations import write_normalized_observed_csv
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
 DEFAULT_INMET_RAIN_PRODUCT = "I175"
@@ -301,33 +300,15 @@ def write_normalized_csv(
     station_code: str,
     state: str = "raw",
 ) -> Path:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    with output_path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=NORMALIZED_OBSERVED_COLUMNS)
-        writer.writeheader()
-        if frame.empty:
-            return output_path
-        for record in frame.sort_values("observed_at").to_dict("records"):
-            value = record.get("rain")
-            if value is None:
-                continue
-            try:
-                if value != value:
-                    continue
-            except TypeError:
-                pass
-            writer.writerow(
-                {
-                    "station_id": station_id,
-                    "provider_code": provider_code,
-                    "station_code": station_code,
-                    "observed_at": record["observed_at"].strftime("%Y-%m-%d %H:%M"),
-                    "variable_code": "rain",
-                    "value": float(value),
-                    "state": state,
-                }
-            )
-    return output_path
+    return write_normalized_observed_csv(
+        frame,
+        output_path=output_path,
+        station_id=station_id,
+        provider_code=provider_code,
+        station_code=station_code,
+        variable_columns=OBSERVED_VARIABLES,
+        state=state,
+    )
 
 
 def save_raw_payload(

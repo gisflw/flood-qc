@@ -1,33 +1,24 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Iterable
 
 import numpy as np
 import pandas as pd
-import xarray as xr
 
 from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.assets.history_queries import read_station_catalog_tables, read_station_observed_tables
+from mgb_ops.assets.model_outputs import (
+    MGB_VARIABLE_METADATA,
+    StaleModelOutputsError,
+    TimeSegment,
+    list_model_variables,
+    load_mgb_series,
+    validate_model_outputs_netcdf,
+)
 
 STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
-MGB_VARIABLE_METADATA = {
-    "q": {"display_name": "QTUDO", "unit": "m3/s"},
-    "y": {"display_name": "YTUDO", "unit": "m"},
-}
-TimeSegment = Literal["all", "current", "forecast"]
-
-
-def _connect_read_only(database_path: Path) -> sqlite3.Connection:
-    path = Path(database_path)
-    if not path.exists():
-        raise FileNotFoundError(f"History database not found: {path}")
-    connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA query_only = ON")
-    return connection
-
 
 def select_preferred_series_rows(series: pd.DataFrame) -> pd.DataFrame:
     """Select one observed series per station/variable by state then recency."""
@@ -64,10 +55,6 @@ def derive_station_kind(variable_codes: Iterable[str]) -> str:
     if hydro:
         return "level"
     return "no_data"
-
-
-class StaleModelOutputsError(ValueError):
-    """Raised when canonical model output metadata differs from the requested run."""
 
 
 def summarize_station_status(values: pd.DataFrame) -> dict[str, object]:
@@ -114,29 +101,9 @@ def load_station_catalog(
     """Load mapped stations and preferred-series availability in [start, end]."""
     if end_time < start_time:
         raise ValueError("end_time must be >= start_time.")
-    with _connect_read_only(database_path) as connection:
-        stations = pd.read_sql_query(
-            """SELECT station_id, station_code, provider_code, station_name,
-                      mini_id, latitude AS lat, longitude AS lon
-               FROM station WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-               ORDER BY provider_code, station_code""",
-            connection,
-        )
-        series = pd.read_sql_query(
-            "SELECT series_id, station_id, variable_code, state, created_at FROM observed_series",
-            connection,
-        )
-        values = pd.read_sql_query(
-            """SELECT os.series_id, os.station_id, os.variable_code,
-                      ov.observed_at AS datetime, ov.value
-               FROM observed_series os JOIN observed_value ov USING (series_id)
-               WHERE ov.observed_at >= ? AND ov.observed_at <= ?""",
-            connection,
-            params=(
-                start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                end_time.strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
+    stations, series, values = read_station_catalog_tables(
+        database_path, start_time=start_time, end_time=end_time
+    )
     columns = [
         "station_id", "station_code", "provider_code", "station_name", "mini_id",
         "lat", "lon", "kind", "status", "status_reason", "rows_recent",
@@ -173,31 +140,14 @@ def load_observed_series(
     """Load preferred observed rainfall, level, and flow values for a station."""
     if end_time < start_time:
         raise ValueError("end_time must be >= start_time.")
-    with _connect_read_only(database_path) as connection:
-        series = pd.read_sql_query(
-            """SELECT series_id, station_id, variable_code, state, created_at
-               FROM observed_series WHERE station_id = ?""",
-            connection,
-            params=(str(station_id),),
-        )
-        preferred = select_preferred_series_rows(series)
-        if preferred.empty:
-            return pd.DataFrame(columns=["datetime", "variable_code", "value"])
-        ids = preferred["series_id"].astype(str).tolist()
-        placeholders = ",".join("?" for _ in ids)
-        values = pd.read_sql_query(
-            f"""SELECT os.variable_code, ov.observed_at AS datetime, ov.value
-                FROM observed_value ov JOIN observed_series os USING (series_id)
-                WHERE ov.series_id IN ({placeholders})
-                  AND ov.observed_at >= ? AND ov.observed_at <= ?
-                ORDER BY ov.observed_at, os.variable_code""",
-            connection,
-            params=(
-                *ids,
-                start_time.strftime("%Y-%m-%d %H:%M:%S"),
-                end_time.strftime("%Y-%m-%d %H:%M:%S"),
-            ),
-        )
+    series, values = read_station_observed_tables(
+        str(station_id), database_path, start_time=start_time, end_time=end_time
+    )
+    preferred = select_preferred_series_rows(series)
+    if preferred.empty:
+        return pd.DataFrame(columns=["datetime", "variable_code", "value"])
+    preferred_ids = set(preferred["series_id"].astype(str))
+    values = values[values["series_id"].astype(str).isin(preferred_ids)].drop(columns="series_id")
     values["datetime"] = pd.to_datetime(values["datetime"], errors="coerce")
     values["value"] = pd.to_numeric(values["value"], errors="coerce")
     return values.dropna(subset=["datetime"]).reset_index(drop=True)
@@ -231,143 +181,6 @@ def compute_observed_metrics(values: pd.DataFrame, *, cutoff_time: datetime | pd
         if not selected.empty:
             result[f"{code}_current"] = float(selected.iloc[-1]["value"])
     return result
-
-
-def _required_model_time_attr(dataset: xr.Dataset, name: str) -> pd.Timestamp:
-    raw = dataset.attrs.get(name)
-    if raw in (None, ""):
-        raise ValueError(f"MGB NetCDF missing required global attribute {name!r}.")
-    try:
-        value = pd.Timestamp(raw)
-    except Exception as exc:
-        raise ValueError(f"MGB NetCDF has invalid global attribute {name!r}: {raw!r}.") from exc
-    if value.tzinfo is not None:
-        value = value.tz_convert(None)
-    return value
-
-
-def validate_model_outputs_netcdf(
-    path: Path,
-    *,
-    expected_window: DashboardWindow | None = None,
-) -> dict[str, object]:
-    """Validate the canonical MGB dashboard contract and return its metadata."""
-    source = Path(path)
-    if not source.exists():
-        raise FileNotFoundError(f"Canonical MGB NetCDF not found: {source}")
-    with xr.open_dataset(source, decode_times=True) as dataset:
-        required_dims = {"time", "mini"}
-        missing_dims = required_dims.difference(dataset.dims)
-        if missing_dims:
-            raise ValueError(f"MGB NetCDF missing required dimensions: {sorted(missing_dims)}")
-        required = {"mini_id", "time_segment"}
-        missing = required.difference(dataset.variables)
-        if missing:
-            raise ValueError(f"MGB NetCDF missing required variables: {sorted(missing)}")
-        present = [code for code in MGB_VARIABLE_METADATA if code in dataset]
-        if not present:
-            raise ValueError("MGB NetCDF must contain at least one model variable: q or y.")
-        if dataset["mini_id"].dims != ("mini",):
-            raise ValueError("MGB NetCDF mini_id must use dimension ('mini',).")
-        if dataset["time_segment"].dims != ("time",):
-            raise ValueError("MGB NetCDF time_segment must use dimension ('time',).")
-        for code in present:
-            if dataset[code].dims != ("time", "mini"):
-                raise ValueError(f"MGB NetCDF {code} must use dimensions ('time', 'mini').")
-        mini_ids = np.asarray(dataset["mini_id"].values)
-        if len(np.unique(mini_ids)) != len(mini_ids):
-            raise ValueError("MGB NetCDF mini_id values must be unique.")
-        segments = set(np.asarray(dataset["time_segment"].values).astype(int).tolist())
-        if not segments.issubset({0, 1}):
-            raise ValueError("MGB NetCDF time_segment may contain only 0 (current) and 1 (forecast).")
-        times = pd.to_datetime(dataset["time"].values, errors="coerce")
-        if pd.isna(times).any() or not pd.DatetimeIndex(times).is_monotonic_increasing:
-            raise ValueError("MGB NetCDF time must be valid and monotonically increasing.")
-        model_window = DashboardWindow(
-            start_time=_required_model_time_attr(dataset, "window_start").to_pydatetime(),
-            cutoff_time=_required_model_time_attr(dataset, "reference_time").to_pydatetime(),
-            forecast_end_exclusive=_required_model_time_attr(dataset, "window_end_exclusive").to_pydatetime(),
-        )
-        if expected_window is not None and model_window != expected_window:
-            raise StaleModelOutputsError(
-                "Stale model_outputs.nc metadata: "
-                f"expected start={expected_window.start_time.isoformat()}, "
-                f"reference={expected_window.cutoff_time.isoformat()}, "
-                f"end_exclusive={expected_window.forecast_end_exclusive.isoformat()}; "
-                f"actual start={model_window.start_time.isoformat()}, "
-                f"reference={model_window.cutoff_time.isoformat()}, "
-                f"end_exclusive={model_window.forecast_end_exclusive.isoformat()}."
-            )
-        return {
-            "path": source,
-            "mini_count": int(dataset.sizes["mini"]),
-            "time_count": int(dataset.sizes["time"]),
-            "variables": tuple(present),
-            "mini_ids": tuple(int(value) for value in mini_ids),
-            "start_time": pd.Timestamp(times[0]) if len(times) else None,
-            "end_time": pd.Timestamp(times[-1]) if len(times) else None,
-            "window": model_window,
-        }
-
-
-def list_model_variables(path: Path | None = None) -> pd.DataFrame:
-    available = set(MGB_VARIABLE_METADATA)
-    if path is not None:
-        available = set(validate_model_outputs_netcdf(path)["variables"])
-    return pd.DataFrame([
-        {"variable_code": code, **MGB_VARIABLE_METADATA[code]}
-        for code in sorted(available)
-    ])
-
-
-def load_mgb_series(
-    path: Path,
-    *,
-    mini_id: int,
-    variable_code: str,
-    time_segment: TimeSegment | int | None = "all",
-    window: DashboardWindow | None = None,
-) -> pd.DataFrame:
-    """Select one mini/variable from canonical model_outputs.nc."""
-    validate_model_outputs_netcdf(path, expected_window=window)
-    code = str(variable_code).strip().lower()
-    if code not in MGB_VARIABLE_METADATA:
-        raise ValueError("variable_code must be 'q' or 'y'.")
-    with xr.open_dataset(path, decode_times=True) as dataset:
-        if code not in dataset:
-            raise ValueError(f"MGB NetCDF does not contain variable {code!r}.")
-        matches = np.flatnonzero(np.asarray(dataset["mini_id"].values) == int(mini_id))
-        if len(matches) == 0:
-            raise ValueError(f"Mini {mini_id} was not found in {path}.")
-        values = np.asarray(dataset[code].isel(mini=int(matches[0])).values, dtype=float)
-        frame = pd.DataFrame({
-            "dt": pd.to_datetime(dataset["time"].values),
-            "prev_flag": np.asarray(dataset["time_segment"].values, dtype=np.int8),
-            "value": values,
-        })
-    segment_map = {"current": 0, "forecast": 1}
-    if time_segment not in (None, "all"):
-        normalized_segment = str(time_segment).lower()
-        if normalized_segment in segment_map:
-            flag = segment_map[normalized_segment]
-        else:
-            try:
-                flag = int(time_segment)
-            except (TypeError, ValueError) as exc:
-                raise ValueError("time_segment must be 'all', 'current', 'forecast', 0, or 1.") from exc
-        if flag not in (0, 1):
-            raise ValueError("time_segment must be 'all', 'current', 'forecast', 0, or 1.")
-        frame = frame[frame["prev_flag"] == flag]
-    if window is not None:
-        frame = frame[
-            (frame["dt"] >= pd.Timestamp(window.start_time))
-            & (frame["dt"] < pd.Timestamp(window.forecast_end_exclusive))
-        ]
-    meta = MGB_VARIABLE_METADATA[code]
-    frame["variable_code"] = code
-    frame["display_name"] = meta["display_name"]
-    frame["unit"] = meta["unit"]
-    return frame.sort_values("dt").reset_index(drop=True)
 
 
 def summarize_mini_peaks(

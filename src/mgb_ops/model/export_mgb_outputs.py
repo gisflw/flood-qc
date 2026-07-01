@@ -10,10 +10,9 @@ from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
-import xarray as xr
+from mgb_ops.assets.model_outputs import NETCDF_ZLIB_COMPLEVEL, write_model_outputs_netcdf
 
 DEFAULT_CHUNK_HOURS = 720
-NETCDF_ZLIB_COMPLEVEL = 4
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
 LOGGER_NAME = "model.export_mgb_outputs"
 
@@ -445,7 +444,8 @@ def write_output_netcdf(
         nt_current=nt_current,
     )
 
-    data_vars: dict[str, tuple[tuple[str, str], np.ndarray, dict[str, str]]] = {}
+    data_values: dict[str, np.ndarray] = {}
+    variable_attrs: dict[str, dict[str, str]] = {}
     value_count = 0
     for spec in VARIABLE_SPECS:
         source = sources[spec.variable_code]
@@ -487,28 +487,18 @@ def write_output_netcdf(
                 )
         finally:
             del matrix
-        data_vars[spec.variable_code] = (("time", "mini"), values, _build_variable_attrs(spec))
+        data_values[spec.variable_code] = values
+        variable_attrs[spec.variable_code] = _build_variable_attrs(spec)
         logger.info("variable_done variable=%s", spec.variable_code)
 
-    dataset = xr.Dataset(
-        data_vars=data_vars
-        | {
-            "time_segment": (
-                ("time",),
-                time_segment,
-                {
-                    "long_name": "MGB output time segment",
-                    "flag_values": np.array([0, 1], dtype=np.int8),
-                    "flag_meanings": "current_simulation forecast",
-                },
-            )
-        },
-        coords={
-            "time": (("time",), time_values, {"long_name": "time"}),
-            "mini": (("mini",), np.arange(len(mini_ids), dtype=np.int32), {"long_name": "mini-basin index"}),
-            "mini_id": (("mini",), np.asarray(mini_ids, dtype=np.int32), {"long_name": "MGB mini-basin identifier"}),
-        },
-        attrs=_build_global_attrs(
+    write_model_outputs_netcdf(
+        path=netcdf_path,
+        variables=data_values,
+        variable_attrs=variable_attrs,
+        time_values=time_values,
+        time_segment=time_segment,
+        mini_ids=mini_ids,
+        global_attrs=_build_global_attrs(
             start_time=start_time,
             dt_seconds=dt_seconds,
             export_window=export_window,
@@ -516,16 +506,7 @@ def write_output_netcdf(
             nt_forecast=nt_forecast,
         ),
     )
-    encoding = {
-        spec.variable_code: {"_FillValue": np.float32(np.nan), "zlib": True, "complevel": NETCDF_ZLIB_COMPLEVEL}
-        for spec in VARIABLE_SPECS
-        if spec.variable_code in data_vars
-    }
-    encoding["time_segment"] = {"dtype": "i1"}
-    netcdf_path.parent.mkdir(parents=True, exist_ok=True)
-    dataset.to_netcdf(netcdf_path, engine="netcdf4", encoding=encoding)
-    dataset.close()
-    logger.info("netcdf_written path=%s variables=%s values=%s", netcdf_path, len(data_vars), value_count)
+    logger.info("netcdf_written path=%s variables=%s values=%s", netcdf_path, len(data_values), value_count)
 
     return ExportSummary(
         netcdf_path=netcdf_path,
@@ -535,7 +516,7 @@ def write_output_netcdf(
         nc=len(mini_ids),
         nt_current=nt_current,
         nt_forecast=nt_forecast,
-        variable_count=len(data_vars),
+        variable_count=len(data_values),
         value_count=value_count,
     )
 

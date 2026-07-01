@@ -7,8 +7,8 @@ from typing import Iterable
 from mgb_ops.common.time_utils import iter_observed_request_dates
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS
 from mgb_ops.adapters import ObservationAdapter, get_observation_adapter
-from mgb_ops.storage.history_repository import HistoryRepository
-from mgb_ops.storage.observed_csv import ObservedCsvImportSummary, load_normalized_observed_csvs
+from mgb_ops.assets.history import HistoryRepository
+from mgb_ops.assets.observations import ObservedCsvImportSummary, load_normalized_observed_csvs
 
 
 def _filter_stations(stations: list[dict], station_codes: Iterable[str] | None, *, provider_code: str) -> list[dict]:

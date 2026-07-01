@@ -8,7 +8,7 @@ summaries or domain objects in a notebook, script, or orchestrated data flow.
 
 ### 1. History Bootstrap
 
-Library module: `mgb_ops.storage.db_bootstrap`
+Library module: `mgb_ops.assets.databases`
 
 1. Initialize an explicitly supplied history SQLite path with an explicitly supplied schema path.
 2. Load the station inventory into `station`.
@@ -67,7 +67,7 @@ python -m pip install -e ".[forecast]"
 
 Python callers pass `bbox=(west, south, east, north)` and
 `buffer_fraction=...` to `mgb_ops.workflows.forecast.collect_forecast_grids`
-or `ingest_forecast_grids`, together with explicit storage and output paths.
+or `ingest_forecast_grids`, together with explicit database, asset, and output paths.
 These values can also be resolved by a thin runtime wrapper from
 `forecast_grid.bbox` and `forecast_grid.buffer_fraction` in
 `<workspace>/config/custom.yaml`.

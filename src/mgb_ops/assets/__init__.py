@@ -1,1 +1,1 @@
-"""Canonical asset contracts and packaged schemas for mgb-ops."""
+"""Canonical persistence contracts, schemas, repositories, validation, and I/O."""

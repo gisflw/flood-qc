@@ -61,10 +61,8 @@ Important: the user is responsible for providing a regional workspace containing
 ## Layer Model
 
 - `common`: shared types and explicit runtime/configuration helpers.
-- `assets`: external-file contracts and readers/writers, including SQL schemas,
-  forecast NetCDF, and spatial GeoPackage layers.
+- `assets`: canonical artifact formats, SQL schemas, SQLite repositories, validation, and readers/writers.
 - `adapters`: provider-specific collection and normalization.
-- `storage`: SQLite persistence and asset registry operations.
 - `analysis`: read-only queries, projections, interpolation, and aggregation.
 - `edit` and `qc`: auditable corrections and validation rules.
 - `model`: MGB preparation, execution, and output production.
@@ -82,7 +80,7 @@ the reporting workflow is designed.
   - `<workspace>/config/custom.yaml` as the only editable regional override.
 - `.env` files are loaded only by `mgb_ops.common` runtime helpers. Core domain modules do not load `.env` or inspect process environment.
 - Library calls should pass explicit workspace, database, schema, asset,
-  settings, path, and time inputs into adapters, storage, analysis, edit, QC,
+  settings, path, and time inputs into adapters, assets, analysis, edit, QC,
   model, and workflow functions.
 - The evaluation of migrating configuration to `.toml` remains open, with no contract change for now.
 

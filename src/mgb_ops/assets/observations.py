@@ -8,7 +8,7 @@ from typing import Iterable
 
 from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.common.time_utils import validate_timestep_hours
-from mgb_ops.storage.history_repository import HistoryRepository
+from mgb_ops.assets.history import HistoryRepository
 
 NORMALIZED_OBSERVED_COLUMNS = (
     "station_id",
@@ -26,6 +26,50 @@ DEFAULT_OBSERVED_AGGREGATION = {
     "flow": "mean",
 }
 ALLOWED_AGGREGATIONS = {"sum", "mean", "last"}
+
+
+
+def write_normalized_observed_csv(
+    frame,
+    *,
+    output_path: Path,
+    station_id: str,
+    provider_code: str,
+    station_code: str,
+    variable_columns: Iterable[str],
+    state: str = "raw",
+) -> Path:
+    """Serialize provider-normalized values using the canonical observation CSV contract."""
+    if state not in ALLOWED_STATES:
+        raise ValueError(f"Unsupported observation state: {state!r}")
+    target = Path(output_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=NORMALIZED_OBSERVED_COLUMNS)
+        writer.writeheader()
+        if frame.empty:
+            return target
+        for record in frame.sort_values("observed_at").to_dict("records"):
+            observed_at = record["observed_at"].strftime("%Y-%m-%d %H:%M")
+            for variable in variable_columns:
+                value = record.get(variable)
+                if value is None:
+                    continue
+                try:
+                    if value != value:
+                        continue
+                except TypeError:
+                    pass
+                writer.writerow({
+                    "station_id": station_id,
+                    "provider_code": provider_code,
+                    "station_code": station_code,
+                    "observed_at": observed_at,
+                    "variable_code": variable,
+                    "value": float(value),
+                    "state": state,
+                })
+    return target
 
 
 @dataclass(frozen=True, slots=True)

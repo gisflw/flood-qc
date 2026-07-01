@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import sqlite3
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -18,6 +17,12 @@ from mgb_ops.analysis.spatial import (
 from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window, validate_timestep_hours
 from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
 from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
+from mgb_ops.assets.history_queries import (
+    find_asset,
+    open_history_read_only,
+    read_observed_values,
+    read_rain_series,
+)
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
@@ -78,12 +83,7 @@ def configure_run_logger(log_file: Path) -> logging.Logger:
     return logger
 
 
-def _connect_history_read_only(database_path: Path) -> sqlite3.Connection:
-    connection = sqlite3.connect(f"{database_path.resolve().as_uri()}?mode=ro", uri=True, timeout=30.0)
-    connection.row_factory = sqlite3.Row
-    connection.execute("PRAGMA busy_timeout = 30000")
-    connection.execute("PRAGMA query_only = ON")
-    return connection
+_connect_history_read_only = open_history_read_only
 
 
 def _select_preferred_series_rows(series_df: pd.DataFrame) -> pd.DataFrame:
@@ -98,24 +98,8 @@ def _select_preferred_series_rows(series_df: pd.DataFrame) -> pd.DataFrame:
     return preferred.drop(columns=["state_rank"], errors="ignore").reset_index(drop=True)
 
 
-def load_preferred_rain_stations(connection: sqlite3.Connection) -> pd.DataFrame:
-    series = pd.read_sql_query(
-        """
-        SELECT
-            os.series_id,
-            os.station_id,
-            os.state,
-            os.created_at,
-            st.latitude AS lat,
-            st.longitude AS lon
-        FROM observed_series os
-        JOIN station st ON st.station_id = os.station_id
-        WHERE os.variable_code = 'rain'
-          AND st.latitude IS NOT NULL
-          AND st.longitude IS NOT NULL
-        """,
-        connection,
-    )
+def load_preferred_rain_stations(connection) -> pd.DataFrame:
+    series = read_rain_series(connection)
     preferred = _select_preferred_series_rows(series)
     preferred["lat"] = pd.to_numeric(preferred["lat"], errors="coerce")
     preferred["lon"] = pd.to_numeric(preferred["lon"], errors="coerce")
@@ -123,7 +107,7 @@ def load_preferred_rain_stations(connection: sqlite3.Connection) -> pd.DataFrame
 
 
 def load_rain_values(
-    connection: sqlite3.Connection,
+    connection,
     preferred_stations: pd.DataFrame,
     *,
     query_start: datetime,
@@ -132,35 +116,13 @@ def load_rain_values(
 ) -> pd.DataFrame:
     if preferred_stations.empty:
         return pd.DataFrame(columns=["station_id", "observed_at", "value"])
-
-    series_ids = preferred_stations["series_id"].astype(str).tolist()
-    frames: list[pd.DataFrame] = []
-    start_text = query_start.strftime("%Y-%m-%d %H:%M")
-    end_text = query_end_exclusive.strftime("%Y-%m-%d %H:%M")
-
-    for start_idx in range(0, len(series_ids), batch_size):
-        chunk_ids = series_ids[start_idx : start_idx + batch_size]
-        placeholders = ",".join("?" for _ in chunk_ids)
-        frames.append(
-            pd.read_sql_query(
-                f"""
-                SELECT
-                    os.station_id,
-                    ov.observed_at,
-                    ov.value
-                FROM observed_value ov
-                JOIN observed_series os ON os.series_id = ov.series_id
-                WHERE ov.series_id IN ({placeholders})
-                  AND ov.observed_at >= ?
-                  AND ov.observed_at < ?
-                ORDER BY ov.observed_at
-                """,
-                connection,
-                params=(*chunk_ids, start_text, end_text),
-            )
-        )
-
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=["station_id", "observed_at", "value"])
+    return read_observed_values(
+        connection,
+        preferred_stations["series_id"].astype(str).tolist(),
+        start_time=query_start,
+        end_time=query_end_exclusive,
+        batch_size=batch_size,
+    )[["station_id", "observed_at", "value"]]
 
 
 def read_mini_centroids(mini_gtp_path: Path, *, nc: int) -> pd.DataFrame:
@@ -262,39 +224,25 @@ def require_observed_values_aligned_to_timestep(values_df: pd.DataFrame, *, time
 
 
 def load_latest_forecast_asset_path(
-    connection: sqlite3.Connection,
+    connection,
     *,
     reference_time: datetime,
     asset_base_dir: Path,
     adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
 ) -> Path:
     reference_time_utc = reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
-    row = connection.execute(
-        """
-        SELECT relative_path
-        FROM asset
-        WHERE provider_code = ?
-          AND asset_kind = ?
-          AND valid_from IS NOT NULL
-          AND valid_to IS NOT NULL
-          AND valid_from <= ?
-          AND valid_to >= ?
-        ORDER BY valid_from DESC, created_at DESC
-        LIMIT 1
-        """,
-        (
-            adapter.provider_code,
-            adapter.product_config.asset_kind,
-            reference_time_utc.isoformat(timespec="seconds"),
-            reference_time_utc.isoformat(timespec="seconds"),
-        ),
-    ).fetchone()
+    row = find_asset(
+        connection,
+        provider_code=adapter.provider_code,
+        asset_kind=adapter.product_config.asset_kind,
+        valid_from_at_most=reference_time_utc,
+        valid_to_at_least=reference_time_utc,
+    )
     if row is None:
         raise FileNotFoundError(
             f"No forecast asset for provider {adapter.provider_code!r} was found in history "
             "for the requested forecast window."
         )
-
     registered_path = Path(str(row["relative_path"]))
     asset_path = registered_path if registered_path.is_absolute() else asset_base_dir / registered_path
     if not asset_path.exists():
@@ -303,7 +251,7 @@ def load_latest_forecast_asset_path(
 
 
 def find_required_forecast_asset(
-    connection: sqlite3.Connection,
+    connection,
     *,
     reference_time: datetime,
     input_days_before: int,
@@ -329,40 +277,27 @@ def find_required_forecast_asset(
         forecast_end_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
     )
 
-    row = connection.execute(
-        """
-        SELECT asset_id, relative_path, valid_from, valid_to
-        FROM asset
-        WHERE asset_id = ?
-          AND provider_code = ?
-          AND asset_kind = ?
-          AND valid_from IS NOT NULL
-          AND valid_to IS NOT NULL
-          AND valid_from <= ?
-          AND valid_to >= ?
-        LIMIT 1
-        """,
-        (
-            expected_asset_id,
-            product_config.provider_code,
-            product_config.asset_kind,
-            forecast_start_utc.isoformat(timespec="seconds"),
-            forecast_end_utc.isoformat(timespec="seconds"),
-        ),
-    ).fetchone()
+    row = find_asset(
+        connection,
+        asset_id=expected_asset_id,
+        provider_code=product_config.provider_code,
+        asset_kind=product_config.asset_kind,
+        valid_from_at_most=forecast_start_utc,
+        valid_to_at_least=forecast_end_utc,
+    )
     if row is None:
         return None
 
-    registered_path = Path(str(row[1]))
+    registered_path = Path(str(row["relative_path"]))
     asset_path = registered_path if registered_path.is_absolute() else Path(asset_base_dir) / registered_path
     if not asset_path.exists():
         raise FileNotFoundError(f"Forecast asset registered in history does not exist on disk: {asset_path}")
 
     return ForecastAssetMatch(
-        asset_id=str(row[0]),
+        asset_id=str(row["asset_id"]),
         asset_path=asset_path,
-        valid_from=datetime.fromisoformat(str(row[2])),
-        valid_to=datetime.fromisoformat(str(row[3])),
+        valid_from=datetime.fromisoformat(str(row["valid_from"])),
+        valid_to=datetime.fromisoformat(str(row["valid_to"])),
     )
 
 

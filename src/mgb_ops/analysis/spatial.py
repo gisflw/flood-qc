@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,6 +8,7 @@ import numpy as np
 import pandas as pd
 
 from mgb_ops.analysis.timeseries import select_preferred_series_rows
+from mgb_ops.assets.history_queries import open_history_read_only, read_observed_values, read_rain_series
 
 
 @dataclass(frozen=True, slots=True, init=False)
@@ -237,27 +237,14 @@ def accumulate_observed_rainfall(
     """Accumulate preferred rainfall series over the half-open interval [start, end)."""
     if end_time <= start_time:
         raise ValueError("end_time must be after start_time.")
-    path = Path(database_path)
-    if not path.exists():
-        raise FileNotFoundError(f"History database not found: {path}")
-    with sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True) as connection:
-        series = pd.read_sql_query(
-            """SELECT os.series_id, os.station_id, os.variable_code, os.state, os.created_at,
-                      st.latitude AS lat, st.longitude AS lon
-               FROM observed_series os JOIN station st USING (station_id)
-               WHERE os.variable_code='rain' AND st.latitude IS NOT NULL AND st.longitude IS NOT NULL""",
-            connection,
-        )
+    with open_history_read_only(database_path) as connection:
+        series = read_rain_series(connection)
         preferred = select_preferred_series_rows(series)
         if preferred.empty:
             return pd.DataFrame(columns=["station_id", "lat", "lon", "value"])
         ids = preferred["series_id"].astype(str).tolist()
-        placeholders = ",".join("?" for _ in ids)
-        values = pd.read_sql_query(
-            f"""SELECT series_id, value FROM observed_value
-                WHERE series_id IN ({placeholders}) AND observed_at >= ? AND observed_at < ?""",
-            connection,
-            params=(*ids, start_time.isoformat(sep=" ", timespec="seconds"), end_time.isoformat(sep=" ", timespec="seconds")),
+        values = read_observed_values(
+            connection, ids, start_time=start_time, end_time=end_time
         )
     values["value"] = pd.to_numeric(values["value"], errors="coerce")
     totals = values.groupby("series_id", as_index=False)["value"].sum(min_count=1)

@@ -13,7 +13,7 @@ from mgb_ops.assets.forecast_grid import (
     ForecastPrecipitationGrid,
     read_forecast_precipitation_grid,
 )
-from mgb_ops.storage.forecast_assets import (
+from mgb_ops.assets.forecast_registry import (
     find_forecast_asset_by_cycle,
     list_forecast_assets,
     resolve_forecast_asset,

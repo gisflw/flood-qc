@@ -8,8 +8,8 @@ from pathlib import Path
 from db_helpers import initialize_history_db
 from mgb_ops.adapters.observed_ana import ObservedFetchStationSummary, ObservedFetchSummary
 from mgb_ops.workflows import observed as observed_workflow
-from mgb_ops.storage.history_repository import HistoryRepository
-from mgb_ops.storage.observed_csv import NORMALIZED_OBSERVED_COLUMNS
+from mgb_ops.assets.history import HistoryRepository
+from mgb_ops.assets.observations import NORMALIZED_OBSERVED_COLUMNS
 
 
 def _write_station_csv(path, rows: list[tuple[str, str]] | None = None, *, observed_at: str = "2026-03-10 00:00", value: str = "1.0") -> None:

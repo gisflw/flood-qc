@@ -8,7 +8,8 @@ import pytest
 import xarray as xr
 from netCDF4 import Dataset
 
-from mgb_ops.model.export_mgb_outputs import NETCDF_ZLIB_COMPLEVEL, export_mgb_outputs
+from mgb_ops.assets.model_outputs import NETCDF_ZLIB_COMPLEVEL
+from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 
 
 def configure_export_logging(tmp_path: Path, monkeypatch) -> Path:

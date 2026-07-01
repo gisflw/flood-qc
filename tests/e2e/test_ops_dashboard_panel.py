@@ -18,7 +18,7 @@ from urllib.request import urlopen
 import pytest
 
 from mgb_ops.common.paths import SQL_DIR
-from mgb_ops.storage.db_bootstrap import apply_schema
+from mgb_ops.assets.databases import apply_schema
 
 
 pytestmark = pytest.mark.skipif(

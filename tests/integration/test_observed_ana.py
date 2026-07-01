@@ -11,7 +11,7 @@ from mgb_ops.common import time_utils
 from mgb_ops.adapters import observed_ana
 from mgb_ops.workflows import observed as observed_workflow
 from db_helpers import initialize_history_db
-from mgb_ops.storage.history_repository import HistoryRepository, build_observed_series_id
+from mgb_ops.assets.history import HistoryRepository, build_observed_series_id
 
 
 SAMPLE_ANA_XML = """\
@@ -356,6 +356,6 @@ def test_history_repository_rejects_old_observed_schema(tmp_path) -> None:
         HistoryRepository(db_path)
     except RuntimeError as exc:
         assert "History database is incompatible" in str(exc)
-        assert "mgb_ops.storage.db_bootstrap" in str(exc)
+        assert "mgb_ops.assets.databases" in str(exc)
     else:
         raise AssertionError("Expected an error for the old observed_series schema.")

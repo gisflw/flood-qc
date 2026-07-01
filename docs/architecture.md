@@ -25,26 +25,20 @@ The package is split by responsibility rather than by user interface:
 | Module | Architectural boundary |
 | --- | --- |
 | `mgb_ops.common` | Shared domain types, paths, settings, runtime conveniences, logging, and time utilities |
-| `mgb_ops.assets` | Contracts, validation, and I/O for external file formats, including packaged SQL schemas, canonical forecast NetCDF, and spatial GeoPackage layers |
+| `mgb_ops.assets` | Sole persistence boundary: canonical file/database structures, validation, SQLite repositories, registration, and I/O |
 | `mgb_ops.adapters` | Provider-specific acquisition and translation, such as ANA, INMET, and ECMWF |
-| `mgb_ops.storage` | SQLite bootstrap, repositories, observed CSV persistence, and external-asset registration/resolution |
 | `mgb_ops.analysis` | Reusable read-only queries, projections, interpolation, resampling, and aggregation |
 | `mgb_ops.edit` | Forecast correction operations and correction persistence |
 | `mgb_ops.qc` | Validation rules, checks, and structured QC results |
 | `mgb_ops.model` | MGB input preparation, execution, and output production |
-| `mgb_ops.workflows` | Use-case orchestration across adapters, storage, assets, and model capabilities |
+| `mgb_ops.workflows` | Use-case orchestration across adapters, assets, and model capabilities |
 | `apps/ops_dashboard` | Panel rendering, callbacks, session state, caching, and UI-specific presentation |
 
-An asset module owns the shape and serialization of a file, not its database
-registration or operational use. Storage owns persistence and registry lookups.
-Analysis owns read-only derivation from explicit inputs. Thus GeoPackage
-validation/loading and the forecast NetCDF contract live in `assets`, while
-rainfall interpolation and grid accumulation live in `analysis`.
+The assets layer owns canonical artifact structures, serialization, validation, database registration, and read/write queries. Analysis owns derivation from values loaded through assets. Thus SQLite, normalized observation CSV, canonical NetCDF, and GeoPackage I/O live in `assets`, while rainfall interpolation and grid accumulation remain in `analysis`.
 
 The existing `analysis.forecast` and `analysis.timeseries` surfaces combine
 explicit read-only loading with computation. They remain supported read-only
-analysis APIs; database writes and registry ownership still belong to
-`storage`.
+analysis APIs; database writes, reads, and registry ownership belong to `assets`.
 
 Core domain functions accept explicit paths, databases, settings, schema paths,
 asset bases, credentials, and times. They return structured summaries or domain
@@ -56,9 +50,8 @@ values.
 ### Dependency Direction
 
 Apps call workflows or focused library APIs. Workflows compose provider
-adapters and domain modules. Adapters, storage, analysis, edit, QC, and model
-code may depend on common types and asset contracts, but library code must not
-depend on the app. Provider access stays out of storage and assets, UI state
+adapters and domain modules. Adapters, analysis, edit, QC, and model code may depend on common types and asset contracts, but library code must not
+depend on the app. Provider access stays out of assets, UI state
 stays out of the library, and peer-module cycles should be avoided.
 
 Subprocess execution is a model capability when exposed through an explicit
@@ -70,7 +63,7 @@ remain in wrappers.
 The repository currently provides:
 
 - history and run schema bootstrap;
-- operational ingestion of observed ANA and INMET data through normalized per-station CSV artifacts and storage-owned SQLite loading;
+- operational ingestion of observed ANA and INMET data through normalized per-station CSV artifacts and asset-owned SQLite loading;
 - forecast grid ingestion with ECMWF defaults, spatial clipping, and generic asset registration in the history database;
 - hourly rainfall preparation for MGB from observations and ECMWF forecasts;
 - real or dry-run MGB runner execution through library functions.

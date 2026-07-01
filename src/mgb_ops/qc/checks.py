@@ -6,7 +6,7 @@ from typing import Iterable, Mapping
 import numpy as np
 import pandas as pd
 
-from mgb_ops.analysis.timeseries import validate_model_outputs_netcdf
+from mgb_ops.assets.model_outputs import validate_model_outputs_netcdf
 from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
 from mgb_ops.qc.rules import (
     CORRECTION_OVERLAP,
