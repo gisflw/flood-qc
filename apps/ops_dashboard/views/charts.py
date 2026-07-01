@@ -1,97 +1,151 @@
 """Pure Plotly chart builders."""
 from __future__ import annotations
 
+from collections.abc import Mapping
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def _station_chart(frame: pd.DataFrame, station_id: str | None) -> go.Figure:
+STATION_COLOR = "#1864ab"
+MINI_COLOR = "#e8590c"
+VARIABLE_ROWS = {
+    "precipitation": 1,
+    "level": 2,
+    "flow": 3,
+}
+
+
+def _comparison_chart(
+    observed: pd.DataFrame,
+    model_series: Mapping[str, pd.DataFrame],
+    station_id: str | None,
+    mini_id: int | None,
+) -> go.Figure:
+    """Build one ordered station/mini comparison figure."""
     fig = make_subplots(
-        rows=2,
+        rows=3,
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.08,
-        row_heights=[0.35, 0.65],
+        subplot_titles=("Precipitation", "Level", "Flow"),
     )
-    if frame.empty:
-        fig.add_annotation(
-            text="Select a station with data on the map.",
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
-        )
-    else:
-        styles = {
-            "rain": ("bar", "#4c6ef5", "Rainfall (mm)", 1),
-            "level": ("scatter", "#0b7285", "Level (cm)", 2),
-            "flow": ("scatter", "#1864ab", "Flow (m³/s)", 2),
-        }
-        for code, (kind, color, label, row) in styles.items():
-            data = frame[frame["variable_code"] == code].dropna(subset=["value"])
+
+    station_codes = {
+        "precipitation": "rain",
+        "level": "level",
+        "flow": "flow",
+    }
+    station_units = {
+        "precipitation": "mm",
+        "level": "cm",
+        "flow": "m³/s",
+    }
+    for variable_code, observed_code in station_codes.items():
+        if observed.empty:
+            break
+        data = observed[
+            observed["variable_code"] == observed_code
+        ].dropna(subset=["value"])
+        if data.empty:
+            continue
+        row = VARIABLE_ROWS[variable_code]
+        name = f"Station {station_id} · {station_units[variable_code]}"
+        if variable_code == "precipitation":
+            fig.add_bar(
+                x=data["datetime"],
+                y=data["value"],
+                name=name,
+                marker_color=STATION_COLOR,
+                legendgroup="station",
+                row=row,
+                col=1,
+            )
+        else:
+            fig.add_scatter(
+                x=data["datetime"],
+                y=data["value"],
+                name=name,
+                mode="lines",
+                line={"color": STATION_COLOR},
+                legendgroup="station",
+                row=row,
+                col=1,
+            )
+
+    for variable_code, row in VARIABLE_ROWS.items():
+        frame = model_series.get(variable_code, pd.DataFrame())
+        if frame.empty:
+            continue
+        for flag, dash, suffix in (
+            (0, "solid", "current"),
+            (1, "dash", "forecast"),
+        ):
+            data = frame[frame["prev_flag"] == flag].dropna(subset=["value"])
             if data.empty:
                 continue
-            if kind == "bar":
+            values = (
+                data["value"] * 100
+                if variable_code == "level"
+                else data["value"]
+            )
+            name = f"Mini {mini_id} · {suffix}"
+            if variable_code == "precipitation":
                 fig.add_bar(
-                    x=data["datetime"],
-                    y=data["value"],
-                    name=label,
-                    marker_color=color,
+                    x=data["dt"],
+                    y=values,
+                    name=name,
+                    marker={
+                        "color": MINI_COLOR,
+                        "pattern": {"shape": "/" if flag else ""},
+                    },
+                    opacity=0.85 if flag == 0 else 0.55,
+                    legendgroup=f"mini-{suffix}",
                     row=row,
                     col=1,
                 )
             else:
                 fig.add_scatter(
-                    x=data["datetime"],
-                    y=data["value"],
-                    name=label,
+                    x=data["dt"],
+                    y=values,
+                    name=name,
                     mode="lines",
-                    line={"color": color},
+                    line={"color": MINI_COLOR, "dash": dash},
+                    legendgroup=f"mini-{suffix}",
                     row=row,
                     col=1,
                 )
-    fig.update_layout(
-        template="plotly_white",
-        height=420,
-        margin={"t": 30, "r": 15, "b": 25, "l": 35},
-        hovermode="x unified",
-        title=f"Station {station_id}" if station_id else "Station series",
-    )
-    return fig
 
-
-def _mgb_chart(frame: pd.DataFrame, mini_id: int | None, code: str) -> go.Figure:
-    fig = go.Figure()
-    if not frame.empty:
-        display = str(frame["display_name"].iloc[0])
-        unit = str(frame["unit"].iloc[0])
-        for flag, dash, suffix in ((0, "solid", "current"), (1, "dash", "forecast")):
-            subset = frame[frame["prev_flag"] == flag]
-            if not subset.empty:
-                fig.add_scatter(
-                    x=subset["dt"],
-                    y=subset["value"],
-                    mode="lines",
-                    name=f"{display} {suffix}",
-                    line={"color": "#0b7285" if code == "level" else "#1864ab", "dash": dash},
-                )
-        fig.update_yaxes(title=f"{display} ({unit})")
-    else:
+    if not fig.data:
+        text = (
+            "Click a station and/or a mini on the map."
+            if station_id is None and mini_id is None
+            else "No series data are available for the current selection."
+        )
         fig.add_annotation(
-            text="Select a mini with model output.",
+            text=text,
             x=0.5,
             y=0.5,
             xref="paper",
             yref="paper",
             showarrow=False,
         )
+
+    selections = []
+    if station_id is not None:
+        selections.append(f"Station {station_id}")
+    if mini_id is not None:
+        selections.append(f"Mini {mini_id}")
+    fig.update_yaxes(title_text="mm", row=1, col=1)
+    fig.update_yaxes(title_text="cm", row=2, col=1)
+    fig.update_yaxes(title_text="m³/s", row=3, col=1)
     fig.update_layout(
         template="plotly_white",
-        height=280,
-        margin={"t": 30, "r": 15, "b": 25, "l": 35},
+        height=720,
+        margin={"t": 55, "r": 15, "b": 25, "l": 55},
         hovermode="x unified",
-        title=f"Mini {mini_id} · {code.upper()}" if mini_id else code.upper(),
+        barmode="group",
+        title=" · ".join(selections) if selections else "Station and Mini Comparison",
     )
     return fig

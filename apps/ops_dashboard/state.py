@@ -200,10 +200,6 @@ class DashboardState(param.Parameterized):
         self.param.selected_raster.objects = [None, *raster_names]
         if self.selected_raster not in raster_names:
             self.selected_raster = raster_names[0] if raster_names else None
-        if self.station_id is None and not self.stations.empty:
-            preferred = self.stations[self.stations["status"] != "no_data"]
-            row = preferred.iloc[0] if not preferred.empty else self.stations.iloc[0]
-            self.station_id = str(row["station_id"])
         self._rebuild_map(segments=segments)
         self._refresh_forecast_assets()
         self.last_refresh_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")

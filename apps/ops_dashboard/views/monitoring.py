@@ -7,7 +7,7 @@ import pandas as pd
 import panel as pn
 
 from apps.ops_dashboard.state import DashboardState
-from apps.ops_dashboard.views.charts import _mgb_chart, _station_chart
+from apps.ops_dashboard.views.charts import _comparison_chart
 from apps.ops_dashboard.views.summaries import (
     _format_number,
     _mini_summary,
@@ -78,38 +78,32 @@ def _monitoring_view(
         controller.param.mini_id,
         controller.param.source_versions,
     )
-    station_plot = pn.bind(
-        lambda *_: pn.pane.Plotly(
-            _station_chart(controller.observed_series(), controller.station_id),
-            config={"responsive": True},
-            sizing_mode="stretch_width",
-        ),
-        controller.param.station_id,
-        controller.param.source_versions,
-    )
-
-    def model_plots(*_: Any) -> pn.viewable.Viewable:
+    def comparison_plot(*_: Any) -> pn.viewable.Viewable:
+        observed = controller.observed_series()
         try:
+            precipitation = controller.mgb_series("precipitation")
             levels = controller.mgb_series("level")
             flows = controller.mgb_series("flow")
         except (FileNotFoundError, OSError, ValueError):
-            levels = flows = pd.DataFrame()
-        return pn.Column(
-            pn.pane.Plotly(
-                _mgb_chart(levels, controller.mini_id, "level"),
-                config={"responsive": True},
-                sizing_mode="stretch_width",
+            precipitation = levels = flows = pd.DataFrame()
+        return pn.pane.Plotly(
+            _comparison_chart(
+                observed,
+                {
+                    "precipitation": precipitation,
+                    "level": levels,
+                    "flow": flows,
+                },
+                controller.station_id,
+                controller.mini_id,
             ),
-            pn.pane.Plotly(
-                _mgb_chart(flows, controller.mini_id, "flow"),
-                config={"responsive": True},
-                sizing_mode="stretch_width",
-            ),
+            config={"responsive": True},
             sizing_mode="stretch_width",
         )
 
-    mini_plots = pn.bind(
-        model_plots,
+    comparison = pn.bind(
+        comparison_plot,
+        controller.param.station_id,
         controller.param.mini_id,
         controller.param.source_versions,
     )
@@ -125,9 +119,9 @@ def _monitoring_view(
             pn.Card(mini_summary, title="Mini Summary", sizing_mode="stretch_width"),
             sizing_mode="stretch_width",
         ),
-        pn.Row(
-            pn.Card(station_plot, title="Station Chart", sizing_mode="stretch_width"),
-            pn.Card(mini_plots, title="Mini Charts", sizing_mode="stretch_width"),
+        pn.Card(
+            comparison,
+            title="Station and Mini Comparison",
             sizing_mode="stretch_width",
         ),
         sizing_mode="stretch_width",

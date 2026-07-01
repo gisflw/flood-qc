@@ -40,6 +40,8 @@ def _preview() -> dashboard_forecast.ForecastPreview:
 
 def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
     state = dashboard_state.DashboardState(tmp_path)
+    assert state.station_id is None
+    assert state.mini_id is None
     assert state.gpkg_path == tmp_path / "data" / "source" / "rs_hydro.gpkg"
     grid = PrecipitationGrid(
         values=np.array([[1.0, 2.0], [3.0, 4.0]]),
@@ -80,6 +82,38 @@ def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
     assert state.station_id == "1001"
     assert state.mini_id == 7
     assert state.raster_inspection.value == 4.0
+
+
+def test_state_does_not_preselect_an_available_station(
+    tmp_path: Path, monkeypatch
+) -> None:
+    data = tmp_path / "data"
+    data.mkdir()
+    (data / "history.sqlite").touch()
+    monkeypatch.setattr(
+        dashboard_state,
+        "_station_catalog",
+        lambda *args: pd.DataFrame(
+            [
+                {
+                    "station_id": "1001",
+                    "status": "ok",
+                    "kind": "mixed",
+                    "station_name": "Station",
+                    "provider_code": "ana",
+                    "station_code": "1001",
+                    "lon": -52.0,
+                    "lat": -30.0,
+                }
+            ]
+        ),
+    )
+
+    state = dashboard_state.DashboardState(tmp_path)
+
+    assert state.stations["station_id"].tolist() == ["1001"]
+    assert state.station_id is None
+    assert state.mini_id is None
 
 
 def test_opacity_change_does_not_rebuild_map_or_reload_spatial_data(
