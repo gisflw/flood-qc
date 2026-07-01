@@ -184,8 +184,9 @@ def write_model_outputs(path: Path) -> Path:
     times = pd.date_range("2026-02-01", periods=72, freq="h")
     dataset = xr.Dataset(
         data_vars={
-            "q": (("time", "mini"), np.column_stack([np.arange(72), 1000 + np.arange(72)])),
-            "y": (("time", "mini"), np.column_stack([2000 + np.arange(72), 3000 + np.arange(72)])),
+            "precipitation": (("time", "mini"), np.column_stack([np.arange(72), 100 + np.arange(72)])),
+            "flow": (("time", "mini"), np.column_stack([np.arange(72), 1000 + np.arange(72)])),
+            "level": (("time", "mini"), np.column_stack([2000 + np.arange(72), 3000 + np.arange(72)])),
             "time_segment": (("time",), np.r_[np.zeros(48, dtype=np.int8), np.ones(24, dtype=np.int8)]),
         },
         coords={"time": times, "mini": [0, 1], "mini_id": ("mini", [101, 539])},
@@ -201,12 +202,12 @@ def write_model_outputs(path: Path) -> Path:
 
 def test_load_mgb_series_splits_current_and_forecast(tmp_path) -> None:
     source = write_model_outputs(tmp_path / "model_outputs.nc")
-    series = ops_dashboard_data.load_mgb_series(source, mini_id=539, variable_code="q")
+    series = ops_dashboard_data.load_mgb_series(source, mini_id=539, variable_code="flow")
 
     assert series["prev_flag"].tolist() == ([0] * 48) + ([1] * 24)
     assert series["value"].tolist()[0] == 1000.0
     assert series["value"].tolist()[-1] == 1071.0
-    assert series["display_name"].tolist()[0] == "QTUDO"
+    assert series["display_name"].tolist()[0] == "Flow"
     assert series["unit"].tolist()[0] == "m3/s"
     assert series["dt"].iloc[0] == pd.Timestamp("2026-02-01 00:00:00")
     assert series["dt"].iloc[47] == pd.Timestamp("2026-02-02 23:00:00")
@@ -217,15 +218,36 @@ def test_list_model_variables_returns_static_mgb_catalog() -> None:
     variables = ops_dashboard_data.list_model_variables()
 
     assert variables.to_dict(orient="records") == [
-        {"variable_code": "q", "display_name": "QTUDO", "unit": "m3/s"},
-        {"variable_code": "y", "display_name": "YTUDO", "unit": "m"},
+        {"variable_code": "flow", "display_name": "Flow", "unit": "m3/s"},
+        {"variable_code": "level", "display_name": "Level", "unit": "m"},
+        {"variable_code": "precipitation", "display_name": "Precipitation", "unit": "mm"},
     ]
 
 
 def test_load_mgb_series_rejects_unknown_mini_id(tmp_path) -> None:
     source = write_model_outputs(tmp_path / "model_outputs.nc")
     with pytest.raises(ValueError, match="Mini 999 was not found"):
-        ops_dashboard_data.load_mgb_series(source, mini_id=999, variable_code="q")
+        ops_dashboard_data.load_mgb_series(source, mini_id=999, variable_code="flow")
+
+
+def test_model_outputs_rejects_legacy_variable_names(tmp_path) -> None:
+    source = tmp_path / "legacy_model_outputs.nc"
+    xr.Dataset(
+        data_vars={
+            "q": (("time", "mini"), [[1.0]]),
+            "y": (("time", "mini"), [[2.0]]),
+            "time_segment": (("time",), [0]),
+        },
+        coords={"time": [pd.Timestamp("2026-02-01")], "mini": [0], "mini_id": ("mini", [101])},
+        attrs={
+            "window_start": "2026-02-01T00:00:00",
+            "reference_time": "2026-02-01T00:00:00",
+            "window_end_exclusive": "2026-02-02T00:00:00",
+        },
+    ).to_netcdf(source)
+
+    with pytest.raises(ValueError, match="precipitation, level, or flow"):
+        ops_dashboard_data.validate_model_outputs_netcdf(source)
 
 
 def test_model_outputs_metadata_mismatch_is_blocked(tmp_path) -> None:

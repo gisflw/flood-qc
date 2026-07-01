@@ -117,12 +117,16 @@ def find_asset(
     if asset_id is not None:
         params.append(asset_id)
     params.extend((valid_from_at_most.isoformat(timespec="seconds"), valid_to_at_least.isoformat(timespec="seconds")))
-    row = connection.execute(
+    cursor = connection.execute(
         f"""SELECT asset_id, relative_path, valid_from, valid_to
             FROM asset WHERE provider_code = ? AND asset_kind = ? {asset_clause}
               AND valid_from IS NOT NULL AND valid_to IS NOT NULL
               AND valid_from <= ? AND valid_to >= ?
             ORDER BY valid_from DESC, created_at DESC LIMIT 1""",
         params,
-    ).fetchone()
-    return dict(row) if row is not None else None
+    )
+    row = cursor.fetchone()
+    if row is None:
+        return None
+    columns = (description[0] for description in cursor.description)
+    return dict(zip(columns, row, strict=True))

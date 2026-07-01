@@ -215,7 +215,7 @@ def summarize_mini_peaks(
 def summarize_network_peaks(
     path: Path,
     *,
-    variable_code: str = "q",
+    variable_code: str = "flow",
     mini_ids: Iterable[int] | None = None,
     window: DashboardWindow,
 ) -> pd.DataFrame:

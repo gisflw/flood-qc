@@ -10,9 +10,12 @@ import xarray as xr
 from mgb_ops.common.time_utils import DashboardWindow
 
 NETCDF_ZLIB_COMPLEVEL = 4
+NETCDF_PACKING_SCALE_FACTOR = 0.01
+NETCDF_PACKED_FILL_VALUE = np.iinfo(np.int32).min
 MGB_VARIABLE_METADATA = {
-    "q": {"display_name": "QTUDO", "unit": "m3/s"},
-    "y": {"display_name": "YTUDO", "unit": "m"},
+    "precipitation": {"display_name": "Precipitation", "unit": "mm"},
+    "level": {"display_name": "Level", "unit": "m"},
+    "flow": {"display_name": "Flow", "unit": "m3/s"},
 }
 TimeSegment = Literal["all", "current", "forecast"]
 
@@ -52,7 +55,10 @@ def validate_model_outputs_netcdf(
             raise ValueError(f"MGB NetCDF missing required variables: {sorted(missing)}")
         present = [code for code in MGB_VARIABLE_METADATA if code in dataset]
         if not present:
-            raise ValueError("MGB NetCDF must contain at least one model variable: q or y.")
+            raise ValueError(
+                "MGB NetCDF must contain at least one model variable: "
+                "precipitation, level, or flow."
+            )
         if dataset["mini_id"].dims != ("mini",):
             raise ValueError("MGB NetCDF mini_id must use dimension ('mini',).")
         if dataset["time_segment"].dims != ("time",):
@@ -109,7 +115,10 @@ def write_model_outputs_netcdf(
     """Build and serialize the canonical model-output NetCDF structure."""
     unknown = set(variables).difference(MGB_VARIABLE_METADATA)
     if unknown or not variables:
-        raise ValueError(f"Model-output variables must be q/y; found {sorted(variables)}")
+        raise ValueError(
+            "Model-output variables must be precipitation/level/flow; "
+            f"found {sorted(variables)}"
+        )
     expected_shape = (len(time_values), len(mini_ids))
     for code, values in variables.items():
         if np.asarray(values).shape != expected_shape:
@@ -139,8 +148,25 @@ def write_model_outputs_netcdf(
         },
         attrs=global_attrs,
     )
+    packed_min = np.iinfo(np.int32).min + 1
+    packed_max = np.iinfo(np.int32).max
+    for code, values in variables.items():
+        finite = np.asarray(values, dtype=np.float64)
+        finite = finite[np.isfinite(finite)]
+        packed = np.rint(finite / NETCDF_PACKING_SCALE_FACTOR)
+        if packed.size and (packed.min() < packed_min or packed.max() > packed_max):
+            raise OverflowError(
+                f"Model-output {code} exceeds the int32 packing range "
+                f"for scale_factor={NETCDF_PACKING_SCALE_FACTOR}."
+            )
     encoding = {
-        code: {"_FillValue": np.float32(np.nan), "zlib": True, "complevel": NETCDF_ZLIB_COMPLEVEL}
+        code: {
+            "dtype": "i4",
+            "_FillValue": NETCDF_PACKED_FILL_VALUE,
+            "scale_factor": NETCDF_PACKING_SCALE_FACTOR,
+            "zlib": True,
+            "complevel": NETCDF_ZLIB_COMPLEVEL,
+        }
         for code in variables
     }
     encoding["time_segment"] = {"dtype": "i1"}
@@ -175,7 +201,7 @@ def load_mgb_series(
     validate_model_outputs_netcdf(path, expected_window=window)
     code = str(variable_code).strip().lower()
     if code not in MGB_VARIABLE_METADATA:
-        raise ValueError("variable_code must be 'q' or 'y'.")
+        raise ValueError("variable_code must be 'precipitation', 'level', or 'flow'.")
     with xr.open_dataset(path, decode_times=True) as dataset:
         if code not in dataset:
             raise ValueError(f"MGB NetCDF does not contain variable {code!r}.")

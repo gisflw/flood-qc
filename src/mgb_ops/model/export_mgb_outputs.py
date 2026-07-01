@@ -10,7 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import numpy as np
-from mgb_ops.assets.model_outputs import NETCDF_ZLIB_COMPLEVEL, write_model_outputs_netcdf
+from mgb_ops.assets.model_outputs import write_model_outputs_netcdf
 
 DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -58,9 +58,18 @@ class ExportSummary:
 
 VARIABLE_SPECS = (
     VariableSpec(
+        source_filename="CHUVABIN.hig",
+        variable_code="precipitation",
+        display_name="Precipitation",
+        unit="mm",
+        netcdf_unit="mm",
+        long_name="MGB precipitation forcing",
+        standard_name="lwe_thickness_of_precipitation_amount",
+    ),
+    VariableSpec(
         source_filename="QTUDO_Inercial_Atual.MGB",
-        variable_code="q",
-        display_name="QTUDO",
+        variable_code="flow",
+        display_name="Flow",
         unit="m3/s",
         netcdf_unit="m3 s-1",
         long_name="MGB river discharge",
@@ -68,8 +77,8 @@ VARIABLE_SPECS = (
     ),
     VariableSpec(
         source_filename="YTUDO.MGB",
-        variable_code="y",
-        display_name="YTUDO",
+        variable_code="level",
+        display_name="Level",
         unit="m",
         netcdf_unit="m",
         long_name="MGB river stage",
@@ -237,12 +246,17 @@ def infer_nt_from_binary(file_path: Path, *, nc: int) -> int:
     return int(nt)
 
 
-def discover_output_sources(output_dir: Path, *, nc: int) -> dict[str, OutputSource]:
+def discover_output_sources(
+    output_dir: Path,
+    *,
+    chuvabin_path: Path,
+    nc: int,
+) -> dict[str, OutputSource]:
     sources: dict[str, OutputSource] = {}
     logger = logging.getLogger(LOGGER_NAME)
 
     for spec in VARIABLE_SPECS:
-        source_path = output_dir / spec.source_filename
+        source_path = chuvabin_path if spec.variable_code == "precipitation" else output_dir / spec.source_filename
         if not source_path.exists():
             raise FileNotFoundError(
                 f"Required output file for variable_code={spec.variable_code!r} was not found: {source_path}"
@@ -528,6 +542,7 @@ def export_mgb_outputs(
     forecast_horizon_days: int,
     parhig_path: Path,
     mini_gtp_path: Path,
+    chuvabin_path: Path,
     output_dir: Path,
     output_nc_path: Path,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
@@ -540,9 +555,10 @@ def export_mgb_outputs(
     if run_logger is None:
         run_logger = logging.getLogger(LOGGER_NAME)
     run_logger.info(
-        "export_start parhig=%s mini_gtp=%s output_dir=%s output_nc=%s chunk_hours=%s",
+        "export_start parhig=%s mini_gtp=%s chuvabin=%s output_dir=%s output_nc=%s chunk_hours=%s",
         parhig_path,
         mini_gtp_path,
+        chuvabin_path,
         output_dir,
         output_nc_path,
         chunk_hours,
@@ -564,7 +580,7 @@ def export_mgb_outputs(
         len(mini_ids),
         _isoformat_seconds(reference_time),
     )
-    raw_sources = discover_output_sources(output_dir, nc=nc)
+    raw_sources = discover_output_sources(output_dir, chuvabin_path=chuvabin_path, nc=nc)
     sources, nt_total = validate_source_lengths(raw_sources)
     nt_current, nt_forecast = compute_nt_current(
         start_time=start_time,

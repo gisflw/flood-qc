@@ -90,18 +90,18 @@ def _monitoring_view(
 
     def model_plots(*_: Any) -> pn.viewable.Viewable:
         try:
-            levels = controller.mgb_series("y")
-            flows = controller.mgb_series("q")
+            levels = controller.mgb_series("level")
+            flows = controller.mgb_series("flow")
         except (FileNotFoundError, OSError, ValueError):
             levels = flows = pd.DataFrame()
         return pn.Column(
             pn.pane.Plotly(
-                _mgb_chart(levels, controller.mini_id, "y"),
+                _mgb_chart(levels, controller.mini_id, "level"),
                 config={"responsive": True},
                 sizing_mode="stretch_width",
             ),
             pn.pane.Plotly(
-                _mgb_chart(flows, controller.mini_id, "q"),
+                _mgb_chart(flows, controller.mini_id, "flow"),
                 config={"responsive": True},
                 sizing_mode="stretch_width",
             ),

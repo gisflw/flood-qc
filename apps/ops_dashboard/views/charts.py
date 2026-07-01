@@ -75,7 +75,7 @@ def _mgb_chart(frame: pd.DataFrame, mini_id: int | None, code: str) -> go.Figure
                     y=subset["value"],
                     mode="lines",
                     name=f"{display} {suffix}",
-                    line={"color": "#0b7285" if code == "y" else "#1864ab", "dash": dash},
+                    line={"color": "#0b7285" if code == "level" else "#1864ab", "dash": dash},
                 )
         fig.update_yaxes(title=f"{display} ({unit})")
     else:

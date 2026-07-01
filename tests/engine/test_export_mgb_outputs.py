@@ -70,13 +70,18 @@ def build_dataset(
 
     q_values = np.arange(nc * total_nt, dtype=np.float32).reshape(total_nt, nc)
     y_values = (200000 + np.arange(nc * y_total_nt, dtype=np.float32)).reshape(y_total_nt, nc)
+    precipitation_values = (
+        np.arange(nc * total_nt, dtype=np.float32).reshape(total_nt, nc) / 10
+    )
 
     write_output(output_dir / "QTUDO_Inercial_Atual.MGB", q_values)
     write_output(output_dir / "YTUDO.MGB", y_values)
+    write_output(input_dir / "CHUVABIN.hig", precipitation_values)
 
     return {
         "parhig_path": input_dir / "PARHIG.hig",
         "mini_gtp_path": input_dir / "MINI.gtp",
+        "chuvabin_path": input_dir / "CHUVABIN.hig",
         "output_dir": output_dir,
         "start_time": start_time,
         "mini_ids": mini_values,
@@ -95,6 +100,7 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         reference_time=datetime(2026, 2, 9, 23, 0, 0),
         parhig_path=dataset["parhig_path"],
         mini_gtp_path=dataset["mini_gtp_path"],
+        chuvabin_path=dataset["chuvabin_path"],
         output_dir=dataset["output_dir"],
         output_nc_path=output_nc_path,
         logs_dir=tmp_path / "logs",
@@ -109,20 +115,20 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
     assert summary.window_end_exclusive == datetime(2026, 2, 25, 0, 0, 0)
     assert summary.nt_current == 960
     assert summary.nt_forecast == 480
-    assert summary.variable_count == 2
-    assert summary.value_count == 4416
+    assert summary.variable_count == 3
+    assert summary.value_count == 6624
     assert log_file.exists()
 
     log_text = log_file.read_text(encoding="utf-8")
     assert "export_start" in log_text
-    assert "chunk_written variable=q" in log_text
+    assert "chunk_written variable=flow" in log_text
     assert "nt_resolved nt_total=1440 nt_current=960 nt_forecast=480" in log_text
     assert "netcdf_finalized" in log_text
     assert "export_done" in log_text
 
     with xr.open_dataset(output_nc_path) as exported:
         assert exported.sizes == {"time": 1104, "mini": 2}
-        assert set(exported.data_vars) == {"q", "y", "time_segment"}
+        assert set(exported.data_vars) == {"precipitation", "level", "flow", "time_segment"}
         assert exported.attrs["Conventions"] == "CF-1.11 ACDD-1.3"
         assert exported.attrs["reference_time"] == "2026-02-09T23:00:00"
         assert exported.attrs["reference_date"] == "2026-02-09"
@@ -143,26 +149,32 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         assert exported["time_segment"].values[744] == 1
         assert exported["time_segment"].values[-1] == 1
 
-        assert exported["q"].attrs["long_name"] == "MGB river discharge"
-        assert exported["q"].attrs["standard_name"] == "water_volume_transport_in_river_channel"
-        assert exported["q"].attrs["units"] == "m3 s-1"
-        assert exported["q"].attrs["source_filename"] == "QTUDO_Inercial_Atual.MGB"
-        assert exported["y"].attrs["long_name"] == "MGB river stage"
-        assert exported["y"].attrs["units"] == "m"
-        assert exported["y"].attrs["source_filename"] == "YTUDO.MGB"
+        assert exported["flow"].attrs["long_name"] == "MGB river discharge"
+        assert exported["flow"].attrs["standard_name"] == "water_volume_transport_in_river_channel"
+        assert exported["flow"].attrs["units"] == "m3 s-1"
+        assert exported["flow"].attrs["source_filename"] == "QTUDO_Inercial_Atual.MGB"
+        assert exported["level"].attrs["long_name"] == "MGB river stage"
+        assert exported["level"].attrs["units"] == "m"
+        assert exported["level"].attrs["source_filename"] == "YTUDO.MGB"
+        assert exported["precipitation"].attrs["units"] == "mm"
+        assert exported["precipitation"].attrs["source_filename"] == "CHUVABIN.hig"
 
-        assert float(exported["q"].isel(time=0, mini=0)) == 432.0
-        assert float(exported["q"].isel(time=744, mini=0)) == 1920.0
-        assert float(exported["y"].isel(time=0, mini=0)) == 200432.0
-        assert float(exported["y"].isel(time=744, mini=0)) == 201920.0
+        assert float(exported["flow"].isel(time=0, mini=0)) == 432.0
+        assert float(exported["flow"].isel(time=744, mini=0)) == 1920.0
+        assert float(exported["level"].isel(time=0, mini=0)) == 200432.0
+        assert float(exported["level"].isel(time=744, mini=0)) == 201920.0
+        assert float(exported["precipitation"].isel(time=0, mini=0)) == 43.2
+        assert float(exported["precipitation"].isel(time=744, mini=0)) == 192.0
 
     with Dataset(output_nc_path) as exported:
-        q_filters = exported.variables["q"].filters()
-        y_filters = exported.variables["y"].filters()
-        assert q_filters["zlib"] is True
-        assert q_filters["complevel"] == NETCDF_ZLIB_COMPLEVEL
-        assert y_filters["zlib"] is True
-        assert y_filters["complevel"] == NETCDF_ZLIB_COMPLEVEL
+        for code in ("precipitation", "level", "flow"):
+            variable = exported.variables[code]
+            variable.set_auto_maskandscale(False)
+            assert variable.dtype == np.dtype("int32")
+            assert variable.scale_factor == 0.01
+            assert variable.filters()["zlib"] is True
+            assert variable.filters()["complevel"] == NETCDF_ZLIB_COMPLEVEL
+        assert exported.variables["precipitation"][0, 0] == 4320
 
 
 def test_export_mgb_outputs_uses_explicit_reference_time(tmp_path, monkeypatch) -> None:
@@ -173,6 +185,7 @@ def test_export_mgb_outputs_uses_explicit_reference_time(tmp_path, monkeypatch) 
         reference_time=datetime(2026, 2, 9, 23, 0, 0),
         parhig_path=dataset["parhig_path"],
         mini_gtp_path=dataset["mini_gtp_path"],
+        chuvabin_path=dataset["chuvabin_path"],
         output_dir=dataset["output_dir"],
         output_nc_path=tmp_path / "model_outputs.nc",
         logs_dir=tmp_path / "logs",
@@ -195,6 +208,7 @@ def test_export_mgb_outputs_requires_single_source_file(tmp_path, monkeypatch) -
             reference_time=datetime(2026, 2, 9, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
             output_days_before=30,
@@ -211,6 +225,7 @@ def test_export_mgb_outputs_rejects_duplicate_mini_ids(tmp_path, monkeypatch) ->
             reference_time=datetime(2026, 2, 9, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
             output_days_before=30,
@@ -227,10 +242,49 @@ def test_export_mgb_outputs_rejects_inconsistent_nt_between_variables(tmp_path, 
             reference_time=datetime(2026, 2, 9, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
             output_days_before=30,
             forecast_horizon_days=15,
+        )
+
+
+def test_export_mgb_outputs_rejects_malformed_chuvabin(tmp_path, monkeypatch) -> None:
+    dataset = build_dataset(tmp_path)
+    configure_export_logging(tmp_path, monkeypatch)
+    Path(dataset["chuvabin_path"]).write_bytes(b"\x00" * 7)
+
+    with pytest.raises(ValueError, match="not divisible by 4"):
+        export_mgb_outputs(
+            reference_time=datetime(2026, 2, 9, 23, 0, 0),
+            parhig_path=dataset["parhig_path"],
+            mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
+            output_dir=dataset["output_dir"],
+            output_nc_path=tmp_path / "model_outputs.nc",
+            output_days_before=30,
+            forecast_horizon_days=15,
+        )
+
+
+def test_export_mgb_outputs_rejects_packed_integer_overflow(tmp_path, monkeypatch) -> None:
+    dataset = build_dataset(tmp_path, total_nt=48)
+    configure_export_logging(tmp_path, monkeypatch)
+    values = np.fromfile(dataset["output_dir"] / "QTUDO_Inercial_Atual.MGB", dtype=np.float32)
+    values[0] = 30_000_000
+    write_output(dataset["output_dir"] / "QTUDO_Inercial_Atual.MGB", values)
+
+    with pytest.raises(OverflowError, match="flow exceeds the int32 packing range"):
+        export_mgb_outputs(
+            reference_time=datetime(2026, 1, 2, 23, 0, 0),
+            parhig_path=dataset["parhig_path"],
+            mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
+            output_dir=dataset["output_dir"],
+            output_nc_path=tmp_path / "model_outputs.nc",
+            output_days_before=1,
+            forecast_horizon_days=0,
         )
 
 
@@ -243,6 +297,7 @@ def test_export_mgb_outputs_allows_cutoff_at_last_available_timestamp(tmp_path, 
         reference_time=datetime(2026, 1, 2, 23, 0, 0),
         parhig_path=dataset["parhig_path"],
         mini_gtp_path=dataset["mini_gtp_path"],
+        chuvabin_path=dataset["chuvabin_path"],
         output_dir=dataset["output_dir"],
         output_nc_path=output_nc_path,
         logs_dir=tmp_path / "logs",
@@ -267,6 +322,7 @@ def test_export_mgb_outputs_rejects_cutoff_before_available_range(tmp_path, monk
             reference_time=datetime(2025, 12, 31, 23, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
             output_days_before=1,
@@ -283,6 +339,7 @@ def test_export_mgb_outputs_rejects_cutoff_after_available_range(tmp_path, monke
             reference_time=datetime(2026, 1, 3, 0, 0, 0),
             parhig_path=dataset["parhig_path"],
             mini_gtp_path=dataset["mini_gtp_path"],
+            chuvabin_path=dataset["chuvabin_path"],
             output_dir=dataset["output_dir"],
             output_nc_path=tmp_path / "model_outputs.nc",
             output_days_before=1,

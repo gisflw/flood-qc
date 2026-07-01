@@ -92,7 +92,7 @@ def _mini_summary(state: DashboardState) -> pn.viewable.Viewable:
     if state.mini_id is None:
         return pn.pane.Alert("Click a mini catchment or river.", alert_type="info")
     try:
-        levels = state.mgb_series("y")
+        levels = state.mgb_series("level")
     except (FileNotFoundError, OSError, ValueError) as exc:
         return pn.pane.Alert(str(exc), alert_type="warning")
     if levels.empty:
