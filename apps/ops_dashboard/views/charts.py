@@ -12,8 +12,8 @@ STATION_COLOR = "#1864ab"
 MINI_COLOR = "#e8590c"
 VARIABLE_ROWS = {
     "precipitation": 1,
-    "level": 2,
-    "flow": 3,
+    "flow": 2,
+    "level": 3,
 }
 
 
@@ -29,7 +29,7 @@ def _comparison_chart(
         cols=1,
         shared_xaxes=True,
         vertical_spacing=0.08,
-        subplot_titles=("Precipitation", "Level", "Flow"),
+        subplot_titles=("Precipitation", "Flow", "Water Level Variation"),
     )
 
     station_codes = {
@@ -50,6 +50,8 @@ def _comparison_chart(
         ].dropna(subset=["value"])
         if data.empty:
             continue
+        if variable_code == "level":
+            data = data.assign(value=data["value"] - data["value"].mean())
         row = VARIABLE_ROWS[variable_code]
         name = f"Station {station_id} · {station_units[variable_code]}"
         if variable_code == "precipitation":
@@ -78,6 +80,14 @@ def _comparison_chart(
         frame = model_series.get(variable_code, pd.DataFrame())
         if frame.empty:
             continue
+        level_mean = None
+        if variable_code == "level":
+            current_levels = frame[frame["prev_flag"] == 0].dropna(
+                subset=["value"]
+            )
+            if current_levels.empty:
+                continue
+            level_mean = current_levels["value"].mean()
         for flag, dash, suffix in (
             (0, "solid", "current"),
             (1, "dash", "forecast"),
@@ -86,7 +96,7 @@ def _comparison_chart(
             if data.empty:
                 continue
             values = (
-                data["value"]
+                data["value"] - level_mean
                 if variable_code == "level"
                 else data["value"]
             )
@@ -138,8 +148,8 @@ def _comparison_chart(
     if mini_id is not None:
         selections.append(f"Mini {mini_id}")
     fig.update_yaxes(title_text="mm", row=1, col=1)
-    fig.update_yaxes(title_text="cm", row=2, col=1)
-    fig.update_yaxes(title_text="m³/s", row=3, col=1)
+    fig.update_yaxes(title_text="m³/s", row=2, col=1)
+    fig.update_yaxes(title_text="cm", row=3, col=1)
     fig.update_layout(
         template="plotly_white",
         height=720,
