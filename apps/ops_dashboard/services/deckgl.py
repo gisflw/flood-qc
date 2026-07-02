@@ -13,7 +13,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
-from mgb_ops.analysis.spatial import PrecipitationGrid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid
 
 
 NO_DATA_COLOR = [230, 73, 128, 180]

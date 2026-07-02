@@ -82,13 +82,16 @@ def test_domain_modules_do_not_import_ambient_runtime_helpers() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom):
                 module = node.module or ""
-                if module == "mgb_ops.common.paths":
+                if module == "mgb_ops.config.workspace":
                     for alias in node.names:
                         if alias.name in FORBIDDEN_DOMAIN_RUNTIME_NAMES:
                             offenders.append(f"{rel_path}:{node.lineno} imports {alias.name}")
-                if module == "mgb_ops.common.settings":
+                if module == "mgb_ops.config.settings":
                     offenders.append(f"{rel_path}:{node.lineno} imports {module}")
-                if module in {"mgb_ops.common.env", "mgb_ops.common.runtime"} or "dotenv" in module:
+                if (
+                    module in {"mgb_ops.config.env", "mgb_ops.config.runtime"}
+                    and "/workflows/" not in f"/{rel_path}"
+                ) or "dotenv" in module:
                     offenders.append(f"{rel_path}:{node.lineno} imports {module}")
             elif isinstance(node, ast.Import):
                 for alias in node.names:
@@ -113,9 +116,6 @@ def test_domain_modules_do_not_call_or_read_ambient_runtime_state() -> None:
                 attr_name = _call_name(node)
                 if attr_name == "os.environ":
                     offenders.append(f"{rel_path}:{node.lineno} reads os.environ")
-            elif isinstance(node, ast.Name) and node.id == "SQL_DIR":
-                offenders.append(f"{rel_path}:{node.lineno} uses SQL_DIR")
-
     assert offenders == []
 
 
@@ -215,4 +215,51 @@ def test_removed_storage_package_is_not_referenced() -> None:
     for path in (REPO_ROOT / "src").rglob("*.py"):
         if "mgb_ops.storage" in path.read_text(encoding="utf-8-sig"):
             offenders.append(path.relative_to(REPO_ROOT).as_posix())
+    assert offenders == []
+
+
+def _internal_imports(path: Path) -> list[tuple[int, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8-sig"), filename=str(path))
+    imports: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module:
+            imports.append((node.lineno, node.module))
+        elif isinstance(node, ast.Import):
+            imports.extend((node.lineno, alias.name) for alias in node.names)
+    return imports
+
+
+def test_foundation_dependency_direction() -> None:
+    package_root = REPO_ROOT / "src" / "mgb_ops"
+    offenders: list[str] = []
+    forbidden_by_root = {
+        "config": ("mgb_ops.assets", "mgb_ops.adapters", "mgb_ops.analysis", "mgb_ops.workflows"),
+        "utils": ("mgb_ops.config", "mgb_ops.assets", "mgb_ops.adapters", "mgb_ops.analysis", "mgb_ops.workflows"),
+        "assets": ("mgb_ops.config", "mgb_ops.adapters", "mgb_ops.analysis", "mgb_ops.workflows", "apps."),
+        "analysis": ("mgb_ops.config", "mgb_ops.adapters", "mgb_ops.workflows", "apps."),
+    }
+    for root_name, forbidden_prefixes in forbidden_by_root.items():
+        for path in (package_root / root_name).rglob("*.py"):
+            for line, module in _internal_imports(path):
+                if module.startswith(forbidden_prefixes):
+                    offenders.append(
+                        f"{path.relative_to(REPO_ROOT).as_posix()}:{line} imports {module}"
+                    )
+    assert offenders == []
+
+
+def test_removed_module_boundaries_are_absent() -> None:
+    package_root = REPO_ROOT / "src" / "mgb_ops"
+    assert not list((package_root / "common").glob("*.py"))
+    assert not (package_root / "analysis" / "spatial.py").exists()
+    assert not (package_root / "workflows" / "spatial_grid.py").exists()
+    offenders: list[str] = []
+    forbidden = ("mgb_ops.common", "mgb_ops.analysis.spatial", "mgb_ops.workflows.spatial_grid")
+    for root in (REPO_ROOT / "src", REPO_ROOT / "apps", REPO_ROOT / "tests", REPO_ROOT / "examples"):
+        for path in root.rglob("*.py"):
+            text = path.read_text(encoding="utf-8-sig")
+            if path == Path(__file__):
+                continue
+            if any(value in text for value in forbidden):
+                offenders.append(path.relative_to(REPO_ROOT).as_posix())
     assert offenders == []

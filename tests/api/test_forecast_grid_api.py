@@ -6,7 +6,7 @@ import pytest
 
 pytest.importorskip("numpy")
 
-from mgb_ops.common.models import RunKind, RunMetadata, RunStatus
+from mgb_ops.assets.types import RunKind, RunMetadata, RunStatus
 from mgb_ops.workflows.forecast import collect_forecast_grids
 from mgb_ops.workflows import forecast as forecast_grid_module
 

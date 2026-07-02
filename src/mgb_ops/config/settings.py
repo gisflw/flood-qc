@@ -7,8 +7,8 @@ from typing import Any
 
 import yaml
 
-from mgb_ops.common.paths import runtime_paths
-from mgb_ops.common.time_utils import validate_timestep_hours
+from mgb_ops.config.workspace import resolve_workspace
+from mgb_ops.utils.time import validate_timestep_hours
 
 
 DEFAULT_SETTINGS: dict[str, Any] = {
@@ -240,7 +240,7 @@ def load_settings(
     if config_dir is not None:
         raise ValueError("config_dir is no longer supported; use <workspace>/config/custom.yaml.")
 
-    custom_path = runtime_paths(workspace).config_dir / "custom.yaml"
+    custom_path = resolve_workspace(workspace) / "config" / "custom.yaml"
     custom_required = False if require_custom is None else require_custom
 
     settings = deepcopy(DEFAULT_SETTINGS)

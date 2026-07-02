@@ -8,7 +8,7 @@ import panel as pn
 import pytest
 
 from apps.ops_dashboard.services import deckgl as ops_dashboard_map
-from mgb_ops.analysis.spatial import PrecipitationGrid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid
 
 
 def _grid(values: np.ndarray | None = None) -> PrecipitationGrid:

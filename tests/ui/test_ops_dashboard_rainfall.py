@@ -5,7 +5,7 @@ import pytest
 
 from apps.ops_dashboard.services import loaders
 from mgb_ops.assets.spatial_grid import write_spatial_grid
-from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.assets.types import AnalysisWindow
 
 
 def _cache(path):
@@ -34,7 +34,7 @@ def _cache(path):
 
 def test_accumulation_raster_reads_cache(tmp_path):
     cache = _cache(tmp_path / "precipitations_observed.nc")
-    window = DashboardWindow(
+    window = AnalysisWindow(
         start_time=datetime(2026, 1, 1),
         cutoff_time=datetime(2026, 1, 3),
         forecast_end_exclusive=datetime(2026, 1, 4),
@@ -49,7 +49,7 @@ def test_accumulation_raster_reads_cache(tmp_path):
 
 @pytest.mark.parametrize("hours", [0, -1, 1.5, True])
 def test_accumulation_raster_rejects_invalid_hours(tmp_path, hours):
-    window = DashboardWindow(datetime(2026, 1, 1), datetime(2026, 1, 3), datetime(2026, 1, 4))
+    window = AnalysisWindow(datetime(2026, 1, 1), datetime(2026, 1, 3), datetime(2026, 1, 4))
     with pytest.raises(ValueError, match="positive integer"):
         loaders._accumulation_raster(
             str(tmp_path / "missing.nc"), str(tmp_path), "v1", window,

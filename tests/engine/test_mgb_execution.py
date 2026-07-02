@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mgb_ops.common.models import RunMetadata
+from mgb_ops.assets.types import RunMetadata
 from mgb_ops.model import mgb_execution
 from mgb_ops.model import run_mgb
 

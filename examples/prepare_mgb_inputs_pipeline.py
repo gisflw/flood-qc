@@ -8,13 +8,13 @@
 # %%
 from __future__ import annotations
 
-import sqlite3
+from datetime import timedelta, timezone
 from pathlib import Path
 
 from mgb_ops.adapters.observed_inmet import INMET_API_KEY_ENV
-from mgb_ops.common.paths import SQL_DIR, ensure_standard_dirs
-from mgb_ops.common.runtime import build_runtime_context
-from mgb_ops.common.time_utils import build_horizon_window, resolve_reference_time
+from mgb_ops.assets.schemas import SQL_DIR
+from mgb_ops.config.runtime import build_runtime_context
+from mgb_ops.utils.time import TIMEZONE, build_horizon_window, resolve_reference_time
 from mgb_ops.adapters.forecast_ecmwf import build_ecmwf_cycle
 from mgb_ops.workflows.forecast import ingest_forecast_grids
 from mgb_ops.workflows.observed import (
@@ -23,7 +23,8 @@ from mgb_ops.workflows.observed import (
     load_observed_provider_csvs,
 )
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
-from mgb_ops.model.prepare_mgb_rainfall import find_required_forecast_asset, prepare_mgb_rainfall
+from mgb_ops.assets.forecast_registry import find_required_forecast_asset
+from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
 from mgb_ops.assets.databases import initialize_history_db
 
 # %% [markdown]
@@ -64,7 +65,7 @@ CHUVABIN_PATH = WORKSPACE / "mgb_runner" / "Input" / "chuvabin.hig"
 context = build_runtime_context(workspace=WORKSPACE)
 paths = context.paths
 settings = context.settings
-ensure_standard_dirs(paths.workspace)
+paths.ensure_standard_dirs()
 
 print(f"workspace: {paths.workspace}")
 print(f"history db: {paths.history_db}")
@@ -189,17 +190,23 @@ for provider_code in OBSERVED_PROVIDERS:
 use_forecast_data = bool(mgb_settings["use_forecast_data"])
 forecast_asset = None
 forecast_cycle = build_ecmwf_cycle(mgb_window.reference_time)
+forecast_start_utc = mgb_window.forecast_start_time.replace(
+    tzinfo=TIMEZONE
+).astimezone(timezone.utc)
+forecast_end_utc = (
+    mgb_window.forecast_start_time
+    + timedelta(hours=timestep_hours * (mgb_window.forecast_nt - 1))
+).replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
 
 if use_forecast_data:
-    with sqlite3.connect(paths.history_db) as connection:
-        forecast_asset = find_required_forecast_asset(
-            connection,
-            reference_time=mgb_window.reference_time,
-            input_days_before=int(mgb_settings["input_days_before"]),
-            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
-            asset_base_dir=paths.workspace,
-            timestep_hours=timestep_hours,
-        )
+    forecast_asset = find_required_forecast_asset(
+        paths.history_db,
+        workspace_path=paths.workspace,
+        provider_code="ecmwf",
+        cycle_time=forecast_cycle,
+        required_start=forecast_start_utc,
+        required_end=forecast_end_utc,
+    )
 
     if forecast_asset is None:
         print(f"ECMWF asset missing for cycle {forecast_cycle:%Y-%m-%dT%H:%M:%SZ}")
@@ -236,15 +243,14 @@ if use_forecast_data and forecast_asset is None:
     )
     print(f"registered ECMWF asset: {grid_summary.asset_id}")
 
-    with sqlite3.connect(paths.history_db) as connection:
-        forecast_asset = find_required_forecast_asset(
-            connection,
-            reference_time=mgb_window.reference_time,
-            input_days_before=int(mgb_settings["input_days_before"]),
-            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
-            asset_base_dir=paths.workspace,
-            timestep_hours=timestep_hours,
-        )
+    forecast_asset = find_required_forecast_asset(
+        paths.history_db,
+        workspace_path=paths.workspace,
+        provider_code="ecmwf",
+        cycle_time=forecast_cycle,
+        required_start=forecast_start_utc,
+        required_end=forecast_end_utc,
+    )
     if forecast_asset is None:
         raise RuntimeError("ECMWF ingestion finished, but no asset covers the required forecast window.")
 

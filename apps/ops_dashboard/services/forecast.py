@@ -9,9 +9,10 @@ import numpy as np
 import pandas as pd
 
 from apps.ops_dashboard.services import deckgl as dashboard_map
+from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER
 from mgb_ops.analysis import forecast as forecast_analysis
-from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec
-from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec
+from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.edit.forcing import apply_corrections
 
 
@@ -89,10 +90,14 @@ class ForecastMapComparisonArtifacts:
 
 
 def list_forecast_assets(
-    database_path: Path, workspace_path: Path, *, window: DashboardWindow
+    database_path: Path, workspace_path: Path, *, window: AnalysisWindow
 ) -> pd.DataFrame:
+    adapter = DEFAULT_FORECAST_ADAPTER
     return forecast_analysis.list_expected_forecast_assets(
-        database_path, workspace_path=workspace_path, reference_time=window.cutoff_time
+        database_path,
+        workspace_path=workspace_path,
+        provider_code=adapter.provider_code,
+        cycle_time=adapter.cycle_time(window.cutoff_time),
     )
 
 
@@ -101,7 +106,7 @@ def list_forecast_steps(
     *,
     database_path: Path,
     workspace_path: Path,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     frame = forecast_analysis.list_dashboard_forecast_intervals(
         asset_id,

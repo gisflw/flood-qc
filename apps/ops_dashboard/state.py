@@ -34,10 +34,12 @@ from apps.ops_dashboard.services.loaders import (
     BasinSpatialData,
 )
 from mgb_ops.analysis import timeseries as dashboard_data
-from mgb_ops.analysis.spatial import RegularGridSpec
-from mgb_ops.common.runtime import RuntimeContext, build_runtime_context
-from mgb_ops.common.time_utils import resolve_dashboard_window, resolve_workspace_path
-from mgb_ops.workflows.spatial_grid import OBSERVED_PRECIPITATION_CACHE_FILENAME
+from mgb_ops.analysis.windows import build_analysis_window
+from mgb_ops.assets.spatial_grid import RegularGridSpec
+from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
+from mgb_ops.config.workspace import resolve_workspace_path
+from mgb_ops.utils.time import resolve_reference_time
+from mgb_ops.assets.observed_precipitation import OBSERVED_PRECIPITATION_CACHE_FILENAME
 from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 
 
@@ -100,7 +102,13 @@ class DashboardState(param.Parameterized):
             workspace=workspace, require_custom_settings=False
         )
         self.workspace = self.context.paths.workspace
-        self.window = resolve_dashboard_window(self.context.settings)
+        run_settings = self.context.settings["run"]
+        mgb_settings = self.context.settings["mgb"]
+        self.window = build_analysis_window(
+            resolve_reference_time(str(run_settings["reference_time"])),
+            output_days_before=int(mgb_settings["output_days_before"]),
+            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        )
         self.history_path = self.context.paths.history_db
         self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
         self.observed_precipitation_path = (

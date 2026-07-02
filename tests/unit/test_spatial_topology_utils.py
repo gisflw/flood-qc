@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 from shapely.geometry import Polygon
 
-from mgb_ops.common import dissolve_geometries, find_upstream_ids
+from mgb_ops.utils.geospatial import dissolve_geometries
+from mgb_ops.utils.topology import find_upstream_ids
 
 
 def test_find_upstream_ids_returns_headwaters_to_target() -> None:

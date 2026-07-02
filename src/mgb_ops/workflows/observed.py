@@ -3,33 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Iterable, Protocol
+from typing import Iterable
 
-from mgb_ops.common.time_utils import iter_observed_request_dates
+from mgb_ops.utils.time import iter_observed_request_dates
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS
 from mgb_ops.adapters import ObservationAdapter, get_observation_adapter
 from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.assets.observations import ObservedCsvImportSummary, load_normalized_observed_csvs
-from mgb_ops.common.time_utils import resolve_reference_time
-
-
-class WorkflowContext(Protocol):
-    paths: Any
-    settings: dict[str, object]
-    env: Any
-
-
-def _normalize_providers(providers: str | Iterable[str], resolver) -> tuple[str, ...]:
-    values = [providers] if isinstance(providers, str) else list(providers)
-    normalized: list[str] = []
-    for value in values:
-        code = str(value).strip().lower()
-        if code and code not in normalized:
-            resolver(code)
-            normalized.append(code)
-    if not normalized:
-        raise ValueError("providers must contain at least one provider code.")
-    return tuple(normalized)
+from mgb_ops.config.runtime import RuntimeContext
+from mgb_ops.utils.time import resolve_reference_time
+from mgb_ops.workflows._providers import normalize_provider_codes
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,7 +150,7 @@ def load_observed_provider_csvs(
 
 
 def ingest_from_csv(
-    context: WorkflowContext,
+    context: RuntimeContext,
     csv_path: Path,
     state: str = "raw",
     *,
@@ -246,13 +229,13 @@ def fetch_observed_provider(
 
 
 def download_observed_data(
-    context: WorkflowContext,
+    context: RuntimeContext,
     providers: str | Iterable[str],
     *,
     reference_time: datetime | None = None,
     station_codes_by_provider: dict[str, Iterable[str]] | None = None,
 ) -> ObservedDownloadSummary:
-    provider_codes = _normalize_providers(providers, get_observation_adapter)
+    provider_codes = normalize_provider_codes(providers, get_observation_adapter)
     settings = context.settings
     reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
     request_days = int(settings["ingest"]["request_days"])

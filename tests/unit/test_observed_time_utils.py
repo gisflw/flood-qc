@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from mgb_ops.common.time_utils import build_horizon_window, iter_observed_request_dates
+from mgb_ops.utils.time import build_horizon_window, iter_observed_request_dates
 
 
 def test_build_horizon_window_includes_forecast_horizon() -> None:

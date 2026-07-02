@@ -5,7 +5,7 @@ import numpy as np
 
 from db_helpers import initialize_history_db
 from mgb_ops.assets.spatial_grid import read_spatial_grid
-from mgb_ops.workflows.spatial_grid import build_observed_precipitation_cache
+from mgb_ops.assets.observed_precipitation import build_observed_precipitation_cache
 
 
 def test_observed_precipitation_cache_combines_requested_providers_in_utc(tmp_path):

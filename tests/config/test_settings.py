@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from mgb_ops.common import settings as settings_module
+from mgb_ops.config import settings as settings_module
 
 
 CUSTOM_CONFIG = """\

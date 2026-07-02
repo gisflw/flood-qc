@@ -17,7 +17,8 @@ The dashboard consumes:
 - `<workspace>/data/history.sqlite` for station registry and observed series;
 - `<workspace>/data/processed/model_outputs.nc` for MGB series;
 - registered canonical forecast NetCDF assets for forecast precipitation;
-- observed rainfall in `history.sqlite`, accumulated and interpolated in memory;
+- observed rainfall in `history.sqlite`, materialized through the asset-owned
+  canonical precipitation cache;
 - the GeoPackage configured by `spatial.gpkg_path` (default
   `<workspace>/data/source/rs_hydro.gpkg`) for clickable mini segments and catchments.
 

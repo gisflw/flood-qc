@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.assets.types import AnalysisWindow
 
 NETCDF_ZLIB_COMPLEVEL = 4
 NETCDF_PACKING_SCALE_FACTOR = 0.001
@@ -40,7 +40,7 @@ def _required_model_time_attr(dataset: xr.Dataset, name: str) -> pd.Timestamp:
 def validate_model_outputs_netcdf(
     path: Path,
     *,
-    expected_window: DashboardWindow | None = None,
+    expected_window: AnalysisWindow | None = None,
 ) -> dict[str, object]:
     """Validate the canonical MGB model-output NetCDF contract."""
     source = Path(path)
@@ -75,7 +75,7 @@ def validate_model_outputs_netcdf(
         times = pd.to_datetime(dataset["time"].values, errors="coerce")
         if pd.isna(times).any() or not pd.DatetimeIndex(times).is_monotonic_increasing:
             raise ValueError("MGB NetCDF time must be valid and monotonically increasing.")
-        model_window = DashboardWindow(
+        model_window = AnalysisWindow(
             start_time=_required_model_time_attr(dataset, "window_start").to_pydatetime(),
             cutoff_time=_required_model_time_attr(dataset, "reference_time").to_pydatetime(),
             forecast_end_exclusive=_required_model_time_attr(dataset, "window_end_exclusive").to_pydatetime(),
@@ -195,7 +195,7 @@ def load_mgb_series(
     mini_id: int,
     variable_code: str,
     time_segment: TimeSegment | int | None = "all",
-    window: DashboardWindow | None = None,
+    window: AnalysisWindow | None = None,
 ) -> pd.DataFrame:
     """Read one mini/variable from the canonical model-output artifact."""
     validate_model_outputs_netcdf(path, expected_window=window)
@@ -241,7 +241,7 @@ def load_weighted_mgb_series(
     mini_ids: list[int],
     weights: np.ndarray,
     variable_code: str,
-    window: DashboardWindow | None = None,
+    window: AnalysisWindow | None = None,
 ) -> pd.DataFrame:
     """Read and finite-value-renormalize one weighted multi-mini series."""
     validate_model_outputs_netcdf(path, expected_window=window)

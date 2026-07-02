@@ -9,17 +9,17 @@ from shapely.geometry import LineString, Polygon
 
 from apps.ops_dashboard.services.deckgl import build_sqlite_version
 from mgb_ops.assets.spatial_layers import read_mini_layer, read_mini_layers
-from mgb_ops.common.time_utils import DashboardWindow, resolve_dashboard_window
+from mgb_ops.analysis.windows import build_analysis_window
+from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction, validate_instruction
 
 
-def test_resolve_dashboard_window_uses_reference_date_and_configured_horizon() -> None:
-    settings = {
-        "run": {"reference_time": "2026-03-17T12:00:00"},
-        "mgb": {"output_days_before": 2, "forecast_horizon_days": 3},
-    }
-
-    assert resolve_dashboard_window(settings) == DashboardWindow(
+def test_build_analysis_window_uses_reference_date_and_explicit_horizon() -> None:
+    assert build_analysis_window(
+        datetime(2026, 3, 17, 12),
+        output_days_before=2,
+        forecast_horizon_days=3,
+    ) == AnalysisWindow(
         start_time=datetime(2026, 3, 15),
         cutoff_time=datetime(2026, 3, 17, 12),
         forecast_end_exclusive=datetime(2026, 3, 21),

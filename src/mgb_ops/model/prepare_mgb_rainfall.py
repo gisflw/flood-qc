@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -9,26 +8,25 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mgb_ops.analysis.spatial import (
+from mgb_ops.assets.grid_transforms import (
     build_grid_idw_neighbors,
     build_idw_neighbors,
     interpolate_station_chunk,
 )
-from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window, validate_timestep_hours
-from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
+from mgb_ops.utils.time import TIMEZONE, build_horizon_window, validate_timestep_hours
+from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
 from mgb_ops.assets.spatial_grid import read_spatial_grid
 from mgb_ops.assets.history_queries import (
-    find_asset,
     open_history_read_only,
     read_observed_values,
     read_rain_series,
+    select_preferred_series_rows,
 )
 from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
 DEFAULT_CHUNK_HOURS = 720
 LOGGER_NAME = "model.prepare_mgb_rainfall"
-STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,14 +44,6 @@ class RainfallPreparationSummary:
     forecast_hours: int
 
 
-@dataclass(frozen=True, slots=True)
-class ForecastAssetMatch:
-    asset_id: str
-    asset_path: Path
-    valid_from: datetime
-    valid_to: datetime
-
-
 def script_stem() -> str:
     return Path(__file__).stem
 
@@ -63,44 +53,15 @@ def build_execution_id() -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]:
-        handler.close()
-        logger.removeHandler(handler)
-    logger.propagate = False
-
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-    return logger
+    return _configure_run_logger(LOGGER_NAME, log_file)
 
 
 _connect_history_read_only = open_history_read_only
 
 
-def _select_preferred_series_rows(series_df: pd.DataFrame) -> pd.DataFrame:
-    if series_df.empty:
-        return series_df.copy()
-
-    ranked = series_df.copy()
-    ranked["state_rank"] = ranked["state"].map(STATE_PRIORITY).fillna(len(STATE_PRIORITY)).astype(int)
-    ranked["created_at"] = ranked["created_at"].fillna("")
-    ranked = ranked.sort_values(["station_id", "state_rank", "created_at"], ascending=[True, True, False])
-    preferred = ranked.drop_duplicates(subset=["station_id"], keep="first")
-    return preferred.drop(columns=["state_rank"], errors="ignore").reset_index(drop=True)
-
-
 def load_preferred_rain_stations(connection) -> pd.DataFrame:
     series = read_rain_series(connection)
-    preferred = _select_preferred_series_rows(series)
+    preferred = select_preferred_series_rows(series)
     preferred["lat"] = pd.to_numeric(preferred["lat"], errors="coerce")
     preferred["lon"] = pd.to_numeric(preferred["lon"], errors="coerce")
     return preferred.dropna(subset=["lat", "lon"]).sort_values("station_id").reset_index(drop=True)
@@ -221,84 +182,6 @@ def require_observed_values_aligned_to_timestep(values_df: pd.DataFrame, *, time
             "Observed rainfall values must already be normalized to run.timestep_hours before MGB preparation. "
             f"First off-grid timestamp: {first_bad.isoformat()}"
         )
-
-
-def load_latest_forecast_asset_path(
-    connection,
-    *,
-    reference_time: datetime,
-    asset_base_dir: Path,
-    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
-) -> Path:
-    reference_time_utc = reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
-    row = find_asset(
-        connection,
-        provider_code=adapter.provider_code,
-        asset_kind=adapter.product_config.asset_kind,
-        valid_from_at_most=reference_time_utc,
-        valid_to_at_least=reference_time_utc,
-    )
-    if row is None:
-        raise FileNotFoundError(
-            f"No forecast asset for provider {adapter.provider_code!r} was found in history "
-            "for the requested forecast window."
-        )
-    registered_path = Path(str(row["relative_path"]))
-    asset_path = registered_path if registered_path.is_absolute() else asset_base_dir / registered_path
-    if not asset_path.exists():
-        raise FileNotFoundError(f"Forecast asset registered in history does not exist on disk: {asset_path}")
-    return asset_path
-
-
-def find_required_forecast_asset(
-    connection,
-    *,
-    reference_time: datetime,
-    input_days_before: int,
-    forecast_horizon_days: int,
-    asset_base_dir: Path,
-    timestep_hours: int = 1,
-    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
-) -> ForecastAssetMatch | None:
-    window = build_horizon_window(
-        reference_time,
-        days_before=input_days_before,
-        horizon_days=forecast_horizon_days,
-        timestep_hours=timestep_hours,
-    )
-    cycle_time = adapter.cycle_time(reference_time)
-    expected_asset_id = adapter.asset_id(cycle_time)
-    product_config = adapter.product_config
-    forecast_end_time = window.forecast_start_time + timedelta(hours=timestep_hours * (window.forecast_nt - 1))
-    forecast_start_utc = (
-        window.forecast_start_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
-    )
-    forecast_end_utc = (
-        forecast_end_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc).replace(tzinfo=None)
-    )
-
-    row = find_asset(
-        connection,
-        asset_id=expected_asset_id,
-        provider_code=product_config.provider_code,
-        asset_kind=product_config.asset_kind,
-        valid_from_at_most=forecast_start_utc,
-        valid_to_at_least=forecast_end_utc,
-    )
-    if row is None:
-        return None
-
-    registered_path = Path(str(row["relative_path"]))
-    asset_path = registered_path if registered_path.is_absolute() else Path(asset_base_dir) / registered_path
-    if not asset_path.exists():
-        raise FileNotFoundError(f"Forecast asset registered in history does not exist on disk: {asset_path}")
-
-    return ForecastAssetMatch(
-        asset_id=str(row["asset_id"]),
-        asset_path=asset_path,
-        valid_from=datetime.fromisoformat(str(row["valid_from"])),
-        valid_to=datetime.fromisoformat(str(row["valid_to"])),
-    )
 
 
 def extend_station_matrix_with_forecast(

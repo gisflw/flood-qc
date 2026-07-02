@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 
 from mgb_ops.adapters.observed_inmet import INMET_API_KEY_ENV
-from mgb_ops.common.env import parse_dotenv, resolve_env_value
-from mgb_ops.common.paths import MGB_OPS_WORKSPACE_ENV, MGB_REMOTE_WORKSPACE_ENV
-from mgb_ops.common.runtime import build_runtime_context
+from mgb_ops.config.env import parse_dotenv, resolve_env_value
+from mgb_ops.config.runtime import build_runtime_context
+from mgb_ops.config.workspace import MGB_OPS_WORKSPACE_ENV, MGB_REMOTE_WORKSPACE_ENV
 
 
 def test_parse_dotenv_supports_workspace_values(tmp_path) -> None:

@@ -13,13 +13,14 @@ from mgb_ops.assets.spatial_grid import (
     SPATIAL_GRID_FORMAT,
     read_spatial_grid,
 )
-from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
-from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.assets.types import DataState, RasterAsset, RunMetadata
+from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.assets.forecast_registry import build_relative_asset_path, register_forecast_asset
 from mgb_ops.assets.forecast_registry import list_forecast_assets
 from mgb_ops.assets.history import HistoryRepository
-from mgb_ops.common.time_utils import TIMEZONE
-from mgb_ops.workflows.observed import WorkflowContext, _normalize_providers
+from mgb_ops.config.runtime import RuntimeContext
+from mgb_ops.utils.time import TIMEZONE
+from mgb_ops.workflows._providers import normalize_provider_codes
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,12 +77,12 @@ def _validate_reusable_grid(
 
 
 def download_forecast_data(
-    context: WorkflowContext,
+    context: RuntimeContext,
     providers: str | Iterable[str],
     *,
     reference_time: datetime | None = None,
 ) -> ForecastDownloadSummary:
-    provider_codes = _normalize_providers(providers, get_forecast_adapter)
+    provider_codes = normalize_provider_codes(providers, get_forecast_adapter)
     settings = context.settings
     reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
     timestep = int(settings["run"]["timestep_hours"])
@@ -141,7 +142,7 @@ def download_forecast_data(
     return ForecastDownloadSummary(tuple(reused), tuple(produced), tuple(raw))
 
 
-def ingest_forecast_asset(context: WorkflowContext, path: Path) -> dict[str, object]:
+def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, object]:
     target = Path(path).resolve()
     assets_root = context.paths.assets_dir.resolve()
     try:

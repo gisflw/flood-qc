@@ -1,98 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime
-from pathlib import Path
-
 import numpy as np
 import pandas as pd
 
-from mgb_ops.analysis.timeseries import select_preferred_series_rows
-from mgb_ops.assets.history_queries import open_history_read_only, read_observed_values, read_rain_series
-
-
-@dataclass(frozen=True, slots=True, init=False)
-class RegularGridSpec:
-    bbox: tuple[float, float, float, float]
-    resolution: float
-
-    def __init__(
-        self,
-        bbox: tuple[float, float, float, float],
-        resolution: float | None = None,
-        *,
-        resolution_degrees: float | None = None,
-    ) -> None:
-        if resolution is None:
-            resolution = resolution_degrees
-        elif resolution_degrees is not None and float(resolution) != float(resolution_degrees):
-            raise ValueError("resolution and resolution_degrees must match when both are provided.")
-        if resolution is None:
-            raise TypeError("resolution is required.")
-        west, south, east, north = (float(value) for value in bbox)
-        if west >= east or south >= north:
-            raise ValueError("bbox must satisfy west < east and south < north.")
-        if not np.isfinite(resolution) or resolution <= 0:
-            raise ValueError("resolution must be > 0.")
-        object.__setattr__(self, "bbox", (west, south, east, north))
-        object.__setattr__(self, "resolution", float(resolution))
-
-    @property
-    def resolution_degrees(self) -> float:
-        return self.resolution
-
-    @property
-    def longitudes(self) -> np.ndarray:
-        west, _, east, _ = self.bbox
-        return _coordinate_centers(west, east, self.resolution)
-
-    @property
-    def latitudes(self) -> np.ndarray:
-        _, south, _, north = self.bbox
-        return _coordinate_centers(south, north, self.resolution)
-
-    @property
-    def shape(self) -> tuple[int, int]:
-        return (len(self.latitudes), len(self.longitudes))
-
-
-def _coordinate_centers(lower: float, upper: float, resolution: float) -> np.ndarray:
-    coordinates = np.arange(lower + resolution / 2.0, upper, resolution, dtype=float)
-    if coordinates.size == 0:
-        return np.array([(lower + upper) / 2.0], dtype=float)
-    return coordinates
-
-
-@dataclass(frozen=True, slots=True)
-class PrecipitationGrid:
-    values: np.ndarray
-    latitudes: np.ndarray
-    longitudes: np.ndarray
-    bounds: tuple[float, float, float, float]
-    start_time: datetime | pd.Timestamp
-    end_time: datetime | pd.Timestamp
-    units: str = "mm"
-    source: str = ""
-
-    def __post_init__(self) -> None:
-        values = np.asarray(self.values, dtype=float)
-        latitudes = np.asarray(self.latitudes, dtype=float)
-        longitudes = np.asarray(self.longitudes, dtype=float)
-        if latitudes.ndim != 1 or longitudes.ndim != 1:
-            raise ValueError("latitudes and longitudes must be 1-D.")
-        if values.shape != (latitudes.size, longitudes.size):
-            raise ValueError(
-                f"values shape must be {(latitudes.size, longitudes.size)}, found {values.shape}."
-            )
-        if pd.Timestamp(self.end_time) <= pd.Timestamp(self.start_time):
-            raise ValueError("end_time must be after start_time.")
-        object.__setattr__(self, "values", values)
-        object.__setattr__(self, "latitudes", latitudes)
-        object.__setattr__(self, "longitudes", longitudes)
-
-    @property
-    def time_window(self) -> tuple[pd.Timestamp, pd.Timestamp]:
-        return pd.Timestamp(self.start_time), pd.Timestamp(self.end_time)
+from mgb_ops.assets.spatial_grid import RegularGridSpec
 
 
 def idw_interpolate(
@@ -228,50 +139,6 @@ def interpolate_station_values(
     )
 
 
-def accumulate_observed_rainfall(
-    database_path: Path,
-    *,
-    start_time: datetime,
-    end_time: datetime,
-) -> pd.DataFrame:
-    """Accumulate preferred rainfall series over the half-open interval [start, end)."""
-    if end_time <= start_time:
-        raise ValueError("end_time must be after start_time.")
-    with open_history_read_only(database_path) as connection:
-        series = read_rain_series(connection)
-        preferred = select_preferred_series_rows(series)
-        if preferred.empty:
-            return pd.DataFrame(columns=["station_id", "lat", "lon", "value"])
-        ids = preferred["series_id"].astype(str).tolist()
-        values = read_observed_values(
-            connection, ids, start_time=start_time, end_time=end_time
-        )
-    values["value"] = pd.to_numeric(values["value"], errors="coerce")
-    totals = values.groupby("series_id", as_index=False)["value"].sum(min_count=1)
-    result = preferred.merge(totals, on="series_id", how="left")
-    return result[["station_id", "lat", "lon", "value"]].reset_index(drop=True)
-
-
-def observed_rainfall_grid(
-    database_path: Path,
-    *,
-    grid: RegularGridSpec,
-    start_time: datetime,
-    end_time: datetime,
-    nearest_stations: int = 5,
-    power: float = 2.0,
-) -> PrecipitationGrid:
-    stations = accumulate_observed_rainfall(database_path, start_time=start_time, end_time=end_time)
-    values = interpolate_station_values(
-        stations, grid, nearest_stations=nearest_stations, power=power
-    ) if not stations.empty else np.full(grid.shape, np.nan)
-    return PrecipitationGrid(
-        values=values, latitudes=grid.latitudes, longitudes=grid.longitudes,
-        bounds=grid.bbox, start_time=start_time, end_time=end_time,
-        units="mm", source="observed",
-    )
-
-
 def bilinear_resample(
     values: np.ndarray,
     source_latitudes: np.ndarray,
@@ -305,8 +172,3 @@ def bilinear_resample(
 def resample_regular_grid(values: np.ndarray, source_latitudes: np.ndarray, source_longitudes: np.ndarray, grid: RegularGridSpec) -> np.ndarray:
     return bilinear_resample(values, source_latitudes, source_longitudes, grid.latitudes, grid.longitudes)
 
-
-# Compatibility names that describe the algorithms explicitly.
-interpolate_idw = idw_interpolate
-resample_bilinear = bilinear_resample
-build_observed_precipitation_grid = observed_rainfall_grid

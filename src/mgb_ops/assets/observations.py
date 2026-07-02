@@ -7,8 +7,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from mgb_ops.common.time_utils import TIMEZONE
-from mgb_ops.common.time_utils import validate_timestep_hours
+from mgb_ops.utils.time import TIMEZONE
+from mgb_ops.utils.time import validate_timestep_hours
 from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.assets.databases import build_station_id
 

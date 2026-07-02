@@ -44,11 +44,11 @@ Still pending in this phase:
 |       |-- analysis/
 |       |-- assets/
 |       |   `-- sql/
-|       |-- common/
+|       |-- config/
 |       |-- edit/
 |       |-- model/
 |       |-- qc/
-|       |-- storage/
+|       |-- utils/
 |       `-- workflows/
 |-- apps/
 |   `-- ops_dashboard/
@@ -60,10 +60,11 @@ Important: the user is responsible for providing a regional workspace containing
 
 ## Layer Model
 
-- `common`: shared types and explicit runtime/configuration helpers.
-- `assets`: canonical artifact formats, SQL schemas, SQLite repositories, validation, and readers/writers.
+- `config`: explicit settings, workspace paths, `.env`, and runtime context.
+- `utils`: focused pure helpers for time, logging, topology, and geospatial operations.
+- `assets`: data contracts, transformations, canonical formats, SQL schemas, repositories, validation, and I/O.
 - `adapters`: provider-specific collection and normalization.
-- `analysis`: read-only queries, projections, interpolation, and aggregation.
+- `analysis`: read-only selections, accumulated products, summaries, and metrics.
 - `edit` and `qc`: auditable corrections and validation rules.
 - `model`: MGB preparation, execution, and output production.
 - `workflows`: Python-first orchestration across those capabilities.
@@ -78,7 +79,7 @@ the reporting workflow is designed.
 - Canonical configuration in this phase:
   - module-owned in-code defaults;
   - `<workspace>/config/custom.yaml` as the only editable regional override.
-- `.env` files are loaded only by `mgb_ops.common` runtime helpers. Core domain modules do not load `.env` or inspect process environment.
+- `.env` files are loaded only by `mgb_ops.config` runtime helpers. Core domain modules do not load `.env` or inspect process environment.
 - Library calls should pass explicit workspace, database, schema, asset,
   settings, path, and time inputs into adapters, assets, analysis, edit, QC,
   model, and workflow functions.
@@ -116,8 +117,8 @@ upgrade headers.
 ```python
 from pathlib import Path
 
-from mgb_ops.common.runtime import build_runtime_context
-from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.config.runtime import build_runtime_context
+from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
 

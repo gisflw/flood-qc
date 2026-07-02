@@ -14,7 +14,7 @@ for import_root in (REPO_ROOT, SRC_DIR):
 import panel as pn
 
 from apps.ops_dashboard.factory import create_dashboard
-from mgb_ops.common.runtime import resolve_workspace_from_runtime_env
+from mgb_ops.config.runtime import resolve_workspace_from_runtime_env
 
 
 def _workspace_from_argv(argv: list[str]) -> Path:

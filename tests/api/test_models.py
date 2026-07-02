@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mgb_ops.common.models import DataState, TimeSeriesRecord
+from mgb_ops.assets.types import DataState, TimeSeriesRecord
 
 
 def test_dataclass_instantiation() -> None:

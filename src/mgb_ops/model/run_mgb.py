@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from mgb_ops.common.models import RunMetadata
+from mgb_ops.assets.types import RunMetadata
 
 
 def build_run_id() -> str:

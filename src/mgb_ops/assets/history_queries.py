@@ -7,6 +7,33 @@ from pathlib import Path
 import pandas as pd
 
 
+STATE_PRIORITY = {"approved": 0, "curated": 1, "raw": 2}
+
+
+def select_preferred_series_rows(series: pd.DataFrame) -> pd.DataFrame:
+    """Select one observed series per station/variable by state then recency."""
+    if series.empty:
+        return series.copy()
+    required = {"station_id", "variable_code", "state"}
+    missing = required.difference(series.columns)
+    if missing:
+        raise ValueError(f"Observed series table is missing columns: {sorted(missing)}")
+    ranked = series.copy()
+    ranked["_state_rank"] = ranked["state"].map(STATE_PRIORITY).fillna(len(STATE_PRIORITY))
+    if "created_at" not in ranked:
+        ranked["created_at"] = ""
+    ranked["created_at"] = ranked["created_at"].fillna("")
+    ranked = ranked.sort_values(
+        ["station_id", "variable_code", "_state_rank", "created_at"],
+        ascending=[True, True, True, False],
+    )
+    return (
+        ranked.drop_duplicates(["station_id", "variable_code"])
+        .drop(columns="_state_rank")
+        .reset_index(drop=True)
+    )
+
+
 def open_history_read_only(database_path: Path, *, timeout: float = 30.0) -> sqlite3.Connection:
     path = Path(database_path)
     if not path.exists():

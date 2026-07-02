@@ -11,7 +11,7 @@ import xarray as xr
 
 from mgb_ops.analysis import timeseries as ops_dashboard_data
 from mgb_ops.assets.databases import apply_schema
-from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.analysis.timeseries import StaleModelOutputsError
 
 
@@ -284,7 +284,7 @@ def test_model_outputs_rejects_legacy_variable_names(tmp_path) -> None:
 
 def test_model_outputs_metadata_mismatch_is_blocked(tmp_path) -> None:
     source = write_model_outputs(tmp_path / "model_outputs.nc")
-    expected = DashboardWindow(
+    expected = AnalysisWindow(
         start_time=datetime(2026, 2, 1),
         cutoff_time=datetime(2026, 2, 3),
         forecast_end_exclusive=datetime(2026, 2, 4),

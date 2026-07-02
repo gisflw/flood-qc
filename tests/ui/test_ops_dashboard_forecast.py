@@ -32,8 +32,8 @@ def write_forecast_precipitation_grid(
         timestep_hours=timestep_hours,
         processing_metadata={"source_format": source_format, "source_cycle_time": str(source_cycle_time)},
     )
-from mgb_ops.analysis.spatial import RegularGridSpec
-from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.assets.spatial_grid import RegularGridSpec
+from mgb_ops.assets.types import AnalysisWindow
 from apps.ops_dashboard.services import forecast as ops_dashboard_forecast
 from db_helpers import initialize_history_db
 from mgb_ops.assets.history import HistoryRepository
@@ -82,7 +82,7 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
             metadata={"cycle_time": "2026-03-11T00:00:00Z", "type": "forecast"},
         )
 
-    window = DashboardWindow(
+    window = AnalysisWindow(
         start_time=datetime(2026, 3, 1),
         cutoff_time=datetime(2026, 3, 10, 23),
         forecast_end_exclusive=datetime(2026, 3, 13),
@@ -137,7 +137,7 @@ def test_ops_dashboard_forecast_applies_preview_correction() -> None:
 
 def test_expected_ecmwf_cycle_reports_unregistered_cycle(tmp_path) -> None:
     db_path = initialize_history_db(tmp_path / "history.sqlite")
-    window = DashboardWindow(
+    window = AnalysisWindow(
         start_time=datetime(2026, 3, 1),
         cutoff_time=datetime(2026, 3, 10, 23),
         forecast_end_exclusive=datetime(2026, 3, 13),
@@ -167,7 +167,7 @@ def test_expected_ecmwf_cycle_reports_missing_registered_file(tmp_path) -> None:
             valid_to="2026-03-12T00:00:00",
             metadata={"cycle_time": "2026-03-11T00:00:00Z", "type": "forecast"},
         )
-    window = DashboardWindow(
+    window = AnalysisWindow(
         start_time=datetime(2026, 3, 1),
         cutoff_time=datetime(2026, 3, 10, 23),
         forecast_end_exclusive=datetime(2026, 3, 13),

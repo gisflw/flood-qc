@@ -3,14 +3,30 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
-import sys
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Mapping
+from typing import Any, Mapping
 
-from mgb_ops.common.models import CommandPlan, ModelOutput, RunMetadata
+from mgb_ops.assets.types import RunMetadata
+from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
 
 LOGGER_NAME = "model.mgb_execution"
+
+
+@dataclass(slots=True)
+class CommandPlan:
+    command: list[str]
+    working_directory: str | None = None
+    environment: dict[str, str] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class ModelOutput:
+    output_name: str
+    description: str
+    asset_refs: list[str] = field(default_factory=list)
 
 
 def script_stem() -> str:
@@ -22,24 +38,7 @@ def build_execution_id() -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]:
-        handler.close()
-        logger.removeHandler(handler)
-    logger.propagate = False
-
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-    return logger
+    return _configure_run_logger(LOGGER_NAME, log_file)
 
 
 def _require_existing_file(path: Path, *, label: str) -> None:

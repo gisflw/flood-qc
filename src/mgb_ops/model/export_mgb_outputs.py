@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import logging
 import re
-import sys
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
@@ -11,6 +10,7 @@ from uuid import uuid4
 
 import numpy as np
 from mgb_ops.assets.model_outputs import write_model_outputs_netcdf
+from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
 
 DEFAULT_CHUNK_HOURS = 720
 NUMBER_PATTERN = re.compile(r"[-+]?\d+(?:[.,]\d+)?")
@@ -95,24 +95,7 @@ def build_execution_id() -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]:
-        handler.close()
-        logger.removeHandler(handler)
-    logger.propagate = False
-
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-    return logger
+    return _configure_run_logger(LOGGER_NAME, log_file)
 
 
 def _extract_numbers(text: str) -> list[str]:

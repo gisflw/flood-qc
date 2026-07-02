@@ -74,6 +74,9 @@ and metadata identifying `variable`, `type`, `source`, and `providers`.
 Coordinates and time bounds are UTC and payload variables use zlib compression
 level 4. Forecast grids are registered; the observed precipitation dashboard
 cache at `data/cache/precipitations_observed.nc` is disposable and unregistered.
+`mgb_ops.assets.spatial_grid` also owns the regular-grid and precipitation-grid
+in-memory contracts; reusable interpolation and resampling live in
+`mgb_ops.assets.grid_transforms`.
 
 ### `qc_flag`
 

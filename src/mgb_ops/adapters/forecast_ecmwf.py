@@ -6,7 +6,6 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-import sys
 
 import numpy as np
 
@@ -17,9 +16,14 @@ from mgb_ops.adapters._grib2 import (
     require_eccodes,
     set_regular_ll_grid,
 )
-from mgb_ops.analysis.spatial import RegularGridSpec, resample_regular_grid
-from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND, write_spatial_grid
-from mgb_ops.common.time_utils import TIMEZONE, validate_timestep_hours
+from mgb_ops.assets.grid_transforms import resample_regular_grid
+from mgb_ops.assets.spatial_grid import (
+    RegularGridSpec,
+    SPATIAL_GRID_ASSET_KIND,
+    write_spatial_grid,
+)
+from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
+from mgb_ops.utils.time import TIMEZONE, validate_timestep_hours
 
 LOGGER_NAME = "adapters.forecast_ecmwf"
 ECMWF_ASSET_KIND = SPATIAL_GRID_ASSET_KIND
@@ -70,24 +74,7 @@ def build_execution_id(reference_time: datetime) -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger(LOGGER_NAME)
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]:
-        handler.close()
-        logger.removeHandler(handler)
-    logger.propagate = False
-
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-    return logger
+    return _configure_run_logger(LOGGER_NAME, log_file)
 
 
 def _require_opendata_client():

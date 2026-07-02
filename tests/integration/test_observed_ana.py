@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from mgb_ops.common import time_utils
+from mgb_ops.utils import time as time_utils
 from mgb_ops.adapters import observed_ana
 from mgb_ops.workflows import observed as observed_workflow
 from db_helpers import initialize_history_db

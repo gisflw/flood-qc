@@ -7,6 +7,7 @@ import pytest
 from db_helpers import initialize_history_db
 from mgb_ops.assets.forecast_registry import (
     find_forecast_asset_by_cycle,
+    find_required_forecast_asset,
     list_forecast_assets,
     register_forecast_asset,
     resolve_forecast_asset,
@@ -50,6 +51,27 @@ def test_forecast_asset_catalog_registers_lists_and_resolves(tmp_path) -> None:
     )
     assert cycle_match is not None
     assert cycle_match[1] == asset_path
+    required = find_required_forecast_asset(
+        database_path,
+        workspace_path=tmp_path,
+        provider_code="ecmwf",
+        cycle_time=cycle_time,
+        required_start=datetime(2026, 3, 12, 1),
+        required_end=datetime(2026, 3, 12, 3),
+    )
+    assert required is not None
+    assert required.asset_path == asset_path
+    assert (
+        find_required_forecast_asset(
+            database_path,
+            workspace_path=tmp_path,
+            provider_code="ecmwf",
+            cycle_time=cycle_time,
+            required_start=datetime(2026, 3, 12),
+            required_end=datetime(2026, 3, 12, 3),
+        )
+        is None
+    )
 
 
 def test_resolve_forecast_asset_rejects_missing_registered_file(tmp_path) -> None:

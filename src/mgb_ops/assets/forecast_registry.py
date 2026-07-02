@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,14 @@ import pandas as pd
 
 from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND
 from mgb_ops.assets.history import HistoryRepository
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastAssetMatch:
+    asset_id: str
+    asset_path: Path
+    valid_from: datetime
+    valid_to: datetime
 
 
 def _parse_cycle_time(value: object) -> pd.Timestamp | None:
@@ -132,3 +141,42 @@ def find_forecast_asset_by_cycle(
         return None
     row = matches.iloc[0].to_dict()
     return row, Path(row["asset_path"])
+
+
+def find_required_forecast_asset(
+    database_path: Path,
+    *,
+    workspace_path: Path,
+    provider_code: str,
+    cycle_time: datetime,
+    required_start: datetime,
+    required_end: datetime,
+) -> ForecastAssetMatch | None:
+    """Resolve one provider cycle only when it covers the required UTC interval."""
+    match = find_forecast_asset_by_cycle(
+        database_path,
+        workspace_path=workspace_path,
+        provider_code=provider_code,
+        cycle_time=cycle_time,
+    )
+    if match is None:
+        return None
+    row, path = match
+    valid_from = pd.Timestamp(row["valid_from"])
+    valid_to = pd.Timestamp(row["valid_to"])
+    start = pd.Timestamp(required_start)
+    end = pd.Timestamp(required_end)
+    valid_from = valid_from.tz_convert("UTC").tz_localize(None) if valid_from.tzinfo else valid_from
+    valid_to = valid_to.tz_convert("UTC").tz_localize(None) if valid_to.tzinfo else valid_to
+    start = start.tz_convert("UTC").tz_localize(None) if start.tzinfo else start
+    end = end.tz_convert("UTC").tz_localize(None) if end.tzinfo else end
+    if valid_from > start or valid_to < end:
+        return None
+    if not path.exists():
+        raise FileNotFoundError(f"Forecast asset registered in history does not exist on disk: {path}")
+    return ForecastAssetMatch(
+        asset_id=str(row["asset_id"]),
+        asset_path=path,
+        valid_from=valid_from.to_pydatetime(),
+        valid_to=valid_to.to_pydatetime(),
+    )

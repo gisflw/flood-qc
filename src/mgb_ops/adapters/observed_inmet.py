@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import sys
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -11,9 +10,10 @@ from typing import Any, Iterable
 
 import requests
 
-from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS, iter_fetch_date_windows
 from mgb_ops.assets.observations import write_normalized_observed_csv
+from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
+from mgb_ops.utils.time import TIMEZONE
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
 DEFAULT_INMET_RAIN_PRODUCT = "I175"
@@ -67,24 +67,7 @@ def build_run_id(reference_time: datetime) -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    log_file.parent.mkdir(parents=True, exist_ok=True)
-    logger = logging.getLogger("adapters.observed_inmet")
-    logger.setLevel(logging.INFO)
-    for handler in logger.handlers[:]:
-        handler.close()
-        logger.removeHandler(handler)
-    logger.propagate = False
-
-    formatter = logging.Formatter("%(asctime)s | %(levelname)s | %(message)s")
-
-    file_handler = logging.FileHandler(log_file, mode="w", encoding="utf-8")
-    file_handler.setFormatter(formatter)
-    logger.addHandler(file_handler)
-
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
-    return logger
+    return _configure_run_logger("adapters.observed_inmet", log_file)
 
 
 def normalize_inmet_station_code(station_code: str | None) -> str | None:

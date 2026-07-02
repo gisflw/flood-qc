@@ -5,7 +5,7 @@ from typing import Iterable, Mapping
 
 import numpy as np
 
-from mgb_ops.analysis.spatial import PrecipitationGrid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid
 
 
 @dataclass(frozen=True, slots=True)

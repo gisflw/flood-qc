@@ -24,17 +24,21 @@ The package is split by responsibility rather than by user interface:
 
 | Module | Architectural boundary |
 | --- | --- |
-| `mgb_ops.common` | Shared domain types, paths, settings, runtime conveniences, logging, and time utilities |
-| `mgb_ops.assets` | Sole persistence boundary: canonical file/database structures, validation, SQLite repositories, registration, and I/O |
+| `mgb_ops.config` | Settings, workspace paths, `.env` parsing, and explicit runtime context |
+| `mgb_ops.utils` | Pure shared time, logging, topology, and geospatial helpers |
+| `mgb_ops.assets` | Canonical data boundary: contracts, transformations, validation, repositories, registration, and I/O |
 | `mgb_ops.adapters` | Provider-specific acquisition and translation, such as ANA, INMET, and ECMWF |
-| `mgb_ops.analysis` | Reusable read-only queries, projections, interpolation, resampling, and aggregation |
+| `mgb_ops.analysis` | Reusable read-only products, selections, summaries, and metrics |
 | `mgb_ops.edit` | Forecast correction operations and correction persistence |
 | `mgb_ops.qc` | Validation rules, checks, and structured QC results |
 | `mgb_ops.model` | MGB input preparation, execution, and output production |
 | `mgb_ops.workflows` | Use-case orchestration across adapters, assets, and model capabilities |
 | `apps/ops_dashboard` | Panel rendering, callbacks, session state, caching, and UI-specific presentation |
 
-The assets layer owns canonical artifact structures, serialization, validation, database registration, and read/write queries. Analysis owns derivation from values loaded through assets. Thus SQLite, normalized observation CSV, canonical NetCDF, and GeoPackage I/O live in `assets`, while rainfall interpolation and grid accumulation remain in `analysis`.
+The assets layer owns canonical in-memory and persisted data structures,
+serialization, validation, database registration, read/write queries,
+interpolation, resampling, and reusable asset construction. Analysis builds
+read-only accumulated products and metrics from those APIs.
 
 The existing `analysis.forecast` and `analysis.timeseries` surfaces combine
 explicit read-only loading with computation. They remain supported read-only
@@ -43,16 +47,17 @@ analysis APIs; database writes, reads, and registry ownership belong to `assets`
 Core domain functions accept explicit paths, databases, settings, schema paths,
 asset bases, credentials, and times. They return structured summaries or domain
 objects instead of depending on console output, process environment, `.env`, or
-workspace globals. `mgb_ops.common` is the only library area that may provide
-convenience runtime helpers for resolving workspaces, settings, and `.env`
-values.
+workspace globals. `mgb_ops.config` is the only library area that may resolve
+workspaces, settings, and `.env` values. Domain functions receive those values
+explicitly.
 
 ### Dependency Direction
 
 Apps call workflows or focused library APIs. Workflows compose provider
-adapters and domain modules. Adapters, analysis, edit, QC, and model code may depend on common types and asset contracts, but library code must not
-depend on the app. Provider access stays out of assets, UI state
-stays out of the library, and peer-module cycles should be avoided.
+adapters and domain modules. Assets and utilities are foundational; analysis,
+adapters, edit, QC, and model code consume their contracts without creating
+reverse dependencies. Provider access stays out of assets, UI state stays out
+of the library, and peer-module cycles should be avoided.
 
 Subprocess execution is a model capability when exposed through an explicit
 plan and structured result. CLI parsing, Panel state, and interface-only output

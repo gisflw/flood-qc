@@ -11,7 +11,7 @@ from apps.ops_dashboard import state as dashboard_state
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from apps.ops_dashboard.services import deckgl as dashboard_map
 from db_helpers import initialize_history_db
-from mgb_ops.analysis.spatial import PrecipitationGrid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid
 from mgb_ops.edit.sqlite import list_forecast_corrections
 from mgb_ops.assets.history import HistoryRepository
 

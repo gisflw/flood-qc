@@ -2,8 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Iterable
 from zoneinfo import ZoneInfo
 
 
@@ -21,45 +20,6 @@ class HorizonWindow:
     dt_seconds: int
     days_before: int
     horizon_days: int
-
-
-@dataclass(frozen=True, slots=True)
-class DashboardWindow:
-    start_time: datetime
-    cutoff_time: datetime
-    forecast_end_exclusive: datetime
-
-    def cache_key(self) -> tuple[str, str, str]:
-        return (
-            self.start_time.isoformat(timespec="seconds"),
-            self.cutoff_time.isoformat(timespec="seconds"),
-            self.forecast_end_exclusive.isoformat(timespec="seconds"),
-        )
-
-
-def resolve_dashboard_window(settings: Mapping[str, Any]) -> DashboardWindow:
-    run = settings["run"]
-    mgb = settings["mgb"]
-    reference_time = resolve_reference_time(str(run["reference_time"]))
-    reference_date = reference_time.date()
-    start_time = datetime.combine(
-        reference_date - timedelta(days=int(mgb["output_days_before"])),
-        time.min,
-    )
-    forecast_end_exclusive = datetime.combine(
-        reference_date + timedelta(days=int(mgb["forecast_horizon_days"]) + 1),
-        time.min,
-    )
-    return DashboardWindow(
-        start_time=start_time,
-        cutoff_time=reference_time,
-        forecast_end_exclusive=forecast_end_exclusive,
-    )
-
-
-def resolve_workspace_path(workspace: str | Path, configured_path: str | Path) -> Path:
-    configured = Path(configured_path).expanduser()
-    return configured.resolve() if configured.is_absolute() else (Path(workspace) / configured).resolve()
 
 
 def resolve_reference_time(raw_value: str | None) -> datetime:

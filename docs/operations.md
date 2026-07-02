@@ -10,7 +10,7 @@ flow.
 1. Use the current root Python environment with `Python 3.11+`.
 2. Install dependencies with `python -m pip install -e '.[dev,data,geo]'`.
 3. Use `<workspace>/config/custom.yaml` for optional regional settings overrides.
-4. Use `<workspace>/.env` only for runtime convenience values consumed by `mgb_ops.common`.
+4. Use `<workspace>/.env` only for runtime convenience values consumed by `mgb_ops.config`.
 
 Typical Linux/macOS setup:
 
@@ -26,7 +26,7 @@ python -m pip install -e ".[dev,data,geo]"
 
 ## Operational Configuration
 
-Common runtime helpers read:
+Configuration runtime helpers read:
 
 - module-owned in-code defaults;
 - `<workspace>/config/custom.yaml` when present;
@@ -34,7 +34,7 @@ Common runtime helpers read:
 
 Precedence is explicit Python arguments first, process environment second,
 `.env` third, and defaults last. `.env` loading is intentionally limited to
-`mgb_ops.common`. Domain modules under `assets`, `adapters`,
+`mgb_ops.config`. Domain modules under `assets`, `adapters`,
 `analysis`, `edit`, `qc`, `model`, and `workflows` require explicit inputs and
 must not inspect process environment or implicit workspace state. Provider
 credentials resolved by a runtime or app wrapper are passed explicitly to the
@@ -57,8 +57,8 @@ library function directly. For example:
 ```python
 from pathlib import Path
 
-from mgb_ops.common.runtime import build_runtime_context
-from mgb_ops.common.time_utils import resolve_reference_time
+from mgb_ops.config.runtime import build_runtime_context
+from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
 context = build_runtime_context(workspace=Path("scratch/rs_hydro"))

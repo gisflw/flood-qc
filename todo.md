@@ -9,5 +9,3 @@
 - normalize time based on global time step!
 
 - assets to register grid formats
-
-- split common into config and actually common

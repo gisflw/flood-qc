@@ -12,11 +12,11 @@ import geopandas as gpd
 
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from mgb_ops.analysis import timeseries as dashboard_data
-from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec
-from mgb_ops.assets.spatial_grid import read_spatial_grid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec, read_spatial_grid
 from mgb_ops.assets.spatial_layers import read_mini_layer
-from mgb_ops.common import dissolve_geometries, find_upstream_ids
-from mgb_ops.common.time_utils import DashboardWindow
+from mgb_ops.utils.geospatial import dissolve_geometries
+from mgb_ops.assets.types import AnalysisWindow
+from mgb_ops.utils.topology import find_upstream_ids
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,7 +31,7 @@ def _station_catalog(
     database_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
     return dashboard_data.load_station_catalog(
@@ -47,7 +47,7 @@ def _observed_series(
     database_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
     return dashboard_data.load_observed_series(
@@ -124,7 +124,7 @@ def _model_variables(
     model_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
     dashboard_data.validate_model_outputs_netcdf(
@@ -140,7 +140,7 @@ def _mgb_series(
     model_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
     return dashboard_data.load_mgb_series(
@@ -158,7 +158,7 @@ def _basin_precipitation(
     model_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del workspace, source_version
     return dashboard_data.load_basin_precipitation(
@@ -174,7 +174,7 @@ def _accumulation_raster(
     cache_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
     bbox: tuple[float, float, float, float],
     resolution: float,
     hours: int,
@@ -236,7 +236,7 @@ def _forecast_assets(
     database_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del source_version
     return dashboard_forecast.list_forecast_assets(
@@ -250,7 +250,7 @@ def _forecast_steps(
     database_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     del source_version
     return dashboard_forecast.list_forecast_steps(
@@ -269,7 +269,7 @@ def _forecast_preview(
     database_path: str,
     workspace: str,
     source_version: str,
-    window: DashboardWindow,
+    window: AnalysisWindow,
     bbox: tuple[float, float, float, float],
     resolution: float,
 ) -> dashboard_forecast.ForecastPreview:

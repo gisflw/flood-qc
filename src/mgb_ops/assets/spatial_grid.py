@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import xarray as xr
 
-from mgb_ops.common.time_utils import validate_timestep_hours
+from mgb_ops.utils.time import validate_timestep_hours
 
 
 SPATIAL_GRID_ASSET_KIND = "spatial_grid"
@@ -39,6 +39,90 @@ class SpatialGrid:
     values: np.ndarray
     timestep_hours: int
     metadata: dict[str, object]
+
+
+def _coordinate_centers(lower: float, upper: float, resolution: float) -> np.ndarray:
+    coordinates = np.arange(lower + resolution / 2.0, upper, resolution, dtype=float)
+    if coordinates.size == 0:
+        return np.array([(lower + upper) / 2.0], dtype=float)
+    return coordinates
+
+
+@dataclass(frozen=True, slots=True, init=False)
+class RegularGridSpec:
+    bbox: tuple[float, float, float, float]
+    resolution: float
+
+    def __init__(
+        self,
+        bbox: tuple[float, float, float, float],
+        resolution: float | None = None,
+        *,
+        resolution_degrees: float | None = None,
+    ) -> None:
+        if resolution is None:
+            resolution = resolution_degrees
+        elif resolution_degrees is not None and float(resolution) != float(resolution_degrees):
+            raise ValueError("resolution and resolution_degrees must match when both are provided.")
+        if resolution is None:
+            raise TypeError("resolution is required.")
+        west, south, east, north = (float(value) for value in bbox)
+        if west >= east or south >= north:
+            raise ValueError("bbox must satisfy west < east and south < north.")
+        if not np.isfinite(resolution) or resolution <= 0:
+            raise ValueError("resolution must be > 0.")
+        object.__setattr__(self, "bbox", (west, south, east, north))
+        object.__setattr__(self, "resolution", float(resolution))
+
+    @property
+    def resolution_degrees(self) -> float:
+        return self.resolution
+
+    @property
+    def longitudes(self) -> np.ndarray:
+        west, _, east, _ = self.bbox
+        return _coordinate_centers(west, east, self.resolution)
+
+    @property
+    def latitudes(self) -> np.ndarray:
+        _, south, _, north = self.bbox
+        return _coordinate_centers(south, north, self.resolution)
+
+    @property
+    def shape(self) -> tuple[int, int]:
+        return (len(self.latitudes), len(self.longitudes))
+
+
+@dataclass(frozen=True, slots=True)
+class PrecipitationGrid:
+    values: np.ndarray
+    latitudes: np.ndarray
+    longitudes: np.ndarray
+    bounds: tuple[float, float, float, float]
+    start_time: datetime | pd.Timestamp
+    end_time: datetime | pd.Timestamp
+    units: str = "mm"
+    source: str = ""
+
+    def __post_init__(self) -> None:
+        values = np.asarray(self.values, dtype=float)
+        latitudes = np.asarray(self.latitudes, dtype=float)
+        longitudes = np.asarray(self.longitudes, dtype=float)
+        if latitudes.ndim != 1 or longitudes.ndim != 1:
+            raise ValueError("latitudes and longitudes must be 1-D.")
+        if values.shape != (latitudes.size, longitudes.size):
+            raise ValueError(
+                f"values shape must be {(latitudes.size, longitudes.size)}, found {values.shape}."
+            )
+        if pd.Timestamp(self.end_time) <= pd.Timestamp(self.start_time):
+            raise ValueError("end_time must be after start_time.")
+        object.__setattr__(self, "values", values)
+        object.__setattr__(self, "latitudes", latitudes)
+        object.__setattr__(self, "longitudes", longitudes)
+
+    @property
+    def time_window(self) -> tuple[pd.Timestamp, pd.Timestamp]:
+        return pd.Timestamp(self.start_time), pd.Timestamp(self.end_time)
 
 
 def normalize_providers(providers: Iterable[str]) -> tuple[str, ...]:

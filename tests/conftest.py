@@ -14,12 +14,3 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 if str(TEST_DIR) not in sys.path:
     sys.path.insert(0, str(TEST_DIR))
-
-
-@pytest.fixture(autouse=True)
-def clear_mgb_ops_workspace_state():
-    from mgb_ops.common.paths import clear_workspace
-
-    clear_workspace()
-    yield
-    clear_workspace()

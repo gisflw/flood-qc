@@ -50,6 +50,7 @@ Library modules:
 
 - `mgb_ops.adapters.forecast_ecmwf`
 - `mgb_ops.assets.spatial_grid`
+- `mgb_ops.assets.grid_transforms`
 - `mgb_ops.workflows.forecast`
 
 Install the optional forecast dependencies in the operational environment:
@@ -72,6 +73,15 @@ or `ingest_forecast_grids`, together with explicit database, asset, and output p
 These values can also be resolved by a thin runtime wrapper from
 `spatial_grid.bbox` and `spatial_grid.resolution_degrees` in
 `<workspace>/config/custom.yaml`.
+
+### 3b. Observed Precipitation Grid
+
+Library module: `mgb_ops.assets.observed_precipitation`
+
+The asset layer selects preferred observed series, interpolates timestep values
+with `mgb_ops.assets.grid_transforms`, and atomically writes the disposable
+dashboard cache using the canonical `assets.spatial_grid` contract. This is an
+asset-construction operation rather than a workflow or analysis API.
 
 ### 4. MGB Preparation
 

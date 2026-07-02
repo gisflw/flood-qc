@@ -6,9 +6,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec, resample_regular_grid
-from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
-from mgb_ops.common.time_utils import DashboardWindow, TIMEZONE
+from mgb_ops.assets.grid_transforms import resample_regular_grid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec
+from mgb_ops.assets.types import AnalysisWindow
+from mgb_ops.utils.time import TIMEZONE
 from mgb_ops.assets.spatial_grid import SpatialGrid, read_spatial_grid
 from mgb_ops.assets.forecast_registry import (
     find_forecast_asset_by_cycle,
@@ -27,28 +28,27 @@ def resolve_expected_forecast_asset(
     database_path: Path,
     *,
     workspace_path: Path,
-    reference_time: datetime,
-    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
+    provider_code: str,
+    cycle_time: datetime,
 ) -> tuple[dict[str, object], Path]:
-    expected_cycle = adapter.cycle_time(reference_time)
     match = find_forecast_asset_by_cycle(
         database_path,
         workspace_path=workspace_path,
-        provider_code=adapter.provider_code,
-        cycle_time=expected_cycle,
+        provider_code=provider_code,
+        cycle_time=cycle_time,
     )
     if match is None:
         raise ForecastIntegrityError(
             "unregistered_cycle",
-            f"Forecast integrity error for {adapter.provider_code}: canonical NetCDF for expected cycle "
-            f"{expected_cycle.isoformat(timespec='seconds')}Z is not registered in history.sqlite.",
+            f"Forecast integrity error for {provider_code}: canonical NetCDF for expected cycle "
+            f"{cycle_time.isoformat(timespec='seconds')}Z is not registered in history.sqlite.",
         )
     row, path = match
     if not path.exists():
         raise ForecastIntegrityError(
             "missing_registered_file",
-            f"Forecast integrity error for {adapter.provider_code}: expected cycle "
-            f"{expected_cycle.isoformat(timespec='seconds')}Z is registered as "
+            f"Forecast integrity error for {provider_code}: expected cycle "
+            f"{cycle_time.isoformat(timespec='seconds')}Z is registered as "
             f"{row['relative_path']!r}, but that canonical NetCDF is missing.",
         )
     return row, path
@@ -58,14 +58,14 @@ def list_expected_forecast_assets(
     database_path: Path,
     *,
     workspace_path: Path,
-    reference_time: datetime,
-    adapter: ForecastAdapter = DEFAULT_FORECAST_ADAPTER,
+    provider_code: str,
+    cycle_time: datetime,
 ) -> pd.DataFrame:
     row, _ = resolve_expected_forecast_asset(
         database_path,
         workspace_path=workspace_path,
-        reference_time=reference_time,
-        adapter=adapter,
+        provider_code=provider_code,
+        cycle_time=cycle_time,
     )
     return pd.DataFrame([row])
 
@@ -79,7 +79,7 @@ def list_dashboard_forecast_intervals(
     *,
     database_path: Path,
     workspace_path: Path,
-    window: DashboardWindow,
+    window: AnalysisWindow,
 ) -> pd.DataFrame:
     frame = list_forecast_intervals(
         asset_id,

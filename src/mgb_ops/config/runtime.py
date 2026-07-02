@@ -5,15 +5,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from mgb_ops.common.env import RuntimeEnv, parse_dotenv, resolve_env_value
-from mgb_ops.common.paths import (
+from mgb_ops.config.env import RuntimeEnv, parse_dotenv, resolve_env_value
+from mgb_ops.config.workspace import (
     DEFAULT_REMOTE_WORKSPACE,
     MGB_OPS_WORKSPACE_ENV,
     MGB_REMOTE_WORKSPACE_ENV,
     RuntimePaths,
     resolve_workspace,
 )
-from mgb_ops.common.settings import load_settings
+from mgb_ops.config.settings import load_settings
 
 
 @dataclass(frozen=True, slots=True)
