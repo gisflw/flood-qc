@@ -1,14 +1,53 @@
 from __future__ import annotations
 
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Protocol
 
 from mgb_ops.common.time_utils import iter_observed_request_dates
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS
 from mgb_ops.adapters import ObservationAdapter, get_observation_adapter
 from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.assets.observations import ObservedCsvImportSummary, load_normalized_observed_csvs
+from mgb_ops.common.time_utils import resolve_reference_time
+
+
+class WorkflowContext(Protocol):
+    paths: Any
+    settings: dict[str, object]
+    env: Any
+
+
+def _normalize_providers(providers: str | Iterable[str], resolver) -> tuple[str, ...]:
+    values = [providers] if isinstance(providers, str) else list(providers)
+    normalized: list[str] = []
+    for value in values:
+        code = str(value).strip().lower()
+        if code and code not in normalized:
+            resolver(code)
+            normalized.append(code)
+    if not normalized:
+        raise ValueError("providers must contain at least one provider code.")
+    return tuple(normalized)
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedProviderDownloadSummary:
+    provider_code: str
+    normalized_csv_paths: tuple[Path, ...]
+    requested_days: int
+    skipped_days: int
+    adapter_summary: object
+
+
+@dataclass(frozen=True, slots=True)
+class ObservedDownloadSummary:
+    providers: tuple[ObservedProviderDownloadSummary, ...]
+
+    @property
+    def normalized_csv_paths(self) -> list[Path]:
+        return [path for provider in self.providers for path in provider.normalized_csv_paths]
 
 
 def _filter_stations(stations: list[dict], station_codes: Iterable[str] | None, *, provider_code: str) -> list[dict]:
@@ -29,24 +68,51 @@ def _request_dates_by_station(
     window_start: datetime,
     window_end: datetime,
     variable_codes: Iterable[str] | None,
-) -> dict[str, list]:
+) -> dict[str, list[date]]:
     variable_list = list(variable_codes) if variable_codes is not None else None
     request_dates: dict[str, list] = {}
     for station in stations:
         station_id = str(station["station_id"])
-        latest_observed_at = repository.get_latest_observed_at(
+        coverage = repository.get_observed_calendar_days(
             station_id,
+            start_date=window_start.date().isoformat(),
+            end_date=window_end.date().isoformat(),
             state="raw",
             variable_codes=variable_list,
         )
-        request_dates[station_id] = list(
+        dates = list(iter_observed_request_dates(window_start, window_end))
+        reference_date = window_end.date()
+        request_dates[station_id] = [
+            value for value in dates
+            if value == reference_date
+            or any(value.isoformat() not in coverage.get(code, set()) for code in (variable_list or ()))
+        ]
+    return request_dates
+
+
+def _resume_dates_by_station(
+    repository: HistoryRepository,
+    stations: list[dict],
+    *,
+    window_start: datetime,
+    window_end: datetime,
+    variable_codes: Iterable[str] | None,
+) -> dict[str, list[date]]:
+    variable_list = list(variable_codes) if variable_codes is not None else None
+    return {
+        str(station["station_id"]): list(
             iter_observed_request_dates(
                 window_start,
                 window_end,
-                latest_observed_at=latest_observed_at,
+                latest_observed_at=repository.get_latest_observed_at(
+                    str(station["station_id"]),
+                    state="raw",
+                    variable_codes=variable_list,
+                ),
             )
         )
-    return request_dates
+        for station in stations
+    }
 
 
 def discover_observed_provider_csvs(
@@ -100,6 +166,29 @@ def load_observed_provider_csvs(
     )
 
 
+def ingest_from_csv(
+    context: WorkflowContext,
+    csv_path: Path,
+    state: str = "raw",
+    *,
+    timestep_hours: int | None = None,
+    observed_aggregation: dict[str, str] | None = None,
+) -> ObservedCsvImportSummary:
+    settings = context.settings
+    return load_normalized_observed_csvs(
+        context.paths.history_db,
+        [csv_path],
+        timestep_hours=int(timestep_hours or settings["run"]["timestep_hours"]),
+        aggregation_by_variable=observed_aggregation
+        or dict(settings["ingest"]["observed_aggregation"]),
+        state=state,
+        provider_variables={
+            code: set(get_observation_adapter(code).variable_codes)
+            for code in ("ana", "inmet")
+        },
+    )
+
+
 def fetch_observed_provider(
     provider_code: str,
     *,
@@ -115,6 +204,7 @@ def fetch_observed_provider(
     credential: str | None = None,
     product_code: str | None = None,
     fetch_window_days: int = DEFAULT_FETCH_WINDOW_DAYS,
+    request_dates_by_station: dict[str, list[date]] | None = None,
 ) -> object:
     adapter: ObservationAdapter = get_observation_adapter(provider_code)
     provider = adapter.provider_code
@@ -129,12 +219,16 @@ def fetch_observed_provider(
             station_codes,
             provider_code=provider,
         )
-        request_dates = _request_dates_by_station(
-            repository,
-            stations,
-            window_start=window_start,
-            window_end=window_end,
-            variable_codes=adapter.variable_codes,
+        request_dates = (
+            request_dates_by_station
+            if request_dates_by_station is not None
+            else _resume_dates_by_station(
+                repository,
+                stations,
+                window_start=window_start,
+                window_end=window_end,
+                variable_codes=adapter.variable_codes,
+            )
         )
 
     return adapter.fetch(
@@ -149,3 +243,63 @@ def fetch_observed_provider(
         logger=logger,
         fetch_window_days=fetch_window_days,
     )
+
+
+def download_observed_data(
+    context: WorkflowContext,
+    providers: str | Iterable[str],
+    *,
+    reference_time: datetime | None = None,
+    station_codes_by_provider: dict[str, Iterable[str]] | None = None,
+) -> ObservedDownloadSummary:
+    provider_codes = _normalize_providers(providers, get_observation_adapter)
+    settings = context.settings
+    reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
+    request_days = int(settings["ingest"]["request_days"])
+    window_start = datetime.combine(reference.date() - timedelta(days=request_days - 1), datetime.min.time())
+    results: list[ObservedProviderDownloadSummary] = []
+    for provider in provider_codes:
+        adapter = get_observation_adapter(provider)
+        credential = (
+            context.env.get(adapter.credential_env_name)
+            if adapter.credential_env_name is not None
+            else None
+        )
+        with HistoryRepository(context.paths.history_db) as repository:
+            stations = _filter_stations(
+                repository.get_provider_stations(provider),
+                (station_codes_by_provider or {}).get(provider),
+                provider_code=provider,
+            )
+            requests = _request_dates_by_station(
+                repository,
+                stations,
+                window_start=window_start,
+                window_end=reference,
+                variable_codes=adapter.variable_codes,
+            )
+        requested = sum(len(values) for values in requests.values())
+        total = len(stations) * request_days
+        summary = fetch_observed_provider(
+            provider,
+            database_path=context.paths.history_db,
+            window_start=window_start,
+            window_end=reference,
+            downloads_dir=context.paths.downloads_dir,
+            logs_dir=context.paths.logs_dir,
+            station_codes=(station_codes_by_provider or {}).get(provider),
+            timeout_seconds=float(settings["ingest"]["timeout_seconds"]),
+            credential=credential,
+            fetch_window_days=int(settings["ingest"]["fetch_window_days"]),
+            request_dates_by_station=requests,
+        )
+        results.append(
+            ObservedProviderDownloadSummary(
+                provider_code=provider,
+                normalized_csv_paths=tuple(Path(path) for path in summary.csv_paths),
+                requested_days=requested,
+                skipped_days=max(total - requested, 0),
+                adapter_summary=summary,
+            )
+        )
+    return ObservedDownloadSummary(tuple(results))

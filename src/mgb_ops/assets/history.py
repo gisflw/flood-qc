@@ -16,12 +16,27 @@ class HistoryRepository:
     def __init__(self, database_path: Path) -> None:
         self.database_path = Path(database_path)
         self.connection = sqlite3.connect(self.database_path, timeout=5.0)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys = ON")
-        self.connection.execute("PRAGMA busy_timeout = 5000")
-        self.connection.execute("PRAGMA journal_mode = WAL")
-        self.connection.execute("PRAGMA synchronous = NORMAL")
-        self._validate_expected_schema()
+        try:
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys = ON")
+            self.connection.execute("PRAGMA busy_timeout = 5000")
+            self._validate_expected_schema()
+        except Exception:
+            self.connection.close()
+            raise
+
+    @classmethod
+    def validate_database(cls, database_path: Path) -> None:
+        path = Path(database_path)
+        connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
+        repository = cls.__new__(cls)
+        repository.database_path = path
+        repository.connection = connection
+        try:
+            connection.row_factory = sqlite3.Row
+            repository._validate_expected_schema()
+        finally:
+            connection.close()
 
     def __enter__(self) -> HistoryRepository:
         return self
@@ -164,7 +179,41 @@ class HistoryRepository:
             return None
         return datetime.strptime(str(row["latest_observed_at"]), "%Y-%m-%d %H:%M")
 
-    def ensure_observed_series(self, station_id: str, variable_code: str, state: str = "raw") -> str:
+    def get_observed_calendar_days(
+        self,
+        station_id: str,
+        *,
+        start_date: str,
+        end_date: str,
+        state: str = "raw",
+        variable_codes: list[str] | tuple[str, ...] | set[str] | None = None,
+    ) -> dict[str, set[str]]:
+        params: list[str] = [station_id, state, start_date, end_date]
+        variable_filter = ""
+        if variable_codes:
+            ordered = sorted({str(code) for code in variable_codes})
+            variable_filter = f"AND os.variable_code IN ({', '.join('?' for _ in ordered)})"
+            params.extend(ordered)
+        rows = self.connection.execute(
+            f"""
+            SELECT os.variable_code, substr(ov.observed_at, 1, 10) AS observed_date
+            FROM observed_value ov
+            JOIN observed_series os ON os.series_id = ov.series_id
+            WHERE os.station_id = ? AND os.state = ?
+              AND substr(ov.observed_at, 1, 10) BETWEEN ? AND ?
+              {variable_filter}
+            GROUP BY os.variable_code, observed_date
+            """,
+            params,
+        ).fetchall()
+        result: dict[str, set[str]] = {}
+        for row in rows:
+            result.setdefault(str(row["variable_code"]), set()).add(str(row["observed_date"]))
+        return result
+
+    def ensure_observed_series(
+        self, station_id: str, variable_code: str, state: str = "raw", *, commit: bool = True
+    ) -> str:
         existing_series_id = self._get_observed_series_id(station_id, variable_code, state)
         if existing_series_id is not None:
             return existing_series_id
@@ -182,7 +231,8 @@ class HistoryRepository:
             """,
             (series_id, station_id, variable_code, state),
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         ensured_series_id = self._get_observed_series_id(station_id, variable_code, state)
         if ensured_series_id is None:
             raise RuntimeError(
@@ -191,7 +241,9 @@ class HistoryRepository:
             )
         return ensured_series_id
 
-    def upsert_observed_values(self, series_id: str, rows: list[tuple[str, float]]) -> int:
+    def upsert_observed_values(
+        self, series_id: str, rows: list[tuple[str, float]], *, commit: bool = True
+    ) -> int:
         if not rows:
             return 0
         self.connection.executemany(
@@ -206,7 +258,8 @@ class HistoryRepository:
             """,
             [(series_id, observed_at, value) for observed_at, value in rows],
         )
-        self.connection.commit()
+        if commit:
+            self.connection.commit()
         return len(rows)
 
     def get_asset_by_relative_path(self, relative_path: str) -> dict[str, Any] | None:

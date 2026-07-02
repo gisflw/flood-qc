@@ -53,6 +53,10 @@ class RuntimePaths:
         return self.data_dir / "downloads"
 
     @property
+    def assets_dir(self) -> Path:
+        return self.data_dir / "assets"
+
+    @property
     def cache_dir(self) -> Path:
         return self.data_dir / "cache"
 
@@ -196,6 +200,7 @@ def ensure_standard_dirs(workspace: str | Path | None = None) -> None:
     for path in (
         source_dir(workspace),
         downloads_dir(workspace),
+        runtime_paths(workspace).assets_dir,
         cache_dir(workspace),
         processed_dir(workspace),
         reports_dir(workspace),

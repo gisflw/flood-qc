@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
+import hashlib
+import json
 from pathlib import Path
+from typing import Iterable
 
-from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
-from mgb_ops.assets.spatial_grid import SPATIAL_GRID_FORMAT
+from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter, get_forecast_adapter
+from mgb_ops.assets.spatial_grid import (
+    SPATIAL_GRID_ASSET_KIND,
+    SPATIAL_GRID_FORMAT,
+    read_spatial_grid,
+)
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.time_utils import resolve_reference_time
 from mgb_ops.assets.forecast_registry import build_relative_asset_path, register_forecast_asset
+from mgb_ops.assets.forecast_registry import list_forecast_assets
+from mgb_ops.assets.history import HistoryRepository
+from mgb_ops.common.time_utils import TIMEZONE
+from mgb_ops.workflows.observed import WorkflowContext, _normalize_providers
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,6 +29,196 @@ class ForecastGridSummary:
     asset_path: Path
     valid_from: datetime
     valid_to: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class ForecastDownloadSummary:
+    reused_asset_paths: tuple[Path, ...]
+    new_asset_paths: tuple[Path, ...]
+    raw_grib_paths: tuple[Path, ...]
+
+
+def _metadata_value(grid, key: str) -> str:
+    value = str(grid.metadata.get(key, "")).strip()
+    if not value:
+        raise ValueError(f"Forecast NetCDF is missing required metadata {key!r}.")
+    return value
+
+
+def _validate_reusable_grid(
+    path: Path,
+    *,
+    provider: str,
+    adapter: ForecastAdapter,
+    cycle_time: datetime,
+    bbox: tuple[float, float, float, float],
+    resolution: float,
+    timestep_hours: int,
+    required_start: datetime,
+    required_end: datetime,
+) -> bool:
+    grid = read_spatial_grid(path)
+    expected_cycle = cycle_time.replace(tzinfo=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    return (
+        grid.grid_type == "forecast"
+        and grid.variable == "precipitation"
+        and grid.providers == (provider,)
+        and _metadata_value(grid, "provider") == provider
+        and _metadata_value(grid, "model") == adapter.product_config.model
+        and _metadata_value(grid, "product_type") == adapter.product_config.product_type
+        and _metadata_value(grid, "source_cycle_time") == expected_cycle
+        and grid.timestep_hours == timestep_hours
+        and float(grid.metadata["resolution_degrees"]) == resolution
+        and json.loads(str(grid.metadata["bbox"])) == list(bbox)
+        and grid.time_bounds_utc[0][0] <= required_start
+        and grid.time_bounds_utc[-1][1] >= required_end
+    )
+
+
+def download_forecast_data(
+    context: WorkflowContext,
+    providers: str | Iterable[str],
+    *,
+    reference_time: datetime | None = None,
+) -> ForecastDownloadSummary:
+    provider_codes = _normalize_providers(providers, get_forecast_adapter)
+    settings = context.settings
+    reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
+    timestep = int(settings["run"]["timestep_hours"])
+    bbox_value = settings["spatial_grid"]["bbox"]
+    if bbox_value is None:
+        raise ValueError("spatial_grid.bbox must be configured.")
+    bbox = tuple(float(value) for value in bbox_value)
+    resolution = float(settings["spatial_grid"]["resolution_degrees"])
+    required_start_local = reference + timedelta(hours=timestep)
+    required_end_local = required_start_local + timedelta(
+        days=int(settings["mgb"]["forecast_horizon_days"])
+    )
+    required_start = required_start_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
+    required_end = required_end_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
+    reused: list[Path] = []
+    produced: list[Path] = []
+    raw: list[Path] = []
+    assets = list_forecast_assets(
+        context.paths.history_db, workspace_path=context.paths.workspace
+    )
+    for provider in provider_codes:
+        adapter = get_forecast_adapter(provider)
+        cycle = adapter.cycle_time(reference)
+        asset_id = adapter.asset_id(cycle)
+        matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
+        if not matches.empty:
+            path = Path(matches.iloc[0]["asset_path"])
+            if not path.exists():
+                raise FileNotFoundError(f"Registered forecast asset is missing: {path}")
+            if not _validate_reusable_grid(
+                path,
+                provider=provider,
+                adapter=adapter,
+                cycle_time=cycle,
+                bbox=bbox,
+                resolution=resolution,
+                timestep_hours=timestep,
+                required_start=required_start,
+                required_end=required_end,
+            ):
+                raise ValueError(f"Registered forecast asset conflicts with the configured request: {path}")
+            reused.append(path)
+            continue
+        grib = adapter.download_grib(
+            reference_time=reference, downloads_dir=context.paths.downloads_dir
+        )
+        normalized = adapter.process_grib(
+            grib,
+            cycle_time=cycle,
+            assets_dir=context.paths.assets_dir,
+            bbox=bbox,
+            resolution_degrees=resolution,
+            timestep_hours=timestep,
+        )
+        raw.append(grib)
+        produced.append(normalized.asset_path)
+    return ForecastDownloadSummary(tuple(reused), tuple(produced), tuple(raw))
+
+
+def ingest_forecast_asset(context: WorkflowContext, path: Path) -> dict[str, object]:
+    target = Path(path).resolve()
+    assets_root = context.paths.assets_dir.resolve()
+    try:
+        relative_path = target.relative_to(context.paths.workspace.resolve()).as_posix()
+        target.relative_to(assets_root)
+    except ValueError as exc:
+        raise ValueError(f"Forecast asset must be inside {assets_root}: {target}") from exc
+    grid = read_spatial_grid(target)
+    if grid.grid_type != "forecast" or grid.variable != "precipitation" or len(grid.providers) != 1:
+        raise ValueError("Forecast asset must contain precipitation for exactly one provider.")
+    provider = grid.providers[0]
+    adapter = get_forecast_adapter(provider)
+    if _metadata_value(grid, "provider") != provider:
+        raise ValueError("Forecast provider metadata conflicts with providers.")
+    expected_metadata = {
+        "model": adapter.product_config.model,
+        "product_type": adapter.product_config.product_type,
+        "source_format": "GRIB2",
+        "source_resolution": adapter.product_config.resolution,
+        "source_parameter": adapter.product_config.param,
+    }
+    for key, expected in expected_metadata.items():
+        if _metadata_value(grid, key) != expected:
+            raise ValueError(
+                f"Forecast metadata {key!r} conflicts with provider product identity."
+            )
+    cycle_text = _metadata_value(grid, "source_cycle_time")
+    cycle = datetime.fromisoformat(cycle_text.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+    asset_id = adapter.asset_id(cycle)
+    checksum = hashlib.sha256(target.read_bytes()).hexdigest()
+    valid_from = grid.time_bounds_utc[0][0].isoformat(timespec="seconds")
+    valid_to = grid.time_bounds_utc[-1][1].isoformat(timespec="seconds")
+    metadata = dict(grid.metadata)
+    metadata["cycle_time"] = cycle_text
+    metadata_json = json.dumps(
+        metadata,
+        sort_keys=True,
+        ensure_ascii=True,
+        default=lambda value: value.item() if hasattr(value, "item") else str(value),
+    )
+    immutable = {
+        "asset_id": asset_id,
+        "asset_kind": SPATIAL_GRID_ASSET_KIND,
+        "format": SPATIAL_GRID_FORMAT,
+        "relative_path": relative_path,
+        "provider_code": provider,
+        "checksum": checksum,
+        "valid_from": valid_from,
+        "valid_to": valid_to,
+        "metadata_json": metadata_json,
+    }
+    with HistoryRepository(context.paths.history_db) as repository:
+        by_id = repository.get_asset_by_id(asset_id)
+        by_path = repository.get_asset_by_relative_path(relative_path)
+        existing = by_id or by_path
+        if existing is not None:
+            if any(str(existing[key]) != str(value) for key, value in immutable.items()):
+                raise ValueError(f"Forecast asset conflicts with registered immutable metadata: {target}")
+            return existing
+        try:
+            repository.connection.execute(
+                """
+                INSERT INTO asset (
+                    asset_id, asset_kind, format, relative_path, provider_code,
+                    checksum, valid_from, valid_to, metadata_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                tuple(immutable.values()),
+            )
+            repository.connection.commit()
+        except Exception:
+            repository.connection.rollback()
+            raise
+        result = repository.get_asset_by_id(asset_id)
+        if result is None:
+            raise RuntimeError(f"Failed to register forecast asset {asset_id}.")
+        return result
 
 
 def ingest_forecast_grids(

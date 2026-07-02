@@ -44,6 +44,8 @@ class ForecastAdapter(Protocol):
     def asset_id(self, cycle_time: datetime) -> str: ...
 
     def store_grid(self, **kwargs: Any) -> Any: ...
+    def download_grib(self, **kwargs: Any) -> Path: ...
+    def process_grib(self, grib_path: Path, **kwargs: Any) -> Any: ...
 
 
 @dataclass(slots=True)
@@ -113,6 +115,16 @@ class _ForecastAdapter:
         return forecast_ecmwf.store_normalized_forecast_grid(
             **kwargs,
             product_config=self.product_config,
+        )
+
+    def download_grib(self, **kwargs: Any) -> Path:
+        return forecast_ecmwf.download_forecast_grib(
+            **kwargs, product_config=self.product_config
+        )
+
+    def process_grib(self, grib_path: Path, **kwargs: Any) -> Any:
+        return forecast_ecmwf.process_forecast_grib(
+            grib_path, **kwargs, product_config=self.product_config
         )
 
 

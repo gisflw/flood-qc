@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -123,6 +124,26 @@ def build_output_path(
         f"{product_config.model.upper()}_precipitation_grid.nc"
     )
     return directory / file_name
+
+
+def build_grib_path(
+    downloads_root: Path,
+    cycle_time: datetime,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> Path:
+    return (
+        Path(downloads_root)
+        / product_config.provider_code
+        / f"{product_config.model}_{product_config.product_type}_{cycle_time:%Y%m%dT%H%M%SZ}.grib2"
+    )
+
+
+def build_asset_path(
+    assets_root: Path,
+    cycle_time: datetime,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> Path:
+    return Path(assets_root) / product_config.provider_code / f"{build_asset_id(cycle_time, product_config)}.nc"
 
 
 def build_asset_id(cycle_time: datetime, product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> str:
@@ -307,11 +328,14 @@ def write_canonical_forecast_grid_from_grib(
         timestep_hours=timestep_hours,
         title="ECMWF IFS precipitation forecast grid",
         processing_metadata={
+            "provider": product_config.provider_code,
             "source_format": "GRIB2",
             "source_cycle_time": cycle_time_utc.isoformat(timespec="seconds").replace("+00:00", "Z"),
             "resampling_method": "bilinear",
             "model": product_config.model,
             "product_type": product_config.product_type,
+            "source_resolution": product_config.resolution,
+            "source_parameter": product_config.param,
         },
     )
     return (
@@ -338,6 +362,76 @@ def download_ecmwf_grib_to_path(
         levtype="sfc",
         param=[product_config.param],
         target=str(target_path),
+    )
+
+
+def download_forecast_grib(
+    *,
+    reference_time: datetime,
+    downloads_dir: Path,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> Path:
+    cycle_time = build_ecmwf_cycle(reference_time)
+    target = build_grib_path(downloads_dir, cycle_time, product_config)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if target.exists():
+        messages = read_tp_grib_messages(target)
+        found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
+        found_steps = {message.step_hours for message in messages}
+        if found_cycle == cycle_time and set(build_ecmwf_steps(product_config)).issubset(found_steps):
+            return target
+        target.unlink()
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        download_ecmwf_grib_to_path(
+            temporary, reference_time=reference_time, product_config=product_config
+        )
+        messages = read_tp_grib_messages(temporary)
+        found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
+        found_steps = {message.step_hours for message in messages}
+        if found_cycle != cycle_time or not set(build_ecmwf_steps(product_config)).issubset(found_steps):
+            raise ValueError("Downloaded ECMWF GRIB2 has an unexpected cycle or incomplete steps.")
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
+
+
+def process_forecast_grib(
+    grib_path: Path,
+    *,
+    cycle_time: datetime,
+    assets_dir: Path,
+    bbox: tuple[float, float, float, float],
+    resolution_degrees: float,
+    timestep_hours: int = 1,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> NormalizedForecastGrid:
+    target = build_asset_path(assets_dir, cycle_time, product_config)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="ecmwf_crop_") as temp_dir_name:
+        cropped = Path(temp_dir_name) / "cropped.grib2"
+        crop_grib_to_bbox(grib_path, cropped, bbox=bbox)
+        valid_from, valid_to = write_canonical_forecast_grid_from_grib(
+            cropped,
+            target,
+            cycle_time=cycle_time,
+            bbox=bbox,
+            resolution_degrees=resolution_degrees,
+            timestep_hours=timestep_hours,
+            product_config=product_config,
+        )
+    return NormalizedForecastGrid(
+        run_id=build_execution_id(cycle_time),
+        asset_path=target,
+        cycle_time=cycle_time,
+        valid_from=valid_from,
+        valid_to=valid_to,
+        bbox=bbox,
     )
 
 

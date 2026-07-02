@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -9,16 +10,22 @@ from typing import Iterable
 from mgb_ops.common.time_utils import TIMEZONE
 from mgb_ops.common.time_utils import validate_timestep_hours
 from mgb_ops.assets.history import HistoryRepository
+from mgb_ops.assets.databases import build_station_id
 
-NORMALIZED_OBSERVED_COLUMNS = (
-    "station_id",
+CANONICAL_OBSERVED_COLUMNS = (
     "provider_code",
     "station_code",
     "observed_at",
     "variable_code",
     "value",
+)
+# Kept as the legacy public constant for callers that construct transition files.
+NORMALIZED_OBSERVED_COLUMNS = (
+    "station_id",
+    *CANONICAL_OBSERVED_COLUMNS,
     "state",
 )
+LEGACY_OBSERVED_COLUMNS = NORMALIZED_OBSERVED_COLUMNS
 ALLOWED_STATES = {"raw", "curated", "approved"}
 DEFAULT_OBSERVED_AGGREGATION = {
     "rain": "sum",
@@ -45,7 +52,7 @@ def write_normalized_observed_csv(
     target = Path(output_path)
     target.parent.mkdir(parents=True, exist_ok=True)
     with target.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=NORMALIZED_OBSERVED_COLUMNS)
+        writer = csv.DictWriter(handle, fieldnames=CANONICAL_OBSERVED_COLUMNS)
         writer.writeheader()
         if frame.empty:
             return target
@@ -61,13 +68,11 @@ def write_normalized_observed_csv(
                 except TypeError:
                     pass
                 writer.writerow({
-                    "station_id": station_id,
                     "provider_code": provider_code,
                     "station_code": station_code,
                     "observed_at": observed_at,
                     "variable_code": variable,
                     "value": float(value),
-                    "state": state,
                 })
     return target
 
@@ -162,6 +167,8 @@ def load_normalized_observed_csvs(
     *,
     timestep_hours: int = 1,
     aggregation_by_variable: dict[str, str] | None = None,
+    state: str | None = None,
+    provider_variables: dict[str, set[str] | tuple[str, ...]] | None = None,
 ) -> ObservedCsvImportSummary:
     timestep_hours = validate_timestep_hours(timestep_hours)
     aggregation_policy = _normalize_aggregation_policy(aggregation_by_variable)
@@ -172,73 +179,110 @@ def load_normalized_observed_csvs(
     rows_total = 0
     grouped_values: dict[tuple[str, str, str, str], list[float]] = {}
 
+    if state is not None:
+        state = str(state).strip().lower()
+        if state not in ALLOWED_STATES:
+            raise ValueError(f"Unsupported observation state: {state!r}")
+
     with HistoryRepository(database_path) as repository:
         stations, variables = _load_catalogs(repository)
-
-        for path in paths:
-            if not path.exists():
-                raise FileNotFoundError(f"Normalized observed CSV not found: {path}")
-            with path.open("r", encoding="utf-8", newline="") as handle:
-                reader = csv.DictReader(handle)
-                missing = set(NORMALIZED_OBSERVED_COLUMNS).difference(reader.fieldnames or [])
-                if missing:
-                    raise ValueError(f"Invalid normalized observed CSV at {path}: missing columns {sorted(missing)}")
-
-                for row_number, row in enumerate(reader, start=2):
-                    rows_total += 1
-                    row_label = f"{path}:{row_number}"
-                    station_id = str(row.get("station_id") or "").strip()
-                    provider_code = str(row.get("provider_code") or "").strip().lower()
-                    station_code = str(row.get("station_code") or "").strip()
-                    variable_code = str(row.get("variable_code") or "").strip().lower()
-                    state = str(row.get("state") or "").strip().lower()
-
-                    station = stations.get(station_id)
-                    if station is None:
-                        raise ValueError(f"{row_label}: unknown station_id {station_id!r}.")
-                    if provider_code != station["provider_code"] or station_code != station["station_code"]:
+        try:
+            for path in paths:
+                if not path.exists():
+                    raise FileNotFoundError(f"Normalized observed CSV not found: {path}")
+                with path.open("r", encoding="utf-8", newline="") as handle:
+                    reader = csv.DictReader(handle)
+                    fields = tuple(reader.fieldnames or ())
+                    is_canonical = set(fields) == set(CANONICAL_OBSERVED_COLUMNS)
+                    is_legacy = set(fields) == set(LEGACY_OBSERVED_COLUMNS)
+                    if not is_canonical and not is_legacy:
+                        missing = sorted(set(CANONICAL_OBSERVED_COLUMNS).difference(fields))
                         raise ValueError(
-                            f"{row_label}: station_id {station_id!r} does not match "
-                            f"provider_code={provider_code!r} station_code={station_code!r}."
+                            f"Invalid normalized observed CSV at {path}: missing columns {missing}; expected exactly "
+                            f"{list(CANONICAL_OBSERVED_COLUMNS)} or legacy {list(LEGACY_OBSERVED_COLUMNS)}"
                         )
-                    if variable_code not in variables:
-                        raise ValueError(f"{row_label}: unsupported variable_code {variable_code!r}.")
-                    if state not in ALLOWED_STATES:
-                        raise ValueError(f"{row_label}: unsupported state {state!r}.")
 
-                    method = aggregation_policy.get(variable_code)
-                    if method is None:
-                        raise ValueError(f"{row_label}: missing aggregation policy for variable_code {variable_code!r}.")
+                    for row_number, row in enumerate(reader, start=2):
+                        rows_total += 1
+                        row_label = f"{path}:{row_number}"
+                        provider_code = str(row.get("provider_code") or "").strip().lower()
+                        station_code = str(row.get("station_code") or "").strip()
+                        station_id = build_station_id(provider_code, station_code)
+                        variable_code = str(row.get("variable_code") or "").strip().lower()
+                        row_state = str(row.get("state") or "").strip().lower() if is_legacy else "raw"
+                        if is_legacy:
+                            legacy_station_id = str(row.get("station_id") or "").strip()
+                            if legacy_station_id != station_id:
+                                if legacy_station_id not in stations:
+                                    raise ValueError(f"{row_label}: unknown station_id {legacy_station_id!r}.")
+                                raise ValueError(
+                                    f"{row_label}: station_id {legacy_station_id!r} does not match "
+                                    f"derived station_id {station_id!r}."
+                                )
+                            if row_state not in ALLOWED_STATES:
+                                raise ValueError(f"{row_label}: unsupported state {row_state!r}.")
+                        effective_state = state if state is not None else row_state
 
-                    observed_at = _parse_observed_timestamp(row.get("observed_at", ""), row_label=row_label)
-                    bucket_end = _ceil_to_timestep_end(observed_at, timestep_hours=timestep_hours)
-                    observed_at_text = bucket_end.strftime("%Y-%m-%d %H:%M")
-                    value_text = str(row.get("value") or "").strip()
-                    if not value_text:
-                        raise ValueError(f"{row_label}: value is required.")
-                    try:
-                        value = float(value_text)
-                    except ValueError as exc:
-                        raise ValueError(f"{row_label}: invalid numeric value {value_text!r}.") from exc
+                        station = stations.get(station_id)
+                        if station is None:
+                            raise ValueError(f"{row_label}: unknown station_id {station_id!r}.")
+                        if provider_code != station["provider_code"] or station_code != station["station_code"]:
+                            raise ValueError(
+                                f"{row_label}: station_id {station_id!r} does not match "
+                                f"provider_code={provider_code!r} station_code={station_code!r}."
+                            )
+                        if variable_code not in variables:
+                            raise ValueError(f"{row_label}: unsupported variable_code {variable_code!r}.")
+                        allowed = (provider_variables or {}).get(provider_code)
+                        if allowed is not None and variable_code not in allowed:
+                            raise ValueError(
+                                f"{row_label}: provider {provider_code!r} does not support "
+                                f"variable_code {variable_code!r}."
+                            )
 
-                    grouped_values.setdefault((station_id, variable_code, state, observed_at_text), []).append(value)
+                        method = aggregation_policy.get(variable_code)
+                        if method is None:
+                            raise ValueError(f"{row_label}: missing aggregation policy for variable_code {variable_code!r}.")
 
-        grouped: dict[tuple[str, str, str], list[tuple[str, float]]] = {}
-        for (station_id, variable_code, state, observed_at), values in grouped_values.items():
-            row_label = f"{station_id} {variable_code} {state} {observed_at}"
-            method = aggregation_policy[variable_code]
-            grouped.setdefault((station_id, variable_code, state), []).append(
-                (observed_at, _aggregate_values(values, method=method, row_label=row_label))
-            )
+                        observed_at = _parse_observed_timestamp(row.get("observed_at", ""), row_label=row_label)
+                        bucket_end = _ceil_to_timestep_end(observed_at, timestep_hours=timestep_hours)
+                        observed_at_text = bucket_end.strftime("%Y-%m-%d %H:%M")
+                        value_text = str(row.get("value") or "").strip()
+                        if not value_text:
+                            raise ValueError(f"{row_label}: value is required.")
+                        try:
+                            value = float(value_text)
+                        except ValueError as exc:
+                            raise ValueError(f"{row_label}: invalid numeric value {value_text!r}.") from exc
+                        if not math.isfinite(value):
+                            raise ValueError(f"{row_label}: value must be finite.")
 
-        values_by_variable: dict[str, int] = {}
-        rows_imported = 0
-        for (station_id, variable_code, state), values in sorted(grouped.items()):
-            series_id = repository.ensure_observed_series(station_id, variable_code, state)
-            ordered_values = sorted(values, key=lambda item: item[0])
-            written = repository.upsert_observed_values(series_id, ordered_values)
-            values_by_variable[variable_code] = values_by_variable.get(variable_code, 0) + written
-            rows_imported += written
+                        grouped_values.setdefault(
+                            (station_id, variable_code, effective_state, observed_at_text), []
+                        ).append(value)
+
+            grouped: dict[tuple[str, str, str], list[tuple[str, float]]] = {}
+            for (station_id, variable_code, effective_state, observed_at), values in grouped_values.items():
+                row_label = f"{station_id} {variable_code} {effective_state} {observed_at}"
+                method = aggregation_policy[variable_code]
+                grouped.setdefault((station_id, variable_code, effective_state), []).append(
+                    (observed_at, _aggregate_values(values, method=method, row_label=row_label))
+                )
+
+            values_by_variable: dict[str, int] = {}
+            rows_imported = 0
+            for (station_id, variable_code, effective_state), values in sorted(grouped.items()):
+                series_id = repository.ensure_observed_series(
+                    station_id, variable_code, effective_state, commit=False
+                )
+                ordered_values = sorted(values, key=lambda item: item[0])
+                written = repository.upsert_observed_values(series_id, ordered_values, commit=False)
+                values_by_variable[variable_code] = values_by_variable.get(variable_code, 0) + written
+                rows_imported += written
+            repository.connection.commit()
+        except Exception:
+            repository.connection.rollback()
+            raise
 
     return ObservedCsvImportSummary(
         files_total=len(paths),

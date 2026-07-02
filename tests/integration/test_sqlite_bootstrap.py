@@ -241,7 +241,7 @@ def test_history_station_inventory_requires_mini_id_column(tmp_path) -> None:
         initialize_history_db(db_path, inventory_path, SQL_DIR / "history_schema.sql")
 
 
-def test_initialize_history_db_adds_mini_id_to_existing_station_table(tmp_path) -> None:
+def test_initialize_history_db_rejects_partial_existing_database_without_repair(tmp_path) -> None:
     db_path = tmp_path / "history.sqlite"
     with sqlite3.connect(db_path) as connection:
         connection.execute(
@@ -260,18 +260,15 @@ def test_initialize_history_db_adds_mini_id_to_existing_station_table(tmp_path) 
             """
         )
 
-    initialize_history_db(db_path, TEST_INVENTORY_CSV, SQL_DIR / "history_schema.sql")
+    original_bytes = db_path.read_bytes()
+    with pytest.raises(RuntimeError, match="incompatible"):
+        initialize_history_db(db_path, TEST_INVENTORY_CSV, SQL_DIR / "history_schema.sql")
 
     with sqlite3.connect(db_path) as connection:
-        mini_id_type = connection.execute(
-            "SELECT type FROM pragma_table_info('station') WHERE name = 'mini_id'"
-        ).fetchone()[0]
-        mapped_sample = connection.execute(
-            "SELECT mini_id FROM station WHERE provider_code = 'ana' AND station_code = '74100000'"
-        ).fetchone()[0]
-
-    assert mini_id_type == "INTEGER"
-    assert mapped_sample == 8504
+        assert connection.execute(
+            "SELECT COUNT(*) FROM pragma_table_info('station') WHERE name = 'mini_id'"
+        ).fetchone()[0] == 0
+    assert db_path.read_bytes() == original_bytes
 
 
 def test_initialize_run_db(tmp_path) -> None:

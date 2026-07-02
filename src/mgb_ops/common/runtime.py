@@ -22,6 +22,24 @@ class RuntimeContext:
     settings: dict[str, object]
     env: RuntimeEnv
 
+    @classmethod
+    def from_workspace(
+        cls,
+        workspace: str | Path,
+        *,
+        dotenv_path: str | Path | None = None,
+        env: Mapping[str, str] | None = None,
+        remote_workspace: str | Path | None = None,
+        require_custom_settings: bool = False,
+    ) -> RuntimeContext:
+        return build_runtime_context(
+            workspace=workspace,
+            dotenv_path=dotenv_path,
+            env=env,
+            remote_workspace=remote_workspace,
+            require_custom_settings=require_custom_settings,
+        )
+
 
 def load_runtime_env(
     *,

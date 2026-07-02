@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import csv
+import os
 import sqlite3
+import tempfile
 import unicodedata
 from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
@@ -156,8 +158,43 @@ def initialize_history_db(
     schema_path: Path,
 ) -> Path:
     target = Path(database_path)
-    apply_schema(target, Path(schema_path))
-    load_history_station_inventory(target, inventory_csv_path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    user_tables: set[str] = set()
+    if target.exists() and target.stat().st_size:
+        try:
+            with sqlite3.connect(f"{target.resolve().as_uri()}?mode=ro", uri=True) as connection:
+                user_tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+                    )
+                }
+        except sqlite3.DatabaseError as exc:
+            raise RuntimeError(f"History database is not a valid SQLite database: {target}") from exc
+    if user_tables:
+        from mgb_ops.assets.history import HistoryRepository
+        HistoryRepository.validate_database(target)
+        return target
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
+    )
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    try:
+        apply_schema(temporary, Path(schema_path))
+        load_history_station_inventory(temporary, inventory_csv_path)
+        from mgb_ops.assets.history import HistoryRepository
+        HistoryRepository.validate_database(temporary)
+        packed = temporary.with_suffix(temporary.suffix + ".packed")
+        with sqlite3.connect(temporary) as source, sqlite3.connect(packed) as destination:
+            source.backup(destination)
+        os.replace(packed, target)
+    finally:
+        temporary.unlink(missing_ok=True)
+        temporary.with_suffix(temporary.suffix + ".packed").unlink(missing_ok=True)
+        Path(f"{temporary}-wal").unlink(missing_ok=True)
+        Path(f"{temporary}-shm").unlink(missing_ok=True)
     return target
 
 
