@@ -16,7 +16,6 @@ from apps.ops_dashboard.views.summaries import (
 
 def _monitoring_view(
     controller: DashboardState,
-    opacity_slider: pn.widgets.FloatSlider | None = None,
 ) -> pn.viewable.Viewable:
     artifacts = controller.map_artifacts
     map_pane = pn.pane.DeckGL(
@@ -32,22 +31,56 @@ def _monitoring_view(
         map_pane.tooltips = event.new.tooltips
 
     controller.param.watch(update_map, "map_artifacts")
-    if opacity_slider is not None:
-        opacity_slider.jscallback(
-            args={"deck": map_pane},
-            value="""
-            const view = Bokeh.index.find_one_by_id(deck.id)
-            if (view == null || view.deckGL == null) {
-              return
-            }
-            const layers = view.deckGL.props.layers.map((layer) =>
-              String(layer.id || "").startsWith("rainfall-raster:")
-                ? layer.clone({opacity: cb_obj.value})
-                : layer
-            )
-            view.deckGL.setProps({layers})
-            """,
+    rainfall_mode = pn.widgets.RadioButtonGroup(
+        name="Rainfall source",
+        options={"Observed": "observed", "Forecast": "forecast"},
+        value=controller.rainfall_mode,
+        button_type="default",
+    )
+    rainfall_mode.param.watch(
+        lambda event: setattr(controller, "rainfall_mode", event.new), "value"
+    )
+    observed_hours = pn.widgets.IntInput.from_param(
+        controller.param.rainfall_hours,
+        name="Hours before reference time",
+        sizing_mode="stretch_width",
+    )
+    map_forecast_hours = pn.widgets.IntInput.from_param(
+        controller.param.forecast_rainfall_hours,
+        name="Hours after reference time",
+        sizing_mode="stretch_width",
+    )
+    apply_rainfall = pn.widgets.Button(
+        name="Apply rainfall period",
+        button_type="primary",
+        sizing_mode="stretch_width",
+    )
+    apply_rainfall.on_click(lambda _: controller.apply_rainfall_hours())
+    opacity_slider = pn.widgets.FloatSlider.from_param(
+        controller.param.raster_opacity,
+        name="Raster opacity",
+        sizing_mode="stretch_width",
+    )
+    show_basin = pn.widgets.Checkbox.from_param(
+        controller.param.show_selected_basin,
+        name="Show selected basin",
+        sizing_mode="stretch_width",
+    )
+    opacity_slider.jscallback(
+        args={"deck": map_pane},
+        value="""
+        const view = Bokeh.index.find_one_by_id(deck.id)
+        if (view == null || view.deckGL == null) {
+          return
+        }
+        const layers = view.deckGL.props.layers.map((layer) =>
+          String(layer.id || "").startsWith("rainfall-raster:")
+            ? layer.clone({opacity: cb_obj.value})
+            : layer
         )
+        view.deckGL.setProps({layers})
+        """,
+    )
     map_pane.param.watch(
         lambda event: controller.handle_map_click(event.new), "click_state"
     )
@@ -126,6 +159,14 @@ def _monitoring_view(
     )
     return pn.Column(
         pn.Card(
+            pn.Row(
+                rainfall_mode,
+                observed_hours,
+                map_forecast_hours,
+                apply_rainfall,
+                sizing_mode="stretch_width",
+            ),
+            pn.Row(opacity_slider, show_basin, sizing_mode="stretch_width"),
             map_pane,
             inspection,
             title="Operational Map",

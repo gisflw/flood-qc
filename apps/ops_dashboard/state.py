@@ -39,7 +39,10 @@ from mgb_ops.assets.spatial_grid import RegularGridSpec
 from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.config.workspace import resolve_workspace_path
 from mgb_ops.utils.time import resolve_reference_time
-from mgb_ops.assets.observed_precipitation import OBSERVED_PRECIPITATION_CACHE_FILENAME
+from mgb_ops.model.prepare_mgb_rainfall import (
+    MGB_FORECAST_CACHE_FILENAME,
+    MGB_OBSERVED_CACHE_FILENAME,
+)
 from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 
 
@@ -56,7 +59,11 @@ class DashboardState(param.Parameterized):
     station_id = param.String(default=None, allow_None=True)
     mini_id = param.Integer(default=None, allow_None=True)
     selected_raster = param.Selector(default=None, objects=[None])
+    rainfall_mode = param.Selector(
+        default="observed", objects=["observed", "forecast"]
+    )
     rainfall_hours = param.Integer(default=24, bounds=(1, None))
+    forecast_rainfall_hours = param.Integer(default=24, bounds=(1, None))
     summary_previous_hours = param.Integer(default=24, bounds=(1, None))
     summary_forecast_hours = param.Integer(default=24, bounds=(1, None))
     raster_opacity = param.Number(default=0.25, bounds=(0, 1), step=0.05)
@@ -112,13 +119,17 @@ class DashboardState(param.Parameterized):
         self.history_path = self.context.paths.history_db
         self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
         self.observed_precipitation_path = (
-            self.context.paths.cache_dir / OBSERVED_PRECIPITATION_CACHE_FILENAME
+            self.context.paths.cache_dir / MGB_OBSERVED_CACHE_FILENAME
+        )
+        self.forecast_precipitation_path = (
+            self.context.paths.cache_dir / MGB_FORECAST_CACHE_FILENAME
         )
         self.gpkg_path = resolve_workspace_path(
             self.workspace, self.context.settings["spatial"]["gpkg_path"]
         )
         default_hours = int(self.context.settings["summaries"]["accum_hours"][0])
         params.setdefault("rainfall_hours", default_hours)
+        params.setdefault("forecast_rainfall_hours", default_hours)
         params.setdefault("summary_previous_hours", default_hours)
         params.setdefault("summary_forecast_hours", default_hours)
         super().__init__(**params)
@@ -191,13 +202,16 @@ class DashboardState(param.Parameterized):
             try:
                 self.accumulation_rasters = [
                     _accumulation_raster(
-                        str(self.observed_precipitation_path),
+                        str(self._rainfall_cache_path()),
                         workspace,
-                        dashboard_map.build_file_version(self.observed_precipitation_path),
+                        dashboard_map.build_file_version(
+                            self._rainfall_cache_path()
+                        ),
                         self.window,
                         tuple(float(value) for value in bbox),
                         float(self.context.settings["spatial_grid"]["resolution_degrees"]),
-                        self.rainfall_hours,
+                        self._selected_rainfall_hours(),
+                        rainfall_mode=self.rainfall_mode,
                     )
                 ]
             except (
@@ -208,7 +222,7 @@ class DashboardState(param.Parameterized):
             ) as exc:
                 self.warnings = [
                     *self.warnings,
-                    f"Observed rainfall maps unavailable: {exc}",
+                    f"{self.rainfall_mode.title()} rainfall maps unavailable: {exc}",
                 ]
         elif bbox is None:
             self.warnings = [
@@ -230,19 +244,24 @@ class DashboardState(param.Parameterized):
         if bbox is None:
             self.warnings = [
                 *self.warnings,
-                "Observed rainfall maps are unavailable for this workspace.",
+                "Rainfall maps are unavailable for this workspace.",
             ]
             return
+        cache_path = self._rainfall_cache_path()
         try:
             raster = _accumulation_raster(
-                str(self.observed_precipitation_path), str(self.workspace),
-                dashboard_map.build_file_version(self.observed_precipitation_path), self.window,
+                str(cache_path), str(self.workspace),
+                dashboard_map.build_file_version(cache_path), self.window,
                 tuple(float(value) for value in bbox),
                 float(self.context.settings["spatial_grid"]["resolution_degrees"]),
-                self.rainfall_hours,
+                self._selected_rainfall_hours(),
+                rainfall_mode=self.rainfall_mode,
             )
         except (FileNotFoundError, sqlite3.Error, pd.errors.DatabaseError, ValueError) as exc:
-            self.warnings = [*self.warnings, f"Observed rainfall map unavailable: {exc}"]
+            self.warnings = [
+                *self.warnings,
+                f"{self.rainfall_mode.title()} rainfall map unavailable: {exc}",
+            ]
             return
         self.accumulation_rasters = [raster]
         raster_name = str(raster["name"])
@@ -258,6 +277,20 @@ class DashboardState(param.Parameterized):
             replacement_map = self.map_artifacts
             self.map_artifacts = current_map
         self.map_artifacts = replacement_map
+
+    def _rainfall_cache_path(self) -> Path:
+        return (
+            self.observed_precipitation_path
+            if self.rainfall_mode == "observed"
+            else self.forecast_precipitation_path
+        )
+
+    def _selected_rainfall_hours(self) -> int:
+        return (
+            int(self.rainfall_hours)
+            if self.rainfall_mode == "observed"
+            else int(self.forecast_rainfall_hours)
+        )
 
     @param.depends("selected_raster", "show_selected_basin", watch=True)
     def _rebuild_map(

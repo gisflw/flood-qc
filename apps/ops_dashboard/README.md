@@ -25,7 +25,7 @@ The dashboard consumes:
 Set `spatial_grid.bbox: [west, south, east, north]` and
 `spatial_grid.resolution_degrees` in `<workspace>/config/custom.yaml`.
 Observed rainfall maps are read from
-`<workspace>/data/cache/precipitations_observed.nc`.
+`<workspace>/data/cache/precipitations_mgb_observed.nc`.
 
 Additional behavior:
 

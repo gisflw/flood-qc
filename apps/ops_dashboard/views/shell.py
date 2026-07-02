@@ -17,27 +17,6 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
         sizing_mode="stretch_width",
     )
     refresh.on_click(lambda _: state.refresh())
-    rainfall_hours = pn.widgets.IntInput.from_param(
-        state.param.rainfall_hours,
-        name="Previous rainfall (hours)",
-        sizing_mode="stretch_width",
-    )
-    apply_rainfall = pn.widgets.Button(
-        name="Apply rainfall period",
-        button_type="primary",
-        sizing_mode="stretch_width",
-    )
-    apply_rainfall.on_click(lambda _: state.apply_rainfall_hours())
-    opacity = pn.widgets.FloatSlider.from_param(
-        state.param.raster_opacity,
-        name="Raster opacity",
-        sizing_mode="stretch_width",
-    )
-    show_basin = pn.widgets.Checkbox.from_param(
-        state.param.show_selected_basin,
-        name="Show selected basin",
-        sizing_mode="stretch_width",
-    )
     refreshed = pn.bind(
         lambda value: pn.pane.Markdown(
             f"Last session refresh:  \n{value}" if value else "Not refreshed yet."
@@ -52,7 +31,7 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
         state.param.warnings,
     )
     tabs = pn.Tabs(
-        ("Monitoring", _monitoring_view(state, opacity)),
+        ("Monitoring", _monitoring_view(state)),
         ("Forecast", _forecast_view(state)),
         dynamic=True,
         sizing_mode="stretch_width",
@@ -63,10 +42,6 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
             pn.pane.Markdown("## Controls"),
             refresh,
             refreshed,
-            rainfall_hours,
-            apply_rainfall,
-            opacity,
-            show_basin,
             pn.layout.Divider(),
             warnings,
         ],

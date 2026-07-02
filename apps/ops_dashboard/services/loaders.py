@@ -178,38 +178,78 @@ def _accumulation_raster(
     bbox: tuple[float, float, float, float],
     resolution: float,
     hours: int,
+    *,
+    rainfall_mode: str = "observed",
 ) -> dict[str, object]:
     del workspace, source_version
     if not isinstance(hours, int) or isinstance(hours, bool) or hours < 1:
         raise ValueError("Rainfall accumulation hours must be a positive integer.")
-    expected_grid = RegularGridSpec(bbox=bbox, resolution=resolution)
+    if rainfall_mode not in {"observed", "forecast"}:
+        raise ValueError("Rainfall mode must be 'observed' or 'forecast'.")
+    expected_grid = RegularGridSpec(
+        bbox=bbox,
+        resolution=resolution,
+        include_boundary_cells=True,
+    )
     cached = read_spatial_grid(Path(cache_path))
-    if cached.variable != "precipitation" or cached.grid_type != "observed":
-        raise ValueError("Observed rainfall cache must contain observed precipitation.")
-    if cached.source != "interpolated_from_stations":
-        raise ValueError("Observed rainfall cache must be interpolated from stations.")
+    if cached.variable != "precipitation" or cached.grid_type != rainfall_mode:
+        raise ValueError(
+            f"{rainfall_mode.title()} rainfall cache must contain "
+            f"{rainfall_mode} precipitation."
+        )
+    expected_source = (
+        "interpolated_from_stations"
+        if rainfall_mode == "observed"
+        else "resampled_from_grid"
+    )
+    if cached.source != expected_source:
+        raise ValueError(
+            f"{rainfall_mode.title()} rainfall cache must have source "
+            f"'{expected_source}'."
+        )
     if not (
         np.allclose(cached.latitudes, expected_grid.latitudes)
         and np.allclose(cached.longitudes, expected_grid.longitudes)
     ):
-        raise ValueError("Observed rainfall cache does not match spatial_grid.")
-    end_utc = pd.Timestamp(window.cutoff_time, tz="America/Sao_Paulo").tz_convert("UTC")
-    start_local = max(
-        window.start_time,
-        window.cutoff_time - pd.Timedelta(hours=hours).to_pytimedelta(),
-    )
-    start_utc = pd.Timestamp(start_local, tz="America/Sao_Paulo").tz_convert("UTC")
+        raise ValueError(
+            f"{rainfall_mode.title()} rainfall cache does not match spatial_grid."
+        )
+    reference_utc = pd.Timestamp(
+        window.cutoff_time, tz="America/Sao_Paulo"
+    ).tz_convert("UTC")
+    if rainfall_mode == "observed":
+        start_utc = reference_utc - pd.Timedelta(hours=hours)
+        end_utc = reference_utc
+    else:
+        start_utc = reference_utc
+        end_utc = reference_utc + pd.Timedelta(hours=hours)
     indices = [
         index
         for index, (left, right) in enumerate(cached.time_bounds_utc)
         if pd.Timestamp(left) >= start_utc and pd.Timestamp(right) <= end_utc
     ]
     if not indices:
-        raise ValueError("Observed rainfall cache does not cover the requested accumulation window.")
-    if pd.Timestamp(cached.time_bounds_utc[indices[0]][0]) != start_utc or pd.Timestamp(
-        cached.time_bounds_utc[indices[-1]][1]
-    ) != end_utc:
-        raise ValueError("Observed rainfall cache incompletely covers the requested accumulation window.")
+        raise ValueError(
+            f"{rainfall_mode.title()} rainfall cache does not cover the "
+            "requested accumulation window."
+        )
+    selected_bounds = [
+        tuple(pd.Timestamp(value) for value in cached.time_bounds_utc[index])
+        for index in indices
+    ]
+    complete = (
+        selected_bounds[0][0] == start_utc
+        and selected_bounds[-1][1] == end_utc
+        and all(
+            left[1] == right[0]
+            for left, right in zip(selected_bounds, selected_bounds[1:])
+        )
+    )
+    if not complete:
+        raise ValueError(
+            f"{rainfall_mode.title()} rainfall cache incompletely covers the "
+            "requested accumulation window."
+        )
     selected = cached.values[indices]
     accumulated = np.nansum(selected, axis=0)
     accumulated[np.all(~np.isfinite(selected), axis=0)] = np.nan
@@ -217,14 +257,15 @@ def _accumulation_raster(
         values=accumulated,
         latitudes=cached.latitudes,
         longitudes=cached.longitudes,
-        bounds=expected_grid.bbox,
+        bounds=expected_grid.effective_bbox,
         start_time=start_utc,
         end_time=end_utc,
         units=cached.units,
         source=str(cache_path),
     )
     return {
-        "name": f"accum_{hours}h",
+        "name": f"{rainfall_mode}_accum_{hours}h",
+        "rainfall_mode": rainfall_mode,
         "horizon_hours": hours,
         "horizon_label": f"{hours}h",
         "grid": rainfall,

@@ -235,6 +235,7 @@ def test_custom_rainfall_hours_apply_and_refresh(tmp_path: Path, monkeypatch) ->
     monkeypatch.setattr(dashboard_state, "_accumulation_raster", fake_raster)
     monkeypatch.setattr(dashboard_state.DashboardState, "_rebuild_map", lambda self, **kwargs: None)
     state = dashboard_state.DashboardState(tmp_path)
+    assert state.observed_precipitation_path.name == "precipitations_mgb_observed.nc"
     assert state.rainfall_hours == 24
     assert calls == [24]
     assert state.selected_raster == "accum_24h"
@@ -248,6 +249,80 @@ def test_custom_rainfall_hours_apply_and_refresh(tmp_path: Path, monkeypatch) ->
     state.refresh()
     assert state.rainfall_hours == 100
     assert calls[-1] == 100
+
+
+def test_forecast_rainfall_uses_separate_hours_and_cache(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_config(tmp_path)
+    initialize_history_db(tmp_path / "data" / "history.sqlite")
+    calls: list[tuple[str, str, int]] = []
+
+    def fake_raster(*args, **kwargs):
+        mode = kwargs["rainfall_mode"]
+        hours = args[6]
+        calls.append((mode, Path(args[0]).name, hours))
+        return {
+            "name": f"{mode}_accum_{hours}h",
+            "horizon_hours": hours,
+            "horizon_label": f"{hours}h",
+            "grid": None,
+        }
+
+    monkeypatch.setattr(dashboard_state, "_accumulation_raster", fake_raster)
+    monkeypatch.setattr(
+        dashboard_state.DashboardState,
+        "_rebuild_map",
+        lambda self, **kwargs: None,
+    )
+    state = dashboard_state.DashboardState(tmp_path)
+    state.rainfall_hours = 12
+    state.forecast_rainfall_hours = 48
+    state.rainfall_mode = "forecast"
+
+    state.apply_rainfall_hours()
+
+    assert calls[-1] == (
+        "forecast",
+        "precipitations_mgb_forecast.nc",
+        48,
+    )
+    assert state.rainfall_hours == 12
+    assert state.selected_raster == "forecast_accum_48h"
+
+
+def test_failed_rainfall_apply_retains_last_valid_map(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_config(tmp_path)
+    initialize_history_db(tmp_path / "data" / "history.sqlite")
+
+    def fake_raster(*args, **kwargs):
+        if kwargs["rainfall_mode"] == "forecast":
+            raise ValueError("incomplete cache")
+        return {
+            "name": "observed_accum_24h",
+            "horizon_hours": 24,
+            "horizon_label": "24h",
+            "grid": None,
+        }
+
+    monkeypatch.setattr(dashboard_state, "_accumulation_raster", fake_raster)
+    monkeypatch.setattr(
+        dashboard_state.DashboardState,
+        "_rebuild_map",
+        lambda self, **kwargs: None,
+    )
+    state = dashboard_state.DashboardState(tmp_path)
+    previous_rasters = state.accumulation_rasters
+    previous_selection = state.selected_raster
+    state.rainfall_mode = "forecast"
+
+    state.apply_rainfall_hours()
+
+    assert state.accumulation_rasters is previous_rasters
+    assert state.selected_raster == previous_selection
+    assert any("Forecast rainfall map unavailable" in value for value in state.warnings)
 
 
 def test_changing_rainfall_hours_preserves_station_map_layer(
