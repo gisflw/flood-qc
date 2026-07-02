@@ -89,7 +89,10 @@ def _rainfall_total(
     return float(selected.sum()) if not selected.empty else np.nan
 
 
-def _selected_area_summary(state: DashboardState) -> pn.viewable.Viewable:
+def _selected_area_summary(
+    state: DashboardState,
+    period_controls: pn.viewable.Viewable | None = None,
+) -> pn.viewable.Viewable:
     cutoff = pd.Timestamp(state.window.cutoff_time)
     previous_hours = int(state.summary_previous_hours)
     forecast_hours = int(state.summary_forecast_hours)
@@ -184,11 +187,12 @@ def _selected_area_summary(state: DashboardState) -> pn.viewable.Viewable:
         ],
         sizing_mode="stretch_width",
     )
-    return pn.Column(
-        pn.pane.Markdown(
+    identity = pn.pane.Markdown(
             f"**Station:** {station_label}  \n"
             f"**Basin:** {basin_label}"
-        ),
-        metrics,
-        sizing_mode="stretch_width",
     )
+    contents = [identity]
+    if period_controls is not None:
+        contents.append(period_controls)
+    contents.append(metrics)
+    return pn.Column(*contents, sizing_mode="stretch_width")

@@ -77,8 +77,13 @@ def _monitoring_view(
         name="Forecast rainfall period (hours)",
         sizing_mode="stretch_width",
     )
+    period_controls = pn.Row(
+        previous_hours,
+        forecast_hours,
+        sizing_mode="stretch_width",
+    )
     selected_area_summary = pn.bind(
-        lambda *_: _selected_area_summary(controller),
+        lambda *_: _selected_area_summary(controller, period_controls),
         controller.param.station_id,
         controller.param.mini_id,
         controller.param.summary_previous_hours,
@@ -127,11 +132,6 @@ def _monitoring_view(
             sizing_mode="stretch_width",
         ),
         pn.Card(
-            pn.Row(
-                previous_hours,
-                forecast_hours,
-                sizing_mode="stretch_width",
-            ),
             selected_area_summary,
             title="Selected Area",
             sizing_mode="stretch_width",
