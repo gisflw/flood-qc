@@ -54,6 +54,8 @@ class DashboardState(param.Parameterized):
     mini_id = param.Integer(default=None, allow_None=True)
     selected_raster = param.Selector(default=None, objects=[None])
     rainfall_hours = param.Integer(default=24, bounds=(1, None))
+    summary_previous_hours = param.Integer(default=24, bounds=(1, None))
+    summary_forecast_hours = param.Integer(default=24, bounds=(1, None))
     raster_opacity = param.Number(default=0.25, bounds=(0, 1), step=0.05)
     show_selected_basin = param.Boolean(default=False)
     raster_inspection = param.Parameter(default=None, allow_None=True)
@@ -105,6 +107,8 @@ class DashboardState(param.Parameterized):
         )
         default_hours = int(self.context.settings["summaries"]["accum_hours"][0])
         params.setdefault("rainfall_hours", default_hours)
+        params.setdefault("summary_previous_hours", default_hours)
+        params.setdefault("summary_forecast_hours", default_hours)
         super().__init__(**params)
         self.refresh()
 

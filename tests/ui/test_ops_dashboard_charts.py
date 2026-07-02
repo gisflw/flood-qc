@@ -40,7 +40,7 @@ def test_comparison_chart_is_empty_without_selections() -> None:
     assert figure.layout.annotations[-1].text == (
         "Click a station and/or a mini on the map."
     )
-    assert figure.layout.title.text == "Station and Mini Comparison"
+    assert figure.layout.title.text == "Observed and Modeled Comparison"
 
 
 def test_comparison_chart_preserves_panel_order_and_centers_levels() -> None:

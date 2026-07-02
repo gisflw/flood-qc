@@ -10,8 +10,7 @@ from apps.ops_dashboard.state import DashboardState
 from apps.ops_dashboard.views.charts import _comparison_chart
 from apps.ops_dashboard.views.summaries import (
     _format_number,
-    _mini_summary,
-    _station_summary,
+    _selected_area_summary,
 )
 
 
@@ -68,14 +67,22 @@ def _monitoring_view(
         )
 
     controller.param.watch(update_inspection, "raster_inspection")
-    station_summary = pn.bind(
-        lambda *_: _station_summary(controller),
-        controller.param.station_id,
-        controller.param.source_versions,
+    previous_hours = pn.widgets.IntInput.from_param(
+        controller.param.summary_previous_hours,
+        name="Previous rainfall period (hours)",
+        sizing_mode="stretch_width",
     )
-    mini_summary = pn.bind(
-        lambda *_: _mini_summary(controller),
+    forecast_hours = pn.widgets.IntInput.from_param(
+        controller.param.summary_forecast_hours,
+        name="Forecast rainfall period (hours)",
+        sizing_mode="stretch_width",
+    )
+    selected_area_summary = pn.bind(
+        lambda *_: _selected_area_summary(controller),
+        controller.param.station_id,
         controller.param.mini_id,
+        controller.param.summary_previous_hours,
+        controller.param.summary_forecast_hours,
         controller.param.source_versions,
     )
     def comparison_plot(*_: Any) -> pn.viewable.Viewable:
@@ -119,14 +126,19 @@ def _monitoring_view(
             title="Operational Map",
             sizing_mode="stretch_width",
         ),
-        pn.Row(
-            pn.Card(station_summary, title="Station Summary", sizing_mode="stretch_width"),
-            pn.Card(mini_summary, title="Mini Summary", sizing_mode="stretch_width"),
+        pn.Card(
+            pn.Row(
+                previous_hours,
+                forecast_hours,
+                sizing_mode="stretch_width",
+            ),
+            selected_area_summary,
+            title="Selected Area",
             sizing_mode="stretch_width",
         ),
         pn.Card(
             comparison,
-            title="Station and Mini Comparison",
+            title="Observed and Modeled Comparison",
             sizing_mode="stretch_width",
         ),
         sizing_mode="stretch_width",

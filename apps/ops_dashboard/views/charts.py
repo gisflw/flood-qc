@@ -160,6 +160,6 @@ def _comparison_chart(
         margin={"t": 55, "r": 15, "b": 25, "l": 55},
         hovermode="x unified",
         barmode="group",
-        title=" · ".join(selections) if selections else "Station and Mini Comparison",
+        title=" · ".join(selections) if selections else "Observed and Modeled Comparison",
     )
     return fig

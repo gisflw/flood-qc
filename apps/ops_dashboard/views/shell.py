@@ -75,7 +75,13 @@ def _build_template(state: DashboardState) -> pn.template.base.BasicTemplate:
                 "# Operational MGB System\n"
                 "Observed and forecasted hydrological data for the operation of MGB results."
             ),
-            pn.bind(_network_summary, state.param.stations),
+            pn.bind(
+                lambda stations: _network_summary(
+                    stations,
+                    state.window.cutoff_time,
+                ),
+                state.param.stations,
+            ),
             tabs,
         ],
         sidebar_width=320,
