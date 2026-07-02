@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Iterable
 
 from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter, get_forecast_adapter
+from mgb_ops.adapters.forecast_ecmwf import (
+    FORECAST_BBOX_BUFFER_FRACTION,
+    build_bbox_with_buffer,
+)
 from mgb_ops.assets.spatial_grid import (
     SPATIAL_GRID_ASSET_KIND,
     SPATIAL_GRID_FORMAT,
@@ -58,8 +62,16 @@ def _validate_reusable_grid(
     required_start: datetime,
     required_end: datetime,
 ) -> bool:
-    grid = read_spatial_grid(path)
-    expected_cycle = cycle_time.replace(tzinfo=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    try:
+        grid = read_spatial_grid(path)
+        expected_cycle = cycle_time.replace(tzinfo=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+        buffered_bbox = build_bbox_with_buffer(bbox)
+        buffer_fraction = float(grid.metadata.get("buffer_fraction", -1))
+        model_bbox = json.loads(str(grid.metadata["model_bbox"]))
+        stored_buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
+        requested_bbox = json.loads(str(grid.metadata["requested_bbox"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return False
     return (
         grid.grid_type == "forecast"
         and grid.variable == "precipitation"
@@ -68,9 +80,12 @@ def _validate_reusable_grid(
         and _metadata_value(grid, "model") == adapter.product_config.model
         and _metadata_value(grid, "product_type") == adapter.product_config.product_type
         and _metadata_value(grid, "source_cycle_time") == expected_cycle
-        and grid.timestep_hours == timestep_hours
-        and float(grid.metadata["resolution_degrees"]) == resolution
-        and json.loads(str(grid.metadata["bbox"])) == list(bbox)
+        and grid.timestep_hours is None
+        and grid.source == "cropped_from_native_grid"
+        and buffer_fraction == FORECAST_BBOX_BUFFER_FRACTION
+        and model_bbox == list(bbox)
+        and stored_buffered_bbox == list(buffered_bbox)
+        and requested_bbox == list(buffered_bbox)
         and grid.time_bounds_utc[0][0] <= required_start
         and grid.time_bounds_utc[-1][1] >= required_end
     )
@@ -112,7 +127,7 @@ def download_forecast_data(
             path = Path(matches.iloc[0]["asset_path"])
             if not path.exists():
                 raise FileNotFoundError(f"Registered forecast asset is missing: {path}")
-            if not _validate_reusable_grid(
+            if _validate_reusable_grid(
                 path,
                 provider=provider,
                 adapter=adapter,
@@ -123,9 +138,8 @@ def download_forecast_data(
                 required_start=required_start,
                 required_end=required_end,
             ):
-                raise ValueError(f"Registered forecast asset conflicts with the configured request: {path}")
-            reused.append(path)
-            continue
+                reused.append(path)
+                continue
         grib = adapter.download_grib(
             reference_time=reference, downloads_dir=context.paths.downloads_dir
         )
@@ -169,6 +183,17 @@ def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, obje
             raise ValueError(
                 f"Forecast metadata {key!r} conflicts with provider product identity."
             )
+    try:
+        buffer_fraction = float(grid.metadata["buffer_fraction"])
+        model_bbox = json.loads(str(grid.metadata["model_bbox"]))
+        buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError("Forecast asset is missing valid bbox buffer metadata.") from exc
+    if (
+        buffer_fraction != FORECAST_BBOX_BUFFER_FRACTION
+        or buffered_bbox != list(build_bbox_with_buffer(tuple(model_bbox)))
+    ):
+        raise ValueError("Forecast asset bbox buffer metadata is inconsistent.")
     cycle_text = _metadata_value(grid, "source_cycle_time")
     cycle = datetime.fromisoformat(cycle_text.replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
     asset_id = adapter.asset_id(cycle)
@@ -200,7 +225,43 @@ def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, obje
         existing = by_id or by_path
         if existing is not None:
             if any(str(existing[key]) != str(value) for key, value in immutable.items()):
-                raise ValueError(f"Forecast asset conflicts with registered immutable metadata: {target}")
+                try:
+                    existing_metadata = json.loads(str(existing["metadata_json"] or "{}"))
+                    existing_buffer = float(existing_metadata.get("buffer_fraction", -1))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    existing_buffer = -1
+                if existing_buffer == FORECAST_BBOX_BUFFER_FRACTION:
+                    raise ValueError(f"Forecast asset conflicts with registered immutable metadata: {target}")
+                if str(existing["asset_id"]) != asset_id or str(existing["provider_code"]) != provider:
+                    raise ValueError(f"Obsolete forecast asset identity conflicts with replacement: {target}")
+                try:
+                    repository.connection.execute(
+                        """
+                        UPDATE asset
+                        SET asset_kind = ?, format = ?, relative_path = ?, provider_code = ?,
+                            checksum = ?, valid_from = ?, valid_to = ?, metadata_json = ?
+                        WHERE asset_id = ?
+                        """,
+                        (
+                            immutable["asset_kind"],
+                            immutable["format"],
+                            immutable["relative_path"],
+                            immutable["provider_code"],
+                            immutable["checksum"],
+                            immutable["valid_from"],
+                            immutable["valid_to"],
+                            immutable["metadata_json"],
+                            asset_id,
+                        ),
+                    )
+                    repository.connection.commit()
+                except Exception:
+                    repository.connection.rollback()
+                    raise
+                replaced = repository.get_asset_by_id(asset_id)
+                if replaced is None:
+                    raise RuntimeError(f"Failed to replace obsolete forecast asset {asset_id}.")
+                return replaced
             return existing
         try:
             repository.connection.execute(
@@ -247,6 +308,7 @@ def ingest_forecast_grids(
     )
     product_config = adapter.product_config
     asset_id = adapter.asset_id(normalized.cycle_time)
+    native_grid = read_spatial_grid(normalized.asset_path)
     metadata = {
         "provider": product_config.provider_code,
         "model": product_config.model,
@@ -259,11 +321,12 @@ def ingest_forecast_grids(
         "source_format": "GRIB2",
         "variable": "precipitation",
         "type": "forecast",
-        "source": "resampled_from_grid",
+        "source": "cropped_from_native_grid",
         "providers": [product_config.provider_code],
-        "bbox": list(normalized.bbox),
-        "resolution_degrees": resolution_degrees,
-        "timestep_hours": timestep_hours,
+        "bbox": json.loads(str(native_grid.metadata["bbox"])),
+        "requested_bbox": list(bbox),
+        "resolution_degrees": float(native_grid.metadata["resolution_degrees"]),
+        "temporal_resolution": "irregular",
     }
     asset = register_forecast_asset(
         database_path,

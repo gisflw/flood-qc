@@ -113,6 +113,11 @@ def test_ingest_forecast_asset_is_idempotent_and_detects_changed_content(tmp_pat
             "source_cycle_time": "2026-03-12T00:00:00Z",
             "source_resolution": "0p25",
             "source_parameter": "tp",
+            "model_bbox": [-51.75, -29.75, -51.25, -29.25],
+            "buffered_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "requested_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "buffer_fraction": 0.5,
         },
     )
 
@@ -123,3 +128,54 @@ def test_ingest_forecast_asset_is_idempotent_and_detects_changed_content(tmp_pat
     asset_path.write_bytes(asset_path.read_bytes() + b"changed")
     with pytest.raises((ValueError, OSError)):
         ingest_forecast_asset(context, asset_path)
+
+
+def test_ingest_forecast_asset_replaces_obsolete_unbuffered_registration(tmp_path) -> None:
+    context = _context(tmp_path)
+    asset_path = context.paths.assets_dir / "ecmwf" / "forecast.nc"
+    write_spatial_grid(
+        asset_path,
+        variable="precipitation",
+        grid_type="forecast",
+        source="cropped_from_native_grid",
+        providers=["ecmwf"],
+        units="mm",
+        bbox=(-52.0, -30.0, -51.0, -29.0),
+        resolution_degrees=1.0,
+        times_utc=[datetime(2026, 3, 12, 3, tzinfo=timezone.utc)],
+        latitudes=np.array([-29.5]),
+        longitudes=np.array([-51.5]),
+        values=np.ones((1, 1, 1)),
+        processing_metadata={
+            "provider": "ecmwf",
+            "model": "ifs",
+            "product_type": "fc",
+            "source_format": "GRIB2",
+            "source_cycle_time": "2026-03-12T00:00:00Z",
+            "source_resolution": "0p25",
+            "source_parameter": "tp",
+            "model_bbox": [-51.75, -29.75, -51.25, -29.25],
+            "buffered_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "requested_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "buffer_fraction": 0.5,
+        },
+    )
+    asset_id = "ecmwf.ifs.fc.20260312T000000Z.precipitation_grid"
+    relative_path = asset_path.relative_to(context.paths.workspace).as_posix()
+    with HistoryRepository(context.paths.history_db) as repository:
+        repository.upsert_asset(
+            asset_id=asset_id,
+            asset_kind="spatial_grid",
+            format="NetCDF",
+            relative_path=relative_path,
+            provider_code="ecmwf",
+            valid_from="2026-03-12T00:00:00",
+            valid_to="2026-03-12T03:00:00",
+            metadata={"type": "forecast", "cycle_time": "2026-03-12T00:00:00Z"},
+        )
+
+    replaced = ingest_forecast_asset(context, asset_path)
+
+    assert replaced["asset_id"] == asset_id
+    assert '"buffer_fraction": 0.5' in replaced["metadata_json"]

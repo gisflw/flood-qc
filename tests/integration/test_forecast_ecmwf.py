@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import shutil
 import sqlite3
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +34,20 @@ def test_build_ecmwf_cycle_uses_next_local_hour_and_converts_to_utc() -> None:
     assert cycle_time == datetime(2026, 3, 19, 0, 0, 0)
 
 
+def test_bbox_crop_mask_keeps_cells_touched_by_bbox_edges() -> None:
+    mask = forecast_ecmwf._all_touched_coordinate_mask(
+        np.array([0.25, 0.75, 1.25, 1.75]), 0.5, 1.0
+    )
+
+    assert mask.tolist() == [True, True, True, False]
+
+
+def test_bbox_buffer_expands_each_side_by_half_of_axis_size() -> None:
+    assert forecast_ecmwf.build_bbox_with_buffer(
+        (-52.0, -31.0, -50.0, -30.0)
+    ) == (-53.0, -31.5, -49.0, -29.5)
+
+
 def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkeypatch) -> None:
     history_db = tmp_path / "history.sqlite"
     initialize_history_db(history_db)
@@ -49,7 +64,7 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
 
     def fake_crop(source_path: Path, target_path: Path, *, bbox) -> None:
         assert source_path.exists()
-        assert bbox == (-52.0, -30.0, -51.0, -29.0)
+        assert bbox == (-52.5, -30.5, -50.5, -28.5)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(b"cropped-grib")
 
@@ -89,11 +104,18 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
     assert not temp_dir.exists()
     grid = read_spatial_grid(normalized.asset_path)
     assert grid.times_utc == (
-        datetime(2026, 3, 12, 1, 0, 0, tzinfo=timezone.utc),
-        datetime(2026, 3, 12, 2, 0, 0, tzinfo=timezone.utc),
         datetime(2026, 3, 12, 3, 0, 0, tzinfo=timezone.utc),
     )
-    assert grid.values[:, 0, 0].tolist() == [2.0, 2.0, 2.0]
+    assert grid.time_bounds_utc == ((
+        datetime(2026, 3, 12, 0, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 3, 12, 3, 0, 0, tzinfo=timezone.utc),
+    ),)
+    assert grid.timestep_hours is None
+    assert grid.source == "cropped_from_native_grid"
+    assert json.loads(grid.metadata["model_bbox"]) == [-52.0, -30.0, -51.0, -29.0]
+    assert json.loads(grid.metadata["buffered_bbox"]) == [-52.5, -30.5, -50.5, -28.5]
+    assert grid.metadata["buffer_fraction"] == 0.5
+    assert grid.values[:, 0, 0].tolist() == [6.0]
 
     with sqlite3.connect(history_db) as connection:
         assert connection.execute("SELECT * FROM asset").fetchall() == []

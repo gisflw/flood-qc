@@ -71,9 +71,11 @@ Generic registry of external files. Operational forecast grids are canonical CF-
 
 Canonical gridded products use `asset_kind="spatial_grid"`, `format="NetCDF"`,
 and metadata identifying `variable`, `type`, `source`, and `providers`.
-Coordinates and time bounds are UTC and payload variables use zlib compression
-level 4. Forecast grids are registered; the observed precipitation dashboard
-cache at `data/cache/precipitations_observed.nc` is disposable and unregistered.
+Coordinate and time bounds are authoritative, UTC, and payload variables use
+zlib compression level 4. Registered forecast grids retain native spatial and
+temporal resolution after an all-touched crop of the model bbox buffered by
+50% of its width and height on each side. Model working grids under
+`data/cache/` are disposable and unregistered.
 `mgb_ops.assets.spatial_grid` also owns the regular-grid and precipitation-grid
 in-memory contracts; reusable interpolation and resampling live in
 `mgb_ops.assets.grid_transforms`.

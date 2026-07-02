@@ -12,10 +12,12 @@ from mgb_ops.assets.grid_transforms import (
     build_grid_idw_neighbors,
     build_idw_neighbors,
     interpolate_station_chunk,
+    resample_regular_grid,
 )
+from mgb_ops.assets.observed_precipitation import build_observed_precipitation_cache
 from mgb_ops.utils.time import TIMEZONE, build_horizon_window, validate_timestep_hours
 from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
-from mgb_ops.assets.spatial_grid import read_spatial_grid
+from mgb_ops.assets.spatial_grid import RegularGridSpec, read_spatial_grid, write_spatial_grid
 from mgb_ops.assets.history_queries import (
     open_history_read_only,
     read_observed_values,
@@ -26,6 +28,8 @@ from mgb_ops.model.export_mgb_outputs import read_nc_from_parhig
 from mgb_ops.model.prepare_mgb_meta import read_time_settings_from_parhig
 
 DEFAULT_CHUNK_HOURS = 720
+MGB_OBSERVED_CACHE_FILENAME = "precipitations_mgb_observed.nc"
+MGB_FORECAST_CACHE_FILENAME = "precipitations_mgb_forecast.nc"
 LOGGER_NAME = "model.prepare_mgb_rainfall"
 
 
@@ -309,6 +313,108 @@ def load_required_forecast_precipitation_grid(
     )
 
 
+def _build_forecast_working_cache(
+    source_path: Path,
+    target_path: Path,
+    *,
+    grid_spec: RegularGridSpec,
+    forecast_start_time: datetime,
+    forecast_nt: int,
+    timestep_hours: int,
+) -> Path:
+    source = read_spatial_grid(source_path)
+    if source.variable != "precipitation" or source.grid_type != "forecast":
+        raise ValueError("Expected a forecast precipitation spatial grid.")
+    target_ends = [
+        build_forecast_start_time_utc(forecast_start_time)
+        + timedelta(hours=index * timestep_hours)
+        for index in range(forecast_nt)
+    ]
+    target_bounds = [
+        (end - timedelta(hours=timestep_hours), end) for end in target_ends
+    ]
+    fields: list[np.ndarray] = []
+    for target_start, target_end in target_bounds:
+        matches = [
+            index
+            for index, (source_start, source_end) in enumerate(source.time_bounds_utc)
+            if source_start <= target_start.replace(tzinfo=timezone.utc)
+            and source_end >= target_end.replace(tzinfo=timezone.utc)
+        ]
+        if len(matches) != 1:
+            raise ValueError(
+                "Forecast asset does not uniquely cover MGB timestep "
+                f"({target_start.isoformat()}, {target_end.isoformat()}]."
+            )
+        source_index = matches[0]
+        source_start, source_end = source.time_bounds_utc[source_index]
+        source_hours = (source_end - source_start).total_seconds() / 3600.0
+        if source_hours % timestep_hours:
+            raise ValueError("Forecast native interval cannot be split into MGB timesteps.")
+        per_step = source.values[source_index] / (source_hours / timestep_hours)
+        fields.append(
+            resample_regular_grid(
+                per_step,
+                source.latitudes,
+                source.longitudes,
+                grid_spec,
+            )
+        )
+    values = np.stack(fields)
+    if not np.isfinite(values).all():
+        raise ValueError("Forecast asset does not cover the complete MGB working grid.")
+    return write_spatial_grid(
+        target_path,
+        variable="precipitation",
+        grid_type="forecast",
+        source="resampled_from_grid",
+        providers=source.providers,
+        units=source.units,
+        bbox=grid_spec.effective_bbox,
+        resolution_degrees=grid_spec.resolution,
+        times_utc=[value.replace(tzinfo=timezone.utc) for value in target_ends],
+        latitudes=grid_spec.latitudes,
+        longitudes=grid_spec.longitudes,
+        values=values,
+        timestep_hours=timestep_hours,
+        title="Forecast precipitation prepared for MGB",
+        processing_metadata={
+            "model_role": "forecast_working_grid",
+            "source_asset": str(source_path),
+            "spatial_resampling_method": "bilinear",
+            "temporal_resampling_method": "uniform_interval_split",
+            "requested_bbox": list(grid_spec.bbox),
+            "effective_bbox": list(grid_spec.effective_bbox),
+            "boundary_cell_policy": "closed_footprint_intersects_bbox",
+        },
+    )
+
+
+def _grid_to_mini_matrix(
+    grid,
+    mini_df: pd.DataFrame,
+    *,
+    nearest_points: int,
+    power: float,
+    chunk_hours: int,
+) -> np.ndarray:
+    """IDW-interpolate a time-varying regular grid to MINI.gtp centroids."""
+    source_matrix = grid.values.reshape(len(grid.times_utc), -1).transpose()
+    nearest_idx, weights = build_grid_idw_neighbors(
+        mini_df,
+        latitudes=grid.latitudes,
+        longitudes=grid.longitudes,
+        nearest_points=nearest_points,
+        power=power,
+    )
+    return interpolate_source_matrix(
+        source_matrix,
+        nearest_idx=nearest_idx,
+        weights=weights,
+        chunk_hours=chunk_hours,
+    )
+
+
 def prepare_mgb_rainfall(
     *,
     history_db: Path,
@@ -324,6 +430,10 @@ def prepare_mgb_rainfall(
     timestep_hours: int = 1,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     forecast_asset_path: Path | None = None,
+    cache_dir: Path | None = None,
+    spatial_bbox: tuple[float, float, float, float] | None = None,
+    spatial_resolution_degrees: float | None = None,
+    observed_providers: tuple[str, ...] | list[str] | None = None,
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,
 ) -> RainfallPreparationSummary:
@@ -390,61 +500,140 @@ def prepare_mgb_rainfall(
     if observed_hours < 1:
         raise ValueError(f"Invalid observed window length calculated from nt={nt} and forecast_nt={window.forecast_nt}.")
 
-    with _connect_history_read_only(history_db) as connection:
-        preferred_stations = load_preferred_rain_stations(connection)
-        raw_values = load_rain_values(
-            connection,
-            preferred_stations,
-            query_start=query_start,
-            query_end_exclusive=observed_end_exclusive,
+    cache_grid_mode = any(
+        value is not None
+        for value in (cache_dir, spatial_bbox, spatial_resolution_degrees)
+    )
+    if cache_grid_mode:
+        if (
+            cache_dir is None
+            or spatial_bbox is None
+            or spatial_resolution_degrees is None
+            or observed_providers is None
+        ):
+            raise ValueError(
+                "cache_dir, spatial_bbox, spatial_resolution_degrees, and "
+                "observed_providers are all required for cache-grid rainfall preparation."
+            )
+        grid_spec = RegularGridSpec(
+            bbox=spatial_bbox,
+            resolution_degrees=spatial_resolution_degrees,
+            include_boundary_cells=True,
         )
-
-    require_observed_values_aligned_to_timestep(raw_values, timestep_hours=timestep_hours)
-    used_hourly_normalization = False
-    observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq=f"{timestep_hours}h")
-    station_meta, station_matrix = build_hourly_station_matrix(
-        preferred_stations,
-        raw_values,
-        time_index=observed_time_index,
-    )
-    observed_nearest_idx, observed_weights = build_idw_neighbors(
-        mini_df,
-        station_meta,
-        nearest_stations=nearest_stations,
-        power=power,
-    )
-    observed_mini_matrix = interpolate_source_matrix(
-        station_matrix,
-        nearest_idx=observed_nearest_idx,
-        weights=observed_weights,
-        chunk_hours=chunk_hours,
-    )
-
-    if use_forecast_data and window.forecast_nt > 0:
-        if forecast_asset_path is None:
-            raise ValueError("forecast_asset_path is required when use_forecast_data is true.")
-        forecast_latitudes, forecast_longitudes, forecast_hourly_grids = load_required_forecast_precipitation_grid(
-            forecast_asset_path,
-            forecast_start_time=window.forecast_start_time,
-            forecast_nt=window.forecast_nt,
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        observed_cache_path = build_observed_precipitation_cache(
+            history_db,
+            cache_dir,
+            bbox=spatial_bbox,
+            resolution_degrees=grid_spec.resolution,
+            start_time_utc=(
+                start_time - timedelta(hours=timestep_hours)
+            ).replace(tzinfo=TIMEZONE).astimezone(timezone.utc),
+            end_time_utc=window.reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc),
             timestep_hours=timestep_hours,
+            providers=observed_providers,
+            nearest_stations=nearest_stations,
+            power=power,
+            filename=MGB_OBSERVED_CACHE_FILENAME,
+            include_boundary_cells=True,
+            processing_metadata={
+                "model_role": "observed_working_grid",
+                "requested_bbox": list(grid_spec.bbox),
+                "effective_bbox": list(grid_spec.effective_bbox),
+                "boundary_cell_policy": "closed_footprint_intersects_bbox",
+            },
         )
-        forecast_grid_matrix = forecast_hourly_grids.reshape(window.forecast_nt, -1).transpose()
-        forecast_nearest_idx, forecast_weights = build_grid_idw_neighbors(
+        observed_grid = read_spatial_grid(observed_cache_path)
+        if not np.isfinite(observed_grid.values).all():
+            raise ValueError("Observed data does not cover the complete MGB working grid and window.")
+        observed_mini_matrix = _grid_to_mini_matrix(
+            observed_grid,
             mini_df,
-            latitudes=forecast_latitudes,
-            longitudes=forecast_longitudes,
             nearest_points=nearest_stations,
             power=power,
-        )
-        forecast_mini_matrix = interpolate_source_matrix(
-            forecast_grid_matrix,
-            nearest_idx=forecast_nearest_idx,
-            weights=forecast_weights,
             chunk_hours=chunk_hours,
         )
+        with _connect_history_read_only(history_db) as connection:
+            station_count = len(load_preferred_rain_stations(connection))
+        if use_forecast_data and window.forecast_nt > 0:
+            if forecast_asset_path is None:
+                raise ValueError("forecast_asset_path is required when use_forecast_data is true.")
+            forecast_cache_path = _build_forecast_working_cache(
+                forecast_asset_path,
+                cache_dir / MGB_FORECAST_CACHE_FILENAME,
+                grid_spec=grid_spec,
+                forecast_start_time=window.forecast_start_time,
+                forecast_nt=window.forecast_nt,
+                timestep_hours=timestep_hours,
+            )
+            forecast_grid = read_spatial_grid(forecast_cache_path)
+            forecast_mini_matrix = _grid_to_mini_matrix(
+                forecast_grid,
+                mini_df,
+                nearest_points=nearest_stations,
+                power=power,
+                chunk_hours=chunk_hours,
+            )
+        else:
+            forecast_mini_matrix = np.zeros((nc, window.forecast_nt), dtype=np.float64)
+        used_hourly_normalization = False
     else:
-        forecast_mini_matrix = np.zeros((nc, window.forecast_nt), dtype=np.float64)
+        with _connect_history_read_only(history_db) as connection:
+            preferred_stations = load_preferred_rain_stations(connection)
+            raw_values = load_rain_values(
+                connection,
+                preferred_stations,
+                query_start=query_start,
+                query_end_exclusive=observed_end_exclusive,
+            )
+
+        require_observed_values_aligned_to_timestep(raw_values, timestep_hours=timestep_hours)
+        used_hourly_normalization = False
+        observed_time_index = pd.date_range(start=start_time, periods=observed_hours, freq=f"{timestep_hours}h")
+        station_meta, station_matrix = build_hourly_station_matrix(
+            preferred_stations,
+            raw_values,
+            time_index=observed_time_index,
+        )
+        station_count = len(station_meta)
+        observed_nearest_idx, observed_weights = build_idw_neighbors(
+            mini_df,
+            station_meta,
+            nearest_stations=nearest_stations,
+            power=power,
+        )
+        observed_mini_matrix = interpolate_source_matrix(
+            station_matrix,
+            nearest_idx=observed_nearest_idx,
+            weights=observed_weights,
+            chunk_hours=chunk_hours,
+        )
+
+        if use_forecast_data and window.forecast_nt > 0:
+            if forecast_asset_path is None:
+                raise ValueError("forecast_asset_path is required when use_forecast_data is true.")
+            forecast_latitudes, forecast_longitudes, forecast_hourly_grids = load_required_forecast_precipitation_grid(
+                forecast_asset_path,
+                forecast_start_time=window.forecast_start_time,
+                forecast_nt=window.forecast_nt,
+                timestep_hours=timestep_hours,
+            )
+            forecast_grid_matrix = forecast_hourly_grids.reshape(window.forecast_nt, -1).transpose()
+            forecast_nearest_idx, forecast_weights = build_grid_idw_neighbors(
+                mini_df,
+                latitudes=forecast_latitudes,
+                longitudes=forecast_longitudes,
+                nearest_points=nearest_stations,
+                power=power,
+            )
+            forecast_mini_matrix = interpolate_source_matrix(
+                forecast_grid_matrix,
+                nearest_idx=forecast_nearest_idx,
+                weights=forecast_weights,
+                chunk_hours=chunk_hours,
+            )
+        else:
+            forecast_mini_matrix = np.zeros((nc, window.forecast_nt), dtype=np.float64)
 
     mini_matrix = np.concatenate([observed_mini_matrix, forecast_mini_matrix], axis=1)
     if mini_matrix.shape != (nc, nt):
@@ -459,7 +648,7 @@ def prepare_mgb_rainfall(
     run_logger.info(
         "rainfall_prepare_done output=%s station_count=%s nt=%s nc=%s forecast_nt=%s used_hourly_normalization=%s",
         output_path,
-        len(station_meta),
+        station_count,
         nt,
         nc,
         window.forecast_nt,
@@ -472,8 +661,8 @@ def prepare_mgb_rainfall(
         end_time_exclusive=end_time_exclusive,
         nt=nt,
         nc=nc,
-        station_count=len(station_meta),
-        nearest_stations=min(int(nearest_stations), len(station_meta)),
+        station_count=station_count,
+        nearest_stations=min(int(nearest_stations), station_count),
         power=float(power),
         used_hourly_normalization=used_hourly_normalization,
         forecast_hours=window.forecast_nt,

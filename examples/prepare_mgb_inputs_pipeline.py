@@ -282,6 +282,9 @@ print(f"PARHIG start={meta_summary.start_time.isoformat(timespec='seconds')} nt=
 
 # %%
 rainfall_settings = settings["rainfall_interpolation"]
+spatial_settings = settings["spatial_grid"]
+if spatial_settings["bbox"] is None:
+    raise ValueError("spatial_grid.bbox is required for MGB rainfall preparation.")
 rainfall_summary = prepare_mgb_rainfall(
     history_db=paths.history_db,
     parhig_path=PARHIG_PATH,
@@ -292,6 +295,10 @@ rainfall_summary = prepare_mgb_rainfall(
     forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
     use_forecast_data=use_forecast_data,
     forecast_asset_path=forecast_asset.asset_path if forecast_asset is not None else None,
+    cache_dir=paths.cache_dir,
+    spatial_bbox=tuple(float(value) for value in spatial_settings["bbox"]),
+    spatial_resolution_degrees=float(spatial_settings["resolution_degrees"]),
+    observed_providers=list(OBSERVED_PROVIDERS),
     nearest_stations=int(rainfall_settings["nearest_stations"]),
     power=float(rainfall_settings["power"]),
     timestep_hours=timestep_hours,

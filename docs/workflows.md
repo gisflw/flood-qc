@@ -61,18 +61,21 @@ python -m pip install -e ".[forecast]"
 
 1. Resolve the cycle from `reference_time`.
 2. Download the configured ECMWF GRIB source inside the adapter.
-3. Clip the source grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
-4. Convert cumulative precipitation to hourly UTC precipitation increments, aggregate those increments to `run.timestep_hours`, and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)`, `time_bounds(time, bounds)`, and `timestep_hours` metadata, using zlib compression level 4 for payload variables.
-5. Resample to the configured spatial grid and register the canonical NetCDF
-   with `asset_kind="spatial_grid"` and `type="forecast"`.
-6. Register logs in `logs/forecast_ecmwf/`.
+3. Expand the model bbox by 50% of its width and height on every side, then
+   retain every native source cell whose footprint touches that buffered bbox.
+4. Crop the native grid by retaining every source cell whose footprint touches
+   the configured bbox.
+5. Convert cumulative precipitation to native 3/6-hour interval totals and
+   write a CF-style NetCDF with authoritative coordinate and time bounds. No
+   spatial or MGB-timestep resampling occurs in the registered asset.
+6. Register the canonical NetCDF with `asset_kind="spatial_grid"` and
+   `type="forecast"`.
+7. Register logs in `logs/forecast_ecmwf/`.
 
-Python callers pass `bbox=(west, south, east, north)` and
-`resolution_degrees=...` to `mgb_ops.workflows.forecast.collect_forecast_grids`
-or `ingest_forecast_grids`, together with explicit database, asset, and output paths.
-These values can also be resolved by a thin runtime wrapper from
-`spatial_grid.bbox` and `spatial_grid.resolution_degrees` in
-`<workspace>/config/custom.yaml`.
+Python callers pass the unbuffered model `bbox=(west, south, east, north)` to forecast ingestion.
+The configured working resolution and MGB timestep are accepted by legacy
+entrypoints but are applied only later by model preparation, never to the
+registered forecast asset.
 
 ### 3b. Observed Precipitation Grid
 
@@ -91,9 +94,13 @@ Library modules:
 - `mgb_ops.model.prepare_mgb_rainfall`
 
 1. Rewrite `PARHIG.hig` from the current configuration, including `DT = run.timestep_hours * 3600`.
-2. Load already-normalized observed rainfall from the history database.
-3. Validate rainfall timestamps against `run.timestep_hours` and interpolate them to the minis.
-4. When enabled, load the canonical forecast NetCDF, match the local MGB forecast window against UTC NetCDF coordinates, and incorporate ECMWF rainfall at the configured timestep into the forecast block.
+2. Build deterministic observed and forecast working-grid caches at the
+   configured spatial resolution for their complete portions of the MGB window,
+   including every cell whose closed footprint touches the configured bbox.
+3. Uniformly split native forecast interval totals into MGB timesteps and
+   bilinearly resample them to the working grid.
+4. IDW-interpolate each cache timestep from grid-cell centroids to the
+   `MINI.gtp` centroids, preserving mini order.
 5. Write `<workspace>/mgb_runner/Input/chuvabin.hig`.
 
 ### 5. Model Execution and Consumption

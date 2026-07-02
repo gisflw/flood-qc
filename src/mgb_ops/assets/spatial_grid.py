@@ -17,12 +17,16 @@ from mgb_ops.utils.time import validate_timestep_hours
 
 SPATIAL_GRID_ASSET_KIND = "spatial_grid"
 SPATIAL_GRID_FORMAT = "NetCDF"
-SPATIAL_GRID_SCHEMA_VERSION = "1.0"
+SPATIAL_GRID_SCHEMA_VERSION = "2.0"
 SPATIAL_GRID_TIME_ZONE = "UTC"
 SPATIAL_GRID_CRS = "EPSG:4326"
 NETCDF_ZLIB_COMPLEVEL = 4
 ALLOWED_GRID_TYPES = {"observed", "forecast"}
-ALLOWED_GRID_SOURCES = {"interpolated_from_stations", "resampled_from_grid"}
+ALLOWED_GRID_SOURCES = {
+    "interpolated_from_stations",
+    "resampled_from_grid",
+    "cropped_from_native_grid",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,7 +41,7 @@ class SpatialGrid:
     times_utc: tuple[datetime, ...]
     time_bounds_utc: tuple[tuple[datetime, datetime], ...]
     values: np.ndarray
-    timestep_hours: int
+    timestep_hours: int | None
     metadata: dict[str, object]
 
 
@@ -48,10 +52,17 @@ def _coordinate_centers(lower: float, upper: float, resolution: float) -> np.nda
     return coordinates
 
 
+def _inclusive_touch_centers(lower: float, upper: float, resolution: float) -> np.ndarray:
+    """Return cells whose closed footprints intersect [lower, upper]."""
+    cell_count = int(np.floor((upper - lower) / resolution)) + 2
+    return lower - resolution / 2.0 + np.arange(cell_count, dtype=float) * resolution
+
+
 @dataclass(frozen=True, slots=True, init=False)
 class RegularGridSpec:
     bbox: tuple[float, float, float, float]
     resolution: float
+    include_boundary_cells: bool
 
     def __init__(
         self,
@@ -59,6 +70,7 @@ class RegularGridSpec:
         resolution: float | None = None,
         *,
         resolution_degrees: float | None = None,
+        include_boundary_cells: bool = False,
     ) -> None:
         if resolution is None:
             resolution = resolution_degrees
@@ -73,6 +85,7 @@ class RegularGridSpec:
             raise ValueError("resolution must be > 0.")
         object.__setattr__(self, "bbox", (west, south, east, north))
         object.__setattr__(self, "resolution", float(resolution))
+        object.__setattr__(self, "include_boundary_cells", bool(include_boundary_cells))
 
     @property
     def resolution_degrees(self) -> float:
@@ -81,12 +94,27 @@ class RegularGridSpec:
     @property
     def longitudes(self) -> np.ndarray:
         west, _, east, _ = self.bbox
+        if self.include_boundary_cells:
+            return _inclusive_touch_centers(west, east, self.resolution)
         return _coordinate_centers(west, east, self.resolution)
 
     @property
     def latitudes(self) -> np.ndarray:
         _, south, _, north = self.bbox
+        if self.include_boundary_cells:
+            return _inclusive_touch_centers(south, north, self.resolution)
         return _coordinate_centers(south, north, self.resolution)
+
+    @property
+    def effective_bbox(self) -> tuple[float, float, float, float]:
+        if not self.include_boundary_cells:
+            return self.bbox
+        return (
+            float(self.longitudes[0] - self.resolution / 2),
+            float(self.latitudes[0] - self.resolution / 2),
+            float(self.longitudes[-1] + self.resolution / 2),
+            float(self.latitudes[-1] + self.resolution / 2),
+        )
 
     @property
     def shape(self) -> tuple[int, int]:
@@ -200,7 +228,10 @@ def write_spatial_grid(
     latitudes: np.ndarray,
     longitudes: np.ndarray,
     values: np.ndarray,
-    timestep_hours: int = 1,
+    timestep_hours: int | None = 1,
+    time_bounds_utc: Iterable[
+        tuple[datetime | np.datetime64 | pd.Timestamp, datetime | np.datetime64 | pd.Timestamp]
+    ] | None = None,
     title: str | None = None,
     processing_metadata: Mapping[str, object] | None = None,
 ) -> Path:
@@ -209,9 +240,10 @@ def write_spatial_grid(
     units = str(units).strip()
     if not units:
         raise ValueError("units must be non-empty.")
-    timestep_hours = validate_timestep_hours(timestep_hours)
     time_index = _utc_index(times_utc, name="times_utc", require_aware=True)
-    _require_contiguous(time_index, timestep_hours)
+    if timestep_hours is not None:
+        timestep_hours = validate_timestep_hours(timestep_hours)
+        _require_contiguous(time_index, timestep_hours)
 
     latitude_values = np.asarray(latitudes, dtype=np.float64)
     longitude_values = np.asarray(longitudes, dtype=np.float64)
@@ -245,8 +277,28 @@ def write_spatial_grid(
         raise ValueError(f"values shape mismatch: expected {expected_shape}, found {payload.shape}.")
 
     end_times = time_index.values.astype("datetime64[ns]")
-    start_times = end_times - np.timedelta64(timestep_hours, "h")
-    time_bounds = np.stack([start_times, end_times], axis=1)
+    if time_bounds_utc is None:
+        if timestep_hours is None:
+            raise ValueError("time_bounds_utc is required when timestep_hours is None.")
+        start_times = end_times - np.timedelta64(timestep_hours, "h")
+        time_bounds = np.stack([start_times, end_times], axis=1)
+    else:
+        raw_bounds = list(time_bounds_utc)
+        if len(raw_bounds) != len(time_index):
+            raise ValueError("time_bounds_utc length must match times_utc.")
+        flat_bounds = _utc_index(
+            [value for pair in raw_bounds for value in pair],
+            name="time_bounds_utc",
+            require_aware=True,
+        ).values.astype("datetime64[ns]")
+        time_bounds = flat_bounds.reshape(-1, 2)
+        if not np.array_equal(time_bounds[:, 1], end_times):
+            raise ValueError("Each time bound must end at its corresponding time.")
+        if np.any(time_bounds[:, 0] >= time_bounds[:, 1]):
+            raise ValueError("Each time bound must have positive duration.")
+        if len(time_bounds) > 1 and not np.array_equal(time_bounds[:-1, 1], time_bounds[1:, 0]):
+            raise ValueError("time_bounds_utc must be contiguous.")
+        start_times = time_bounds[:, 0]
     created_at = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 
     attrs: dict[str, object] = {
@@ -262,10 +314,14 @@ def write_spatial_grid(
         "created_at": created_at,
         "valid_from": pd.Timestamp(start_times[0]).isoformat() + "Z",
         "valid_to": pd.Timestamp(end_times[-1]).isoformat() + "Z",
-        "timestep_hours": timestep_hours,
+        "temporal_resolution": (
+            f"PT{timestep_hours}H" if timestep_hours is not None else "irregular"
+        ),
         "bbox": json.dumps([west, south, east, north]),
         "resolution_degrees": resolution_degrees,
     }
+    if timestep_hours is not None:
+        attrs["timestep_hours"] = timestep_hours
     for key, value in dict(processing_metadata or {}).items():
         if key in attrs:
             raise ValueError(f"processing_metadata cannot override required attribute {key!r}.")
@@ -279,6 +335,20 @@ def write_spatial_grid(
                 {"long_name": variable.replace("_", " "), "units": units, "grid_mapping": "crs"},
             ),
             "time_bounds": (("time", "bounds"), time_bounds),
+            "latitude_bounds": (
+                ("latitude", "bounds"),
+                np.column_stack([
+                    latitude_values - resolution_degrees / 2,
+                    latitude_values + resolution_degrees / 2,
+                ]),
+            ),
+            "longitude_bounds": (
+                ("longitude", "bounds"),
+                np.column_stack([
+                    longitude_values - resolution_degrees / 2,
+                    longitude_values + resolution_degrees / 2,
+                ]),
+            ),
             "crs": (
                 (),
                 np.int32(0),
@@ -295,12 +365,12 @@ def write_spatial_grid(
             "latitude": (
                 ("latitude",),
                 latitude_values,
-                {"standard_name": "latitude", "units": "degrees_north", "axis": "Y"},
+                {"standard_name": "latitude", "units": "degrees_north", "axis": "Y", "bounds": "latitude_bounds"},
             ),
             "longitude": (
                 ("longitude",),
                 longitude_values,
-                {"standard_name": "longitude", "units": "degrees_east", "axis": "X"},
+                {"standard_name": "longitude", "units": "degrees_east", "axis": "X", "bounds": "longitude_bounds"},
             ),
         },
         attrs=attrs,
@@ -314,6 +384,8 @@ def write_spatial_grid(
             "zlib": True,
             "complevel": NETCDF_ZLIB_COMPLEVEL,
         },
+        "latitude_bounds": {"zlib": True, "complevel": NETCDF_ZLIB_COMPLEVEL},
+        "longitude_bounds": {"zlib": True, "complevel": NETCDF_ZLIB_COMPLEVEL},
     }
     target = Path(netcdf_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -334,7 +406,7 @@ def _require_contract(dataset: xr.Dataset, source_path: Path) -> tuple[str, str,
     required_attrs = {
         "Conventions", "title", "spatial_grid_schema_version", "variable", "type", "source",
         "providers", "time_zone", "crs", "created_at", "valid_from", "valid_to",
-        "timestep_hours", "bbox", "resolution_degrees",
+        "bbox", "resolution_degrees", "temporal_resolution",
     }
     missing = sorted(required_attrs.difference(dataset.attrs))
     if missing:
@@ -352,13 +424,20 @@ def _require_contract(dataset: xr.Dataset, source_path: Path) -> tuple[str, str,
     for dimension in ("time", "latitude", "longitude", "bounds"):
         if dimension not in dataset.dims:
             raise ValueError(f"Spatial-grid NetCDF missing required dimension {dimension!r}: {source_path}")
-    for name in (variable, "time_bounds", "time", "latitude", "longitude", "crs"):
+    for name in (
+        variable, "time_bounds", "latitude_bounds", "longitude_bounds",
+        "time", "latitude", "longitude", "crs",
+    ):
         if name not in dataset:
             raise ValueError(f"Spatial-grid NetCDF missing required variable {name!r}: {source_path}")
     if dataset[variable].dims != ("time", "latitude", "longitude"):
         raise ValueError(f"Spatial-grid variable {variable!r} must use (time, latitude, longitude).")
     if dataset["time_bounds"].dims != ("time", "bounds") or dataset.sizes["bounds"] != 2:
         raise ValueError("Spatial-grid time_bounds must use (time, bounds) with bounds length 2.")
+    if dataset["latitude_bounds"].dims != ("latitude", "bounds") or dataset[
+        "longitude_bounds"
+    ].dims != ("longitude", "bounds"):
+        raise ValueError("Spatial-grid coordinate bounds have invalid dimensions.")
     if dataset.attrs["time_zone"] != "UTC" or dataset.attrs["crs"] != SPATIAL_GRID_CRS:
         raise ValueError("Spatial-grid NetCDF must use UTC and EPSG:4326.")
     if dataset.attrs["spatial_grid_schema_version"] != SPATIAL_GRID_SCHEMA_VERSION:
@@ -370,8 +449,10 @@ def _require_contract(dataset: xr.Dataset, source_path: Path) -> tuple[str, str,
     if (
         dataset["latitude"].attrs.get("standard_name") != "latitude"
         or dataset["latitude"].attrs.get("units") != "degrees_north"
+        or dataset["latitude"].attrs.get("bounds") != "latitude_bounds"
         or dataset["longitude"].attrs.get("standard_name") != "longitude"
         or dataset["longitude"].attrs.get("units") != "degrees_east"
+        or dataset["longitude"].attrs.get("bounds") != "longitude_bounds"
     ):
         raise ValueError("Spatial-grid geographic coordinate metadata is invalid.")
     if dataset[variable].attrs.get("grid_mapping") != "crs":
@@ -398,6 +479,16 @@ def _require_contract(dataset: xr.Dataset, source_path: Path) -> tuple[str, str,
             longitudes, expected_longitudes
         ):
             raise ValueError
+        expected_latitude_bounds = np.column_stack([
+            latitudes - resolution / 2, latitudes + resolution / 2
+        ])
+        expected_longitude_bounds = np.column_stack([
+            longitudes - resolution / 2, longitudes + resolution / 2
+        ])
+        if not np.allclose(dataset["latitude_bounds"].values, expected_latitude_bounds):
+            raise ValueError
+        if not np.allclose(dataset["longitude_bounds"].values, expected_longitude_bounds):
+            raise ValueError
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("Spatial-grid bbox, resolution, and coordinates are inconsistent.") from exc
     return variable, grid_type, source, providers
@@ -408,9 +499,13 @@ def read_spatial_grid(netcdf_path: Path) -> SpatialGrid:
     with xr.open_dataset(path, decode_times=True) as dataset:
         dataset = dataset.load()
     variable, grid_type, source, providers = _require_contract(dataset, path)
-    timestep_hours = validate_timestep_hours(int(dataset.attrs["timestep_hours"]))
+    raw_timestep = dataset.attrs.get("timestep_hours")
+    timestep_hours = (
+        validate_timestep_hours(int(raw_timestep)) if raw_timestep is not None else None
+    )
     time_index = _utc_index(dataset["time"].values, name="time", require_aware=False)
-    _require_contiguous(time_index, timestep_hours)
+    if timestep_hours is not None:
+        _require_contiguous(time_index, timestep_hours)
     bounds_index = _utc_index(
         dataset["time_bounds"].values.reshape(-1), name="time_bounds", require_aware=False
     )
@@ -418,8 +513,12 @@ def read_spatial_grid(netcdf_path: Path) -> SpatialGrid:
     flat_bounds = tuple(value.to_pydatetime().replace(tzinfo=timezone.utc) for value in bounds_index)
     bounds = tuple((flat_bounds[index], flat_bounds[index + 1]) for index in range(0, len(flat_bounds), 2))
     for timestamp, (start, end) in zip(times, bounds, strict=True):
-        if end != timestamp or end - start != timedelta(hours=timestep_hours):
-            raise ValueError("Spatial-grid time bounds must end at time and match timestep_hours.")
+        if end != timestamp or end <= start:
+            raise ValueError("Spatial-grid time bounds must end at time and have positive duration.")
+        if timestep_hours is not None and end - start != timedelta(hours=timestep_hours):
+            raise ValueError("Spatial-grid time bounds must match timestep_hours.")
+    if any(left[1] != right[0] for left, right in zip(bounds, bounds[1:])):
+        raise ValueError("Spatial-grid time bounds must be contiguous.")
     valid_from = pd.Timestamp(dataset.attrs["valid_from"])
     valid_to = pd.Timestamp(dataset.attrs["valid_to"])
     if valid_from.tzinfo is None or valid_to.tzinfo is None:

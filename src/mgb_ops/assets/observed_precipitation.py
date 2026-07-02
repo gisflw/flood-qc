@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Mapping
 
 import numpy as np
 import pandas as pd
@@ -42,6 +43,9 @@ def build_observed_precipitation_cache(
     providers: tuple[str, ...] | list[str],
     nearest_stations: int = 5,
     power: float = 2.0,
+    filename: str = OBSERVED_PRECIPITATION_CACHE_FILENAME,
+    processing_metadata: Mapping[str, object] | None = None,
+    include_boundary_cells: bool = False,
 ) -> Path:
     """Interpolate observed precipitation timesteps and atomically replace the dashboard cache."""
     start_utc = _require_utc(start_time_utc, name="start_time_utc")
@@ -58,7 +62,11 @@ def build_observed_precipitation_cache(
         raise ValueError("power must be > 0.")
 
     provider_codes = normalize_providers(providers)
-    grid = RegularGridSpec(bbox=bbox, resolution_degrees=resolution_degrees)
+    grid = RegularGridSpec(
+        bbox=bbox,
+        resolution_degrees=resolution_degrees,
+        include_boundary_cells=include_boundary_cells,
+    )
     local_start = start_utc.astimezone(TIMEZONE).replace(tzinfo=None)
     local_end = end_utc.astimezone(TIMEZONE).replace(tzinfo=None)
     with open_history_read_only(Path(database_path)) as connection:
@@ -105,7 +113,7 @@ def build_observed_precipitation_cache(
                 )
         fields = np.stack(fields_list)
 
-    target = Path(cache_dir) / OBSERVED_PRECIPITATION_CACHE_FILENAME
+    target = Path(cache_dir) / filename
     return write_spatial_grid(
         target,
         variable="precipitation",
@@ -113,7 +121,7 @@ def build_observed_precipitation_cache(
         source="interpolated_from_stations",
         providers=provider_codes,
         units="mm",
-        bbox=grid.bbox,
+        bbox=grid.effective_bbox,
         resolution_degrees=grid.resolution,
         times_utc=[timestamp.to_pydatetime() for timestamp in ends_utc],
         latitudes=grid.latitudes,
@@ -125,5 +133,6 @@ def build_observed_precipitation_cache(
             "interpolation_method": "inverse_distance_weighting",
             "nearest_stations": nearest_stations,
             "power": power,
+            **dict(processing_metadata or {}),
         },
     )

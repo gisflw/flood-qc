@@ -16,9 +16,7 @@ from mgb_ops.adapters._grib2 import (
     require_eccodes,
     set_regular_ll_grid,
 )
-from mgb_ops.assets.grid_transforms import resample_regular_grid
 from mgb_ops.assets.spatial_grid import (
-    RegularGridSpec,
     SPATIAL_GRID_ASSET_KIND,
     write_spatial_grid,
 )
@@ -31,6 +29,7 @@ ECMWF_MODEL = "ifs"
 ECMWF_PRODUCT_TYPE = "fc"
 ECMWF_RESOLUTION = "0p25"
 ECMWF_PARAM = "tp"
+FORECAST_BBOX_BUFFER_FRACTION = 0.5
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +99,26 @@ def build_ecmwf_steps(product_config: ForecastProductConfig = ECMWF_FORECAST_PRO
     return list(product_config.step_schedule)
 
 
+def build_bbox_with_buffer(
+    bbox: tuple[float, float, float, float],
+    *,
+    buffer_fraction: float = FORECAST_BBOX_BUFFER_FRACTION,
+) -> tuple[float, float, float, float]:
+    west, south, east, north = (float(value) for value in bbox)
+    if west >= east or south >= north:
+        raise ValueError("bbox must satisfy west < east and south < north.")
+    if not np.isfinite(buffer_fraction) or buffer_fraction < 0:
+        raise ValueError("buffer_fraction must be finite and >= 0.")
+    width = east - west
+    height = north - south
+    return (
+        west - width * buffer_fraction,
+        south - height * buffer_fraction,
+        east + width * buffer_fraction,
+        north + height * buffer_fraction,
+    )
+
+
 def build_output_path(
     downloads_root: Path,
     cycle_time: datetime,
@@ -140,6 +159,17 @@ def build_asset_id(cycle_time: datetime, product_config: ForecastProductConfig =
     )
 
 
+def _all_touched_coordinate_mask(
+    coordinates: np.ndarray, lower: float, upper: float
+) -> np.ndarray:
+    values = np.asarray(coordinates, dtype=np.float64)
+    if values.size < 1:
+        return np.zeros(0, dtype=bool)
+    step = abs(float(np.median(np.diff(values)))) if values.size > 1 else 0.0
+    half = step / 2.0
+    return ((values + half) >= lower) & ((values - half) <= upper)
+
+
 def crop_grib_to_bbox(
     source_path: Path,
     target_path: Path,
@@ -158,8 +188,9 @@ def crop_grib_to_bbox(
                 break
             try:
                 latitudes, longitudes, values = build_grid_arrays(gid)
-                lat_mask = (latitudes >= south) & (latitudes <= north)
-                lon_mask = (longitudes >= west) & (longitudes <= east)
+                # Keep every source cell whose footprint touches the requested bbox.
+                lat_mask = _all_touched_coordinate_mask(latitudes, south, north)
+                lon_mask = _all_touched_coordinate_mask(longitudes, west, east)
                 if not lat_mask.any() or not lon_mask.any():
                     raise ValueError(
                         f"Requested bbox {bbox} does not intersect GRIB grid in {source_path}."
@@ -234,6 +265,58 @@ def build_hourly_precipitation_from_cumulative_messages(
     return tuple(hourly_times), latitudes, longitudes, np.stack(hourly_grids, axis=0)
 
 
+def build_native_interval_precipitation_from_cumulative_messages(
+    messages: list[TpGribMessage],
+) -> tuple[
+    tuple[datetime, ...],
+    tuple[tuple[datetime, datetime], ...],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """Convert cumulative messages to totals on their original forecast intervals."""
+    if not messages:
+        raise ValueError("No ECMWF precipitation messages were provided.")
+    ordered = sorted(messages, key=lambda item: (item.valid_time, item.step_hours))
+    first = ordered[0]
+    cycle_time = min(item.valid_time - timedelta(hours=item.step_hours) for item in ordered)
+    previous_time = cycle_time
+    previous = np.zeros_like(first.values_mm, dtype=np.float64)
+    times: list[datetime] = []
+    bounds: list[tuple[datetime, datetime]] = []
+    totals: list[np.ndarray] = []
+    for message in ordered:
+        if message.values_mm.shape != previous.shape:
+            raise ValueError("ECMWF GRIB contains inconsistent grid shapes across messages.")
+        if not np.allclose(message.latitudes, first.latitudes) or not np.allclose(
+            message.longitudes, first.longitudes
+        ):
+            raise ValueError("ECMWF GRIB contains inconsistent grid coordinates across messages.")
+        if message.valid_time < previous_time:
+            raise ValueError("ECMWF GRIB valid times are not monotonic.")
+        if message.valid_time > previous_time:
+            increment = np.asarray(message.values_mm, dtype=np.float64) - previous
+            increment = np.where(np.isfinite(increment), increment, np.nan)
+            increment[increment < 0.0] = 0.0
+            times.append(message.valid_time)
+            bounds.append((previous_time, message.valid_time))
+            totals.append(increment)
+        previous_time = message.valid_time
+        previous = np.asarray(message.values_mm, dtype=np.float64)
+    if not totals:
+        raise ValueError("ECMWF GRIB did not contain any positive-length accumulation interval.")
+    latitudes = np.asarray(first.latitudes, dtype=np.float64)
+    longitudes = np.asarray(first.longitudes, dtype=np.float64)
+    payload = np.stack(totals)
+    if len(latitudes) > 1 and latitudes[0] > latitudes[-1]:
+        latitudes = latitudes[::-1]
+        payload = payload[:, ::-1, :]
+    if len(longitudes) > 1 and longitudes[0] > longitudes[-1]:
+        longitudes = longitudes[::-1]
+        payload = payload[:, :, ::-1]
+    return tuple(times), tuple(bounds), latitudes, longitudes, payload
+
+
 def aggregate_hourly_precipitation_to_timestep(
     times_utc: tuple[datetime, ...] | list[datetime],
     precipitation_mm: np.ndarray,
@@ -276,49 +359,63 @@ def write_canonical_forecast_grid_from_grib(
     *,
     cycle_time: datetime,
     bbox: tuple[float, float, float, float],
+    model_bbox: tuple[float, float, float, float],
     resolution_degrees: float,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> tuple[datetime, datetime]:
-    hourly_times, latitudes, longitudes, hourly_grids = build_hourly_precipitation_from_cumulative_messages(
+    native_times, native_bounds, latitudes, longitudes, native_grids = build_native_interval_precipitation_from_cumulative_messages(
         read_tp_grib_messages(grib_path)
     )
-    timestep_times, timestep_grids = aggregate_hourly_precipitation_to_timestep(
-        hourly_times,
-        hourly_grids,
-        timestep_hours=timestep_hours,
-    )
-    target_grid = RegularGridSpec(bbox=bbox, resolution_degrees=resolution_degrees)
-    resampled = np.stack(
-        [
-            resample_regular_grid(field, latitudes, longitudes, target_grid)
-            for field in timestep_grids
-        ]
+    if len(latitudes) > 1:
+        native_resolution = abs(float(np.median(np.diff(latitudes))))
+    elif len(longitudes) > 1:
+        native_resolution = abs(float(np.median(np.diff(longitudes))))
+    else:
+        native_resolution = float(product_config.resolution.replace("p", "."))
+    actual_bbox = (
+        float(longitudes[0] - native_resolution / 2),
+        float(latitudes[0] - native_resolution / 2),
+        float(longitudes[-1] + native_resolution / 2),
+        float(latitudes[-1] + native_resolution / 2),
     )
     cycle_time_utc = cycle_time.replace(tzinfo=timezone.utc) if cycle_time.tzinfo is None else cycle_time.astimezone(timezone.utc)
     write_spatial_grid(
         netcdf_path,
         variable="precipitation",
         grid_type="forecast",
-        source="resampled_from_grid",
+        source="cropped_from_native_grid",
         providers=[product_config.provider_code],
         units="mm",
-        bbox=target_grid.bbox,
-        resolution_degrees=target_grid.resolution,
+        bbox=actual_bbox,
+        resolution_degrees=native_resolution,
         times_utc=[
             value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
-            for value in timestep_times
+            for value in native_times
         ],
-        latitudes=target_grid.latitudes,
-        longitudes=target_grid.longitudes,
-        values=resampled,
-        timestep_hours=timestep_hours,
+        time_bounds_utc=[
+            (
+                start.replace(tzinfo=timezone.utc) if start.tzinfo is None else start.astimezone(timezone.utc),
+                end.replace(tzinfo=timezone.utc) if end.tzinfo is None else end.astimezone(timezone.utc),
+            )
+            for start, end in native_bounds
+        ],
+        latitudes=latitudes,
+        longitudes=longitudes,
+        values=native_grids,
+        timestep_hours=None,
         title="ECMWF IFS precipitation forecast grid",
         processing_metadata={
             "provider": product_config.provider_code,
             "source_format": "GRIB2",
             "source_cycle_time": cycle_time_utc.isoformat(timespec="seconds").replace("+00:00", "Z"),
-            "resampling_method": "bilinear",
+            "crop_method": "cell_intersection_all_touched",
+            "requested_bbox": list(bbox),
+            "model_bbox": list(model_bbox),
+            "buffered_bbox": list(bbox),
+            "buffer_fraction": FORECAST_BBOX_BUFFER_FRACTION,
+            "effective_bbox": list(actual_bbox),
+            "accumulation_semantics": "interval_total",
             "model": product_config.model,
             "product_type": product_config.product_type,
             "source_resolution": product_config.resolution,
@@ -326,8 +423,8 @@ def write_canonical_forecast_grid_from_grib(
         },
     )
     return (
-        timestep_times[0] - timedelta(hours=timestep_hours),
-        timestep_times[-1],
+        native_bounds[0][0],
+        native_bounds[-1][1],
     )
 
 def download_ecmwf_grib_to_path(
@@ -400,14 +497,16 @@ def process_forecast_grib(
 ) -> NormalizedForecastGrid:
     target = build_asset_path(assets_dir, cycle_time, product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
+    buffered_bbox = build_bbox_with_buffer(bbox)
     with tempfile.TemporaryDirectory(prefix="ecmwf_crop_") as temp_dir_name:
         cropped = Path(temp_dir_name) / "cropped.grib2"
-        crop_grib_to_bbox(grib_path, cropped, bbox=bbox)
+        crop_grib_to_bbox(grib_path, cropped, bbox=buffered_bbox)
         valid_from, valid_to = write_canonical_forecast_grid_from_grib(
             cropped,
             target,
             cycle_time=cycle_time,
-            bbox=bbox,
+            bbox=buffered_bbox,
+            model_bbox=bbox,
             resolution_degrees=resolution_degrees,
             timestep_hours=timestep_hours,
             product_config=product_config,
@@ -436,12 +535,11 @@ def store_normalized_forecast_grid(
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
     cycle_time = build_ecmwf_cycle(reference_time)
     target_path = build_output_path(downloads_dir, cycle_time, product_config)
-    RegularGridSpec(bbox=bbox, resolution_degrees=resolution_degrees)
-
+    buffered_bbox = build_bbox_with_buffer(bbox)
     logger.info(
         "forecast_grid_start cycle_time=%s bbox=%s target=%s",
         cycle_time.strftime("%Y-%m-%dT%H:%M:%S"),
-        bbox,
+        buffered_bbox,
         target_path,
     )
 
@@ -450,12 +548,13 @@ def store_normalized_forecast_grid(
         temp_grib_path = temp_dir / "download.grib2"
         cropped_grib_path = temp_dir / "cropped.grib2"
         download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time, product_config=product_config)
-        crop_grib_to_bbox(temp_grib_path, cropped_grib_path, bbox=bbox)
+        crop_grib_to_bbox(temp_grib_path, cropped_grib_path, bbox=buffered_bbox)
         valid_from, valid_to = write_canonical_forecast_grid_from_grib(
             cropped_grib_path,
             target_path,
             cycle_time=cycle_time,
-            bbox=bbox,
+            bbox=buffered_bbox,
+            model_bbox=bbox,
             resolution_degrees=resolution_degrees,
             timestep_hours=timestep_hours,
             product_config=product_config,

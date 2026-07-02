@@ -169,6 +169,16 @@ def bilinear_resample(
     ]).T
 
 
-def resample_regular_grid(values: np.ndarray, source_latitudes: np.ndarray, source_longitudes: np.ndarray, grid: RegularGridSpec) -> np.ndarray:
-    return bilinear_resample(values, source_latitudes, source_longitudes, grid.latitudes, grid.longitudes)
-
+def resample_regular_grid(
+    values: np.ndarray,
+    source_latitudes: np.ndarray,
+    source_longitudes: np.ndarray,
+    grid: RegularGridSpec,
+) -> np.ndarray:
+    return bilinear_resample(
+        values,
+        source_latitudes,
+        source_longitudes,
+        grid.latitudes,
+        grid.longitudes,
+    )
