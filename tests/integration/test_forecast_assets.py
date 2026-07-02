@@ -29,7 +29,7 @@ def test_forecast_asset_catalog_registers_lists_and_resolves(tmp_path) -> None:
         provider_code="ecmwf",
         valid_from=datetime(2026, 3, 12, 1),
         valid_to=datetime(2026, 3, 12, 3),
-        metadata={"cycle_time": "2026-03-12T00:00:00Z"},
+        metadata={"cycle_time": "2026-03-12T00:00:00Z", "type": "forecast"},
     )
 
     assert registered["relative_path"] == "data/downloads/ecmwf/forecast.nc"
@@ -64,7 +64,7 @@ def test_resolve_forecast_asset_rejects_missing_registered_file(tmp_path) -> Non
         provider_code="ecmwf",
         valid_from=datetime(2026, 3, 12, 1),
         valid_to=datetime(2026, 3, 12, 3),
-        metadata={"cycle_time": "2026-03-12T00:00:00Z"},
+        metadata={"cycle_time": "2026-03-12T00:00:00Z", "type": "forecast"},
     )
 
     with pytest.raises(FileNotFoundError, match="was not found"):

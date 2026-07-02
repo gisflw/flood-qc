@@ -26,9 +26,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "flow": "mean",
         },
     },
-    "forecast_grid": {
+    "spatial_grid": {
         "bbox": None,
-        "buffer_fraction": None,
+        "resolution_degrees": 0.1,
     },
     "spatial": {
         "gpkg_path": "data/source/rs_hydro.gpkg",
@@ -37,7 +37,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "forecast_days": [1, 3, 7, 14],
         "accum_hours": [24, 72, 240, 720],
         "selected_mini_ids": [],
-        "grid_resolution_degrees": 0.1,
     },
     "mgb": {
         "input_days_before": 56,
@@ -206,9 +205,9 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "fetch_window_days": _validate_positive_int,
             "observed_aggregation": _validate_observed_aggregation,
         },
-        "forecast_grid": {
+        "spatial_grid": {
             "bbox": _validate_optional_bbox,
-            "buffer_fraction": _validate_optional_nonnegative_number,
+            "resolution_degrees": _validate_positive_number,
         },
         "spatial": {
             "gpkg_path": _validate_nonempty_path,
@@ -217,7 +216,6 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "forecast_days": _validate_positive_int_list,
             "accum_hours": _validate_positive_int_list,
             "selected_mini_ids": _validate_selected_mini_ids,
-            "grid_resolution_degrees": _validate_positive_number,
         },
         "mgb": {
             "input_days_before": _validate_positive_int,

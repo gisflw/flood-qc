@@ -16,7 +16,7 @@ from mgb_ops.analysis.spatial import (
 )
 from mgb_ops.common.time_utils import TIMEZONE, build_horizon_window, validate_timestep_hours
 from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
-from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
+from mgb_ops.assets.spatial_grid import read_spatial_grid
 from mgb_ops.assets.history_queries import (
     find_asset,
     open_history_read_only,
@@ -383,19 +383,22 @@ def load_forecast_precipitation_grid(
     timestep_hours = validate_timestep_hours(timestep_hours)
     if forecast_nt < 0:
         raise ValueError("forecast_nt must be >= 0.")
-    grid = read_forecast_precipitation_grid(netcdf_path)
+    grid = read_spatial_grid(netcdf_path)
+    if grid.variable != "precipitation" or grid.grid_type != "forecast":
+        raise ValueError("Expected a forecast precipitation spatial grid.")
     if grid.timestep_hours != timestep_hours:
         raise ValueError(
             f"Forecast NetCDF timestep_hours={grid.timestep_hours} "
             f"does not match requested timestep_hours={timestep_hours}."
         )
     if forecast_nt == 0:
-        return grid.latitudes, grid.longitudes, grid.hourly_grids[:0]
+        return grid.latitudes, grid.longitudes, grid.values[:0]
 
     required_times = tuple(
         forecast_start_time_utc + timedelta(hours=timestep_hours * offset)
         for offset in range(forecast_nt)
     )
+    required_times = tuple(value.replace(tzinfo=timezone.utc) for value in required_times)
     index_by_time = {valid_time: idx for idx, valid_time in enumerate(grid.times_utc)}
     missing_times = [valid_time for valid_time in required_times if valid_time not in index_by_time]
     if missing_times:
@@ -405,7 +408,7 @@ def load_forecast_precipitation_grid(
         )
 
     selected_indices = [index_by_time[valid_time] for valid_time in required_times]
-    return grid.latitudes, grid.longitudes, grid.hourly_grids[selected_indices, :, :]
+    return grid.latitudes, grid.longitudes, grid.values[selected_indices, :, :]
 
 
 def load_required_forecast_precipitation_grid(

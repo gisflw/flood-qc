@@ -20,7 +20,7 @@ def _write_config(workspace: Path) -> None:
     config = workspace / "config"
     config.mkdir(parents=True)
     (config / "custom.yaml").write_text(
-        "forecast_grid:\n  bbox: [-52.5, -31.5, -50.5, -29.5]\n",
+        "spatial_grid:\n  bbox: [-52.5, -31.5, -50.5, -29.5]\n",
         encoding="utf-8",
     )
 

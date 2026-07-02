@@ -21,9 +21,10 @@ The dashboard consumes:
 - the GeoPackage configured by `spatial.gpkg_path` (default
   `<workspace>/data/source/rs_hydro.gpkg`) for clickable mini segments and catchments.
 
-Set `forecast_grid.bbox: [west, south, east, north]` in
-`<workspace>/config/custom.yaml`. The common map resolution is controlled by
-`summaries.grid_resolution_degrees` and defaults to `0.1`.
+Set `spatial_grid.bbox: [west, south, east, north]` and
+`spatial_grid.resolution_degrees` in `<workspace>/config/custom.yaml`.
+Observed rainfall maps are read from
+`<workspace>/data/cache/precipitations_observed.nc`.
 
 Additional behavior:
 

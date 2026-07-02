@@ -6,7 +6,33 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from mgb_ops.assets.forecast_grid import write_forecast_precipitation_grid
+from mgb_ops.assets.spatial_grid import write_spatial_grid
+
+
+def write_forecast_precipitation_grid(
+    path, *, times_utc, latitudes, longitudes, precipitation_mm, provider_code,
+    source_format, source_cycle_time, timestep_hours=1, title=None
+):
+    from datetime import timezone
+    resolution = float(abs(longitudes[1] - longitudes[0])) if len(longitudes) > 1 else (
+        float(abs(latitudes[1] - latitudes[0])) if len(latitudes) > 1 else 1.0
+    )
+    return write_spatial_grid(
+        path, variable="precipitation", grid_type="forecast",
+        source="resampled_from_grid", providers=[provider_code], units="mm",
+        bbox=(
+            float(longitudes[0] - resolution / 2), float(latitudes[0] - resolution / 2),
+            float(longitudes[-1] + resolution / 2), float(latitudes[-1] + resolution / 2),
+        ),
+        resolution_degrees=resolution,
+        times_utc=[
+            value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+            for value in times_utc
+        ],
+        latitudes=latitudes, longitudes=longitudes, values=precipitation_mm,
+        timestep_hours=timestep_hours, title=title,
+        processing_metadata={"source_format": source_format, "source_cycle_time": str(source_cycle_time)},
+    )
 from mgb_ops.model.prepare_mgb_rainfall import (
     extend_station_matrix_with_forecast,
     load_required_forecast_precipitation_grid,

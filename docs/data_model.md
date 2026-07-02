@@ -69,7 +69,11 @@ Fetchers write one normalized CSV per station per run, for example
 
 Generic registry of external files. Operational forecast grids are canonical CF-style NetCDF assets registered by `provider_code` and `asset_kind`, with ECMWF as the default forecast product configuration. ECMWF GRIB2 files are source-adapter inputs and are not registered as operational forecast assets.
 
-The canonical forecast precipitation asset uses `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and `.nc` relative paths. Its time coordinates and `time_bounds` are UTC, while the operational local timezone remains recorded as `America/Sao_Paulo` metadata. Canonical NetCDF payload variables are stored with zlib compression level 4.
+Canonical gridded products use `asset_kind="spatial_grid"`, `format="NetCDF"`,
+and metadata identifying `variable`, `type`, `source`, and `providers`.
+Coordinates and time bounds are UTC and payload variables use zlib compression
+level 4. Forecast grids are registered; the observed precipitation dashboard
+cache at `data/cache/precipitations_observed.nc` is disposable and unregistered.
 
 ### `qc_flag`
 

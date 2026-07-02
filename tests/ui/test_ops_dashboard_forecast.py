@@ -5,10 +5,33 @@ from datetime import datetime, timedelta
 import numpy as np
 
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
-from mgb_ops.assets.forecast_grid import (
-    FORECAST_PRECIPITATION_GRID_ASSET_KIND,
-    write_forecast_precipitation_grid,
-)
+from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND, write_spatial_grid
+
+FORECAST_PRECIPITATION_GRID_ASSET_KIND = SPATIAL_GRID_ASSET_KIND
+
+
+def write_forecast_precipitation_grid(
+    path, *, times_utc, latitudes, longitudes, precipitation_mm, provider_code,
+    source_format, source_cycle_time, timestep_hours=1, title=None
+):
+    from datetime import timezone
+    resolution = float(abs(longitudes[1] - longitudes[0])) if len(longitudes) > 1 else 1.0
+    return write_spatial_grid(
+        path, variable="precipitation", grid_type="forecast",
+        source="resampled_from_grid", providers=[provider_code], units="mm",
+        bbox=(
+            float(longitudes[0] - resolution / 2), float(latitudes[0] - resolution / 2),
+            float(longitudes[-1] + resolution / 2), float(latitudes[-1] + resolution / 2),
+        ),
+        resolution_degrees=resolution,
+        times_utc=[
+            value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value
+            for value in times_utc
+        ],
+        latitudes=latitudes, longitudes=longitudes, values=precipitation_mm,
+        timestep_hours=timestep_hours,
+        processing_metadata={"source_format": source_format, "source_cycle_time": str(source_cycle_time)},
+    )
 from mgb_ops.analysis.spatial import RegularGridSpec
 from mgb_ops.common.time_utils import DashboardWindow
 from apps.ops_dashboard.services import forecast as ops_dashboard_forecast
@@ -56,7 +79,7 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
             provider_code="ecmwf",
             valid_from="2026-03-11T00:00:00",
             valid_to="2026-03-12T00:00:00",
-            metadata={"cycle_time": "2026-03-11T00:00:00Z"},
+            metadata={"cycle_time": "2026-03-11T00:00:00Z", "type": "forecast"},
         )
 
     window = DashboardWindow(
@@ -142,7 +165,7 @@ def test_expected_ecmwf_cycle_reports_missing_registered_file(tmp_path) -> None:
             provider_code="ecmwf",
             valid_from="2026-03-11T00:00:00",
             valid_to="2026-03-12T00:00:00",
-            metadata={"cycle_time": "2026-03-11T00:00:00Z"},
+            metadata={"cycle_time": "2026-03-11T00:00:00Z", "type": "forecast"},
         )
     window = DashboardWindow(
         start_time=datetime(2026, 3, 1),

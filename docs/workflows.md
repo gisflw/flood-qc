@@ -49,7 +49,7 @@ Workflow helpers: `mgb_ops.workflows.observed.fetch_observed_provider`,
 Library modules:
 
 - `mgb_ops.adapters.forecast_ecmwf`
-- `mgb_ops.assets.forecast_grid`
+- `mgb_ops.assets.spatial_grid`
 - `mgb_ops.workflows.forecast`
 
 Install the optional forecast dependencies in the operational environment:
@@ -62,14 +62,15 @@ python -m pip install -e ".[forecast]"
 2. Download the configured ECMWF GRIB source inside the adapter.
 3. Clip the source grid to the caller-supplied operational bounding box plus caller-supplied buffer fraction.
 4. Convert cumulative precipitation to hourly UTC precipitation increments, aggregate those increments to `run.timestep_hours`, and write a CF-style NetCDF asset with `precipitation(time, latitude, longitude)`, `time_bounds(time, bounds)`, and `timestep_hours` metadata, using zlib compression level 4 for payload variables.
-5. Register only the canonical NetCDF asset in the explicitly supplied history database, using `asset_kind="forecast_precipitation_grid"`, `format="NetCDF"`, and an explicitly supplied asset base directory for relative paths.
+5. Resample to the configured spatial grid and register the canonical NetCDF
+   with `asset_kind="spatial_grid"` and `type="forecast"`.
 6. Register logs in `logs/forecast_ecmwf/`.
 
 Python callers pass `bbox=(west, south, east, north)` and
-`buffer_fraction=...` to `mgb_ops.workflows.forecast.collect_forecast_grids`
+`resolution_degrees=...` to `mgb_ops.workflows.forecast.collect_forecast_grids`
 or `ingest_forecast_grids`, together with explicit database, asset, and output paths.
 These values can also be resolved by a thin runtime wrapper from
-`forecast_grid.bbox` and `forecast_grid.buffer_fraction` in
+`spatial_grid.bbox` and `spatial_grid.resolution_degrees` in
 `<workspace>/config/custom.yaml`.
 
 ### 4. MGB Preparation

@@ -7,7 +7,7 @@ from typing import Any
 
 import pandas as pd
 
-from mgb_ops.assets.forecast_grid import FORECAST_PRECIPITATION_GRID_ASSET_KIND
+from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND
 from mgb_ops.assets.history import HistoryRepository
 
 
@@ -43,7 +43,7 @@ def register_forecast_asset(
     valid_from: datetime,
     valid_to: datetime,
     metadata: dict[str, Any],
-    asset_kind: str = FORECAST_PRECIPITATION_GRID_ASSET_KIND,
+    asset_kind: str = SPATIAL_GRID_ASSET_KIND,
 ) -> dict[str, Any]:
     relative_path = build_relative_asset_path(path, asset_base_dir=asset_base_dir)
     with HistoryRepository(database_path) as repository:
@@ -68,7 +68,7 @@ def list_forecast_assets(
     if not database.exists():
         raise FileNotFoundError(f"History database not found: {database}")
     with HistoryRepository(database) as repository:
-        rows = repository.list_assets(asset_kind=FORECAST_PRECIPITATION_GRID_ASSET_KIND)
+        rows = repository.list_assets(asset_kind=SPATIAL_GRID_ASSET_KIND)
 
     frame = pd.DataFrame(rows)
     if frame.empty:
@@ -79,6 +79,13 @@ def list_forecast_assets(
         lambda value: Path(value) if Path(value).is_absolute() else root / Path(value)
     )
     frame["metadata"] = frame["metadata_json"].map(lambda value: json.loads(value) if value else {})
+    frame = frame[
+        frame["metadata"].map(
+            lambda value: isinstance(value, dict) and value.get("type") == "forecast"
+        )
+    ].reset_index(drop=True)
+    if frame.empty:
+        return frame.assign(asset_path=pd.Series(dtype=object), display_label=pd.Series(dtype=str))
     frame["cycle_time"] = frame["metadata"].map(
         lambda value: value.get("cycle_time") if isinstance(value, dict) else None
     )

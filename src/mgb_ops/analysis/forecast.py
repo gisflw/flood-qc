@@ -9,10 +9,7 @@ import pandas as pd
 from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec, resample_regular_grid
 from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
 from mgb_ops.common.time_utils import DashboardWindow, TIMEZONE
-from mgb_ops.assets.forecast_grid import (
-    ForecastPrecipitationGrid,
-    read_forecast_precipitation_grid,
-)
+from mgb_ops.assets.spatial_grid import SpatialGrid, read_spatial_grid
 from mgb_ops.assets.forecast_registry import (
     find_forecast_asset_by_cycle,
     list_forecast_assets,
@@ -99,9 +96,11 @@ def list_dashboard_forecast_intervals(
 
 
 def forecast_interval_boundaries(
-    source: Path | ForecastPrecipitationGrid,
+    source: Path | SpatialGrid,
 ) -> pd.DataFrame:
-    grid = read_forecast_precipitation_grid(source) if isinstance(source, (str, Path)) else source
+    grid = read_spatial_grid(source) if isinstance(source, (str, Path)) else source
+    if grid.variable != "precipitation" or grid.grid_type != "forecast":
+        raise ValueError("Expected a forecast precipitation spatial grid.")
     rows = []
     cycle_start = grid.time_bounds_utc[0][0]
     for index, (start, end) in enumerate(grid.time_bounds_utc):
@@ -127,13 +126,15 @@ def list_forecast_intervals(
 
 
 def accumulate_forecast_precipitation(
-    source: Path | ForecastPrecipitationGrid,
+    source: Path | SpatialGrid,
     *,
     start_time: datetime | pd.Timestamp,
     end_time: datetime | pd.Timestamp,
 ) -> PrecipitationGrid:
     """Sum canonical timestep fields fully contained in [start_time, end_time)."""
-    grid = read_forecast_precipitation_grid(source) if isinstance(source, (str, Path)) else source
+    grid = read_spatial_grid(source) if isinstance(source, (str, Path)) else source
+    if grid.variable != "precipitation" or grid.grid_type != "forecast":
+        raise ValueError("Expected a forecast precipitation spatial grid.")
     start = pd.Timestamp(start_time)
     end = pd.Timestamp(end_time)
     if end <= start:
@@ -150,7 +151,7 @@ def accumulate_forecast_precipitation(
         raise ValueError(
             "Selected accumulation boundaries must align with forecast interval boundaries."
         )
-    values = np.nansum(grid.hourly_grids[indices, :, :], axis=0)
+    values = np.nansum(grid.values[indices, :, :], axis=0)
     return PrecipitationGrid(
         values=values,
         latitudes=grid.latitudes,
@@ -167,12 +168,12 @@ def accumulate_forecast_precipitation(
 
 
 def accumulate_forecast_steps(
-    source: Path | ForecastPrecipitationGrid,
+    source: Path | SpatialGrid,
     *,
     t0_step: int,
     t1_step: int,
 ) -> PrecipitationGrid:
-    grid = read_forecast_precipitation_grid(source) if isinstance(source, (str, Path)) else source
+    grid = read_spatial_grid(source) if isinstance(source, (str, Path)) else source
     if t0_step < 0 or t1_step <= t0_step:
         raise ValueError("Forecast steps must satisfy 0 <= t0_step < t1_step.")
     cycle_start = grid.time_bounds_utc[0][0]

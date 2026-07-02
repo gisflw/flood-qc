@@ -13,9 +13,9 @@ ingest:
   timeout_seconds: 30
   fetch_window_days: 14
 
-forecast_grid:
+spatial_grid:
   bbox: [-60.0, -35.0, -48.0, -26.0]
-  buffer_fraction: 1.0
+  resolution_degrees: 0.25
 
 summaries:
   selected_mini_ids: ["7601", "7612"]
@@ -57,8 +57,8 @@ def test_load_settings_merges_workspace_custom_yaml(tmp_path) -> None:
     assert settings["ingest"]["request_days"] == 90
     assert settings["ingest"]["timeout_seconds"] == 30
     assert settings["ingest"]["fetch_window_days"] == 14
-    assert settings["forecast_grid"]["bbox"] == [-60.0, -35.0, -48.0, -26.0]
-    assert settings["forecast_grid"]["buffer_fraction"] == 1.0
+    assert settings["spatial_grid"]["bbox"] == [-60.0, -35.0, -48.0, -26.0]
+    assert settings["spatial_grid"]["resolution_degrees"] == 0.25
     assert settings["summaries"]["forecast_days"] == [1, 3, 7, 14]
     assert settings["summaries"]["selected_mini_ids"] == ["7601", "7612"]
     assert settings["mgb"]["input_days_before"] == 45
@@ -135,17 +135,17 @@ mgb:
         ),
         (
             """\
-forecast_grid:
+spatial_grid:
   bbox: [-60.0, -35.0, -60.0, -26.0]
 """,
             "west < east",
         ),
         (
             """\
-forecast_grid:
-  buffer_fraction: -1
+spatial_grid:
+  resolution_degrees: -1
 """,
-            "number >= 0",
+            "number > 0",
         ),
         (
             """\

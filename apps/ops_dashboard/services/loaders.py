@@ -5,13 +5,15 @@ from dataclasses import dataclass
 import math
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import panel as pn
 import geopandas as gpd
 
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from mgb_ops.analysis import timeseries as dashboard_data
-from mgb_ops.analysis.spatial import RegularGridSpec, observed_rainfall_grid
+from mgb_ops.analysis.spatial import PrecipitationGrid, RegularGridSpec
+from mgb_ops.assets.spatial_grid import read_spatial_grid
 from mgb_ops.assets.spatial_layers import read_mini_layer
 from mgb_ops.common import dissolve_geometries, find_upstream_ids
 from mgb_ops.common.time_utils import DashboardWindow
@@ -169,31 +171,57 @@ def _basin_precipitation(
 
 @pn.cache(max_items=32)
 def _accumulation_raster(
-    database_path: str,
+    cache_path: str,
     workspace: str,
     source_version: str,
     window: DashboardWindow,
     bbox: tuple[float, float, float, float],
     resolution: float,
     hours: int,
-    nearest_stations: int,
-    power: float,
 ) -> dict[str, object]:
     del workspace, source_version
     if not isinstance(hours, int) or isinstance(hours, bool) or hours < 1:
         raise ValueError("Rainfall accumulation hours must be a positive integer.")
-    grid = RegularGridSpec(bbox=bbox, resolution=resolution)
-    end_time = window.cutoff_time
-    rainfall = observed_rainfall_grid(
-        Path(database_path),
-        grid=grid,
-        start_time=max(
-            window.start_time,
-            end_time - pd.Timedelta(hours=hours).to_pytimedelta(),
-        ),
-        end_time=end_time,
-        nearest_stations=nearest_stations,
-        power=power,
+    expected_grid = RegularGridSpec(bbox=bbox, resolution=resolution)
+    cached = read_spatial_grid(Path(cache_path))
+    if cached.variable != "precipitation" or cached.grid_type != "observed":
+        raise ValueError("Observed rainfall cache must contain observed precipitation.")
+    if cached.source != "interpolated_from_stations":
+        raise ValueError("Observed rainfall cache must be interpolated from stations.")
+    if not (
+        np.allclose(cached.latitudes, expected_grid.latitudes)
+        and np.allclose(cached.longitudes, expected_grid.longitudes)
+    ):
+        raise ValueError("Observed rainfall cache does not match spatial_grid.")
+    end_utc = pd.Timestamp(window.cutoff_time, tz="America/Sao_Paulo").tz_convert("UTC")
+    start_local = max(
+        window.start_time,
+        window.cutoff_time - pd.Timedelta(hours=hours).to_pytimedelta(),
+    )
+    start_utc = pd.Timestamp(start_local, tz="America/Sao_Paulo").tz_convert("UTC")
+    indices = [
+        index
+        for index, (left, right) in enumerate(cached.time_bounds_utc)
+        if pd.Timestamp(left) >= start_utc and pd.Timestamp(right) <= end_utc
+    ]
+    if not indices:
+        raise ValueError("Observed rainfall cache does not cover the requested accumulation window.")
+    if pd.Timestamp(cached.time_bounds_utc[indices[0]][0]) != start_utc or pd.Timestamp(
+        cached.time_bounds_utc[indices[-1]][1]
+    ) != end_utc:
+        raise ValueError("Observed rainfall cache incompletely covers the requested accumulation window.")
+    selected = cached.values[indices]
+    accumulated = np.nansum(selected, axis=0)
+    accumulated[np.all(~np.isfinite(selected), axis=0)] = np.nan
+    rainfall = PrecipitationGrid(
+        values=accumulated,
+        latitudes=cached.latitudes,
+        longitudes=cached.longitudes,
+        bounds=expected_grid.bbox,
+        start_time=start_utc,
+        end_time=end_utc,
+        units=cached.units,
+        source=str(cache_path),
     )
     return {
         "name": f"accum_{hours}h",

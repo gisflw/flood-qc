@@ -57,8 +57,8 @@ CHUVABIN_PATH = WORKSPACE / "mgb_runner" / "Input" / "chuvabin.hig"
 #
 # Settings are read from `<workspace>/config/custom.yaml` over the package
 # defaults. This example requires the usual MGB timing settings and, when
-# forecast rainfall is enabled, `forecast_grid.bbox` and
-# `forecast_grid.buffer_fraction`.
+# forecast rainfall is enabled, `spatial_grid.bbox` and
+# `spatial_grid.resolution_degrees`.
 
 # %%
 context = build_runtime_context(workspace=WORKSPACE)
@@ -219,17 +219,16 @@ else:
 
 # %%
 if use_forecast_data and forecast_asset is None:
-    forecast_grid_settings = settings["forecast_grid"]
-    bbox = forecast_grid_settings["bbox"]
-    buffer_fraction = forecast_grid_settings["buffer_fraction"]
-    if bbox is None or buffer_fraction is None:
-        raise ValueError("Set forecast_grid.bbox and forecast_grid.buffer_fraction in config/custom.yaml.")
+    spatial_grid_settings = settings["spatial_grid"]
+    bbox = spatial_grid_settings["bbox"]
+    if bbox is None:
+        raise ValueError("Set spatial_grid.bbox in config/custom.yaml.")
 
     grid_summary = ingest_forecast_grids(
         paths.history_db,
         reference_time=mgb_window.reference_time,
         bbox=tuple(float(value) for value in bbox),
-        buffer_fraction=float(buffer_fraction),
+        resolution_degrees=float(spatial_grid_settings["resolution_degrees"]),
         downloads_dir=paths.downloads_dir,
         logs_dir=paths.logs_dir,
         asset_base_dir=paths.workspace,

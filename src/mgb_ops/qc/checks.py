@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 from mgb_ops.assets.model_outputs import validate_model_outputs_netcdf
-from mgb_ops.assets.forecast_grid import read_forecast_precipitation_grid
+from mgb_ops.assets.spatial_grid import read_spatial_grid
 from mgb_ops.qc.rules import (
     CORRECTION_OVERLAP,
     CORRECTION_WINDOW,
@@ -36,10 +36,12 @@ def check_netcdf_contract(path: Path, *, contract: str) -> QCResult:
     try:
         if contract == "mgb":
             validate_model_outputs_netcdf(path)
-        elif contract == "forecast":
-            read_forecast_precipitation_grid(path)
+        elif contract in {"forecast", "spatial_grid"}:
+            grid = read_spatial_grid(path)
+            if contract == "forecast" and grid.grid_type != "forecast":
+                raise ValueError("Expected a forecast spatial grid.")
         else:
-            raise ValueError("contract must be 'mgb' or 'forecast'.")
+            raise ValueError("contract must be 'mgb', 'forecast', or 'spatial_grid'.")
     except (FileNotFoundError, OSError, ValueError) as exc:
         return QCResult(NETCDF_CONTRACT, False, "error", str(exc))
     return QCResult(NETCDF_CONTRACT, True, "info", f"Valid {contract} NetCDF contract.")

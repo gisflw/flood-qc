@@ -5,7 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter
-from mgb_ops.assets.forecast_grid import FORECAST_GRID_FORMAT
+from mgb_ops.assets.spatial_grid import SPATIAL_GRID_FORMAT
 from mgb_ops.common.models import DataState, RasterAsset, RunMetadata
 from mgb_ops.common.time_utils import resolve_reference_time
 from mgb_ops.assets.forecast_registry import build_relative_asset_path, register_forecast_asset
@@ -25,7 +25,7 @@ def ingest_forecast_grids(
     *,
     reference_time: datetime,
     bbox: tuple[float, float, float, float],
-    buffer_fraction: float,
+    resolution_degrees: float,
     downloads_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
@@ -38,7 +38,7 @@ def ingest_forecast_grids(
     normalized = adapter.store_grid(
         reference_time=reference_time,
         bbox=bbox,
-        buffer_fraction=buffer_fraction,
+        resolution_degrees=resolution_degrees,
         downloads_dir=downloads_dir,
         logs_dir=logs_dir,
         timestep_hours=timestep_hours,
@@ -55,16 +55,19 @@ def ingest_forecast_grids(
         "source_cycle_time": normalized.cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "cycle_time": normalized.cycle_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
         "source_format": "GRIB2",
-        "bbox": list(normalized.buffered_bbox),
-        "source_bbox": list(bbox),
-        "buffer_fraction": buffer_fraction,
+        "variable": "precipitation",
+        "type": "forecast",
+        "source": "resampled_from_grid",
+        "providers": [product_config.provider_code],
+        "bbox": list(normalized.bbox),
+        "resolution_degrees": resolution_degrees,
         "timestep_hours": timestep_hours,
     }
     asset = register_forecast_asset(
         database_path,
         asset_id=asset_id,
         asset_kind=product_config.asset_kind,
-        format=FORECAST_GRID_FORMAT,
+        format=SPATIAL_GRID_FORMAT,
         path=normalized.asset_path,
         asset_base_dir=asset_base_dir,
         provider_code=product_config.provider_code,
@@ -86,7 +89,7 @@ def collect_forecast_grids(
     *,
     history_db: Path,
     bbox: tuple[float, float, float, float],
-    buffer_fraction: float,
+    resolution_degrees: float,
     downloads_dir: Path,
     logs_dir: Path,
     asset_base_dir: Path,
@@ -97,7 +100,7 @@ def collect_forecast_grids(
         history_db,
         reference_time=reference_time,
         bbox=bbox,
-        buffer_fraction=buffer_fraction,
+        resolution_degrees=resolution_degrees,
         downloads_dir=downloads_dir,
         logs_dir=logs_dir,
         asset_base_dir=asset_base_dir,
@@ -107,7 +110,7 @@ def collect_forecast_grids(
         RasterAsset(
             name=summary.asset_id,
             relative_path=build_relative_asset_path(summary.asset_path, asset_base_dir=asset_base_dir),
-            format=FORECAST_GRID_FORMAT,
+            format=SPATIAL_GRID_FORMAT,
             state=DataState.RAW,
             crs="EPSG:4326",
         )

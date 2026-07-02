@@ -37,6 +37,7 @@ from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.spatial import RegularGridSpec
 from mgb_ops.common.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.common.time_utils import resolve_dashboard_window, resolve_workspace_path
+from mgb_ops.workflows.spatial_grid import OBSERVED_PRECIPITATION_CACHE_FILENAME
 from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 
 
@@ -102,6 +103,9 @@ class DashboardState(param.Parameterized):
         self.window = resolve_dashboard_window(self.context.settings)
         self.history_path = self.context.paths.history_db
         self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
+        self.observed_precipitation_path = (
+            self.context.paths.cache_dir / OBSERVED_PRECIPITATION_CACHE_FILENAME
+        )
         self.gpkg_path = resolve_workspace_path(
             self.workspace, self.context.settings["spatial"]["gpkg_path"]
         )
@@ -174,22 +178,18 @@ class DashboardState(param.Parameterized):
             self.warnings = [*self.warnings, str(exc)]
 
         self.accumulation_rasters = []
-        bbox = self.context.settings["forecast_grid"]["bbox"]
-        if self.history_path.exists() and bbox is not None:
+        bbox = self.context.settings["spatial_grid"]["bbox"]
+        if bbox is not None:
             try:
-                summaries = self.context.settings["summaries"]
-                interpolation = self.context.settings["rainfall_interpolation"]
                 self.accumulation_rasters = [
                     _accumulation_raster(
-                        str(self.history_path),
+                        str(self.observed_precipitation_path),
                         workspace,
-                        versions.history,
+                        dashboard_map.build_file_version(self.observed_precipitation_path),
                         self.window,
                         tuple(float(value) for value in bbox),
-                        float(summaries["grid_resolution_degrees"]),
+                        float(self.context.settings["spatial_grid"]["resolution_degrees"]),
                         self.rainfall_hours,
-                        int(interpolation["nearest_stations"]),
-                        float(interpolation["power"]),
                     )
                 ]
             except (
@@ -205,7 +205,7 @@ class DashboardState(param.Parameterized):
         elif bbox is None:
             self.warnings = [
                 *self.warnings,
-                "Set forecast_grid.bbox in <workspace>/config/custom.yaml to enable rainfall maps.",
+                "Set spatial_grid.bbox in <workspace>/config/custom.yaml to enable rainfall maps.",
             ]
 
         raster_names = [str(item["name"]) for item in self.accumulation_rasters]
@@ -218,22 +218,20 @@ class DashboardState(param.Parameterized):
 
     def apply_rainfall_hours(self) -> None:
         """Load the requested session-local rainfall accumulation period."""
-        bbox = self.context.settings["forecast_grid"]["bbox"]
-        if not self.history_path.exists() or bbox is None:
+        bbox = self.context.settings["spatial_grid"]["bbox"]
+        if bbox is None:
             self.warnings = [
                 *self.warnings,
                 "Observed rainfall maps are unavailable for this workspace.",
             ]
             return
         try:
-            summaries = self.context.settings["summaries"]
-            interpolation = self.context.settings["rainfall_interpolation"]
             raster = _accumulation_raster(
-                str(self.history_path), str(self.workspace),
-                self.source_versions["history"], self.window,
+                str(self.observed_precipitation_path), str(self.workspace),
+                dashboard_map.build_file_version(self.observed_precipitation_path), self.window,
                 tuple(float(value) for value in bbox),
-                float(summaries["grid_resolution_degrees"]), self.rainfall_hours,
-                int(interpolation["nearest_stations"]), float(interpolation["power"]),
+                float(self.context.settings["spatial_grid"]["resolution_degrees"]),
+                self.rainfall_hours,
             )
         except (FileNotFoundError, sqlite3.Error, pd.errors.DatabaseError, ValueError) as exc:
             self.warnings = [*self.warnings, f"Observed rainfall map unavailable: {exc}"]
@@ -352,15 +350,15 @@ class DashboardState(param.Parameterized):
         )
 
     def _analysis_grid(self) -> RegularGridSpec:
-        bbox = self.context.settings["forecast_grid"]["bbox"]
+        bbox = self.context.settings["spatial_grid"]["bbox"]
         if bbox is None:
             raise ValueError(
-                "Set forecast_grid.bbox in <workspace>/config/custom.yaml to enable forecast maps."
+                "Set spatial_grid.bbox in <workspace>/config/custom.yaml to enable forecast maps."
             )
         return RegularGridSpec(
             bbox=tuple(float(value) for value in bbox),
             resolution=float(
-                self.context.settings["summaries"]["grid_resolution_degrees"]
+                self.context.settings["spatial_grid"]["resolution_degrees"]
             ),
         )
 
@@ -429,10 +427,10 @@ class DashboardState(param.Parameterized):
         )
         if request.t1_step < request.t0_step:
             raise ValueError("t1_step must be >= t0_step.")
-        bbox = self.context.settings["forecast_grid"]["bbox"]
+        bbox = self.context.settings["spatial_grid"]["bbox"]
         if bbox is None:
             raise ValueError(
-                "Set forecast_grid.bbox in <workspace>/config/custom.yaml to enable forecast maps."
+                "Set spatial_grid.bbox in <workspace>/config/custom.yaml to enable forecast maps."
             )
         asset_version = ""
         if not self.forecast_assets.empty and "asset_path" in self.forecast_assets:
@@ -452,7 +450,7 @@ class DashboardState(param.Parameterized):
             f"{self.source_versions.get('history', '')}|{asset_version}",
             self.window,
             tuple(float(value) for value in bbox),
-            float(self.context.settings["summaries"]["grid_resolution_degrees"]),
+            float(self.context.settings["spatial_grid"]["resolution_degrees"]),
         )
         corrected = (
             dashboard_forecast.apply_preview_corrections(

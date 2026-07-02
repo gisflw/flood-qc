@@ -32,9 +32,9 @@ When `mgb.use_forecast_data: true`, `config/custom.yaml` must include the
 forecast grid crop settings:
 
 ```yaml
-forecast_grid:
+spatial_grid:
   bbox: [west, south, east, north]
-  buffer_fraction: 0.25
+  resolution_degrees: 0.1
 ```
 
 ECMWF forecast ingestion writes canonical CF-style NetCDF assets to

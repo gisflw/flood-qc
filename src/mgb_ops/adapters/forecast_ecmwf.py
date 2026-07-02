@@ -16,14 +16,12 @@ from mgb_ops.adapters._grib2 import (
     require_eccodes,
     set_regular_ll_grid,
 )
-from mgb_ops.assets.forecast_grid import (
-    FORECAST_PRECIPITATION_GRID_ASSET_KIND,
-    write_forecast_precipitation_grid,
-)
+from mgb_ops.analysis.spatial import RegularGridSpec, resample_regular_grid
+from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND, write_spatial_grid
 from mgb_ops.common.time_utils import TIMEZONE, validate_timestep_hours
 
 LOGGER_NAME = "adapters.forecast_ecmwf"
-ECMWF_ASSET_KIND = FORECAST_PRECIPITATION_GRID_ASSET_KIND
+ECMWF_ASSET_KIND = SPATIAL_GRID_ASSET_KIND
 ECMWF_MODEL = "ifs"
 ECMWF_PRODUCT_TYPE = "fc"
 ECMWF_RESOLUTION = "0p25"
@@ -48,7 +46,7 @@ class NormalizedForecastGrid:
     cycle_time: datetime
     valid_from: datetime
     valid_to: datetime
-    buffered_bbox: tuple[float, float, float, float]
+    bbox: tuple[float, float, float, float]
 
 
 ECMWF_FORECAST_PRODUCT = ForecastProductConfig(
@@ -99,26 +97,6 @@ def _require_opendata_client():
             "Missing dependency for ECMWF ingestion: install `ecmwf-opendata` in the operational environment."
         ) from exc
     return Client
-
-
-def build_bbox_with_buffer(
-    bbox: tuple[float, float, float, float],
-    *,
-    buffer_fraction: float,
-) -> tuple[float, float, float, float]:
-    west, south, east, north = bbox
-    if west >= east or south >= north:
-        raise ValueError("bbox must satisfy west < east and south < north.")
-    if buffer_fraction < 0:
-        raise ValueError("buffer_fraction must be >= 0.")
-    width = east - west
-    height = north - south
-    return (
-        west - width * buffer_fraction,
-        south - height * buffer_fraction,
-        east + width * buffer_fraction,
-        north + height * buffer_fraction,
-    )
 
 
 def build_ecmwf_cycle(reference_time: datetime) -> datetime:
@@ -289,6 +267,8 @@ def write_canonical_forecast_grid_from_grib(
     netcdf_path: Path,
     *,
     cycle_time: datetime,
+    bbox: tuple[float, float, float, float],
+    resolution_degrees: float,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> tuple[datetime, datetime]:
@@ -300,19 +280,44 @@ def write_canonical_forecast_grid_from_grib(
         hourly_grids,
         timestep_hours=timestep_hours,
     )
-    write_forecast_precipitation_grid(
+    target_grid = RegularGridSpec(bbox=bbox, resolution_degrees=resolution_degrees)
+    resampled = np.stack(
+        [
+            resample_regular_grid(field, latitudes, longitudes, target_grid)
+            for field in timestep_grids
+        ]
+    )
+    cycle_time_utc = cycle_time.replace(tzinfo=timezone.utc) if cycle_time.tzinfo is None else cycle_time.astimezone(timezone.utc)
+    write_spatial_grid(
         netcdf_path,
-        times_utc=timestep_times,
-        latitudes=latitudes,
-        longitudes=longitudes,
-        precipitation_mm=timestep_grids,
-        provider_code=product_config.provider_code,
-        source_format="GRIB2",
-        source_cycle_time=cycle_time,
+        variable="precipitation",
+        grid_type="forecast",
+        source="resampled_from_grid",
+        providers=[product_config.provider_code],
+        units="mm",
+        bbox=target_grid.bbox,
+        resolution_degrees=target_grid.resolution,
+        times_utc=[
+            value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            for value in timestep_times
+        ],
+        latitudes=target_grid.latitudes,
+        longitudes=target_grid.longitudes,
+        values=resampled,
         timestep_hours=timestep_hours,
         title="ECMWF IFS precipitation forecast grid",
+        processing_metadata={
+            "source_format": "GRIB2",
+            "source_cycle_time": cycle_time_utc.isoformat(timespec="seconds").replace("+00:00", "Z"),
+            "resampling_method": "bilinear",
+            "model": product_config.model,
+            "product_type": product_config.product_type,
+        },
     )
-    return timestep_times[0], timestep_times[-1]
+    return (
+        timestep_times[0] - timedelta(hours=timestep_hours),
+        timestep_times[-1],
+    )
 
 def download_ecmwf_grib_to_path(
     target_path: Path,
@@ -340,7 +345,7 @@ def store_normalized_forecast_grid(
     *,
     reference_time: datetime,
     bbox: tuple[float, float, float, float],
-    buffer_fraction: float,
+    resolution_degrees: float,
     downloads_dir: Path,
     logs_dir: Path,
     timestep_hours: int = 1,
@@ -350,15 +355,12 @@ def store_normalized_forecast_grid(
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
     cycle_time = build_ecmwf_cycle(reference_time)
     target_path = build_output_path(downloads_dir, cycle_time, product_config)
-    buffered_bbox = build_bbox_with_buffer(
-        bbox,
-        buffer_fraction=buffer_fraction,
-    )
+    RegularGridSpec(bbox=bbox, resolution_degrees=resolution_degrees)
 
     logger.info(
         "forecast_grid_start cycle_time=%s bbox=%s target=%s",
         cycle_time.strftime("%Y-%m-%dT%H:%M:%S"),
-        buffered_bbox,
+        bbox,
         target_path,
     )
 
@@ -367,11 +369,13 @@ def store_normalized_forecast_grid(
         temp_grib_path = temp_dir / "download.grib2"
         cropped_grib_path = temp_dir / "cropped.grib2"
         download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time, product_config=product_config)
-        crop_grib_to_bbox(temp_grib_path, cropped_grib_path, bbox=buffered_bbox)
+        crop_grib_to_bbox(temp_grib_path, cropped_grib_path, bbox=bbox)
         valid_from, valid_to = write_canonical_forecast_grid_from_grib(
             cropped_grib_path,
             target_path,
             cycle_time=cycle_time,
+            bbox=bbox,
+            resolution_degrees=resolution_degrees,
             timestep_hours=timestep_hours,
             product_config=product_config,
         )
@@ -388,5 +392,5 @@ def store_normalized_forecast_grid(
         cycle_time=cycle_time,
         valid_from=valid_from,
         valid_to=valid_to,
-        buffered_bbox=buffered_bbox,
+        bbox=bbox,
     )

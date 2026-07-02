@@ -68,7 +68,7 @@ def read_station_observed_tables(
 def read_rain_series(connection: sqlite3.Connection) -> pd.DataFrame:
     return pd.read_sql_query(
         """SELECT os.series_id, os.station_id, os.variable_code, os.state, os.created_at,
-                  st.latitude AS lat, st.longitude AS lon
+                  st.provider_code, st.latitude AS lat, st.longitude AS lon
            FROM observed_series os JOIN station st USING (station_id)
            WHERE os.variable_code='rain' AND st.latitude IS NOT NULL AND st.longitude IS NOT NULL""",
         connection,

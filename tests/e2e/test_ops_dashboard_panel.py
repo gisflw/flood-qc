@@ -38,7 +38,7 @@ def _controlled_workspace(root: Path) -> Path:
     (root / "config" / "custom.yaml").write_text(
         "run:\n"
         "  reference_time: '2026-06-29T00:00:00'\n"
-        "forecast_grid:\n"
+        "spatial_grid:\n"
         "  bbox: [-52.5, -30.5, -51.5, -29.5]\n",
         encoding="utf-8",
     )
