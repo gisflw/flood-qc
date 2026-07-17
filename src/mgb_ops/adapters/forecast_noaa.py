@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+import numpy as np
 from tqdm import tqdm
 
 from mgb_ops.adapters._grib2 import (
@@ -174,11 +175,41 @@ def request_gfs_file(
 
 
 def read_gfs_precipitation_messages(grib_path: Path) -> list[TpGribMessage]:
-    return read_precipitation_grib_messages(
+    """Read the authoritative, cumulative APCP series from a GFS GRIB file.
+
+    NOMADS responses can contain both cumulative APCP fields and rolling APCP
+    fields for the same forecast output. Only ``startStep == 0`` represents
+    the cumulative series used to construct canonical native intervals.
+    """
+    messages = read_precipitation_grib_messages(
         grib_path,
         short_names=("tp", "apcp"),
         values_multiplier=1.0,
     )
+    cumulative_messages = [message for message in messages if message.start_step_hours == 0]
+    if not cumulative_messages:
+        raise ValueError("NOAA GFS GRIB2 contains no cumulative APCP messages (startStep=0).")
+
+    unique_messages: dict[tuple[datetime, int, int], TpGribMessage] = {}
+    for message in cumulative_messages:
+        cycle_time = message.valid_time - timedelta(hours=message.step_hours)
+        interval = (cycle_time, message.start_step_hours, message.step_hours)
+        previous = unique_messages.get(interval)
+        if previous is None:
+            unique_messages[interval] = message
+            continue
+        same_coordinates = (
+            np.array_equal(previous.latitudes, message.latitudes)
+            and np.array_equal(previous.longitudes, message.longitudes)
+        )
+        same_values = np.array_equal(previous.values_mm, message.values_mm, equal_nan=True)
+        if not same_coordinates or not same_values:
+            raise ValueError(
+                "NOAA GFS GRIB2 has conflicting duplicate cumulative APCP messages "
+                f"for forecast interval {message.start_step_hours}-{message.step_hours} hours: "
+                "coordinates or values differ."
+            )
+    return sorted(unique_messages.values(), key=lambda item: (item.valid_time, item.step_hours))
 
 
 def download_gfs_grib_to_path(
@@ -292,7 +323,7 @@ def process_forecast_grib(
         timestep_hours=timestep_hours,
         product_config=product_config,
         messages_reader=read_gfs_precipitation_messages,
-        accumulation_semantics="interval_total",
+        accumulation_semantics="cumulative",
     )
     return NormalizedForecastGrid(
         run_id=build_execution_id(cycle_time),

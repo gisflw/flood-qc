@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
-from mgb_ops.adapters import forecast_ecmwf, forecast_gfs, observed_ana, observed_inmet
+from mgb_ops.adapters import forecast_ecmwf, forecast_noaa, observed_ana, observed_inmet
 
 
 class ObservationAdapter(Protocol):
@@ -156,17 +156,17 @@ DEFAULT_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
     download_grib_function=forecast_ecmwf.download_forecast_grib,
     process_grib_function=forecast_ecmwf.process_forecast_grib,
 )
-GFS_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
-    provider_code=forecast_gfs.GFS_FORECAST_PRODUCT.provider_code,
-    product_config=forecast_gfs.GFS_FORECAST_PRODUCT,
-    asset_id_function=forecast_gfs.build_asset_id,
-    store_grid_function=forecast_gfs.store_normalized_forecast_grid,
-    download_grib_function=forecast_gfs.download_forecast_grib,
-    process_grib_function=forecast_gfs.process_forecast_grib,
+NOAA_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
+    provider_code=forecast_noaa.GFS_FORECAST_PRODUCT.provider_code,
+    product_config=forecast_noaa.GFS_FORECAST_PRODUCT,
+    asset_id_function=forecast_noaa.build_asset_id,
+    store_grid_function=forecast_noaa.store_normalized_forecast_grid,
+    download_grib_function=forecast_noaa.download_forecast_grib,
+    process_grib_function=forecast_noaa.process_forecast_grib,
 )
 _FORECAST_ADAPTERS: dict[str, ForecastAdapter] = {
     DEFAULT_FORECAST_ADAPTER.provider_code: DEFAULT_FORECAST_ADAPTER,
-    GFS_FORECAST_ADAPTER.provider_code: GFS_FORECAST_ADAPTER,
+    NOAA_FORECAST_ADAPTER.provider_code: NOAA_FORECAST_ADAPTER,
 }
 
 

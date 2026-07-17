@@ -162,22 +162,29 @@ def download_forecast_data(
                     reused.append(path)
                     break
             logger = None
+            download_kwargs: dict[str, object] = {
+                "cycle_time": cycle,
+                "downloads_dir": context.paths.downloads_dir,
+                "bbox": forecast_bbox if provider == "noaa" else bbox,
+            }
+            if provider == "noaa":
+                logger = configure_run_logger(
+                    "forecast_noaa",
+                    context.paths.logs_dir / "forecast_noaa" / f"{cycle:%Y%m%dT%H%M%S}.log",
+                    console=False,
+                )
+                logger.info("noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s", cycle.isoformat(), bbox, forecast_bbox)
+                download_kwargs["required_end"] = required_end
+                download_kwargs["logger"] = logger
             try:
-                download_kwargs: dict[str, object] = {
-                    "cycle_time": cycle,
-                    "downloads_dir": context.paths.downloads_dir,
-                    "bbox": forecast_bbox if provider == "noaa" else bbox,
-                }
-                if provider == "noaa":
-                    logger = configure_run_logger(
-                        "forecast_noaa",
-                        context.paths.logs_dir / "forecast_noaa" / f"{cycle:%Y%m%dT%H%M%S}.log",
-                        console=False,
-                    )
-                    logger.info("noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s", cycle.isoformat(), bbox, forecast_bbox)
-                    download_kwargs["required_end"] = required_end
-                    download_kwargs["logger"] = logger
                 grib = adapter.download_grib(**download_kwargs)
+            except Exception as exc:
+                if logger is not None:
+                    logger.exception("noaa_acquisition_failed cycle=%s", cycle.isoformat())
+                last_error = exc
+                continue
+
+            try:
                 normalized = adapter.process_grib(
                     grib,
                     cycle_time=cycle,
@@ -188,8 +195,14 @@ def download_forecast_data(
                     resolution_degrees=resolution,
                     timestep_hours=timestep,
                 )
-                required_start_naive = required_start.replace(tzinfo=None)
-                required_end_naive = required_end.replace(tzinfo=None)
+            except Exception:
+                if logger is not None:
+                    logger.exception("noaa_conversion_failed cycle=%s", cycle.isoformat())
+                raise
+
+            required_start_naive = required_start.replace(tzinfo=None)
+            required_end_naive = required_end.replace(tzinfo=None)
+            try:
                 if (
                     normalized.valid_from > required_start_naive
                     or normalized.valid_to < required_end_naive
@@ -197,14 +210,14 @@ def download_forecast_data(
                     raise ValueError(
                         "Downloaded forecast asset does not cover the required forecast window."
                     )
-                raw.append(grib)
-                produced.append(normalized.asset_path)
-                break
-            except Exception as exc:
+            except Exception:
                 if logger is not None:
-                    logger.exception("noaa_cycle_failed cycle=%s", cycle.isoformat())
-                last_error = exc
-                continue
+                    logger.exception("noaa_validation_failed cycle=%s", cycle.isoformat())
+                raise
+
+            raw.append(grib)
+            produced.append(normalized.asset_path)
+            break
         else:
             raise RuntimeError(
                 f"No usable forecast asset found for provider {provider!r} "
