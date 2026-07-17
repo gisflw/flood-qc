@@ -90,7 +90,7 @@ def test_initialize_history_db(tmp_path) -> None:
     assert altitude_type == "INTEGER"
     assert mini_id_type == "INTEGER"
 
-    assert {"ana", "inmet", "ecmwf", "gfs"}.issubset(providers)
+    assert {"ana", "inmet", "ecmwf", "noaa"}.issubset(providers)
     assert {"rain", "level", "flow"}.issubset(variables)
     assert ("ana:74100000", "flow") in station_variable_rows
     assert ("ana:74100000", "level") in station_variable_rows

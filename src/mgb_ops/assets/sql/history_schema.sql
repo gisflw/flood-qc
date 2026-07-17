@@ -143,7 +143,7 @@ INSERT OR IGNORE INTO provider (provider_code, provider_name, provider_type) VAL
     ('ana', 'National Water and Basic Sanitation Agency', 'observed'),
     ('inmet', 'National Institute of Meteorology', 'observed'),
     ('ecmwf', 'European Centre for Medium-Range Weather Forecasts', 'forecast'),
-    ('gfs', 'NOAA Global Forecast System', 'forecast');
+    ('noaa', 'National Oceanic and Atmospheric Administration', 'forecast');
 
 INSERT OR IGNORE INTO variable (variable_code, variable_name, default_unit, description) VALUES
     ('rain', 'Observed precipitation', 'mm', 'Observed value at the original timestamp'),

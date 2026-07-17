@@ -53,26 +53,26 @@ def test_history_repository_lists_and_finds_generic_non_ecmwf_asset(tmp_path) ->
 
     with HistoryRepository(db_path) as repository:
         repository.upsert_asset(
-            asset_id="gfs.test.fc.20260311T000000Z.precipitation_grid",
+            asset_id="noaa.test.fc.20260311T000000Z.precipitation_grid",
             asset_kind="forecast_precipitation_grid",
             format="NetCDF",
-            relative_path="data/downloads/gfs/fc_2026-03-11_00_GFS_precipitation_grid.nc",
-            provider_code="gfs",
+            relative_path="data/downloads/noaa/fc_2026-03-11_00_GFS_precipitation_grid.nc",
+            provider_code="noaa",
             valid_from="2026-03-11T03:00:00",
             valid_to="2026-03-12T00:00:00",
             metadata={"cycle_time": "2026-03-11T00:00:00Z"},
         )
 
-        listed = repository.list_assets(provider_code="gfs", asset_kind="forecast_precipitation_grid")
+        listed = repository.list_assets(provider_code="noaa", asset_kind="forecast_precipitation_grid")
         found = repository.find_latest_asset(
             datetime(2026, 3, 11, 12, 0, 0),
-            provider_code="gfs",
+            provider_code="noaa",
             asset_kind="forecast_precipitation_grid",
         )
 
-    assert [asset["asset_id"] for asset in listed] == ["gfs.test.fc.20260311T000000Z.precipitation_grid"]
+    assert [asset["asset_id"] for asset in listed] == ["noaa.test.fc.20260311T000000Z.precipitation_grid"]
     assert found is not None
-    assert found["provider_code"] == "gfs"
+    assert found["provider_code"] == "noaa"
 
 
 def test_history_repository_replaces_forecast_manual_edits(tmp_path) -> None:

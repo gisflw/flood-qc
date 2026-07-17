@@ -128,8 +128,8 @@ def _validate_bool(value: Any, context: str) -> None:
 
 
 def _validate_forecast_provider(value: Any, context: str) -> None:
-    if not isinstance(value, str) or value.strip().lower() not in {"ecmwf", "gfs"}:
-        raise ValueError(f"{context} must be one of ['ecmwf', 'gfs'].")
+    if not isinstance(value, str) or value.strip().lower() not in {"ecmwf", "noaa"}:
+        raise ValueError(f"{context} must be one of ['ecmwf', 'noaa'].")
 
 
 def _validate_nonempty_path(value: Any, context: str) -> None:

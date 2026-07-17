@@ -80,7 +80,7 @@ def test_find_asset_supports_sqlite_rows(asset_connection: sqlite3.Connection) -
 def test_find_asset_returns_none_when_no_asset_matches(asset_connection: sqlite3.Connection) -> None:
     result = find_asset(
         asset_connection,
-        provider_code="gfs",
+        provider_code="noaa",
         asset_kind="forecast_precipitation_grid",
         valid_from_at_most=datetime(2026, 3, 11),
         valid_to_at_least=datetime(2026, 3, 12),
