@@ -26,7 +26,12 @@ class HistoryRepository:
             raise
 
     @classmethod
-    def validate_database(cls, database_path: Path) -> None:
+    def validate_database(
+        cls,
+        database_path: Path,
+        *,
+        allow_missing_station_observed_variable: bool = False,
+    ) -> None:
         path = Path(database_path)
         connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
         repository = cls.__new__(cls)
@@ -34,7 +39,9 @@ class HistoryRepository:
         repository.connection = connection
         try:
             connection.row_factory = sqlite3.Row
-            repository._validate_expected_schema()
+            repository._validate_expected_schema(
+                allow_missing_station_observed_variable=allow_missing_station_observed_variable,
+            )
         finally:
             connection.close()
 
@@ -46,6 +53,13 @@ class HistoryRepository:
 
     def close(self) -> None:
         self.connection.close()
+
+    def _table_exists(self, table_name: str) -> bool:
+        row = self.connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        return row is not None
 
     def _require_exact_columns(self, table_name: str, expected_columns: set[str]) -> None:
         found_columns = {
@@ -60,7 +74,7 @@ class HistoryRepository:
                 "`mgb_ops.assets.databases`."
             )
 
-    def _validate_expected_schema(self) -> None:
+    def _validate_expected_schema(self, *, allow_missing_station_observed_variable: bool = False) -> None:
         self._require_exact_columns(
             "asset",
             {
@@ -86,6 +100,14 @@ class HistoryRepository:
                 "created_at",
             },
         )
+        if self._table_exists("station_observed_variable") or not allow_missing_station_observed_variable:
+            self._require_exact_columns(
+                "station_observed_variable",
+                {
+                    "station_id",
+                    "variable_code",
+                },
+            )
         self._require_exact_columns(
             "manual_edit",
             {
@@ -135,7 +157,25 @@ class HistoryRepository:
             """,
             (provider_code,),
         ).fetchall()
-        return [dict(row) for row in rows]
+        stations = [dict(row) for row in rows]
+        variable_rows = self.connection.execute(
+            """
+            SELECT sov.station_id, sov.variable_code
+            FROM station_observed_variable sov
+            JOIN station st ON st.station_id = sov.station_id
+            WHERE st.provider_code = ?
+            ORDER BY sov.station_id, sov.variable_code
+            """,
+            (provider_code,),
+        ).fetchall()
+        variables_by_station: dict[str, list[str]] = {}
+        for row in variable_rows:
+            variables_by_station.setdefault(str(row["station_id"]), []).append(str(row["variable_code"]))
+        for station in stations:
+            station["observed_variable_codes"] = tuple(
+                variables_by_station.get(str(station["station_id"]), [])
+            )
+        return stations
 
     def _get_observed_series_id(self, station_id: str, variable_code: str, state: str) -> str | None:
         row = self.connection.execute(

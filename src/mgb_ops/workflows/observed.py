@@ -33,6 +33,19 @@ class ObservedDownloadSummary:
         return [path for provider in self.providers for path in provider.normalized_csv_paths]
 
 
+def _station_variable_codes(station: dict, provider_variable_codes: Iterable[str] | None) -> tuple[str, ...]:
+    provider_variables = tuple(provider_variable_codes or ())
+    if "observed_variable_codes" not in station:
+        return provider_variables
+    station_variables = tuple(str(code) for code in station.get("observed_variable_codes", ()))
+    if not station_variables:
+        return ()
+    if not provider_variables:
+        return station_variables
+    station_variable_set = set(station_variables)
+    return tuple(variable for variable in provider_variables if variable in station_variable_set)
+
+
 def _filter_stations(stations: list[dict], station_codes: Iterable[str] | None, *, provider_code: str) -> list[dict]:
     if station_codes is None:
         return stations
@@ -52,23 +65,27 @@ def _request_dates_by_station(
     window_end: datetime,
     variable_codes: Iterable[str] | None,
 ) -> dict[str, list[date]]:
-    variable_list = list(variable_codes) if variable_codes is not None else None
-    request_dates: dict[str, list] = {}
+    variable_list = tuple(variable_codes) if variable_codes is not None else None
+    request_dates: dict[str, list[date]] = {}
     for station in stations:
         station_id = str(station["station_id"])
+        station_variables = _station_variable_codes(station, variable_list)
+        if not station_variables:
+            request_dates[station_id] = []
+            continue
         coverage = repository.get_observed_calendar_days(
             station_id,
             start_date=window_start.date().isoformat(),
             end_date=window_end.date().isoformat(),
             state="raw",
-            variable_codes=variable_list,
+            variable_codes=station_variables,
         )
         dates = list(iter_observed_request_dates(window_start, window_end))
         reference_date = window_end.date()
         request_dates[station_id] = [
             value for value in dates
             if value == reference_date
-            or any(value.isoformat() not in coverage.get(code, set()) for code in (variable_list or ()))
+            or any(value.isoformat() not in coverage.get(code, set()) for code in station_variables)
         ]
     return request_dates
 
@@ -81,21 +98,26 @@ def _resume_dates_by_station(
     window_end: datetime,
     variable_codes: Iterable[str] | None,
 ) -> dict[str, list[date]]:
-    variable_list = list(variable_codes) if variable_codes is not None else None
-    return {
-        str(station["station_id"]): list(
+    variable_list = tuple(variable_codes) if variable_codes is not None else None
+    request_dates: dict[str, list[date]] = {}
+    for station in stations:
+        station_id = str(station["station_id"])
+        station_variables = _station_variable_codes(station, variable_list)
+        if not station_variables:
+            request_dates[station_id] = []
+            continue
+        request_dates[station_id] = list(
             iter_observed_request_dates(
                 window_start,
                 window_end,
                 latest_observed_at=repository.get_latest_observed_at(
-                    str(station["station_id"]),
+                    station_id,
                     state="raw",
-                    variable_codes=variable_list,
+                    variable_codes=station_variables,
                 ),
             )
         )
-        for station in stations
-    }
+    return request_dates
 
 
 def discover_observed_provider_csvs(

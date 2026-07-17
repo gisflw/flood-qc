@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import os
+import re
 import sqlite3
 import tempfile
 import unicodedata
@@ -58,6 +59,40 @@ def _parse_nullable_coordinate(value: str) -> float | None:
 
 
 
+ALLOWED_OBSERVED_VARIABLES = {"rain", "level", "flow"}
+OBSERVED_VARIABLES_NONE = "none"
+
+
+def parse_observed_variables(value: str, *, row_label: str) -> tuple[str, ...]:
+    text = str(value or "").strip().lower()
+    if not text:
+        raise ValueError(f"{row_label}: observed_variables is required.")
+    if text == OBSERVED_VARIABLES_NONE:
+        return ()
+
+    values = tuple(part.strip().lower() for part in re.split(r"[,;|]", text))
+    if any(not part for part in values):
+        raise ValueError(f"{row_label}: observed_variables contains an empty value.")
+
+    seen: set[str] = set()
+    duplicates: list[str] = []
+    unsupported: list[str] = []
+    for variable_code in values:
+        if variable_code in seen and variable_code not in duplicates:
+            duplicates.append(variable_code)
+        seen.add(variable_code)
+        if variable_code not in ALLOWED_OBSERVED_VARIABLES:
+            unsupported.append(variable_code)
+
+    if duplicates:
+        raise ValueError(f"{row_label}: observed_variables contains duplicates: {sorted(duplicates)}")
+    if unsupported:
+        raise ValueError(
+            f"{row_label}: observed_variables contains unsupported values: {sorted(set(unsupported))}"
+        )
+    return values
+
+
 def build_station_id(provider_code: str, station_code: str) -> str:
     normalized_provider = provider_code.strip().lower()
     normalized_station_code = _normalize_station_code(normalized_provider, station_code)
@@ -80,8 +115,11 @@ def load_history_station_inventory(
         "latitude",
         "longitude",
         "altitude_m",
+        "observed_variables",
     }
-    rows_to_insert: list[tuple[object, ...]] = []
+    station_rows: list[tuple[object, ...]] = []
+    capability_rows: list[tuple[str, str]] = []
+    inventory_station_ids: list[tuple[str]] = []
     seen_keys: set[tuple[str, str]] = set()
     seen_station_ids: set[str] = set()
 
@@ -93,7 +131,12 @@ def load_history_station_inventory(
                 f"Invalid inventory CSV at {inventory_path}: missing columns {sorted(missing_columns)}"
             )
 
-        for raw_row in reader:
+        for row_number, raw_row in enumerate(reader, start=2):
+            row_label = f"{inventory_path}:{row_number}"
+            if None in raw_row:
+                raise ValueError(
+                    f"{row_label}: too many columns; quote observed_variables values containing commas."
+                )
             provider_code = raw_row["provider_code"].strip().lower()
             station_code = _normalize_station_code(provider_code, raw_row["station_code"])
             station_name = _normalize_station_name(raw_row["station_name"])
@@ -101,6 +144,10 @@ def load_history_station_inventory(
             latitude = _parse_nullable_coordinate(raw_row["latitude"])
             longitude = _parse_nullable_coordinate(raw_row["longitude"])
             altitude_m = _parse_nullable_int(raw_row["altitude_m"])
+            observed_variables = parse_observed_variables(
+                raw_row["observed_variables"],
+                row_label=row_label,
+            )
 
             row_key = (provider_code, station_code)
             if row_key in seen_keys:
@@ -111,8 +158,9 @@ def load_history_station_inventory(
             if station_id in seen_station_ids:
                 raise ValueError(f"Duplicate station_id in inventory CSV for {row_key}: {station_id}")
             seen_station_ids.add(station_id)
+            inventory_station_ids.append((station_id,))
 
-            rows_to_insert.append(
+            station_rows.append(
                 (
                     station_id,
                     station_code,
@@ -124,8 +172,10 @@ def load_history_station_inventory(
                     altitude_m,
                 )
             )
+            capability_rows.extend((station_id, variable_code) for variable_code in observed_variables)
 
     with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
         connection.executemany(
             """
             INSERT INTO station (
@@ -145,11 +195,22 @@ def load_history_station_inventory(
                 longitude = excluded.longitude,
                 altitude_m = excluded.altitude_m
             """,
-            rows_to_insert,
+            station_rows,
+        )
+        connection.executemany(
+            "DELETE FROM station_observed_variable WHERE station_id = ?",
+            inventory_station_ids,
+        )
+        connection.executemany(
+            """
+            INSERT INTO station_observed_variable (station_id, variable_code)
+            VALUES (?, ?)
+            """,
+            capability_rows,
         )
         connection.commit()
 
-    return len(rows_to_insert)
+    return len(station_rows)
 
 
 def initialize_history_db(
@@ -173,6 +234,9 @@ def initialize_history_db(
             raise RuntimeError(f"History database is not a valid SQLite database: {target}") from exc
     if user_tables:
         from mgb_ops.assets.history import HistoryRepository
+        HistoryRepository.validate_database(target, allow_missing_station_observed_variable=True)
+        apply_schema(target, Path(schema_path))
+        load_history_station_inventory(target, inventory_csv_path)
         HistoryRepository.validate_database(target)
         return target
 

@@ -30,7 +30,11 @@ Catalog of canonical variables. In this phase, the history database works with:
 
 Unified operational station registry. The primary identity is `station_id`, a canonical string in the form `{provider_code}:{normalized_station_code}`. Examples include `ana:74100000` and `inmet:A801`.
 
-`provider_code` and `station_code` remain separate searchable columns, with duplicate detection on the provider-local code pair as well as the canonical `station_id`. The initial inventory comes from `<workspace>/data/source/history_station_inventory.csv`, and bootstrap derives `station_id` from the normalized provider and station code.
+`provider_code` and `station_code` remain separate searchable columns, with duplicate detection on the provider-local code pair as well as the canonical `station_id`. The initial inventory comes from `<workspace>/data/source/history_station_inventory.csv`, and bootstrap derives `station_id` from the normalized provider and station code. The inventory must also declare `observed_variables` for each station as a comma-separated list of canonical variables, or `none` when the station should not be fetched for observations.
+
+### `station_observed_variable`
+
+Static station capability table populated from the inventory. Observation workflows use it to avoid requesting variables that a station does not publish while leaving existing time-series rows untouched.
 
 ### `observed_series`
 

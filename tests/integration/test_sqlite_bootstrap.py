@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mgb_ops.assets.databases import initialize_history_db, initialize_run_db
+from mgb_ops.assets.databases import initialize_history_db, initialize_run_db, load_history_station_inventory
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SQL_DIR = REPO_ROOT / "src" / "mgb_ops" / "assets" / "sql"
@@ -48,6 +48,7 @@ def test_initialize_history_db(tmp_path) -> None:
         "provider",
         "variable",
         "station",
+        "station_observed_variable",
         "asset",
         "observed_series",
         "observed_value",
@@ -63,6 +64,9 @@ def test_initialize_history_db(tmp_path) -> None:
         variables = {
             row[0] for row in connection.execute("SELECT variable_code FROM variable").fetchall()
         }
+        station_variable_rows = connection.execute(
+            "SELECT station_id, variable_code FROM station_observed_variable ORDER BY station_id, variable_code"
+        ).fetchall()
 
     station_columns = _list_columns(db_path, "station")
     assert {
@@ -88,6 +92,11 @@ def test_initialize_history_db(tmp_path) -> None:
 
     assert {"ana", "inmet", "ecmwf", "gfs"}.issubset(providers)
     assert {"rain", "level", "flow"}.issubset(variables)
+    assert ("ana:74100000", "flow") in station_variable_rows
+    assert ("ana:74100000", "level") in station_variable_rows
+    assert ("ana:74100000", "rain") in station_variable_rows
+    assert ("ana:2650035", "rain") in station_variable_rows
+    assert not any(row[0] == "ana:74320000" for row in station_variable_rows)
 
     observed_series_columns = _list_columns(db_path, "observed_series")
     assert {"series_id", "station_id", "variable_code", "state", "created_at"}.issubset(observed_series_columns)
@@ -230,8 +239,8 @@ def test_history_station_inventory_requires_mini_id_column(tmp_path) -> None:
     inventory_path.write_text(
         "\n".join(
             [
-                "provider_code,station_code,station_name,latitude,longitude,altitude_m",
-                "ana,74100000,ANA TEST STATION,-29.1234,-51.1234,10",
+                "provider_code,station_code,station_name,latitude,longitude,altitude_m,observed_variables",
+                "ana,74100000,ANA TEST STATION,-29.1234,-51.1234,10,rain",
             ]
         ),
         encoding="utf-8",
@@ -239,6 +248,90 @@ def test_history_station_inventory_requires_mini_id_column(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="missing columns \\['mini_id'\\]"):
         initialize_history_db(db_path, inventory_path, SQL_DIR / "history_schema.sql")
+
+
+def test_history_station_inventory_requires_observed_variables_column(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    inventory_path = tmp_path / "inventory_without_observed_variables.csv"
+    inventory_path.write_text(
+        "\n".join(
+            [
+                "provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m",
+                "ana,74100000,ANA TEST STATION,8504,-29.1234,-51.1234,10",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="missing columns \\['observed_variables'\\]"):
+        initialize_history_db(db_path, inventory_path, SQL_DIR / "history_schema.sql")
+
+
+@pytest.mark.parametrize(
+    ("observed_variables", "expected_error"),
+    [
+        ("", "observed_variables is required"),
+        ("wind", "unsupported"),
+        ("rain,rain", "duplicates"),
+        ("rain,", "empty value"),
+    ],
+)
+def test_history_station_inventory_rejects_invalid_observed_variables(
+    tmp_path, observed_variables: str, expected_error: str
+) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path, TEST_INVENTORY_CSV, SQL_DIR / "history_schema.sql")
+    inventory_path = tmp_path / "inventory_invalid_observed_variables.csv"
+    inventory_path.write_text(
+        "\n".join(
+            [
+                "provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables",
+                f'ana,74100000,ANA TEST STATION,8504,-29.1234,-51.1234,10,"{observed_variables}"',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        load_history_station_inventory(db_path, inventory_path)
+
+
+def test_initialize_history_db_migrates_station_variables_without_touching_observed_values(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    _init_history(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO observed_series (series_id, station_id, variable_code, state) VALUES (?, ?, ?, ?)",
+            ("ana:74100000.rain.raw", "ana:74100000", "rain", "raw"),
+        )
+        connection.execute(
+            "INSERT INTO observed_value (series_id, observed_at, value) VALUES (?, ?, ?)",
+            ("ana:74100000.rain.raw", "2026-03-10 00:00", 4.2),
+        )
+        before_series = connection.execute("SELECT COUNT(*) FROM observed_series").fetchone()[0]
+        before_values = connection.execute("SELECT COUNT(*) FROM observed_value").fetchone()[0]
+        before_sample = connection.execute(
+            "SELECT series_id, observed_at, value FROM observed_value ORDER BY series_id, observed_at"
+        ).fetchall()
+        connection.execute("DROP TABLE station_observed_variable")
+        connection.commit()
+
+    initialize_history_db(db_path, TEST_INVENTORY_CSV, SQL_DIR / "history_schema.sql")
+
+    with sqlite3.connect(db_path) as connection:
+        after_series = connection.execute("SELECT COUNT(*) FROM observed_series").fetchone()[0]
+        after_values = connection.execute("SELECT COUNT(*) FROM observed_value").fetchone()[0]
+        after_sample = connection.execute(
+            "SELECT series_id, observed_at, value FROM observed_value ORDER BY series_id, observed_at"
+        ).fetchall()
+        station_variables = connection.execute(
+            "SELECT variable_code FROM station_observed_variable WHERE station_id = 'ana:74100000' ORDER BY variable_code"
+        ).fetchall()
+
+    assert after_series == before_series
+    assert after_values == before_values
+    assert after_sample == before_sample
+    assert station_variables == [("flow",), ("level",), ("rain",)]
 
 
 def test_initialize_history_db_rejects_partial_existing_database_without_repair(tmp_path) -> None:

@@ -85,6 +85,94 @@ def test_fetch_observed_provider_empty_db_starts_at_window_start_without_import(
     assert values_total == 0
 
 
+def test_fetch_observed_provider_uses_station_variable_capabilities(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    with HistoryRepository(db_path) as repository:
+        series_id = repository.ensure_observed_series("ana:2650035", "rain")
+        repository.upsert_observed_values(
+            series_id,
+            [("2026-03-10 00:00", 1.0), ("2026-03-11 00:00", 1.0)],
+        )
+
+    captured_dates = {}
+
+    def fake_fetch(stations, *, request_dates_by_station, downloads_dir, run_id, **kwargs):
+        captured_dates.update(request_dates_by_station)
+        return ObservedFetchSummary(run_id=run_id, provider_code="ana", stations=())
+
+    monkeypatch.setattr(
+        observed_workflow.get_observation_adapter("ana"),
+        "fetch_function",
+        fake_fetch,
+    )
+
+    observed_workflow.fetch_observed_provider(
+        "ana",
+        database_path=db_path,
+        window_start=datetime(2026, 3, 10, 0),
+        window_end=datetime(2026, 3, 12, 23),
+        downloads_dir=tmp_path / "downloads",
+        station_codes=["2650035"],
+        run_id="run",
+    )
+
+    assert captured_dates["ana:2650035"] == [date(2026, 3, 11), date(2026, 3, 12)]
+
+
+def test_fetch_observed_provider_skips_stations_without_observed_variables(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    captured_dates = {}
+
+    def fake_fetch(stations, *, request_dates_by_station, downloads_dir, run_id, **kwargs):
+        captured_dates.update(request_dates_by_station)
+        return ObservedFetchSummary(run_id=run_id, provider_code="ana", stations=())
+
+    monkeypatch.setattr(
+        observed_workflow.get_observation_adapter("ana"),
+        "fetch_function",
+        fake_fetch,
+    )
+
+    observed_workflow.fetch_observed_provider(
+        "ana",
+        database_path=db_path,
+        window_start=datetime(2026, 3, 10, 0),
+        window_end=datetime(2026, 3, 12, 23),
+        downloads_dir=tmp_path / "downloads",
+        station_codes=["74320000"],
+        run_id="run",
+    )
+
+    assert captured_dates["ana:74320000"] == []
+
+
+def test_request_dates_by_station_ignores_unsupported_missing_variables(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    initialize_history_db(db_path)
+    with HistoryRepository(db_path) as repository:
+        series_id = repository.ensure_observed_series("ana:2650035", "rain")
+        repository.upsert_observed_values(
+            series_id,
+            [("2026-03-10 00:00", 1.0), ("2026-03-11 00:00", 1.0)],
+        )
+        stations = [
+            station
+            for station in repository.get_provider_stations("ana")
+            if station["station_id"] == "ana:2650035"
+        ]
+        requests = observed_workflow._request_dates_by_station(
+            repository,
+            stations,
+            window_start=datetime(2026, 3, 10, 0),
+            window_end=datetime(2026, 3, 12, 23),
+            variable_codes=("rain", "level", "flow"),
+        )
+
+    assert requests["ana:2650035"] == [date(2026, 3, 12)]
+
+
 def test_fetch_observed_provider_resumes_from_latest_day_with_overlap(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "history.sqlite"
     initialize_history_db(db_path)
