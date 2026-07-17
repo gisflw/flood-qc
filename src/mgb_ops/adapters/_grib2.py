@@ -14,6 +14,7 @@ class TpGribMessage:
     latitudes: np.ndarray
     longitudes: np.ndarray
     values_mm: np.ndarray
+    start_step_hours: int = 0
 
 
 def require_eccodes():
@@ -92,9 +93,15 @@ def set_regular_ll_grid(gid, *, latitudes: np.ndarray, longitudes: np.ndarray, v
     eccodes.codes_set_array(gid, "values", grid_values.reshape(-1))
 
 
-def read_tp_grib_messages(grib_path: Path) -> list[TpGribMessage]:
+def read_precipitation_grib_messages(
+    grib_path: Path,
+    *,
+    short_names: tuple[str, ...],
+    values_multiplier: float,
+) -> list[TpGribMessage]:
     eccodes = require_eccodes()
     messages: list[TpGribMessage] = []
+    allowed = {value.lower() for value in short_names}
 
     with Path(grib_path).open("rb") as handle:
         while True:
@@ -103,12 +110,16 @@ def read_tp_grib_messages(grib_path: Path) -> list[TpGribMessage]:
                 break
             try:
                 short_name = str(eccodes.codes_get(gid, "shortName"))
-                if short_name != "tp":
+                if short_name.lower() not in allowed:
                     continue
 
                 valid_date = int(eccodes.codes_get_long(gid, "validityDate"))
                 valid_time = int(eccodes.codes_get_long(gid, "validityTime"))
                 step_hours = int(eccodes.codes_get_long(gid, "endStep"))
+                try:
+                    start_step_hours = int(eccodes.codes_get_long(gid, "startStep"))
+                except Exception:
+                    start_step_hours = 0
                 valid_dt = datetime.strptime(f"{valid_date:08d}{valid_time:04d}", "%Y%m%d%H%M")
                 latitudes, longitudes, values = build_grid_arrays(gid)
                 messages.append(
@@ -117,12 +128,21 @@ def read_tp_grib_messages(grib_path: Path) -> list[TpGribMessage]:
                         step_hours=step_hours,
                         latitudes=latitudes,
                         longitudes=longitudes,
-                        values_mm=values * 1000.0,
+                        values_mm=values * values_multiplier,
+                        start_step_hours=start_step_hours,
                     )
                 )
             finally:
                 eccodes.codes_release(gid)
 
     if not messages:
-        raise ValueError(f"No 'tp' messages found in {grib_path}.")
+        raise ValueError(f"No precipitation messages found in {grib_path}.")
     return sorted(messages, key=lambda item: (item.valid_time, item.step_hours))
+
+
+def read_tp_grib_messages(grib_path: Path) -> list[TpGribMessage]:
+    return read_precipitation_grib_messages(
+        grib_path,
+        short_names=("tp",),
+        values_multiplier=1000.0,
+    )

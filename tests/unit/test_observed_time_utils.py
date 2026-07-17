@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
-from mgb_ops.utils.time import build_horizon_window, iter_observed_request_dates
+from mgb_ops.utils.time import (
+    build_horizon_window,
+    iter_forecast_cycle_candidates,
+    iter_observed_request_dates,
+    resolve_forecast_cycle,
+)
 
 
 def test_build_horizon_window_includes_forecast_horizon() -> None:
@@ -94,3 +99,22 @@ def test_iter_observed_request_dates_latest_after_window_yields_no_dates() -> No
             latest_observed_at=datetime(2026, 3, 12, 0),
         )
     ) == []
+
+
+def test_resolve_forecast_cycle_snaps_local_reference_to_previous_utc_cycle() -> None:
+    assert resolve_forecast_cycle(datetime(2026, 3, 18, 22, 30, 0)) == datetime(2026, 3, 19, 0, 0, 0)
+    assert resolve_forecast_cycle(datetime(2026, 3, 18, 1, 0, 0)) == datetime(2026, 3, 18, 0, 0, 0)
+
+
+def test_iter_forecast_cycle_candidates_walks_synoptic_cycles_newest_first() -> None:
+    assert list(
+        iter_forecast_cycle_candidates(
+            datetime(2026, 3, 19, 0, 0, 0),
+            lookback_cycles=4,
+        )
+    ) == [
+        datetime(2026, 3, 19, 0, 0, 0),
+        datetime(2026, 3, 18, 18, 0, 0),
+        datetime(2026, 3, 18, 12, 0, 0),
+        datetime(2026, 3, 18, 6, 0, 0),
+    ]

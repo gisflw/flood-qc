@@ -135,7 +135,8 @@ CREATE INDEX IF NOT EXISTS idx_run_catalog_status ON run_catalog(status);
 INSERT OR IGNORE INTO provider (provider_code, provider_name, provider_type) VALUES
     ('ana', 'National Water and Basic Sanitation Agency', 'observed'),
     ('inmet', 'National Institute of Meteorology', 'observed'),
-    ('ecmwf', 'European Centre for Medium-Range Weather Forecasts', 'forecast');
+    ('ecmwf', 'European Centre for Medium-Range Weather Forecasts', 'forecast'),
+    ('gfs', 'NOAA Global Forecast System', 'forecast');
 
 INSERT OR IGNORE INTO variable (variable_code, variable_name, default_unit, description) VALUES
     ('rain', 'Observed precipitation', 'mm', 'Observed value at the original timestamp'),

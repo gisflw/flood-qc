@@ -11,11 +11,11 @@ from __future__ import annotations
 from datetime import timedelta, timezone
 from pathlib import Path
 
+from mgb_ops.adapters import get_forecast_adapter
 from mgb_ops.adapters.observed_inmet import INMET_API_KEY_ENV
 from mgb_ops.assets.schemas import SQL_DIR
 from mgb_ops.config.runtime import build_runtime_context
-from mgb_ops.utils.time import TIMEZONE, build_horizon_window, resolve_reference_time
-from mgb_ops.adapters.forecast_ecmwf import build_ecmwf_cycle
+from mgb_ops.utils.time import TIMEZONE, build_horizon_window, resolve_forecast_cycle, resolve_reference_time
 from mgb_ops.workflows.forecast import ingest_forecast_grids
 from mgb_ops.workflows.observed import (
     discover_observed_provider_csvs,
@@ -181,15 +181,16 @@ for provider_code in OBSERVED_PROVIDERS:
     )
 
 # %% [markdown]
-# ## 6. Find the ECMWF forecast asset for this forecast window
+# ## 6. Find the configured forecast asset for this forecast window
 #
-# The lookup is by the expected deterministic ECMWF cycle and by full coverage of
+# The lookup is by the expected deterministic forecast cycle and by full coverage of
 # the MGB forecast window, not by the latest registered asset.
 
 # %%
 use_forecast_data = bool(mgb_settings["use_forecast_data"])
 forecast_asset = None
-forecast_cycle = build_ecmwf_cycle(mgb_window.reference_time)
+forecast_provider = str(settings["forecast"]["provider"]).strip().lower()
+forecast_cycle = resolve_forecast_cycle(mgb_window.reference_time)
 forecast_start_utc = mgb_window.forecast_start_time.replace(
     tzinfo=TIMEZONE
 ).astimezone(timezone.utc)
@@ -202,27 +203,26 @@ if use_forecast_data:
     forecast_asset = find_required_forecast_asset(
         paths.history_db,
         workspace_path=paths.workspace,
-        provider_code="ecmwf",
+        provider_code=forecast_provider,
         cycle_time=forecast_cycle,
         required_start=forecast_start_utc,
         required_end=forecast_end_utc,
     )
 
     if forecast_asset is None:
-        print(f"ECMWF asset missing for cycle {forecast_cycle:%Y-%m-%dT%H:%M:%SZ}")
+        print(f"{forecast_provider} asset missing for cycle {forecast_cycle:%Y-%m-%dT%H:%M:%SZ}")
     else:
-        print(f"ECMWF asset found: {forecast_asset.asset_id}")
-        print(f"ECMWF file: {forecast_asset.asset_path}")
+        print(f"{forecast_provider} asset found: {forecast_asset.asset_id}")
+        print(f"{forecast_provider} file: {forecast_asset.asset_path}")
 else:
     print("forecast rainfall disabled by settings; forecast block will be zero-filled")
 
 # %% [markdown]
-# ## 7. If missing, ingest/register the ECMWF grid and resolve it again
+# ## 7. If missing, ingest/register the forecast grid and resolve it again
 #
-# ECMWF ingestion downloads the deterministic total-precipitation GRIB inside the
-# adapter, crops it to the configured buffered bounding box, converts cumulative
-# totals to hourly UTC precipitation increments, writes a canonical NetCDF under
-# `data/downloads/ecmwf/`, and registers only that NetCDF in `history.sqlite`.
+# Forecast ingestion downloads the deterministic total-precipitation GRIB inside
+# the configured adapter, writes a canonical NetCDF, and registers only that
+# NetCDF in `history.sqlite`.
 
 # %%
 if use_forecast_data and forecast_asset is None:
@@ -240,19 +240,20 @@ if use_forecast_data and forecast_asset is None:
         logs_dir=paths.logs_dir,
         asset_base_dir=paths.workspace,
         timestep_hours=timestep_hours,
+        adapter=get_forecast_adapter(forecast_provider),
     )
-    print(f"registered ECMWF asset: {grid_summary.asset_id}")
+    print(f"registered {forecast_provider} asset: {grid_summary.asset_id}")
 
     forecast_asset = find_required_forecast_asset(
         paths.history_db,
         workspace_path=paths.workspace,
-        provider_code="ecmwf",
+        provider_code=forecast_provider,
         cycle_time=forecast_cycle,
         required_start=forecast_start_utc,
         required_end=forecast_end_utc,
     )
     if forecast_asset is None:
-        raise RuntimeError("ECMWF ingestion finished, but no asset covers the required forecast window.")
+        raise RuntimeError(f"{forecast_provider} ingestion finished, but no asset covers the required forecast window.")
 
 # %% [markdown]
 # ## 8. Rewrite `PARHIG.hig`

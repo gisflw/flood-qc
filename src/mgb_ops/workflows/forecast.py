@@ -18,7 +18,11 @@ from mgb_ops.assets.spatial_grid import (
     read_spatial_grid,
 )
 from mgb_ops.assets.types import DataState, RasterAsset, RunMetadata
-from mgb_ops.utils.time import resolve_reference_time
+from mgb_ops.utils.time import (
+    iter_forecast_cycle_candidates,
+    resolve_forecast_cycle,
+    resolve_reference_time,
+)
 from mgb_ops.assets.forecast_registry import build_relative_asset_path, register_forecast_asset
 from mgb_ops.assets.forecast_registry import list_forecast_assets
 from mgb_ops.assets.history import HistoryRepository
@@ -41,6 +45,15 @@ class ForecastDownloadSummary:
     reused_asset_paths: tuple[Path, ...]
     new_asset_paths: tuple[Path, ...]
     raw_grib_paths: tuple[Path, ...]
+
+
+def _forecast_settings(settings: dict[str, object]) -> tuple[str, int]:
+    forecast_settings = settings.get("forecast", {})
+    if not isinstance(forecast_settings, dict):
+        raise ValueError("forecast settings must be a mapping.")
+    provider = str(forecast_settings.get("provider", DEFAULT_FORECAST_ADAPTER.provider_code)).strip().lower()
+    lookback_cycles = int(forecast_settings.get("lookback_cycles", 12))
+    return provider, lookback_cycles
 
 
 def _metadata_value(grid, key: str) -> str:
@@ -93,12 +106,13 @@ def _validate_reusable_grid(
 
 def download_forecast_data(
     context: RuntimeContext,
-    providers: str | Iterable[str],
+    providers: str | Iterable[str] | None = None,
     *,
     reference_time: datetime | None = None,
 ) -> ForecastDownloadSummary:
-    provider_codes = normalize_provider_codes(providers, get_forecast_adapter)
     settings = context.settings
+    configured_provider, lookback_cycles = _forecast_settings(settings)
+    provider_codes = normalize_provider_codes(providers or configured_provider, get_forecast_adapter)
     reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
     timestep = int(settings["run"]["timestep_hours"])
     bbox_value = settings["spatial_grid"]["bbox"]
@@ -120,39 +134,62 @@ def download_forecast_data(
     )
     for provider in provider_codes:
         adapter = get_forecast_adapter(provider)
-        cycle = adapter.cycle_time(reference)
-        asset_id = adapter.asset_id(cycle)
-        matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
-        if not matches.empty:
-            path = Path(matches.iloc[0]["asset_path"])
-            if not path.exists():
-                raise FileNotFoundError(f"Registered forecast asset is missing: {path}")
-            if _validate_reusable_grid(
-                path,
-                provider=provider,
-                adapter=adapter,
-                cycle_time=cycle,
-                bbox=bbox,
-                resolution=resolution,
-                timestep_hours=timestep,
-                required_start=required_start,
-                required_end=required_end,
-            ):
-                reused.append(path)
+        target_cycle = resolve_forecast_cycle(reference)
+        last_error: Exception | None = None
+        for cycle in iter_forecast_cycle_candidates(target_cycle, lookback_cycles=lookback_cycles):
+            asset_id = adapter.asset_id(cycle)
+            matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
+            if not matches.empty:
+                path = Path(matches.iloc[0]["asset_path"])
+                if not path.exists():
+                    raise FileNotFoundError(f"Registered forecast asset is missing: {path}")
+                if _validate_reusable_grid(
+                    path,
+                    provider=provider,
+                    adapter=adapter,
+                    cycle_time=cycle,
+                    bbox=bbox,
+                    resolution=resolution,
+                    timestep_hours=timestep,
+                    required_start=required_start,
+                    required_end=required_end,
+                ):
+                    reused.append(path)
+                    break
+            try:
+                grib = adapter.download_grib(
+                    cycle_time=cycle,
+                    downloads_dir=context.paths.downloads_dir,
+                    bbox=bbox,
+                )
+                normalized = adapter.process_grib(
+                    grib,
+                    cycle_time=cycle,
+                    assets_dir=context.paths.assets_dir,
+                    bbox=bbox,
+                    resolution_degrees=resolution,
+                    timestep_hours=timestep,
+                )
+                required_start_naive = required_start.replace(tzinfo=None)
+                required_end_naive = required_end.replace(tzinfo=None)
+                if (
+                    normalized.valid_from > required_start_naive
+                    or normalized.valid_to < required_end_naive
+                ):
+                    raise ValueError(
+                        "Downloaded forecast asset does not cover the required forecast window."
+                    )
+                raw.append(grib)
+                produced.append(normalized.asset_path)
+                break
+            except Exception as exc:
+                last_error = exc
                 continue
-        grib = adapter.download_grib(
-            reference_time=reference, downloads_dir=context.paths.downloads_dir
-        )
-        normalized = adapter.process_grib(
-            grib,
-            cycle_time=cycle,
-            assets_dir=context.paths.assets_dir,
-            bbox=bbox,
-            resolution_degrees=resolution,
-            timestep_hours=timestep,
-        )
-        raw.append(grib)
-        produced.append(normalized.asset_path)
+        else:
+            raise RuntimeError(
+                f"No usable forecast asset found for provider {provider!r} "
+                f"within {lookback_cycles} cycle(s)."
+            ) from last_error
     return ForecastDownloadSummary(tuple(reused), tuple(produced), tuple(raw))
 
 
@@ -299,7 +336,7 @@ def ingest_forecast_grids(
         raise FileNotFoundError(f"History database not found: {database_path}")
 
     normalized = adapter.store_grid(
-        reference_time=reference_time,
+        cycle_time=resolve_forecast_cycle(reference_time),
         bbox=bbox,
         resolution_degrees=resolution_degrees,
         downloads_dir=downloads_dir,

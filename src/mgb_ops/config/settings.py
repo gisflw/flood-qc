@@ -26,6 +26,10 @@ DEFAULT_SETTINGS: dict[str, Any] = {
             "flow": "mean",
         },
     },
+    "forecast": {
+        "provider": "ecmwf",
+        "lookback_cycles": 12,
+    },
     "spatial_grid": {
         "bbox": None,
         "resolution_degrees": 0.1,
@@ -123,6 +127,11 @@ def _validate_bool(value: Any, context: str) -> None:
         raise ValueError(f"{context} must be boolean.")
 
 
+def _validate_forecast_provider(value: Any, context: str) -> None:
+    if not isinstance(value, str) or value.strip().lower() not in {"ecmwf", "gfs"}:
+        raise ValueError(f"{context} must be one of ['ecmwf', 'gfs'].")
+
+
 def _validate_nonempty_path(value: Any, context: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"{context} must be a non-empty path string.")
@@ -204,6 +213,10 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "timeout_seconds": _validate_positive_number,
             "fetch_window_days": _validate_positive_int,
             "observed_aggregation": _validate_observed_aggregation,
+        },
+        "forecast": {
+            "provider": _validate_forecast_provider,
+            "lookback_cycles": _validate_positive_int,
         },
         "spatial_grid": {
             "bbox": _validate_optional_bbox,

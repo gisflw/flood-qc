@@ -52,11 +52,6 @@ def test_history_repository_lists_and_finds_generic_non_ecmwf_asset(tmp_path) ->
     initialize_history_db(db_path)
 
     with HistoryRepository(db_path) as repository:
-        repository.connection.execute(
-            "INSERT INTO provider (provider_code, provider_name, provider_type) VALUES (?, ?, ?)",
-            ("gfs", "Global Forecast System", "forecast"),
-        )
-        repository.connection.commit()
         repository.upsert_asset(
             asset_id="gfs.test.fc.20260311T000000Z.precipitation_grid",
             asset_kind="forecast_precipitation_grid",

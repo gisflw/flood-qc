@@ -6,7 +6,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol
 
-from mgb_ops.adapters import forecast_ecmwf, observed_ana, observed_inmet
+from mgb_ops.adapters import forecast_ecmwf, forecast_gfs, observed_ana, observed_inmet
 
 
 class ObservationAdapter(Protocol):
@@ -38,8 +38,6 @@ class ObservationAdapter(Protocol):
 class ForecastAdapter(Protocol):
     provider_code: str
     product_config: Any
-
-    def cycle_time(self, reference_time: datetime) -> datetime: ...
 
     def asset_id(self, cycle_time: datetime) -> str: ...
 
@@ -104,26 +102,27 @@ class _ObservationAdapter:
 class _ForecastAdapter:
     provider_code: str
     product_config: Any
-
-    def cycle_time(self, reference_time: datetime) -> datetime:
-        return forecast_ecmwf.build_ecmwf_cycle(reference_time)
+    asset_id_function: Callable[..., str]
+    store_grid_function: Callable[..., Any]
+    download_grib_function: Callable[..., Path]
+    process_grib_function: Callable[..., Any]
 
     def asset_id(self, cycle_time: datetime) -> str:
-        return forecast_ecmwf.build_asset_id(cycle_time, self.product_config)
+        return self.asset_id_function(cycle_time, self.product_config)
 
     def store_grid(self, **kwargs: Any) -> Any:
-        return forecast_ecmwf.store_normalized_forecast_grid(
+        return self.store_grid_function(
             **kwargs,
             product_config=self.product_config,
         )
 
     def download_grib(self, **kwargs: Any) -> Path:
-        return forecast_ecmwf.download_forecast_grib(
+        return self.download_grib_function(
             **kwargs, product_config=self.product_config
         )
 
     def process_grib(self, grib_path: Path, **kwargs: Any) -> Any:
-        return forecast_ecmwf.process_forecast_grib(
+        return self.process_grib_function(
             grib_path, **kwargs, product_config=self.product_config
         )
 
@@ -152,9 +151,22 @@ _OBSERVATION_ADAPTERS: dict[str, ObservationAdapter] = {
 DEFAULT_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
     provider_code=forecast_ecmwf.ECMWF_FORECAST_PRODUCT.provider_code,
     product_config=forecast_ecmwf.ECMWF_FORECAST_PRODUCT,
+    asset_id_function=forecast_ecmwf.build_asset_id,
+    store_grid_function=forecast_ecmwf.store_normalized_forecast_grid,
+    download_grib_function=forecast_ecmwf.download_forecast_grib,
+    process_grib_function=forecast_ecmwf.process_forecast_grib,
+)
+GFS_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
+    provider_code=forecast_gfs.GFS_FORECAST_PRODUCT.provider_code,
+    product_config=forecast_gfs.GFS_FORECAST_PRODUCT,
+    asset_id_function=forecast_gfs.build_asset_id,
+    store_grid_function=forecast_gfs.store_normalized_forecast_grid,
+    download_grib_function=forecast_gfs.download_forecast_grib,
+    process_grib_function=forecast_gfs.process_forecast_grib,
 )
 _FORECAST_ADAPTERS: dict[str, ForecastAdapter] = {
     DEFAULT_FORECAST_ADAPTER.provider_code: DEFAULT_FORECAST_ADAPTER,
+    GFS_FORECAST_ADAPTER.provider_code: GFS_FORECAST_ADAPTER,
 }
 
 

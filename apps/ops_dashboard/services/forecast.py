@@ -14,6 +14,7 @@ from mgb_ops.analysis import forecast as forecast_analysis
 from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec
 from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.edit.forcing import apply_corrections
+from mgb_ops.utils.time import resolve_forecast_cycle
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,7 +98,7 @@ def list_forecast_assets(
         database_path,
         workspace_path=workspace_path,
         provider_code=adapter.provider_code,
-        cycle_time=adapter.cycle_time(window.cutoff_time),
+        cycle_time=resolve_forecast_cycle(window.cutoff_time),
     )
 
 

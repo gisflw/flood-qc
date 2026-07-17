@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Iterable
 from zoneinfo import ZoneInfo
 
 
 TIMEZONE = ZoneInfo("America/Sao_Paulo")
 DEFAULT_DT_SECONDS = 3600
+DEFAULT_FORECAST_CYCLE_HOURS = (0, 6, 12, 18)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +40,47 @@ def resolve_reference_time(raw_value: str | None) -> datetime:
     if reference_time.tzinfo is not None:
         reference_time = reference_time.astimezone(TIMEZONE).replace(tzinfo=None)
     return reference_time.replace(second=0, microsecond=0)
+
+
+def resolve_forecast_cycle(
+    reference_time: datetime,
+    *,
+    cycle_hours: tuple[int, ...] = DEFAULT_FORECAST_CYCLE_HOURS,
+) -> datetime:
+    """Resolve the previous UTC forecast cycle for a local reference time."""
+    if not cycle_hours:
+        raise ValueError("cycle_hours must not be empty.")
+    normalized_hours = tuple(sorted(set(cycle_hours)))
+    if any(hour < 0 or hour > 23 for hour in normalized_hours):
+        raise ValueError("cycle_hours must be UTC hours in the range 0..23.")
+
+    if reference_time.tzinfo is None:
+        reference_utc = reference_time.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
+    else:
+        reference_utc = reference_time.astimezone(timezone.utc)
+
+    current = reference_utc.replace(minute=0, second=0, microsecond=0)
+    eligible = [hour for hour in normalized_hours if hour <= current.hour]
+    if eligible:
+        return current.replace(hour=max(eligible), tzinfo=None)
+    return (current - timedelta(days=1)).replace(hour=normalized_hours[-1], tzinfo=None)
+
+
+def iter_forecast_cycle_candidates(
+    cycle_time: datetime,
+    *,
+    lookback_cycles: int,
+    cycle_hours: tuple[int, ...] = DEFAULT_FORECAST_CYCLE_HOURS,
+) -> Iterable[datetime]:
+    if lookback_cycles < 1:
+        raise ValueError("lookback_cycles must be >= 1.")
+    current = resolve_forecast_cycle(cycle_time.replace(tzinfo=timezone.utc), cycle_hours=cycle_hours)
+    for _ in range(lookback_cycles):
+        yield current
+        current = resolve_forecast_cycle(
+            (current - timedelta(seconds=1)).replace(tzinfo=timezone.utc),
+            cycle_hours=cycle_hours,
+        )
 
 
 def validate_timestep_hours(timestep_hours: int) -> int:

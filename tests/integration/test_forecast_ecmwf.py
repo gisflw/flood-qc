@@ -12,6 +12,7 @@ from mgb_ops.adapters import forecast_ecmwf
 from mgb_ops.adapters import _grib2 as grib2
 from mgb_ops.adapters._grib2 import TpGribMessage
 from mgb_ops.assets.spatial_grid import read_spatial_grid
+from mgb_ops.utils.time import resolve_forecast_cycle
 from mgb_ops.workflows import forecast as forecast_workflow
 from db_helpers import initialize_history_db
 
@@ -28,8 +29,8 @@ class FakeTemporaryDirectory:
         shutil.rmtree(self.path, ignore_errors=True)
 
 
-def test_build_ecmwf_cycle_uses_next_local_hour_and_converts_to_utc() -> None:
-    cycle_time = forecast_ecmwf.build_ecmwf_cycle(datetime(2026, 3, 18, 23, 0, 0))
+def test_resolve_forecast_cycle_uses_previous_utc_synoptic_cycle() -> None:
+    cycle_time = resolve_forecast_cycle(datetime(2026, 3, 18, 23, 0, 0))
 
     assert cycle_time == datetime(2026, 3, 19, 0, 0, 0)
 
@@ -59,7 +60,7 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
         lambda prefix="": FakeTemporaryDirectory(temp_dir),
     )
 
-    def fake_download(target_path: Path, *, reference_time: datetime, product_config=None) -> None:
+    def fake_download(target_path: Path, *, cycle_time: datetime, product_config=None) -> None:
         target_path.write_bytes(b"raw-grib")
 
     def fake_crop(source_path: Path, target_path: Path, *, bbox) -> None:
@@ -92,7 +93,7 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
     )
 
     normalized = forecast_ecmwf.store_normalized_forecast_grid(
-        reference_time=datetime(2026, 3, 11, 23, 0, 0),
+        cycle_time=datetime(2026, 3, 12, 0, 0, 0),
         bbox=(-52.0, -30.0, -51.0, -29.0),
         resolution_degrees=1.0,
         downloads_dir=tmp_path / "data" / "downloads",

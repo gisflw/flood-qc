@@ -6,6 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 import numpy as np
 
@@ -21,7 +22,7 @@ from mgb_ops.assets.spatial_grid import (
     write_spatial_grid,
 )
 from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
-from mgb_ops.utils.time import TIMEZONE, validate_timestep_hours
+from mgb_ops.utils.time import validate_timestep_hours
 
 LOGGER_NAME = "adapters.forecast_ecmwf"
 ECMWF_ASSET_KIND = SPATIAL_GRID_ASSET_KIND
@@ -84,15 +85,6 @@ def _require_opendata_client():
             "Missing dependency for ECMWF ingestion: install `ecmwf-opendata` in the operational environment."
         ) from exc
     return Client
-
-
-def build_ecmwf_cycle(reference_time: datetime) -> datetime:
-    # `reference_time` arrives in local time (America/Sao_Paulo) as the measurement cutoff.
-    # The MGB forecast starts on the next hour, so resolve the ECMWF cycle from that
-    # forecast start converted to UTC.
-    forecast_start_local = reference_time + timedelta(hours=1)
-    forecast_start_utc = forecast_start_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
-    return datetime(forecast_start_utc.year, forecast_start_utc.month, forecast_start_utc.day, 0, 0, 0)
 
 
 def build_ecmwf_steps(product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> list[int]:
@@ -317,6 +309,49 @@ def build_native_interval_precipitation_from_cumulative_messages(
     return tuple(times), tuple(bounds), latitudes, longitudes, payload
 
 
+def build_native_interval_precipitation_from_interval_messages(
+    messages: list[TpGribMessage],
+) -> tuple[
+    tuple[datetime, ...],
+    tuple[tuple[datetime, datetime], ...],
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
+    """Use GRIB accumulation interval values directly as interval totals."""
+    if not messages:
+        raise ValueError("No precipitation messages were provided.")
+    ordered = sorted(messages, key=lambda item: (item.valid_time, item.step_hours))
+    first = ordered[0]
+    times: list[datetime] = []
+    bounds: list[tuple[datetime, datetime]] = []
+    totals: list[np.ndarray] = []
+    for message in ordered:
+        if message.values_mm.shape != first.values_mm.shape:
+            raise ValueError("GRIB contains inconsistent grid shapes across messages.")
+        if not np.allclose(message.latitudes, first.latitudes) or not np.allclose(
+            message.longitudes, first.longitudes
+        ):
+            raise ValueError("GRIB contains inconsistent grid coordinates across messages.")
+        if message.start_step_hours >= message.step_hours:
+            raise ValueError("GRIB precipitation interval must have startStep < endStep.")
+        cycle_time = message.valid_time - timedelta(hours=message.step_hours)
+        start_time = cycle_time + timedelta(hours=message.start_step_hours)
+        bounds.append((start_time, message.valid_time))
+        times.append(message.valid_time)
+        totals.append(np.where(np.isfinite(message.values_mm), message.values_mm, np.nan))
+    latitudes = np.asarray(first.latitudes, dtype=np.float64)
+    longitudes = np.asarray(first.longitudes, dtype=np.float64)
+    payload = np.stack(totals)
+    if len(latitudes) > 1 and latitudes[0] > latitudes[-1]:
+        latitudes = latitudes[::-1]
+        payload = payload[:, ::-1, :]
+    if len(longitudes) > 1 and longitudes[0] > longitudes[-1]:
+        longitudes = longitudes[::-1]
+        payload = payload[:, :, ::-1]
+    return tuple(times), tuple(bounds), latitudes, longitudes, payload
+
+
 def aggregate_hourly_precipitation_to_timestep(
     times_utc: tuple[datetime, ...] | list[datetime],
     precipitation_mm: np.ndarray,
@@ -363,10 +398,22 @@ def write_canonical_forecast_grid_from_grib(
     resolution_degrees: float,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+    messages_reader: Callable[[Path], list[TpGribMessage]] | None = None,
+    accumulation_semantics: str = "cumulative",
 ) -> tuple[datetime, datetime]:
-    native_times, native_bounds, latitudes, longitudes, native_grids = build_native_interval_precipitation_from_cumulative_messages(
-        read_tp_grib_messages(grib_path)
-    )
+    if messages_reader is None:
+        messages_reader = read_tp_grib_messages
+    messages = messages_reader(grib_path)
+    if accumulation_semantics == "cumulative":
+        native_times, native_bounds, latitudes, longitudes, native_grids = (
+            build_native_interval_precipitation_from_cumulative_messages(messages)
+        )
+    elif accumulation_semantics == "interval_total":
+        native_times, native_bounds, latitudes, longitudes, native_grids = (
+            build_native_interval_precipitation_from_interval_messages(messages)
+        )
+    else:
+        raise ValueError("accumulation_semantics must be 'cumulative' or 'interval_total'.")
     if len(latitudes) > 1:
         native_resolution = abs(float(np.median(np.diff(latitudes))))
     elif len(longitudes) > 1:
@@ -416,6 +463,7 @@ def write_canonical_forecast_grid_from_grib(
             "buffer_fraction": FORECAST_BBOX_BUFFER_FRACTION,
             "effective_bbox": list(actual_bbox),
             "accumulation_semantics": "interval_total",
+            "source_accumulation_semantics": accumulation_semantics,
             "model": product_config.model,
             "product_type": product_config.product_type,
             "source_resolution": product_config.resolution,
@@ -430,11 +478,10 @@ def write_canonical_forecast_grid_from_grib(
 def download_ecmwf_grib_to_path(
     target_path: Path,
     *,
-    reference_time: datetime,
+    cycle_time: datetime,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> None:
     Client = _require_opendata_client()
-    cycle_time = build_ecmwf_cycle(reference_time)
     client = Client()
     client.retrieve(
         date=cycle_time.strftime("%Y-%m-%d"),
@@ -451,11 +498,11 @@ def download_ecmwf_grib_to_path(
 
 def download_forecast_grib(
     *,
-    reference_time: datetime,
+    cycle_time: datetime,
     downloads_dir: Path,
+    bbox: tuple[float, float, float, float] | None = None,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> Path:
-    cycle_time = build_ecmwf_cycle(reference_time)
     target = build_grib_path(downloads_dir, cycle_time, product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
@@ -472,7 +519,7 @@ def download_forecast_grib(
     temporary = Path(temporary_name)
     try:
         download_ecmwf_grib_to_path(
-            temporary, reference_time=reference_time, product_config=product_config
+            temporary, cycle_time=cycle_time, product_config=product_config
         )
         messages = read_tp_grib_messages(temporary)
         found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
@@ -523,7 +570,7 @@ def process_forecast_grib(
 
 def store_normalized_forecast_grid(
     *,
-    reference_time: datetime,
+    cycle_time: datetime,
     bbox: tuple[float, float, float, float],
     resolution_degrees: float,
     downloads_dir: Path,
@@ -531,9 +578,8 @@ def store_normalized_forecast_grid(
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> NormalizedForecastGrid:
-    execution_id = build_execution_id(reference_time)
+    execution_id = build_execution_id(cycle_time)
     logger = configure_run_logger(logs_dir / script_stem() / f"{execution_id}.log")
-    cycle_time = build_ecmwf_cycle(reference_time)
     target_path = build_output_path(downloads_dir, cycle_time, product_config)
     buffered_bbox = build_bbox_with_buffer(bbox)
     logger.info(
@@ -547,7 +593,7 @@ def store_normalized_forecast_grid(
         temp_dir = Path(temp_dir_name)
         temp_grib_path = temp_dir / "download.grib2"
         cropped_grib_path = temp_dir / "cropped.grib2"
-        download_ecmwf_grib_to_path(temp_grib_path, reference_time=reference_time, product_config=product_config)
+        download_ecmwf_grib_to_path(temp_grib_path, cycle_time=cycle_time, product_config=product_config)
         crop_grib_to_bbox(temp_grib_path, cropped_grib_path, bbox=buffered_bbox)
         valid_from, valid_to = write_canonical_forecast_grid_from_grib(
             cropped_grib_path,
