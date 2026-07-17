@@ -114,10 +114,10 @@ def test_ingest_forecast_asset_is_idempotent_and_detects_changed_content(tmp_pat
             "source_resolution": "0p25",
             "source_parameter": "tp",
             "model_bbox": [-51.75, -29.75, -51.25, -29.25],
-            "buffered_bbox": [-52.0, -30.0, -51.0, -29.0],
-            "requested_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "buffered_bbox": [-52.75, -30.75, -50.25, -28.25],
+            "requested_bbox": [-52.75, -30.75, -50.25, -28.25],
             "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
-            "buffer_fraction": 0.5,
+            "buffer_fraction": 2.0,
         },
     )
 
@@ -155,10 +155,10 @@ def test_ingest_forecast_asset_replaces_obsolete_unbuffered_registration(tmp_pat
             "source_resolution": "0p25",
             "source_parameter": "tp",
             "model_bbox": [-51.75, -29.75, -51.25, -29.25],
-            "buffered_bbox": [-52.0, -30.0, -51.0, -29.0],
-            "requested_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "buffered_bbox": [-52.75, -30.75, -50.25, -28.25],
+            "requested_bbox": [-52.75, -30.75, -50.25, -28.25],
             "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
-            "buffer_fraction": 0.5,
+            "buffer_fraction": 2.0,
         },
     )
     asset_id = "ecmwf.ifs.fc.20260312T000000Z.precipitation_grid"
@@ -178,4 +178,4 @@ def test_ingest_forecast_asset_replaces_obsolete_unbuffered_registration(tmp_pat
     replaced = ingest_forecast_asset(context, asset_path)
 
     assert replaced["asset_id"] == asset_id
-    assert '"buffer_fraction": 0.5' in replaced["metadata_json"]
+    assert '"buffer_fraction": 2.0' in replaced["metadata_json"]

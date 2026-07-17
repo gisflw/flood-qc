@@ -28,6 +28,7 @@ forecast = [
   "netCDF4>=1.6",
   "ecmwf-opendata",
   "eccodes",
+  "tqdm>=4.66",
 ]
 geo = [
   "rasterio>=1.3",

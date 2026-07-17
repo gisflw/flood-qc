@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import os
+import logging
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
+
+from tqdm import tqdm
 
 from mgb_ops.adapters._grib2 import (
     TpGribMessage,
@@ -20,6 +23,7 @@ from mgb_ops.adapters.forecast_ecmwf import (
     write_canonical_forecast_grid_from_grib,
 )
 from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND
+from mgb_ops.utils.logging import configure_run_logger
 
 
 GFS_ASSET_KIND = SPATIAL_GRID_ASSET_KIND
@@ -41,6 +45,25 @@ GFS_FORECAST_PRODUCT = ForecastProductConfig(
 
 def build_gfs_steps(product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT) -> list[int]:
     return list(product_config.step_schedule)
+
+
+def build_required_gfs_steps(
+    cycle_time: datetime,
+    required_end: datetime,
+    product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT,
+) -> list[int]:
+    """Return native GFS steps needed to cover the requested forecast end."""
+    cycle = cycle_time.replace(tzinfo=timezone.utc) if cycle_time.tzinfo is None else cycle_time.astimezone(timezone.utc)
+    end = required_end.replace(tzinfo=timezone.utc) if required_end.tzinfo is None else required_end.astimezone(timezone.utc)
+    required_hours = max(0, (end - cycle).total_seconds() / 3600)
+    available = build_gfs_steps(product_config)
+    steps = [step for step in available if step <= required_hours]
+    following = next((step for step in available if step > required_hours), None)
+    if following is not None:
+        steps.append(following)
+    if not steps:
+        raise ValueError("Requested forecast end is before the first available GFS interval.")
+    return steps
 
 
 def build_asset_id(cycle_time: datetime, product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT) -> str:
@@ -163,13 +186,21 @@ def download_gfs_grib_to_path(
     *,
     cycle_time: datetime,
     bbox: tuple[float, float, float, float],
+    forecast_hours: Iterable[int] | None = None,
+    logger: logging.Logger | None = None,
     pause_seconds: float = 0.2,
     product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT,
 ) -> None:
     requests = _require_requests()
+    steps = list(forecast_hours or build_gfs_steps(product_config))
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    with requests.Session() as session, target_path.open("wb") as handle:
-        for forecast_hour in build_gfs_steps(product_config):
+    with requests.Session() as session, target_path.open("wb") as handle, tqdm(
+        steps, desc="NOAA GFS", unit="step"
+    ) as progress:
+        for forecast_hour in progress:
+            progress.set_postfix_str(f"f{forecast_hour:03d}")
+            if logger is not None:
+                logger.info("noaa_request_start cycle=%s forecast_hour=%03d", cycle_time.isoformat(), forecast_hour)
             response = request_gfs_file(
                 cycle_time=cycle_time,
                 forecast_hour=forecast_hour,
@@ -178,6 +209,8 @@ def download_gfs_grib_to_path(
                 product_config=product_config,
             )
             handle.write(response.content)
+            if logger is not None:
+                logger.info("noaa_request_done cycle=%s forecast_hour=%03d bytes=%d", cycle_time.isoformat(), forecast_hour, len(response.content))
             if pause_seconds > 0:
                 time.sleep(pause_seconds)
 
@@ -187,16 +220,20 @@ def download_forecast_grib(
     cycle_time: datetime,
     downloads_dir: Path,
     bbox: tuple[float, float, float, float],
+    required_end: datetime | None = None,
+    logger: logging.Logger | None = None,
     product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT,
 ) -> Path:
     target = build_grib_path(downloads_dir, cycle_time, product_config)
-    buffered_bbox = build_bbox_with_buffer(bbox)
+    steps = build_required_gfs_steps(cycle_time, required_end, product_config) if required_end is not None else build_gfs_steps(product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
     if target.exists():
         messages = read_gfs_precipitation_messages(target)
         found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
         found_steps = {message.step_hours for message in messages}
-        if found_cycle == cycle_time and set(build_gfs_steps(product_config)).issubset(found_steps):
+        if found_cycle == cycle_time and set(steps).issubset(found_steps):
+            if logger is not None:
+                logger.info("noaa_download_reused cycle=%s path=%s", cycle_time.isoformat(), target)
             return target
         target.unlink()
 
@@ -206,18 +243,24 @@ def download_forecast_grib(
     os.close(descriptor)
     temporary = Path(temporary_name)
     try:
+        if logger is not None:
+            logger.info("noaa_download_start cycle=%s bbox=%s steps=%s", cycle_time.isoformat(), bbox, steps)
         download_gfs_grib_to_path(
             temporary,
             cycle_time=cycle_time,
-            bbox=buffered_bbox,
+            bbox=bbox,
+            forecast_hours=steps,
+            logger=logger,
             product_config=product_config,
         )
         messages = read_gfs_precipitation_messages(temporary)
         found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
         found_steps = {message.step_hours for message in messages}
-        if found_cycle != cycle_time or not set(build_gfs_steps(product_config)).issubset(found_steps):
+        if found_cycle != cycle_time or not set(steps).issubset(found_steps):
             raise ValueError("Downloaded GFS GRIB2 has an unexpected cycle or incomplete steps.")
         os.replace(temporary, target)
+        if logger is not None:
+            logger.info("noaa_download_done cycle=%s path=%s", cycle_time.isoformat(), target)
     finally:
         temporary.unlink(missing_ok=True)
     return target
@@ -229,19 +272,22 @@ def process_forecast_grib(
     cycle_time: datetime,
     assets_dir: Path,
     bbox: tuple[float, float, float, float],
+    forecast_bbox: tuple[float, float, float, float] | None = None,
+    buffer_fraction: float = FORECAST_BBOX_BUFFER_FRACTION,
     resolution_degrees: float,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT,
 ) -> NormalizedForecastGrid:
     target = build_asset_path(assets_dir, cycle_time, product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
-    buffered_bbox = build_bbox_with_buffer(bbox)
+    buffered_bbox = forecast_bbox or build_bbox_with_buffer(bbox, buffer_fraction=buffer_fraction)
     valid_from, valid_to = write_canonical_forecast_grid_from_grib(
         grib_path,
         target,
         cycle_time=cycle_time,
         bbox=buffered_bbox,
         model_bbox=bbox,
+        buffer_fraction=buffer_fraction,
         resolution_degrees=resolution_degrees,
         timestep_hours=timestep_hours,
         product_config=product_config,
@@ -268,10 +314,14 @@ def store_normalized_forecast_grid(
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = GFS_FORECAST_PRODUCT,
 ) -> NormalizedForecastGrid:
+    forecast_bbox = build_bbox_with_buffer(bbox)
+    logger = configure_run_logger("forecast_noaa", logs_dir / "forecast_noaa" / f"{build_execution_id(cycle_time)}.log", console=False)
+    logger.info("noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s", cycle_time.isoformat(), bbox, forecast_bbox)
     grib_path = download_forecast_grib(
         cycle_time=cycle_time,
         downloads_dir=downloads_dir,
-        bbox=bbox,
+        bbox=forecast_bbox,
+        logger=logger,
         product_config=product_config,
     )
     return process_forecast_grib(

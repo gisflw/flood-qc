@@ -29,6 +29,7 @@ from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.config.runtime import RuntimeContext
 from mgb_ops.utils.time import TIMEZONE
 from mgb_ops.workflows._providers import normalize_provider_codes
+from mgb_ops.utils.logging import configure_run_logger
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,13 +48,14 @@ class ForecastDownloadSummary:
     raw_grib_paths: tuple[Path, ...]
 
 
-def _forecast_settings(settings: dict[str, object]) -> tuple[str, int]:
+def _forecast_settings(settings: dict[str, object]) -> tuple[str, int, float]:
     forecast_settings = settings.get("forecast", {})
     if not isinstance(forecast_settings, dict):
         raise ValueError("forecast settings must be a mapping.")
     provider = str(forecast_settings.get("provider", DEFAULT_FORECAST_ADAPTER.provider_code)).strip().lower()
     lookback_cycles = int(forecast_settings.get("lookback_cycles", 12))
-    return provider, lookback_cycles
+    buffer_fraction = float(forecast_settings.get("buffer_fraction", FORECAST_BBOX_BUFFER_FRACTION))
+    return provider, lookback_cycles, buffer_fraction
 
 
 def _metadata_value(grid, key: str) -> str:
@@ -74,11 +76,12 @@ def _validate_reusable_grid(
     timestep_hours: int,
     required_start: datetime,
     required_end: datetime,
+    expected_buffer_fraction: float,
 ) -> bool:
     try:
         grid = read_spatial_grid(path)
         expected_cycle = cycle_time.replace(tzinfo=timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
-        buffered_bbox = build_bbox_with_buffer(bbox)
+        buffered_bbox = build_bbox_with_buffer(bbox, buffer_fraction=expected_buffer_fraction)
         buffer_fraction = float(grid.metadata.get("buffer_fraction", -1))
         model_bbox = json.loads(str(grid.metadata["model_bbox"]))
         stored_buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
@@ -95,7 +98,7 @@ def _validate_reusable_grid(
         and _metadata_value(grid, "source_cycle_time") == expected_cycle
         and grid.timestep_hours is None
         and grid.source == "cropped_from_native_grid"
-        and buffer_fraction == FORECAST_BBOX_BUFFER_FRACTION
+        and buffer_fraction == expected_buffer_fraction
         and model_bbox == list(bbox)
         and stored_buffered_bbox == list(buffered_bbox)
         and requested_bbox == list(buffered_bbox)
@@ -111,7 +114,7 @@ def download_forecast_data(
     reference_time: datetime | None = None,
 ) -> ForecastDownloadSummary:
     settings = context.settings
-    configured_provider, lookback_cycles = _forecast_settings(settings)
+    configured_provider, lookback_cycles, buffer_fraction = _forecast_settings(settings)
     provider_codes = normalize_provider_codes(providers or configured_provider, get_forecast_adapter)
     reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
     timestep = int(settings["run"]["timestep_hours"])
@@ -120,6 +123,7 @@ def download_forecast_data(
         raise ValueError("spatial_grid.bbox must be configured.")
     bbox = tuple(float(value) for value in bbox_value)
     resolution = float(settings["spatial_grid"]["resolution_degrees"])
+    forecast_bbox = build_bbox_with_buffer(bbox, buffer_fraction=buffer_fraction)
     required_start_local = reference + timedelta(hours=timestep)
     required_end_local = required_start_local + timedelta(
         days=int(settings["mgb"]["forecast_horizon_days"])
@@ -153,20 +157,34 @@ def download_forecast_data(
                     timestep_hours=timestep,
                     required_start=required_start,
                     required_end=required_end,
+                    expected_buffer_fraction=buffer_fraction,
                 ):
                     reused.append(path)
                     break
+            logger = None
             try:
-                grib = adapter.download_grib(
-                    cycle_time=cycle,
-                    downloads_dir=context.paths.downloads_dir,
-                    bbox=bbox,
-                )
+                download_kwargs: dict[str, object] = {
+                    "cycle_time": cycle,
+                    "downloads_dir": context.paths.downloads_dir,
+                    "bbox": forecast_bbox if provider == "noaa" else bbox,
+                }
+                if provider == "noaa":
+                    logger = configure_run_logger(
+                        "forecast_noaa",
+                        context.paths.logs_dir / "forecast_noaa" / f"{cycle:%Y%m%dT%H%M%S}.log",
+                        console=False,
+                    )
+                    logger.info("noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s", cycle.isoformat(), bbox, forecast_bbox)
+                    download_kwargs["required_end"] = required_end
+                    download_kwargs["logger"] = logger
+                grib = adapter.download_grib(**download_kwargs)
                 normalized = adapter.process_grib(
                     grib,
                     cycle_time=cycle,
                     assets_dir=context.paths.assets_dir,
                     bbox=bbox,
+                    forecast_bbox=forecast_bbox,
+                    buffer_fraction=buffer_fraction,
                     resolution_degrees=resolution,
                     timestep_hours=timestep,
                 )
@@ -183,6 +201,8 @@ def download_forecast_data(
                 produced.append(normalized.asset_path)
                 break
             except Exception as exc:
+                if logger is not None:
+                    logger.exception("noaa_cycle_failed cycle=%s", cycle.isoformat())
                 last_error = exc
                 continue
         else:
@@ -226,9 +246,10 @@ def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, obje
         buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("Forecast asset is missing valid bbox buffer metadata.") from exc
+    _, _, expected_buffer_fraction = _forecast_settings(context.settings)
     if (
-        buffer_fraction != FORECAST_BBOX_BUFFER_FRACTION
-        or buffered_bbox != list(build_bbox_with_buffer(tuple(model_bbox)))
+        buffer_fraction != expected_buffer_fraction
+        or buffered_bbox != list(build_bbox_with_buffer(tuple(model_bbox), buffer_fraction=expected_buffer_fraction))
     ):
         raise ValueError("Forecast asset bbox buffer metadata is inconsistent.")
     cycle_text = _metadata_value(grid, "source_cycle_time")

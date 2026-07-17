@@ -30,7 +30,7 @@ ECMWF_MODEL = "ifs"
 ECMWF_PRODUCT_TYPE = "fc"
 ECMWF_RESOLUTION = "0p25"
 ECMWF_PARAM = "tp"
-FORECAST_BBOX_BUFFER_FRACTION = 0.5
+FORECAST_BBOX_BUFFER_FRACTION = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,12 +103,21 @@ def build_bbox_with_buffer(
         raise ValueError("buffer_fraction must be finite and >= 0.")
     width = east - west
     height = north - south
-    return (
+    buffered_bbox = (
         west - width * buffer_fraction,
         south - height * buffer_fraction,
         east + width * buffer_fraction,
         north + height * buffer_fraction,
     )
+    buffered_west, buffered_south, buffered_east, buffered_north = buffered_bbox
+    if (
+        buffered_west < -180
+        or buffered_east > 180
+        or buffered_south < -90
+        or buffered_north > 90
+    ):
+        raise ValueError("Forecast bbox exceeds supported geographic bounds or crosses the antimeridian.")
+    return buffered_bbox
 
 
 def build_output_path(
@@ -395,6 +404,7 @@ def write_canonical_forecast_grid_from_grib(
     cycle_time: datetime,
     bbox: tuple[float, float, float, float],
     model_bbox: tuple[float, float, float, float],
+    buffer_fraction: float = FORECAST_BBOX_BUFFER_FRACTION,
     resolution_degrees: float,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
@@ -460,7 +470,7 @@ def write_canonical_forecast_grid_from_grib(
             "requested_bbox": list(bbox),
             "model_bbox": list(model_bbox),
             "buffered_bbox": list(bbox),
-            "buffer_fraction": FORECAST_BBOX_BUFFER_FRACTION,
+            "buffer_fraction": buffer_fraction,
             "effective_bbox": list(actual_bbox),
             "accumulation_semantics": "interval_total",
             "source_accumulation_semantics": accumulation_semantics,
@@ -538,13 +548,15 @@ def process_forecast_grib(
     cycle_time: datetime,
     assets_dir: Path,
     bbox: tuple[float, float, float, float],
+    forecast_bbox: tuple[float, float, float, float] | None = None,
+    buffer_fraction: float = FORECAST_BBOX_BUFFER_FRACTION,
     resolution_degrees: float,
     timestep_hours: int = 1,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> NormalizedForecastGrid:
     target = build_asset_path(assets_dir, cycle_time, product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
-    buffered_bbox = build_bbox_with_buffer(bbox)
+    buffered_bbox = forecast_bbox or build_bbox_with_buffer(bbox, buffer_fraction=buffer_fraction)
     with tempfile.TemporaryDirectory(prefix="ecmwf_crop_") as temp_dir_name:
         cropped = Path(temp_dir_name) / "cropped.grib2"
         crop_grib_to_bbox(grib_path, cropped, bbox=buffered_bbox)
@@ -554,6 +566,7 @@ def process_forecast_grib(
             cycle_time=cycle_time,
             bbox=buffered_bbox,
             model_bbox=bbox,
+            buffer_fraction=buffer_fraction,
             resolution_degrees=resolution_degrees,
             timestep_hours=timestep_hours,
             product_config=product_config,

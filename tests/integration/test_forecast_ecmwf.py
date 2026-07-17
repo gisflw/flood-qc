@@ -43,10 +43,10 @@ def test_bbox_crop_mask_keeps_cells_touched_by_bbox_edges() -> None:
     assert mask.tolist() == [True, True, True, False]
 
 
-def test_bbox_buffer_expands_each_side_by_half_of_axis_size() -> None:
+def test_bbox_buffer_expands_each_side_by_configured_axis_fraction() -> None:
     assert forecast_ecmwf.build_bbox_with_buffer(
         (-52.0, -31.0, -50.0, -30.0)
-    ) == (-53.0, -31.5, -49.0, -29.5)
+    ) == (-56.0, -33.0, -46.0, -28.0)
 
 
 def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkeypatch) -> None:
@@ -65,7 +65,7 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
 
     def fake_crop(source_path: Path, target_path: Path, *, bbox) -> None:
         assert source_path.exists()
-        assert bbox == (-52.5, -30.5, -50.5, -28.5)
+        assert bbox == (-54.0, -32.0, -49.0, -27.0)
         target_path.parent.mkdir(parents=True, exist_ok=True)
         target_path.write_bytes(b"cropped-grib")
 
@@ -114,8 +114,8 @@ def test_ingest_forecast_grids_registers_canonical_netcdf_asset(tmp_path, monkey
     assert grid.timestep_hours is None
     assert grid.source == "cropped_from_native_grid"
     assert json.loads(grid.metadata["model_bbox"]) == [-52.0, -30.0, -51.0, -29.0]
-    assert json.loads(grid.metadata["buffered_bbox"]) == [-52.5, -30.5, -50.5, -28.5]
-    assert grid.metadata["buffer_fraction"] == 0.5
+    assert json.loads(grid.metadata["buffered_bbox"]) == [-54.0, -32.0, -49.0, -27.0]
+    assert grid.metadata["buffer_fraction"] == 2.0
     assert grid.values[:, 0, 0].tolist() == [6.0]
 
     with sqlite3.connect(history_db) as connection:

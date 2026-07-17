@@ -5,8 +5,8 @@ from pathlib import Path
 import sys
 
 
-def configure_run_logger(name: str, log_file: Path) -> logging.Logger:
-    """Configure a dedicated file/stdout logger for one operational run."""
+def configure_run_logger(name: str, log_file: Path, *, console: bool = True) -> logging.Logger:
+    """Configure a dedicated file logger, optionally mirrored to stdout."""
     target = Path(log_file)
     target.parent.mkdir(parents=True, exist_ok=True)
     logger = logging.getLogger(name)
@@ -20,9 +20,10 @@ def configure_run_logger(name: str, log_file: Path) -> logging.Logger:
     file_handler = logging.FileHandler(target, mode="w", encoding="utf-8")
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
-    stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(formatter)
-    logger.addHandler(stream_handler)
+    if console:
+        stream_handler = logging.StreamHandler(sys.stdout)
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
     return logger
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "forecast": {
         "provider": "ecmwf",
         "lookback_cycles": 12,
+        "buffer_fraction": 2.0,
     },
     "spatial_grid": {
         "bbox": None,
@@ -118,8 +120,12 @@ def _validate_positive_number(value: Any, context: str) -> None:
 def _validate_optional_nonnegative_number(value: Any, context: str) -> None:
     if value is None:
         return
-    if not isinstance(value, (int, float)) or isinstance(value, bool) or value < 0:
-        raise ValueError(f"{context} must be null or a number >= 0.")
+    _validate_nonnegative_number(value, context)
+
+
+def _validate_nonnegative_number(value: Any, context: str) -> None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not math.isfinite(value) or value < 0:
+        raise ValueError(f"{context} must be a number >= 0.")
 
 
 def _validate_bool(value: Any, context: str) -> None:
@@ -217,6 +223,7 @@ def _validate_settings(settings: dict[str, Any]) -> None:
         "forecast": {
             "provider": _validate_forecast_provider,
             "lookback_cycles": _validate_positive_int,
+            "buffer_fraction": _validate_nonnegative_number,
         },
         "spatial_grid": {
             "bbox": _validate_optional_bbox,

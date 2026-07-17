@@ -9,6 +9,9 @@ CUSTOM_CONFIG = """\
 run:
   timestep_hours: 3
 
+forecast:
+  buffer_fraction: 1.5
+
 ingest:
   timeout_seconds: 30
   fetch_window_days: 14
@@ -43,6 +46,7 @@ def test_load_settings_uses_in_code_defaults_without_workspace_config(tmp_path) 
     assert settings["run"]["timestep_hours"] == 1
     assert settings["forecast"]["provider"] == "ecmwf"
     assert settings["forecast"]["lookback_cycles"] == 12
+    assert settings["forecast"]["buffer_fraction"] == 2.0
     assert settings["ingest"]["request_days"] == 90
     assert settings["ingest"]["fetch_window_days"] == 30
     assert settings["ingest"]["observed_aggregation"] == {"rain": "sum", "level": "mean", "flow": "mean"}
@@ -60,6 +64,7 @@ def test_load_settings_merges_workspace_custom_yaml(tmp_path) -> None:
     assert settings["ingest"]["timeout_seconds"] == 30
     assert settings["ingest"]["fetch_window_days"] == 14
     assert settings["forecast"]["provider"] == "ecmwf"
+    assert settings["forecast"]["buffer_fraction"] == 1.5
     assert settings["spatial_grid"]["bbox"] == [-60.0, -35.0, -48.0, -26.0]
     assert settings["spatial_grid"]["resolution_degrees"] == 0.25
     assert settings["summaries"]["forecast_days"] == [1, 3, 7, 14]
