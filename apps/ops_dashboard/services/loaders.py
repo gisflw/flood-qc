@@ -127,7 +127,7 @@ def _basin_spatial_data(
     source_version: str,
 ) -> BasinSpatialData:
     catchments = _mini_catchments(gpkg_path, workspace, source_version)
-    required = {"mini_jus", "area_km2"}
+    required = {"mini_jus", "mini_area"}
     missing = required.difference(catchments.columns)
     if missing:
         raise ValueError(
@@ -140,23 +140,23 @@ def _basin_spatial_data(
         id_down_col="mini_jus",
     )
     selected = catchments[catchments["mini_id"].isin(basin_ids)].copy()
-    area_counts = selected.groupby("mini_id")["area_km2"].nunique(dropna=False)
+    area_counts = selected.groupby("mini_id")["mini_area"].nunique(dropna=False)
     inconsistent = sorted(int(value) for value in area_counts[area_counts != 1].index)
     if inconsistent:
         raise ValueError(
-            f"Catchments contain inconsistent area_km2 values for minis: {inconsistent}."
+            f"Catchments contain inconsistent mini_area values for minis: {inconsistent}."
         )
     areas = (
-        selected[["mini_id", "area_km2"]]
+        selected[["mini_id", "mini_area"]]
         .drop_duplicates("mini_id")
-        .set_index("mini_id")["area_km2"]
+        .set_index("mini_id")["mini_area"]
     )
     try:
         weights = tuple(float(areas.loc[value]) for value in basin_ids)
     except (TypeError, ValueError) as exc:
-        raise ValueError("Catchment area_km2 values must be numeric.") from exc
+        raise ValueError("Catchment mini_area values must be numeric.") from exc
     if any(not math.isfinite(value) or value <= 0 for value in weights):
-        raise ValueError("Catchment area_km2 values must be finite and positive.")
+        raise ValueError("Catchment mini_area values must be finite and positive.")
     dissolved = dissolve_geometries(
         selected,
         attributes={"outlet_mini_id": int(mini_id), "mini_count": len(basin_ids)},
