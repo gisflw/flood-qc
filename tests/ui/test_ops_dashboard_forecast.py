@@ -244,3 +244,41 @@ def test_synchronize_view_state_copies_only_portable_values() -> None:
         "pitch": 20.0,
         "bearing": 4.0,
     }
+
+
+
+def test_ops_dashboard_forecast_uses_provider_lookback_cycle(tmp_path) -> None:
+    db_path = initialize_history_db(tmp_path / "history.sqlite")
+    forecast_path = tmp_path / "noaa_06.nc"
+    write_forecast_precipitation_grid(
+        forecast_path,
+        times_utc=[datetime(2026, 7, 20, 13), datetime(2026, 7, 20, 14)],
+        latitudes=np.array([-30.5, -29.5]),
+        longitudes=np.array([-51.5, -50.5]),
+        precipitation_mm=np.ones((2, 2, 2)),
+        provider_code="noaa",
+        source_format="GRIB2",
+        source_cycle_time=datetime(2026, 7, 20, 6),
+    )
+    with HistoryRepository(db_path) as repository:
+        repository.upsert_asset(
+            asset_id="noaa.gfs.fc.20260720T060000Z.precipitation_grid",
+            asset_kind=FORECAST_PRECIPITATION_GRID_ASSET_KIND,
+            format="NetCDF",
+            relative_path=str(forecast_path),
+            provider_code="noaa",
+            valid_from="2026-07-20T06:00:00",
+            valid_to="2026-07-30T18:00:00",
+            metadata={"cycle_time": "2026-07-20T06:00:00Z", "type": "forecast"},
+        )
+    window = AnalysisWindow(
+        start_time=datetime(2026, 7, 5),
+        cutoff_time=datetime(2026, 7, 20, 9),
+        forecast_end_exclusive=datetime(2026, 7, 31),
+    )
+
+    assets = ops_dashboard_forecast.list_forecast_assets(
+        db_path, tmp_path, window=window, provider_code="noaa", lookback_cycles=2
+    )
+
+    assert assets["asset_id"].tolist() == ["noaa.gfs.fc.20260720T060000Z.precipitation_grid"]

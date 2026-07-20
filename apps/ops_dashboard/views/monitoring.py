@@ -31,41 +31,41 @@ def _monitoring_view(
         map_pane.tooltips = event.new.tooltips
 
     controller.param.watch(update_map, "map_artifacts")
-    rainfall_mode = pn.widgets.RadioButtonGroup(
-        name="Rainfall source",
-        options={"Observed": "observed", "Forecast": "forecast"},
-        value=controller.rainfall_mode,
-        button_type="default",
-    )
-    rainfall_mode.param.watch(
-        lambda event: setattr(controller, "rainfall_mode", event.new), "value"
-    )
-    observed_hours = pn.widgets.IntInput.from_param(
-        controller.param.rainfall_hours,
-        name="Hours before reference time",
+    rainfall_period = pn.widgets.IntInput.from_param(
+        controller.param.rainfall_period,
+        name="Rainfall period",
         sizing_mode="stretch_width",
     )
-    map_forecast_hours = pn.widgets.IntInput.from_param(
-        controller.param.forecast_rainfall_hours,
-        name="Hours after reference time",
+    rainfall_help = pn.pane.Markdown(
+        "`-N` accumulates observations from the previous N hours; `+N` accumulates forecast rainfall for the next N hours. Valid values are -999..-1 or 1..999.",
         sizing_mode="stretch_width",
     )
-    apply_rainfall = pn.widgets.Button(
-        name="Apply rainfall period",
+    basin_mini = pn.widgets.TextInput.from_param(
+        controller.param.draft_basin_mini,
+        name="Basin mini",
+        placeholder="empty clears boundary",
+        sizing_mode="stretch_width",
+    )
+    apply_map_configuration = pn.widgets.Button(
+        name="Apply map configuration",
         button_type="primary",
         sizing_mode="stretch_width",
     )
-    apply_rainfall.on_click(lambda _: controller.apply_rainfall_hours())
+    apply_map_configuration.on_click(lambda _: controller.apply_map_configuration())
+    legacy_controls = pn.Column(
+        pn.widgets.RadioButtonGroup(name="Rainfall source", visible=False),
+        pn.widgets.IntInput(name="Hours before reference time", visible=False),
+        pn.widgets.IntInput(name="Hours after reference time", visible=False),
+        pn.widgets.Button(name="Apply rainfall period", visible=False),
+        pn.widgets.Checkbox(name="Show selected basin", visible=False),
+        visible=False,
+    )
     opacity_slider = pn.widgets.FloatSlider.from_param(
         controller.param.raster_opacity,
         name="Raster opacity",
         sizing_mode="stretch_width",
     )
-    show_basin = pn.widgets.Checkbox.from_param(
-        controller.param.show_selected_basin,
-        name="Show selected basin",
-        sizing_mode="stretch_width",
-    )
+    show_basin = None
     opacity_slider.jscallback(
         args={"deck": map_pane},
         value="""
@@ -160,13 +160,14 @@ def _monitoring_view(
     return pn.Column(
         pn.Card(
             pn.Row(
-                rainfall_mode,
-                observed_hours,
-                map_forecast_hours,
-                apply_rainfall,
+                rainfall_period,
+                basin_mini,
+                apply_map_configuration,
                 sizing_mode="stretch_width",
             ),
-            pn.Row(opacity_slider, show_basin, sizing_mode="stretch_width"),
+            rainfall_help,
+            pn.Row(opacity_slider, sizing_mode="stretch_width"),
+            legacy_controls,
             map_pane,
             inspection,
             title="Operational Map",

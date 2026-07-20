@@ -9,10 +9,11 @@ import numpy as np
 import pandas as pd
 import panel as pn
 import geopandas as gpd
+from shapely.geometry import LineString, MultiLineString
 
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from mgb_ops.analysis import timeseries as dashboard_data
-from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec, read_spatial_grid
+from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec, read_spatial_grid_window
 from mgb_ops.assets.spatial_layers import read_mini_layer
 from mgb_ops.utils.geospatial import dissolve_geometries
 from mgb_ops.assets.types import AnalysisWindow
@@ -64,6 +65,50 @@ def _mini_segments(
 ) -> gpd.GeoDataFrame:
     del workspace, source_version
     return read_mini_layer(Path(gpkg_path), "mini_segments")
+
+
+def _quantized_path(geometry: LineString, *, precision: int = 5) -> list[list[float]]:
+    return [
+        [round(float(x), precision), round(float(y), precision)]
+        for x, y, *_ in geometry.coords
+    ]
+
+
+@pn.cache(max_items=8)
+def _mini_segment_paths(
+    gpkg_path: str, workspace: str, source_version: str
+) -> pd.DataFrame:
+    """Return a compact, display-only PathLayer table for mini river segments."""
+    segments = _mini_segments(gpkg_path, workspace, source_version)
+    try:
+        projected_crs = segments.estimate_utm_crs()
+    except RuntimeError:
+        projected_crs = None
+    projected = segments.to_crs(projected_crs) if projected_crs is not None else segments
+    simplified = projected.geometry.simplify(50.0, preserve_topology=True)
+    if projected_crs is not None:
+        simplified = gpd.GeoSeries(simplified, crs=projected_crs).to_crs(epsg=4326)
+    rows: list[dict[str, object]] = []
+    for mini_id, geometry in zip(segments["mini_id"], simplified, strict=True):
+        if isinstance(geometry, LineString):
+            lines = [geometry]
+        elif isinstance(geometry, MultiLineString):
+            lines = list(geometry.geoms)
+        else:
+            raise ValueError("Mini segment display geometries must be LineStrings.")
+        path: list[list[float]] = []
+        for line in lines:
+            if line.is_empty or len(line.coords) < 2:
+                continue
+            coords = _quantized_path(line)
+            if path and coords:
+                path.extend(coords[1:] if path[-1] == coords[0] else coords)
+            else:
+                path.extend(coords)
+        if len(path) < 2:
+            raise ValueError(f"Mini segment {int(mini_id)} simplified to an empty path.")
+        rows.append({"mini_id": int(mini_id), "path": path})
+    return pd.DataFrame(rows, columns=["mini_id", "path"])
 
 
 @pn.cache(max_items=8)
@@ -191,7 +236,16 @@ def _accumulation_raster(
         resolution=resolution,
         include_boundary_cells=True,
     )
-    cached = read_spatial_grid(Path(cache_path))
+    reference_utc = pd.Timestamp(
+        window.cutoff_time, tz="America/Sao_Paulo"
+    ).tz_convert("UTC")
+    if rainfall_mode == "observed":
+        start_utc = reference_utc - pd.Timedelta(hours=hours)
+        end_utc = reference_utc
+    else:
+        start_utc = reference_utc
+        end_utc = reference_utc + pd.Timedelta(hours=hours)
+    cached = read_spatial_grid_window(Path(cache_path), start_time=start_utc, end_time=end_utc)
     if cached.variable != "precipitation" or cached.grid_type != rainfall_mode:
         raise ValueError(
             f"{rainfall_mode.title()} rainfall cache must contain "
@@ -214,15 +268,6 @@ def _accumulation_raster(
         raise ValueError(
             f"{rainfall_mode.title()} rainfall cache does not match spatial_grid."
         )
-    reference_utc = pd.Timestamp(
-        window.cutoff_time, tz="America/Sao_Paulo"
-    ).tz_convert("UTC")
-    if rainfall_mode == "observed":
-        start_utc = reference_utc - pd.Timedelta(hours=hours)
-        end_utc = reference_utc
-    else:
-        start_utc = reference_utc
-        end_utc = reference_utc + pd.Timedelta(hours=hours)
     indices = [
         index
         for index, (left, right) in enumerate(cached.time_bounds_utc)
@@ -272,16 +317,30 @@ def _accumulation_raster(
     }
 
 
+def parse_signed_rainfall_period(period: int) -> tuple[str, int]:
+    if not isinstance(period, int) or isinstance(period, bool):
+        raise ValueError("Rainfall period must be an integer from -999..-1 or 1..999.")
+    if period == 0 or abs(period) > 999:
+        raise ValueError("Rainfall period must be -999..-1 or 1..999; zero is not valid.")
+    return ("observed", abs(period)) if period < 0 else ("forecast", period)
+
+
 @pn.cache(max_items=16)
 def _forecast_assets(
     database_path: str,
     workspace: str,
     source_version: str,
     window: AnalysisWindow,
+    provider_code: str,
+    lookback_cycles: int,
 ) -> pd.DataFrame:
     del source_version
     return dashboard_forecast.list_forecast_assets(
-        Path(database_path), Path(workspace), window=window
+        Path(database_path),
+        Path(workspace),
+        window=window,
+        provider_code=provider_code,
+        lookback_cycles=lookback_cycles,
     )
 
 
@@ -334,8 +393,10 @@ __all__ = [
     "_forecast_steps",
     "_mgb_series",
     "_mini_catchments",
+    "_mini_segment_paths",
     "_mini_segments",
     "_model_variables",
     "_observed_series",
     "_station_catalog",
+    "parse_signed_rainfall_period",
 ]

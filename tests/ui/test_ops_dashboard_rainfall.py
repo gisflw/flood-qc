@@ -158,3 +158,18 @@ def test_accumulation_raster_rejects_invalid_mode(tmp_path):
             1,
             rainfall_mode="radar",
         )
+
+
+
+@pytest.mark.parametrize(
+    ("period", "expected"),
+    [(-24, ("observed", 24)), (1, ("forecast", 1)), (999, ("forecast", 999))],
+)
+def test_parse_signed_rainfall_period(period, expected):
+    assert loaders.parse_signed_rainfall_period(period) == expected
+
+
+@pytest.mark.parametrize("period", [0, -1000, 1000, 1.5, True])
+def test_parse_signed_rainfall_period_rejects_invalid(period):
+    with pytest.raises(ValueError, match="-999..-1"):
+        loaders.parse_signed_rainfall_period(period)

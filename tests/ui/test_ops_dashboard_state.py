@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -140,7 +139,7 @@ def test_opacity_change_does_not_rebuild_map_or_reload_spatial_data(
     )
     monkeypatch.setattr(
         dashboard_state,
-        "_mini_segments",
+        "_mini_segment_paths",
         lambda *args, **kwargs: pytest.fail("spatial reload"),
     )
 
@@ -366,21 +365,9 @@ def test_changing_rainfall_hours_preserves_station_map_layer(
     monkeypatch.setattr(dashboard_state, "_accumulation_raster", fake_raster)
     monkeypatch.setattr(
         dashboard_state,
-        "_mini_segments",
-        lambda *args: SimpleNamespace(
-            __geo_interface__={
-                "type": "FeatureCollection",
-                "features": [
-                    {
-                        "type": "Feature",
-                        "properties": {"mini_id": 7},
-                        "geometry": {
-                            "type": "LineString",
-                            "coordinates": [[-52.0, -31.0], [-51.0, -30.0]],
-                        },
-                    }
-                ],
-            }
+        "_mini_segment_paths",
+        lambda *args: pd.DataFrame(
+            [{"mini_id": 7, "path": [[-52.0, -31.0], [-51.0, -30.0]]}]
         ),
     )
     state = dashboard_state.DashboardState(tmp_path)
@@ -411,3 +398,46 @@ def test_rainfall_hours_parameter_rejects_non_positive_values(tmp_path: Path) ->
     state = dashboard_state.DashboardState(tmp_path)
     with pytest.raises(ValueError, match="at least 1"):
         state.rainfall_hours = 0
+
+
+
+def test_river_click_populates_draft_basin_without_replacing_applied_basin(tmp_path: Path) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
+    state.applied_basin_mini_id = 5
+    state.map_artifacts = dashboard_map.DeckGLArtifacts(
+        spec={"layers": []},
+        raster_lookups={},
+        pick_lookups={"mini-segments": (dashboard_map.MapSelection(mini_id=7),)},
+        tooltips={},
+    )
+
+    state.handle_map_click({"layer": "mini-segments", "index": 0})
+
+    assert state.mini_id == 7
+    assert state.draft_basin_mini == "7"
+    assert state.applied_basin_mini_id == 5
+
+
+
+def test_state_uses_model_output_window_when_reference_time_is_now(tmp_path: Path, monkeypatch) -> None:
+    from mgb_ops.assets.types import AnalysisWindow
+
+    _write_config(tmp_path)
+    model_path = tmp_path / "data" / "processed" / "model_outputs.nc"
+    model_path.parent.mkdir(parents=True)
+    model_path.touch()
+    model_window = AnalysisWindow(
+        start_time=pd.Timestamp("2026-07-05T00:00:00").to_pydatetime(),
+        cutoff_time=pd.Timestamp("2026-07-20T09:00:00").to_pydatetime(),
+        forecast_end_exclusive=pd.Timestamp("2026-07-31T00:00:00").to_pydatetime(),
+    )
+    monkeypatch.setattr(
+        dashboard_state,
+        "validate_model_outputs_netcdf",
+        lambda *args, **kwargs: {"window": model_window, "variables": ("flow",)},
+    )
+    monkeypatch.setattr(dashboard_state.DashboardState, "refresh", lambda self: None)
+
+    state = dashboard_state.DashboardState(tmp_path)
+
+    assert state.window == model_window

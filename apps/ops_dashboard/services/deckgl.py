@@ -323,7 +323,7 @@ def build_ops_map(
     selected_layer_name: str | None,
     opacity: float,
     stations: pd.DataFrame,
-    segments_geojson: dict[str, Any] | None,
+    segments: pd.DataFrame | None,
     raster_catalog: dict[str, dict[str, object]],
     basin_geojson: dict[str, Any] | None = None,
 ) -> DeckGLArtifacts:
@@ -362,23 +362,24 @@ def build_ops_map(
         basin_layer["autoHighlight"] = False
         layers.append(basin_layer)
 
-    for layer in (
-        _geojson_layer(
-            "mini-segments",
-            segments_geojson,
-            line_color=[25, 113, 194, 190],
-            fill_color=[0, 0, 0, 0],
-            line_width=2,
-        ),
-    ):
-        if layer is not None:
-            layers.append(layer)
-            features = layer["data"].get("features", [])
-            pick_lookups[layer["id"]] = tuple(
-                MapSelection(mini_id=int(feature["properties"]["mini_id"]))
-                for feature in features
-            )
-
+    if isinstance(segments, pd.DataFrame) and not segments.empty:
+        layers.append(
+            {
+                "@@type": "PathLayer",
+                "id": "mini-segments",
+                "data": segments,
+                "pickable": True,
+                "getPath": "@@=path",
+                "getColor": [25, 113, 194, 190],
+                "getWidth": 2,
+                "widthUnits": "pixels",
+                "widthMinPixels": 2,
+                "autoHighlight": True,
+            }
+        )
+        pick_lookups["mini-segments"] = tuple(
+            MapSelection(mini_id=int(row.mini_id)) for row in segments.itertuples()
+        )
     station_data = _station_records(stations)
     if station_data:
         layers.append(
@@ -421,7 +422,7 @@ def build_ops_map(
                 "{properties.status}"
             )
         },
-        "mini-segments": {"html": "<b>Mini {properties.mini_id}</b>"},
+        "mini-segments": {"html": "<b>Mini {mini_id}</b>"},
     }
     return DeckGLArtifacts(
         spec=spec,
@@ -468,6 +469,8 @@ def decode_click_state(
     layer_id = str(layer_id or "")
     obj = click_state.get("object") or {}
     properties = obj.get("properties", obj) if isinstance(obj, Mapping) else {}
+    if isinstance(obj, Mapping) and "mini_id" in obj and isinstance(properties, Mapping):
+        properties = {**properties, "mini_id": obj["mini_id"]}
     coordinate = click_state.get("coordinate")
     parsed_coordinate = None
     if isinstance(coordinate, (list, tuple)) and len(coordinate) >= 2:

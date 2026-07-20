@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 
 import numpy as np
 import pandas as pd
@@ -52,16 +51,9 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
             }
         ]
     )
-    rivers = {
-        "type": "FeatureCollection",
-        "features": [
-            {
-                "type": "Feature",
-                "properties": {"mini_id": 7},
-                "geometry": {"type": "LineString", "coordinates": [[-52, -31], [-51, -30]]},
-            }
-        ],
-    }
+    rivers = pd.DataFrame(
+        [{"mini_id": 7, "path": [[-52.0, -31.0], [-51.0, -30.0]]}]
+    )
     artifacts = ops_dashboard_map.build_ops_map(
         "accum_24h",
         0.6,
@@ -84,7 +76,9 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
     station_layer = next(
         layer for layer in artifacts.spec["layers"] if layer["id"] == "stations"
     )
-    assert segment_layer["lineWidthUnits"] == "pixels"
+    assert segment_layer["@@type"] == "PathLayer"
+    assert segment_layer["data"] is rivers
+    assert segment_layer["widthUnits"] == "pixels"
     assert station_layer["@@type"] == "GeoJsonLayer"
     assert station_layer["getFillColor"] == "@@=properties.color"
     assert station_layer["getPointRadius"] == 4500
@@ -111,7 +105,6 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
         ],
     }
     assert "properties.station_name" in artifacts.tooltips["stations"]["html"]
-    json.dumps(artifacts.spec)
     assert set(artifacts.raster_lookups) == {"rainfall-raster:accum_24h"}
     assert set(artifacts.tooltips) == {
         "stations",
@@ -307,3 +300,41 @@ def test_north_first_raster_values_rejects_invalid_latitudes(
 ) -> None:
     with pytest.raises(ValueError, match=message):
         ops_dashboard_map.north_first_raster_values(np.ones((2, 2)), latitudes)
+
+
+
+def test_pathlayer_segments_are_pickable_and_reuse_panel_source() -> None:
+    segments = pd.DataFrame(
+        [
+            {"mini_id": 7, "path": [[-52.0, -31.0], [-51.0, -30.0]]},
+            {"mini_id": 9, "path": [[-51.5, -30.5], [-50.5, -29.5]]},
+        ]
+    )
+    first = ops_dashboard_map.build_ops_map(None, 0.4, pd.DataFrame(), segments, {})
+    second = ops_dashboard_map.build_ops_map(
+        "accum_24h",
+        0.4,
+        pd.DataFrame(),
+        segments,
+        {"accum_24h": {"grid": _grid(), "horizon_label": "24h"}},
+    )
+
+    segment_layer = next(layer for layer in first.spec["layers"] if layer["id"] == "mini-segments")
+    assert segment_layer["@@type"] == "PathLayer"
+    assert segment_layer["data"] is segments
+    assert first.pick_lookups["mini-segments"] == (
+        ops_dashboard_map.MapSelection(mini_id=7),
+        ops_dashboard_map.MapSelection(mini_id=9),
+    )
+    assert ops_dashboard_map.decode_click_state(
+        {"layer": "mini-segments", "object": {"mini_id": "9"}}, first.pick_lookups
+    ).mini_id == 9
+    assert ops_dashboard_map.decode_click_state(
+        {"layer": "mini-segments", "index": 0}, first.pick_lookups
+    ).mini_id == 7
+
+    pane = pn.pane.DeckGL(first.spec)
+    model = pane.get_root()
+    source = model.data_sources[0]
+    pane.object = second.spec
+    assert model.data_sources[0] is source

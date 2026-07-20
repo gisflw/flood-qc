@@ -9,12 +9,12 @@ import numpy as np
 import pandas as pd
 
 from apps.ops_dashboard.services import deckgl as dashboard_map
-from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER
+from mgb_ops.adapters import get_forecast_adapter
 from mgb_ops.analysis import forecast as forecast_analysis
 from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec
 from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.edit.forcing import apply_corrections
-from mgb_ops.utils.time import resolve_forecast_cycle
+from mgb_ops.utils.time import iter_forecast_cycle_candidates, resolve_forecast_cycle
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,15 +91,37 @@ class ForecastMapComparisonArtifacts:
 
 
 def list_forecast_assets(
-    database_path: Path, workspace_path: Path, *, window: AnalysisWindow
+    database_path: Path,
+    workspace_path: Path,
+    *,
+    window: AnalysisWindow,
+    provider_code: str = "ecmwf",
+    lookback_cycles: int = 1,
 ) -> pd.DataFrame:
-    adapter = DEFAULT_FORECAST_ADAPTER
-    return forecast_analysis.list_expected_forecast_assets(
-        database_path,
-        workspace_path=workspace_path,
-        provider_code=adapter.provider_code,
-        cycle_time=resolve_forecast_cycle(window.cutoff_time),
-    )
+    adapter = get_forecast_adapter(provider_code)
+    target_cycle = resolve_forecast_cycle(window.cutoff_time)
+    last_error: forecast_analysis.ForecastIntegrityError | None = None
+    for cycle_time in iter_forecast_cycle_candidates(
+        target_cycle, lookback_cycles=int(lookback_cycles)
+    ):
+        try:
+            return forecast_analysis.list_expected_forecast_assets(
+                database_path,
+                workspace_path=workspace_path,
+                provider_code=adapter.provider_code,
+                cycle_time=cycle_time,
+            )
+        except forecast_analysis.ForecastIntegrityError as exc:
+            last_error = exc
+            if exc.code != "unregistered_cycle":
+                raise
+    if last_error is not None:
+        raise forecast_analysis.ForecastIntegrityError(
+            "unregistered_cycle",
+            f"Forecast integrity error for {adapter.provider_code}: no registered canonical NetCDF was found from expected cycle "
+            f"{target_cycle.isoformat(timespec='seconds')}Z within {int(lookback_cycles)} cycle(s).",
+        ) from last_error
+    return pd.DataFrame()
 
 
 def list_forecast_steps(

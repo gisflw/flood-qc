@@ -6,7 +6,7 @@ import pytest
 import xarray as xr
 from netCDF4 import Dataset
 
-from mgb_ops.assets.spatial_grid import NETCDF_ZLIB_COMPLEVEL, read_spatial_grid, write_spatial_grid
+from mgb_ops.assets.spatial_grid import NETCDF_ZLIB_COMPLEVEL, read_spatial_grid, read_spatial_grid_window, write_spatial_grid
 
 
 def _write(path, **overrides):
@@ -61,3 +61,26 @@ def test_spatial_grid_supports_future_variable(tmp_path):
 def test_spatial_grid_rejects_naive_times(tmp_path):
     with pytest.raises(ValueError, match="timezone-aware UTC"):
         _write(tmp_path / "bad.nc", times_utc=[datetime(2026, 3, 11, 1)])
+
+
+
+def test_spatial_grid_window_matches_full_reader(tmp_path):
+    times = [
+        datetime(2026, 3, 11, hour, tzinfo=timezone.utc)
+        for hour in (1, 2, 3)
+    ]
+    values = np.arange(18, dtype=float).reshape(3, 2, 3)
+    path = _write(tmp_path / "grid.nc", times_utc=times, values=values)
+
+    full = read_spatial_grid(path)
+    windowed = read_spatial_grid_window(
+        path,
+        start_time=datetime(2026, 3, 11, 1, tzinfo=timezone.utc),
+        end_time=datetime(2026, 3, 11, 3, tzinfo=timezone.utc),
+    )
+
+    assert windowed.times_utc == full.times_utc[1:3]
+    assert windowed.time_bounds_utc == full.time_bounds_utc[1:3]
+    np.testing.assert_array_equal(windowed.values, full.values[1:3])
+    np.testing.assert_array_equal(windowed.latitudes, full.latitudes)
+    np.testing.assert_array_equal(windowed.longitudes, full.longitudes)

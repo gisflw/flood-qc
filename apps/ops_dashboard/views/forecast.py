@@ -21,7 +21,7 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
         else {}
     )
     asset = pn.widgets.Select(
-        name="ECMWF cycle",
+        name="Forecast cycle",
         options=asset_options,
         value=controller.forecast_asset_id,
     )
@@ -232,7 +232,7 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
         ),
         table,
         pn.Row(editor, reason, add_button, save_button, sizing_mode="stretch_width"),
-        title="ECMWF Corrections",
+        title="Forecast Corrections",
         sizing_mode="stretch_width",
     )
     render_maps()

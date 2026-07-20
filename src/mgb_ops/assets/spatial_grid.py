@@ -494,10 +494,12 @@ def _require_contract(dataset: xr.Dataset, source_path: Path) -> tuple[str, str,
     return variable, grid_type, source, providers
 
 
-def read_spatial_grid(netcdf_path: Path) -> SpatialGrid:
-    path = Path(netcdf_path)
-    with xr.open_dataset(path, decode_times=True) as dataset:
-        dataset = dataset.load()
+def _read_spatial_grid_from_dataset(
+    dataset: xr.Dataset,
+    path: Path,
+    *,
+    value_indices: list[int] | None = None,
+) -> SpatialGrid:
     variable, grid_type, source, providers = _require_contract(dataset, path)
     raw_timestep = dataset.attrs.get("timestep_hours")
     timestep_hours = (
@@ -509,24 +511,30 @@ def read_spatial_grid(netcdf_path: Path) -> SpatialGrid:
     bounds_index = _utc_index(
         dataset["time_bounds"].values.reshape(-1), name="time_bounds", require_aware=False
     )
-    times = tuple(value.to_pydatetime().replace(tzinfo=timezone.utc) for value in time_index)
+    all_times = tuple(value.to_pydatetime().replace(tzinfo=timezone.utc) for value in time_index)
     flat_bounds = tuple(value.to_pydatetime().replace(tzinfo=timezone.utc) for value in bounds_index)
-    bounds = tuple((flat_bounds[index], flat_bounds[index + 1]) for index in range(0, len(flat_bounds), 2))
-    for timestamp, (start, end) in zip(times, bounds, strict=True):
+    all_bounds = tuple((flat_bounds[index], flat_bounds[index + 1]) for index in range(0, len(flat_bounds), 2))
+    for timestamp, (start, end) in zip(all_times, all_bounds, strict=True):
         if end != timestamp or end <= start:
             raise ValueError("Spatial-grid time bounds must end at time and have positive duration.")
         if timestep_hours is not None and end - start != timedelta(hours=timestep_hours):
             raise ValueError("Spatial-grid time bounds must match timestep_hours.")
-    if any(left[1] != right[0] for left, right in zip(bounds, bounds[1:])):
+    if any(left[1] != right[0] for left, right in zip(all_bounds, all_bounds[1:])):
         raise ValueError("Spatial-grid time bounds must be contiguous.")
     valid_from = pd.Timestamp(dataset.attrs["valid_from"])
     valid_to = pd.Timestamp(dataset.attrs["valid_to"])
     if valid_from.tzinfo is None or valid_to.tzinfo is None:
         raise ValueError("Spatial-grid valid interval metadata must be timezone-aware UTC.")
-    if valid_from.tz_convert("UTC") != pd.Timestamp(bounds[0][0]) or valid_to.tz_convert(
+    if valid_from.tz_convert("UTC") != pd.Timestamp(all_bounds[0][0]) or valid_to.tz_convert(
         "UTC"
-    ) != pd.Timestamp(bounds[-1][1]):
+    ) != pd.Timestamp(all_bounds[-1][1]):
         raise ValueError("Spatial-grid valid interval metadata must match time_bounds.")
+    indices = list(range(len(all_times))) if value_indices is None else [int(value) for value in value_indices]
+    if not indices:
+        raise ValueError("Spatial-grid window selected no timesteps.")
+    if min(indices) < 0 or max(indices) >= len(all_times):
+        raise IndexError("Spatial-grid timestep index is out of range.")
+    values = dataset[variable].isel(time=indices).load().values
     return SpatialGrid(
         variable=variable,
         grid_type=grid_type,
@@ -535,9 +543,42 @@ def read_spatial_grid(netcdf_path: Path) -> SpatialGrid:
         units=str(dataset[variable].attrs.get("units", "")),
         latitudes=np.asarray(dataset["latitude"].values, dtype=np.float64),
         longitudes=np.asarray(dataset["longitude"].values, dtype=np.float64),
-        times_utc=times,
-        time_bounds_utc=bounds,
-        values=np.asarray(dataset[variable].values, dtype=np.float64),
+        times_utc=tuple(all_times[index] for index in indices),
+        time_bounds_utc=tuple(all_bounds[index] for index in indices),
+        values=np.asarray(values, dtype=np.float64),
         timestep_hours=timestep_hours,
         metadata=dict(dataset.attrs),
     )
+
+
+def read_spatial_grid(netcdf_path: Path) -> SpatialGrid:
+    path = Path(netcdf_path)
+    with xr.open_dataset(path, decode_times=True) as dataset:
+        return _read_spatial_grid_from_dataset(dataset, path)
+
+
+def read_spatial_grid_window(
+    netcdf_path: Path,
+    *,
+    start_time: datetime | pd.Timestamp,
+    end_time: datetime | pd.Timestamp,
+) -> SpatialGrid:
+    """Validate a canonical spatial-grid file and load only contained timesteps."""
+    path = Path(netcdf_path)
+    start = pd.Timestamp(start_time)
+    end = pd.Timestamp(end_time)
+    if end <= start:
+        raise ValueError("end_time must be after start_time.")
+    with xr.open_dataset(path, decode_times=True) as dataset:
+        variable, _, _, _ = _require_contract(dataset, path)
+        del variable
+        bounds_index = _utc_index(
+            dataset["time_bounds"].values.reshape(-1), name="time_bounds", require_aware=False
+        )
+        flat_bounds = tuple(value.to_pydatetime().replace(tzinfo=timezone.utc) for value in bounds_index)
+        bounds = tuple((flat_bounds[index], flat_bounds[index + 1]) for index in range(0, len(flat_bounds), 2))
+        indices = [
+            index for index, (left, right) in enumerate(bounds)
+            if pd.Timestamp(left) >= start and pd.Timestamp(right) <= end
+        ]
+        return _read_spatial_grid_from_dataset(dataset, path, value_indices=indices)

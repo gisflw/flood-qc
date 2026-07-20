@@ -27,14 +27,16 @@ from apps.ops_dashboard.services.loaders import (
     _forecast_preview,
     _forecast_steps,
     _mgb_series,
-    _mini_segments,
+    _mini_segment_paths,
     _model_variables,
+    parse_signed_rainfall_period,
     _observed_series,
     _station_catalog,
     BasinSpatialData,
 )
 from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.windows import build_analysis_window
+from mgb_ops.assets.model_outputs import validate_model_outputs_netcdf
 from mgb_ops.assets.spatial_grid import RegularGridSpec
 from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.config.workspace import resolve_workspace_path
@@ -59,11 +61,14 @@ class DashboardState(param.Parameterized):
     station_id = param.String(default=None, allow_None=True)
     mini_id = param.Integer(default=None, allow_None=True)
     selected_raster = param.Selector(default=None, objects=[None])
+    rainfall_period = param.Integer(default=-24, bounds=(-999, 999))
+    draft_basin_mini = param.String(default="")
+    applied_basin_mini_id = param.Integer(default=None, allow_None=True)
     rainfall_mode = param.Selector(
-        default="observed", objects=["observed", "forecast"]
+        default="observed", objects=["observed", "forecast"], precedence=-1
     )
-    rainfall_hours = param.Integer(default=24, bounds=(1, None))
-    forecast_rainfall_hours = param.Integer(default=24, bounds=(1, None))
+    rainfall_hours = param.Integer(default=24, bounds=(1, None), precedence=-1)
+    forecast_rainfall_hours = param.Integer(default=24, bounds=(1, None), precedence=-1)
     summary_previous_hours = param.Integer(default=24, bounds=(1, None))
     summary_forecast_hours = param.Integer(default=24, bounds=(1, None))
     raster_opacity = param.Number(default=0.25, bounds=(0, 1), step=0.05)
@@ -111,13 +116,14 @@ class DashboardState(param.Parameterized):
         self.workspace = self.context.paths.workspace
         run_settings = self.context.settings["run"]
         mgb_settings = self.context.settings["mgb"]
-        self.window = build_analysis_window(
+        self.history_path = self.context.paths.history_db
+        self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
+        configured_window = build_analysis_window(
             resolve_reference_time(str(run_settings["reference_time"])),
             output_days_before=int(mgb_settings["output_days_before"]),
             forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
         )
-        self.history_path = self.context.paths.history_db
-        self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
+        self.window = self._resolve_dashboard_window(configured_window)
         self.observed_precipitation_path = (
             self.context.paths.cache_dir / MGB_OBSERVED_CACHE_FILENAME
         )
@@ -128,12 +134,22 @@ class DashboardState(param.Parameterized):
             self.workspace, self.context.settings["spatial"]["gpkg_path"]
         )
         default_hours = int(self.context.settings["summaries"]["accum_hours"][0])
+        params.setdefault("rainfall_period", -default_hours)
         params.setdefault("rainfall_hours", default_hours)
         params.setdefault("forecast_rainfall_hours", default_hours)
         params.setdefault("summary_previous_hours", default_hours)
         params.setdefault("summary_forecast_hours", default_hours)
         super().__init__(**params)
         self.refresh()
+
+    def _resolve_dashboard_window(self, configured_window):
+        if not self.model_path.exists():
+            return configured_window
+        try:
+            metadata = validate_model_outputs_netcdf(self.model_path)
+        except (FileNotFoundError, OSError, ValueError):
+            return configured_window
+        return metadata.get("window", configured_window)
 
     def _versions(self) -> DashboardSources:
         return DashboardSources(
@@ -179,9 +195,9 @@ class DashboardState(param.Parameterized):
 
         segments = None
         try:
-            segments = _mini_segments(
+            segments = _mini_segment_paths(
                 str(self.gpkg_path), workspace, versions.spatial
-            ).__geo_interface__
+            )
         except (FileNotFoundError, ValueError) as exc:
             self.warnings = [
                 *self.warnings,
@@ -211,7 +227,7 @@ class DashboardState(param.Parameterized):
                         tuple(float(value) for value in bbox),
                         float(self.context.settings["spatial_grid"]["resolution_degrees"]),
                         self._selected_rainfall_hours(),
-                        rainfall_mode=self.rainfall_mode,
+                        rainfall_mode=self._selected_rainfall_mode(),
                     )
                 ]
             except (
@@ -222,7 +238,7 @@ class DashboardState(param.Parameterized):
             ) as exc:
                 self.warnings = [
                     *self.warnings,
-                    f"{self.rainfall_mode.title()} rainfall maps unavailable: {exc}",
+                    f"{self._selected_rainfall_mode().title()} rainfall maps unavailable: {exc}",
                 ]
         elif bbox is None:
             self.warnings = [
@@ -239,38 +255,62 @@ class DashboardState(param.Parameterized):
         self.last_refresh_at = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
 
     def apply_rainfall_hours(self) -> None:
-        """Load the requested session-local rainfall accumulation period."""
-        bbox = self.context.settings["spatial_grid"]["bbox"]
+        """Load the requested rainfall accumulation period from legacy controls."""
+        mode = str(self.rainfall_mode)
+        hours = int(self.forecast_rainfall_hours if mode == "forecast" else self.rainfall_hours)
+        self.rainfall_period = hours if mode == "forecast" else -hours
+        before_rasters = self.accumulation_rasters
+        before_selection = self.selected_raster
+        before_warnings = list(self.warnings)
+        self.apply_map_configuration(apply_basin=False)
+        if self.accumulation_rasters is before_rasters and self.selected_raster == before_selection:
+            new_warnings = [value for value in self.warnings if value not in before_warnings]
+            if new_warnings:
+                self.warnings = [
+                    *before_warnings,
+                    f"{mode.title()} rainfall map unavailable: {new_warnings[-1].split(': ', 1)[-1]}",
+                ]
+
+    def apply_map_configuration(self, *, apply_basin: bool = True) -> None:
+        """Atomically apply rainfall and optional basin-boundary map settings."""
+        bbox = self.context.settings["spatial_grid"].get("bbox")
         if bbox is None:
-            self.warnings = [
-                *self.warnings,
-                "Rainfall maps are unavailable for this workspace.",
-            ]
+            self.warnings = [*self.warnings, "Rainfall maps are unavailable for this workspace."]
             return
-        cache_path = self._rainfall_cache_path()
         try:
+            rainfall_mode, rainfall_hours = parse_signed_rainfall_period(int(self.rainfall_period))
+            cache_path = self._rainfall_cache_path(rainfall_mode)
             raster = _accumulation_raster(
                 str(cache_path), str(self.workspace),
                 dashboard_map.build_file_version(cache_path), self.window,
                 tuple(float(value) for value in bbox),
                 float(self.context.settings["spatial_grid"]["resolution_degrees"]),
-                self._selected_rainfall_hours(),
-                rainfall_mode=self.rainfall_mode,
+                rainfall_hours,
+                rainfall_mode=rainfall_mode,
             )
+            next_basin_mini = self.applied_basin_mini_id
+            if apply_basin:
+                next_basin_mini = self._parse_draft_basin_mini()
+                if next_basin_mini is not None:
+                    _basin_spatial_data(
+                        next_basin_mini,
+                        str(self.gpkg_path),
+                        str(self.workspace),
+                        self.source_versions.get("spatial", ""),
+                    )
         except (FileNotFoundError, sqlite3.Error, pd.errors.DatabaseError, ValueError) as exc:
-            self.warnings = [
-                *self.warnings,
-                f"{self.rainfall_mode.title()} rainfall map unavailable: {exc}",
-            ]
+            self.warnings = [*self.warnings, f"Map configuration was not applied: {exc}"]
             return
-        self.accumulation_rasters = [raster]
         raster_name = str(raster["name"])
-        # Changing a Selector's objects can temporarily coerce its value and fire
-        # the map watcher before the new raster state is complete. Suppress that
-        # intermediate event and publish one fully rebuilt map below.
         with param.parameterized.discard_events(self):
+            self.rainfall_mode = rainfall_mode
+            self.rainfall_hours = rainfall_hours if rainfall_mode == "observed" else self.rainfall_hours
+            self.forecast_rainfall_hours = rainfall_hours if rainfall_mode == "forecast" else self.forecast_rainfall_hours
+            self.accumulation_rasters = [raster]
             self.param.selected_raster.objects = [None, raster_name]
             self.selected_raster = raster_name
+            if apply_basin:
+                self.applied_basin_mini_id = next_basin_mini
         current_map = self.map_artifacts
         with param.parameterized.discard_events(self):
             self._rebuild_map()
@@ -278,42 +318,50 @@ class DashboardState(param.Parameterized):
             self.map_artifacts = current_map
         self.map_artifacts = replacement_map
 
-    def _rainfall_cache_path(self) -> Path:
-        return (
-            self.observed_precipitation_path
-            if self.rainfall_mode == "observed"
-            else self.forecast_precipitation_path
-        )
+    def _selected_rainfall_mode(self) -> str:
+        return parse_signed_rainfall_period(int(self.rainfall_period))[0]
+
+    def _rainfall_cache_path(self, rainfall_mode: str | None = None) -> Path:
+        mode = rainfall_mode or self._selected_rainfall_mode()
+        return self.observed_precipitation_path if mode == "observed" else self.forecast_precipitation_path
 
     def _selected_rainfall_hours(self) -> int:
-        return (
-            int(self.rainfall_hours)
-            if self.rainfall_mode == "observed"
-            else int(self.forecast_rainfall_hours)
-        )
+        return parse_signed_rainfall_period(int(self.rainfall_period))[1]
 
-    @param.depends("selected_raster", "show_selected_basin", watch=True)
+    def _parse_draft_basin_mini(self) -> int | None:
+        value = str(self.draft_basin_mini or "").strip()
+        if not value:
+            return None
+        try:
+            mini_id = int(value)
+        except ValueError as exc:
+            raise ValueError("Basin mini must be an integer mini_id or empty.") from exc
+        if mini_id < 1:
+            raise ValueError("Basin mini must be a positive integer mini_id or empty.")
+        return mini_id
+
+    @param.depends("selected_raster", watch=True)
     def _rebuild_map(
         self,
         *_: Any,
-        segments: dict[str, Any] | None = None,
+        segments: pd.DataFrame | None = None,
     ) -> None:
         if segments is None:
             try:
-                segments = _mini_segments(
+                segments = _mini_segment_paths(
                     str(self.gpkg_path),
                     str(self.workspace),
                     self.source_versions.get("spatial", ""),
-                ).__geo_interface__
+                )
             except (FileNotFoundError, ValueError):
                 segments = None
         catalog = {
             str(item["name"]): item for item in self.accumulation_rasters
         }
         basin_geojson = None
-        if self.show_selected_basin and self.mini_id is not None:
+        if self.applied_basin_mini_id is not None:
             try:
-                basin_geojson = self.basin_spatial_data().geometry.__geo_interface__
+                basin_geojson = self.basin_spatial_data(self.applied_basin_mini_id).geometry.__geo_interface__
             except (FileNotFoundError, TypeError, ValueError) as exc:
                 self.add_warning(f"Selected basin unavailable: {exc}")
         self.map_artifacts = dashboard_map.build_ops_map(
@@ -325,10 +373,9 @@ class DashboardState(param.Parameterized):
             basin_geojson,
         )
 
-    @param.depends("mini_id", watch=True)
+    @param.depends("applied_basin_mini_id", watch=True)
     def _rebuild_selected_basin(self) -> None:
-        if self.show_selected_basin:
-            self._rebuild_map()
+        self._rebuild_map()
 
     def handle_map_click(self, click_state: Mapping[str, Any] | None) -> None:
         selection = dashboard_map.decode_click_state(
@@ -339,6 +386,7 @@ class DashboardState(param.Parameterized):
             self.station_id = selection.station_id
         if selection.mini_id is not None:
             self.mini_id = selection.mini_id
+            self.draft_basin_mini = str(selection.mini_id)
         self.raster_inspection = dashboard_map.inspect_raster_click(
             click_state,
             self.map_artifacts.raster_lookups if self.map_artifacts else {},
@@ -367,11 +415,12 @@ class DashboardState(param.Parameterized):
             self.window,
         )
 
-    def basin_spatial_data(self) -> BasinSpatialData:
-        if self.mini_id is None:
+    def basin_spatial_data(self, mini_id: int | None = None) -> BasinSpatialData:
+        selected_mini = self.mini_id if mini_id is None else mini_id
+        if selected_mini is None:
             raise ValueError("Select a mini before loading its basin.")
         return _basin_spatial_data(
-            self.mini_id,
+            int(selected_mini),
             str(self.gpkg_path),
             str(self.workspace),
             self.source_versions.get("spatial", ""),
@@ -414,6 +463,8 @@ class DashboardState(param.Parameterized):
                 str(self.workspace),
                 self.source_versions.get("history", ""),
                 self.window,
+                str(self.context.settings["forecast"]["provider"]),
+                int(self.context.settings["forecast"].get("lookback_cycles", 1)),
             )
         except (
             FileNotFoundError,
