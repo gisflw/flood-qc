@@ -175,8 +175,7 @@ class DashboardState(param.Parameterized):
         return [
             cache
             for cache in caches
-            if cache.kind != "zero"
-            and cache.reference_time is not None
+            if cache.reference_time is not None
             and self._normalize_runtime_time(cache.reference_time) == expected
         ]
 
@@ -203,7 +202,8 @@ class DashboardState(param.Parameterized):
         selected = self.scenario_id if self.scenario_id in valid_ids else None
         if selected is None:
             raw = next((item for item in caches if item.kind == "raw"), None)
-            selected = raw.scenario_id if raw is not None else None
+            zero = next((item for item in caches if item.kind == "zero"), None)
+            selected = (raw or zero).scenario_id if (raw or zero) else None
         self.scenario_caches = caches
         self.scenario_id = selected
         self.comparison_scenario_ids = [

@@ -488,7 +488,7 @@ def test_state_uses_model_output_window_when_reference_time_is_now(tmp_path: Pat
     assert state.window == model_window
 
 
-def test_state_hides_zero_scenario_from_dashboard_choices(
+def test_state_keeps_zero_scenario_available_for_chart_comparisons(
     tmp_path: Path, monkeypatch
 ) -> None:
     from mgb_ops.assets.scenario_cache import ScenarioCache
@@ -513,5 +513,5 @@ def test_state_hides_zero_scenario_from_dashboard_choices(
 
     assert state.scenario_id == "raw:asset"
     assert state.model_path == raw_path
-    assert state.comparison_scenario_ids == ["raw:asset"]
-    assert [cache.scenario_id for cache in state.scenario_caches] == ["raw:asset"]
+    assert state.comparison_scenario_ids == ["zero", "raw:asset"]
+    assert [cache.scenario_id for cache in state.scenario_caches] == ["zero", "raw:asset"]

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
 import panel as pn
 
 from apps.ops_dashboard import create_dashboard
+from mgb_ops.assets.scenario_cache import ScenarioCache
 from apps.ops_dashboard.state import DashboardState
 from apps.ops_dashboard.views.forecast import _forecast_view
 from apps.ops_dashboard.services import forecast as dashboard_forecast
@@ -52,6 +54,32 @@ def test_monitoring_and_forecast_views_compose_from_controlled_state(
         "Raster opacity",
         "Show selected basin",
     }.issubset(widget_names)
+
+
+def test_zero_scenario_is_hidden_from_map_selector_but_available_for_charts(
+    tmp_path: Path,
+) -> None:
+    state = DashboardState(tmp_path)
+    state.scenario_caches = [
+        ScenarioCache(
+            "zero", "Zero", "zero", tmp_path / "zero.nc", None, None, None,
+            reference_time=datetime(2026, 3, 12),
+        ),
+        ScenarioCache(
+            "raw", "Raw", "raw", tmp_path / "raw.nc", "ecmwf", "asset", None,
+            reference_time=datetime(2026, 3, 12),
+        ),
+    ]
+    state.scenario_id = "raw"
+    state.comparison_scenario_ids = ["zero", "raw"]
+
+    widgets = {
+        widget.name: widget
+        for widget in _monitoring_view(state).select(pn.widgets.Widget)
+    }
+
+    assert "zero" not in widgets["Forecast to display"].options.values()
+    assert "zero" in widgets["Compare scenarios"].options.values()
 
 
 def test_map_controls_are_not_in_global_sidebar(tmp_path: Path) -> None:

@@ -19,16 +19,21 @@ def _monitoring_view(
     scenario_options = {
         controller.scenario_label(cache.scenario_id): cache.scenario_id
         for cache in controller.scenario_caches
+        if cache.kind != "zero"
+    }
+    comparison_options = {
+        controller.scenario_label(cache.scenario_id): cache.scenario_id
+        for cache in controller.scenario_caches
     }
     scenario = pn.widgets.Select(
         name="Forecast to display",
         options=scenario_options,
-        value=controller.scenario_id,
+        value=controller.scenario_id if controller.scenario_id in scenario_options.values() else None,
         sizing_mode="stretch_width",
     )
     comparisons = pn.widgets.MultiChoice(
         name="Compare scenarios",
-        options=scenario_options,
+        options=comparison_options,
         value=list(controller.comparison_scenario_ids),
         sizing_mode="stretch_width",
     )
@@ -46,13 +51,22 @@ def _monitoring_view(
     )
 
     def refresh_scenario_widgets(_: Any = None) -> None:
-        options = {
+        map_options = {
             controller.scenario_label(cache.scenario_id): cache.scenario_id
-        for cache in controller.scenario_caches
+            for cache in controller.scenario_caches
+            if cache.kind != "zero"
         }
-        scenario.options = options
-        comparisons.options = options
-        scenario.value = controller.scenario_id
+        chart_options = {
+            controller.scenario_label(cache.scenario_id): cache.scenario_id
+            for cache in controller.scenario_caches
+        }
+        scenario.options = map_options
+        comparisons.options = chart_options
+        scenario.value = (
+            controller.scenario_id
+            if controller.scenario_id in map_options.values()
+            else None
+        )
         comparisons.value = list(controller.comparison_scenario_ids)
 
     controller.param.watch(refresh_scenario_widgets, "scenario_caches")
