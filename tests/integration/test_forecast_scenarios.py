@@ -40,9 +40,15 @@ def _history(tmp_path: Path) -> Path:
     )
 
 
-def _forecast_asset(tmp_path: Path, provider: str = "ecmwf") -> tuple[Path, str]:
-    asset_id = f"{provider}.test.20260312T000000Z"
-    path = tmp_path / "data" / "assets" / f"{provider}.nc"
+def _forecast_asset(
+    tmp_path: Path,
+    provider: str = "ecmwf",
+    *,
+    cycle_time: datetime = datetime(2026, 3, 12, tzinfo=timezone.utc),
+) -> tuple[Path, str]:
+    cycle_label = cycle_time.strftime("%Y%m%dT%H%M%SZ")
+    asset_id = f"{provider}.test.{cycle_label}"
+    path = tmp_path / "data" / "assets" / f"{provider}.{cycle_label}.nc"
     bounds = [
         (
             datetime(2026, 3, 12, 0, tzinfo=timezone.utc),
@@ -109,10 +115,8 @@ def test_enabled_provider_registry_and_scenario_derivation(tmp_path: Path) -> No
     scenarios = derive_forecast_scenarios(
         database,
         tmp_path,
-        target_cycle=datetime(2026, 3, 12),
         required_start=datetime(2026, 3, 12),
         required_end=datetime(2026, 3, 12, 6),
-        lookback_cycles=1,
     )
     assert [item.kind for item in scenarios] == ["zero", "raw", "corrected"]
     assert scenarios[1].asset_id == asset_id
@@ -120,8 +124,120 @@ def test_enabled_provider_registry_and_scenario_derivation(tmp_path: Path) -> No
     assert scenarios[2].correction.multiplication_factor == 2
 
 
+def _register_forecast_asset(
+    database: Path,
+    workspace: Path,
+    *,
+    path: Path,
+    asset_id: str,
+    provider: str,
+    cycle_time: str,
+    valid_to: str = "2026-03-12T06:00:00Z",
+) -> None:
+    with HistoryRepository(database) as repository:
+        repository.upsert_asset(
+            asset_id=asset_id,
+            asset_kind="spatial_grid",
+            format="NetCDF",
+            relative_path=path.relative_to(workspace).as_posix(),
+            provider_code=provider,
+            valid_from="2026-03-12T00:00:00Z",
+            valid_to=valid_to,
+            metadata={"type": "forecast", "cycle_time": cycle_time},
+        )
+
+
+def test_scenarios_use_latest_covering_cycle_and_its_corrections_only(
+    tmp_path: Path,
+) -> None:
+    database = _history(tmp_path)
+    old_path, old_asset_id = _forecast_asset(
+        tmp_path, cycle_time=datetime(2026, 3, 11, 18, tzinfo=timezone.utc)
+    )
+    latest_path, latest_asset_id = _forecast_asset(
+        tmp_path, cycle_time=datetime(2026, 3, 12, tzinfo=timezone.utc)
+    )
+    unavailable_path, unavailable_asset_id = _forecast_asset(
+        tmp_path, cycle_time=datetime(2026, 3, 12, 6, tzinfo=timezone.utc)
+    )
+    with HistoryRepository(database) as repository:
+        repository.connection.execute(
+            "UPDATE provider SET is_active = 0 WHERE provider_code = 'noaa'"
+        )
+        repository.connection.commit()
+    _register_forecast_asset(
+        database,
+        tmp_path,
+        path=old_path,
+        asset_id=old_asset_id,
+        provider="ecmwf",
+        cycle_time="2026-03-11T18:00:00Z",
+    )
+    _register_forecast_asset(
+        database,
+        tmp_path,
+        path=latest_path,
+        asset_id=latest_asset_id,
+        provider="ecmwf",
+        cycle_time="2026-03-12T00:00:00Z",
+    )
+    _register_forecast_asset(
+        database,
+        tmp_path,
+        path=unavailable_path,
+        asset_id=unavailable_asset_id,
+        provider="ecmwf",
+        cycle_time="2026-03-12T06:00:00Z",
+        valid_to="2026-03-12T03:00:00Z",
+    )
+    with HistoryRepository(database) as repository:
+        repository.replace_forecast_manual_edits(
+            old_asset_id,
+            [{"t0_step": 0, "t1_step": 3, "reason": "old correction"}],
+        )
+        repository.replace_forecast_manual_edits(
+            latest_asset_id,
+            [
+                {"t0_step": 0, "t1_step": 3, "reason": "first correction"},
+                {"t0_step": 3, "t1_step": 6, "reason": "second correction"},
+            ],
+        )
+
+    scenarios = derive_forecast_scenarios(
+        database,
+        tmp_path,
+        required_start=datetime(2026, 3, 12),
+        required_end=datetime(2026, 3, 12, 6),
+    )
+
+    assert [scenario.kind for scenario in scenarios] == [
+        "zero",
+        "raw",
+        "corrected",
+        "corrected",
+    ]
+    assert {scenario.asset_id for scenario in scenarios[1:]} == {latest_asset_id}
+
+
+def test_scenario_derivation_fails_when_provider_has_no_usable_asset(
+    tmp_path: Path,
+) -> None:
+    database = _history(tmp_path)
+
+    with pytest.raises(RuntimeError, match="on-disk forecast asset"):
+        derive_forecast_scenarios(
+            database,
+            tmp_path,
+            required_start=datetime(2026, 3, 12),
+            required_end=datetime(2026, 3, 12, 6),
+        )
+
+
 def _write_scenario_output(
-    path: Path, scenario: ForecastScenario, *, forecast_grid_relative_path: str | None = None
+    path: Path,
+    scenario: ForecastScenario,
+    *,
+    forecast_grid_relative_path: str | None = None,
 ) -> None:
     attrs: dict[str, str | int] = {
         "window_start": "2026-03-11T00:00:00",
@@ -163,9 +279,7 @@ def test_scenario_cache_discovery_reads_direct_current_files(tmp_path: Path) -> 
     forecast_grid = root / "grids" / "raw.nc"
     forecast_grid.parent.mkdir()
     forecast_grid.touch()
-    _write_scenario_output(
-        output, scenario, forecast_grid_relative_path="grids/raw.nc"
-    )
+    _write_scenario_output(output, scenario, forecast_grid_relative_path="grids/raw.nc")
 
     caches = discover_latest_scenario_caches(tmp_path)
 
@@ -211,7 +325,9 @@ def test_orchestrator_runs_concurrently_and_publishes_complete_batch(
     )
     scenarios = (
         ForecastScenario("zero", "Zero", "zero"),
-        ForecastScenario("raw:asset", "Raw", "raw", "ecmwf", "asset", tmp_path / "asset.nc"),
+        ForecastScenario(
+            "raw:asset", "Raw", "raw", "ecmwf", "asset", tmp_path / "asset.nc"
+        ),
     )
     barrier = Barrier(2)
 
@@ -238,7 +354,10 @@ def test_orchestrator_runs_concurrently_and_publishes_complete_batch(
     ]
     assert all(item.cache_path.is_file() for item in result.results)
     assert result.cache_dir == scenario_cache_root(context.paths.cache_dir)
-    assert sorted(path.name for path in result.cache_dir.iterdir()) == ["raw.nc", "zero.nc"]
+    assert sorted(path.name for path in result.cache_dir.iterdir()) == [
+        "raw.nc",
+        "zero.nc",
+    ]
 
 
 def test_orchestrator_replaces_current_cache_after_complete_second_run(
@@ -280,7 +399,9 @@ def test_orchestrator_replaces_current_cache_after_complete_second_run(
     assert [path.name for path in second.cache_dir.iterdir()] == ["zero.nc"]
 
 
-def test_orchestrator_removes_orphaned_staging_directories(tmp_path: Path, monkeypatch) -> None:
+def test_orchestrator_removes_orphaned_staging_directories(
+    tmp_path: Path, monkeypatch
+) -> None:
     context = _context(tmp_path)
     monkeypatch.setattr(
         "mgb_ops.workflows.scenario_orchestrator._scenario_executor",
@@ -316,9 +437,7 @@ def test_orchestrator_removes_orphaned_staging_directories(tmp_path: Path, monke
     assert published.is_dir()
 
 
-def test_orchestrator_failure_keeps_previous_batch(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_orchestrator_failure_keeps_previous_batch(tmp_path: Path, monkeypatch) -> None:
     context = _context(tmp_path)
     monkeypatch.setattr(
         "mgb_ops.workflows.scenario_orchestrator._scenario_executor",

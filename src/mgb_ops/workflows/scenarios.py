@@ -12,7 +12,6 @@ from mgb_ops.analysis.forecast import forecast_interval_boundaries
 from mgb_ops.assets.forecast_registry import list_forecast_assets
 from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction, validate_instruction
-from mgb_ops.utils.time import iter_forecast_cycle_candidates
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
 ScenarioKind = Literal["zero", "raw", "corrected"]
@@ -66,56 +65,66 @@ def derive_forecast_scenarios(
     database_path: Path,
     workspace_path: Path,
     *,
-    target_cycle: datetime,
     required_start: datetime,
     required_end: datetime,
-    lookback_cycles: int,
 ) -> tuple[ForecastScenario, ...]:
-    """Derive execution scenarios exclusively from provider, asset, and edit registries."""
+    """Derive scenarios from each provider's newest usable forecast cycle."""
     enabled = list_enabled_forecast_providers(database_path)
-    allowed_cycles: dict[str, set[pd.Timestamp]] = {}
     for provider in enabled:
         get_forecast_adapter(provider)
-        allowed_cycles[provider] = {
-            _utc_naive(candidate)
-            for candidate in iter_forecast_cycle_candidates(
-                target_cycle, lookback_cycles=int(lookback_cycles)
-            )
-        }
 
     start, end = _utc_naive(required_start), _utc_naive(required_end)
     assets = list_forecast_assets(database_path, workspace_path=workspace_path)
-    eligible: list[dict[str, object]] = []
+    eligible_by_provider: dict[str, list[dict[str, object]]] = {
+        provider: [] for provider in enabled
+    }
     for row in assets.to_dict("records"):
         provider = str(row.get("provider_code") or "").strip().lower()
         cycle = _parse_cycle(row.get("cycle_time"))
-        if provider not in allowed_cycles or cycle not in allowed_cycles[provider]:
+        if provider not in eligible_by_provider or cycle is None:
             continue
-        valid_from, valid_to = _utc_naive(row["valid_from"]), _utc_naive(row["valid_to"])
+        valid_from, valid_to = (
+            _utc_naive(row["valid_from"]),
+            _utc_naive(row["valid_to"]),
+        )
         if valid_from > start or valid_to < end:
             continue
         path = Path(row["asset_path"])
         if not path.is_file():
-            raise FileNotFoundError(
-                f"Forecast asset {row['asset_id']!r} is registered but missing: {path}"
-            )
-        eligible.append(row)
+            continue
+        eligible_by_provider[provider].append(row)
 
-    covered_providers = {
-        str(row["provider_code"]).strip().lower() for row in eligible
-    }
-    missing_providers = sorted(set(enabled).difference(covered_providers))
+    missing_providers = sorted(
+        provider for provider, rows in eligible_by_provider.items() if not rows
+    )
     if missing_providers:
         raise RuntimeError(
-            "No registered forecast asset covers the runtime window for enabled "
+            "No registered, on-disk forecast asset covers the runtime window for enabled "
             f"providers: {missing_providers}."
         )
+
+    selected: list[dict[str, object]] = []
+    for provider, rows in eligible_by_provider.items():
+        latest_cycle = max(_parse_cycle(row["cycle_time"]) for row in rows)
+        latest_rows = [
+            row for row in rows if _parse_cycle(row["cycle_time"]) == latest_cycle
+        ]
+        if len(latest_rows) != 1:
+            asset_ids = sorted(str(row["asset_id"]) for row in latest_rows)
+            raise RuntimeError(
+                f"Multiple forecast assets were registered for provider {provider!r} "
+                f"and latest cycle {latest_cycle.isoformat()}: {asset_ids}."
+            )
+        selected.append(latest_rows[0])
 
     scenarios: list[ForecastScenario] = [
         ForecastScenario("zero", "Zero-rain horizon", "zero")
     ]
     with HistoryRepository(Path(database_path)) as repository:
-        for row in sorted(eligible, key=lambda item: (str(item["provider_code"]), str(item["asset_id"]))):
+        for row in sorted(
+            selected,
+            key=lambda item: (str(item["provider_code"]), str(item["asset_id"])),
+        ):
             asset_id = str(row["asset_id"])
             provider = str(row["provider_code"])
             asset_path = Path(row["asset_path"])
@@ -138,7 +147,10 @@ def derive_forecast_scenarios(
                     raise ValueError(
                         f"Correction {edit['manual_edit_id']} must satisfy t0_step < t1_step."
                     )
-                if instruction.t0_step not in valid_steps or instruction.t1_step not in valid_steps:
+                if (
+                    instruction.t0_step not in valid_steps
+                    or instruction.t1_step not in valid_steps
+                ):
                     raise ValueError(
                         f"Correction {edit['manual_edit_id']} boundaries do not align with asset {asset_id}."
                     )
