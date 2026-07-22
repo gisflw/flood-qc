@@ -173,7 +173,7 @@ def build_forecast_preview(
     t1_step: int,
     database_path: Path,
     workspace_path: Path,
-    target_grid: RegularGridSpec,
+    target_grid: RegularGridSpec | None = None,
 ) -> ForecastPreview:
     row, _ = forecast_analysis.resolve_forecast_asset(
         asset_id, database_path=database_path, workspace_path=workspace_path
@@ -218,6 +218,8 @@ def apply_preview_corrections(
     return replace(
         preview,
         data=corrected.values,
+        latitudes=corrected.latitudes,
+        longitudes=corrected.longitudes,
         source_grid=corrected,
         title=f"{preview.title} | corrected",
     )

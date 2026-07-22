@@ -370,8 +370,6 @@ def _forecast_preview(
     workspace: str,
     source_version: str,
     window: AnalysisWindow,
-    bbox: tuple[float, float, float, float],
-    resolution: float,
 ) -> dashboard_forecast.ForecastPreview:
     del source_version, window
     return dashboard_forecast.build_forecast_preview(
@@ -380,7 +378,6 @@ def _forecast_preview(
         t1_step=t1_step,
         database_path=Path(database_path),
         workspace_path=Path(workspace),
-        target_grid=RegularGridSpec(bbox=bbox, resolution=resolution),
     )
 
 

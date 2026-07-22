@@ -645,11 +645,6 @@ class DashboardState(param.Parameterized):
         )
         if request.t1_step < request.t0_step:
             raise ValueError("t1_step must be >= t0_step.")
-        bbox = self.context.settings["spatial_grid"]["bbox"]
-        if bbox is None:
-            raise ValueError(
-                "Set spatial_grid.bbox in <workspace>/config/custom.yaml to enable forecast maps."
-            )
         asset_version = ""
         if not self.forecast_assets.empty and "asset_path" in self.forecast_assets:
             selected = self.forecast_assets[
@@ -667,8 +662,6 @@ class DashboardState(param.Parameterized):
             str(self.workspace),
             f"{self.source_versions.get('history', '')}|{asset_version}",
             self.window,
-            tuple(float(value) for value in bbox),
-            float(self.context.settings["spatial_grid"]["resolution_degrees"]),
         )
         corrected = (
             dashboard_forecast.apply_preview_corrections(

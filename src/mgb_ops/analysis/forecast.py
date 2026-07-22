@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import json
 from pathlib import Path
 
 import numpy as np
@@ -156,10 +157,7 @@ def accumulate_forecast_precipitation(
         values=values,
         latitudes=grid.latitudes,
         longitudes=grid.longitudes,
-        bounds=(
-            float(np.min(grid.longitudes)), float(np.min(grid.latitudes)),
-            float(np.max(grid.longitudes)), float(np.max(grid.latitudes)),
-        ),
+        bounds=tuple(float(value) for value in json.loads(str(grid.metadata["bbox"]))),
         start_time=start,
         end_time=end,
         units="mm",

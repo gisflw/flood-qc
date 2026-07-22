@@ -1,11 +1,17 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import numpy as np
 
+from apps.ops_dashboard.services import forecast as ops_dashboard_forecast
+from db_helpers import initialize_history_db
+from mgb_ops.analysis.forecast import ForecastIntegrityError
+from mgb_ops.assets.history import HistoryRepository
+from mgb_ops.assets.spatial_grid import RegularGridSpec, SPATIAL_GRID_ASSET_KIND, write_spatial_grid
+from mgb_ops.assets.types import AnalysisWindow
+
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
-from mgb_ops.assets.spatial_grid import SPATIAL_GRID_ASSET_KIND, write_spatial_grid
 
 FORECAST_PRECIPITATION_GRID_ASSET_KIND = SPATIAL_GRID_ASSET_KIND
 
@@ -32,13 +38,6 @@ def write_forecast_precipitation_grid(
         timestep_hours=timestep_hours,
         processing_metadata={"source_format": source_format, "source_cycle_time": str(source_cycle_time)},
     )
-from mgb_ops.assets.spatial_grid import RegularGridSpec
-from mgb_ops.assets.types import AnalysisWindow
-from apps.ops_dashboard.services import forecast as ops_dashboard_forecast
-from db_helpers import initialize_history_db
-from mgb_ops.assets.history import HistoryRepository
-from mgb_ops.analysis.forecast import ForecastIntegrityError
-
 
 def _preview(title: str, data: np.ndarray | None = None) -> ops_dashboard_forecast.ForecastPreview:
     return ops_dashboard_forecast.ForecastPreview(
@@ -117,6 +116,17 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
     assert np.allclose(incr_preview.data, 4.0)
 
 
+    native_preview = ops_dashboard_forecast.build_forecast_preview(
+        "ecmwf.ifs.fc.20260311T000000Z.buffered",
+        t0_step=0,
+        t1_step=3,
+        database_path=db_path,
+        workspace_path=tmp_path,
+    )
+    assert native_preview.source_grid is not None
+    assert native_preview.source_grid.bounds == (-52.0, -31.0, -50.0, -29.0)
+
+
 def test_ops_dashboard_forecast_applies_preview_correction() -> None:
     preview = _preview("teste")
     instruction = ForecastCorrectionInstruction(
@@ -131,8 +141,10 @@ def test_ops_dashboard_forecast_applies_preview_correction() -> None:
 
     corrected = ops_dashboard_forecast.apply_preview_corrections(preview, [instruction])
 
-    assert corrected.data[0, 0] == 0.0
-    assert corrected.data[1, 0] == 2.0
+    np.testing.assert_allclose(corrected.data, [[2.0, 4.0], [6.0, 8.0]])
+    np.testing.assert_allclose(corrected.latitudes, [-28.5, -29.5])
+    assert corrected.source_grid is not None
+    assert corrected.source_grid.bounds == (-51.5, -29.5, -50.5, -28.5)
 
 
 def test_expected_ecmwf_cycle_reports_unregistered_cycle(tmp_path) -> None:

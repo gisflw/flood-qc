@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -17,11 +18,8 @@ from mgb_ops.assets.grid_transforms import (
 from mgb_ops.assets.observed_precipitation import build_observed_precipitation_cache
 from mgb_ops.utils.time import TIMEZONE, build_horizon_window, validate_timestep_hours
 from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
-from mgb_ops.assets.spatial_grid import RegularGridSpec, read_spatial_grid, write_spatial_grid
-from mgb_ops.edit.forcing import (
-    ForecastCorrectionInstruction,
-    apply_forcing_correction,
-)
+from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec, read_spatial_grid, write_spatial_grid
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction, apply_grid_correction
 from mgb_ops.assets.history_queries import (
     open_history_read_only,
     read_observed_values,
@@ -356,25 +354,28 @@ def _build_forecast_working_cache(
         source_hours = (source_end - source_start).total_seconds() / 3600.0
         if source_hours % timestep_hours:
             raise ValueError("Forecast native interval cannot be split into MGB timesteps.")
-        source_values = source.values[source_index]
+        source_grid = PrecipitationGrid(
+            values=source.values[source_index],
+            latitudes=source.latitudes,
+            longitudes=source.longitudes,
+            bounds=tuple(float(value) for value in json.loads(str(source.metadata["bbox"]))),
+            start_time=source_start,
+            end_time=source_end,
+            units=source.units,
+            source="forecast",
+        )
         if correction is not None:
             cycle_start = source.time_bounds_utc[0][0]
             correction_start = cycle_start + timedelta(hours=correction.t0_step)
             correction_end = cycle_start + timedelta(hours=correction.t1_step)
             if source_start >= correction_start and source_end <= correction_end:
-                source_values = apply_forcing_correction(
-                    source_values,
-                    shift_lat=correction.shift_lat,
-                    shift_lon=correction.shift_lon,
-                    rotation_deg=correction.rotation_deg,
-                    multiplication_factor=correction.multiplication_factor,
-                )
-        per_step = source_values / (source_hours / timestep_hours)
+                source_grid = apply_grid_correction(source_grid, correction)
+        per_step = source_grid.values / (source_hours / timestep_hours)
         fields.append(
             resample_regular_grid(
                 per_step,
-                source.latitudes,
-                source.longitudes,
+                source_grid.latitudes,
+                source_grid.longitudes,
                 grid_spec,
             )
         )
