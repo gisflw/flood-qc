@@ -1,12 +1,8 @@
 - Helper to extract bbox from gpkg layer (?)
 
-- mini id assignment
-
-- normalize time based on global time step!
-
-- assets to register grid formats
-
-- New API ana; other forecast data; ensemble run.
+- consider organizing station catalog into input(rain)/eval(level/flow)
+    - they share lots of metadata
+    - for flow, mini_id assignation is mandatory
 
 - Consider: new MGB version (ventobin)
 
