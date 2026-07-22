@@ -7,6 +7,7 @@ from typing import Any
 import panel as pn
 
 from apps.ops_dashboard.state import DashboardState
+from apps.ops_dashboard.services.deckgl_sync import link_deckgl_panes
 from apps.ops_dashboard.views.corrections import _correction_table
 
 
@@ -27,10 +28,13 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     )
     t0 = pn.widgets.Select(name="Start step", options=[])
     t1 = pn.widgets.Select(name="End step", options=[])
+    correction_t0 = pn.widgets.Select(name="Correction start step", options=[])
+    correction_t1 = pn.widgets.Select(name="Correction end step", options=[])
 
     def update_steps() -> None:
         if controller.forecast_steps.empty:
             t0.options = t1.options = []
+            correction_t0.options = correction_t1.options = []
             return
         labels = {
             str(row.label): int(row.step_hours)
@@ -38,8 +42,12 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
         }
         t0.options = labels
         t1.options = labels
+        correction_t0.options = labels
+        correction_t1.options = labels
         t0.value = controller.forecast_t0_step
         t1.value = controller.forecast_t1_step
+        correction_t0.value = controller.forecast_t0_step
+        correction_t1.value = controller.forecast_t1_step
 
     update_steps()
 
@@ -100,38 +108,29 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
         corrected = pn.pane.DeckGL(
             artifacts.corrected.spec, height=500, sizing_mode="stretch_width"
         )
-        syncing = {"active": False}
-
-        def synchronize(event: Any, target: pn.pane.DeckGL) -> None:
-            if syncing["active"] or not event.new:
-                return
-            syncing["active"] = True
-            try:
-                shared = dict(event.new)
-                target.view_state = shared
-                controller.update_forecast_view(shared)
-            finally:
-                syncing["active"] = False
-
-        original.param.watch(lambda event: synchronize(event, corrected), "view_state")
-        corrected.param.watch(lambda event: synchronize(event, original), "view_state")
-        maps.append(
-            pn.Row(
-                pn.Card(
-                    original,
-                    pn.pane.Markdown(artifacts.original.legend_html),
-                    title="Original",
-                    sizing_mode="stretch_width",
-                ),
-                pn.Card(
-                    corrected,
-                    pn.pane.Markdown(artifacts.corrected.legend_html),
-                    title="Corrected",
-                    sizing_mode="stretch_width",
-                ),
-                sizing_mode="stretch_width",
-            )
+        original.param.watch(
+            lambda event: controller.update_forecast_view(event.new), "view_state"
         )
+        corrected.param.watch(
+            lambda event: controller.update_forecast_view(event.new), "view_state"
+        )
+        comparison = pn.Row(
+            pn.Card(
+                original,
+                pn.pane.Markdown(artifacts.original.legend_html),
+                title="Original",
+                sizing_mode="stretch_width",
+            ),
+            pn.Card(
+                corrected,
+                pn.pane.Markdown(artifacts.corrected.legend_html),
+                title="Corrected",
+                sizing_mode="stretch_width",
+            ),
+            sizing_mode="stretch_width",
+        )
+        maps.append(comparison)
+        link_deckgl_panes(original, corrected)
 
     def apply_preview(_: Any) -> None:
         controller.forecast_shift_lat = shift_lat.value
@@ -141,6 +140,14 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
         controller.forecast_opacity = opacity.value
         try:
             controller.apply_preview()
+            # Seed the correction form with the exact interval and transforms
+            # used for the map currently being displayed.
+            correction_t0.value = t0.value
+            correction_t1.value = t1.value
+            correction_shift_lat.value = shift_lat.value
+            correction_shift_lon.value = shift_lon.value
+            correction_rotation.value = rotation.value
+            correction_factor.value = factor.value
             status.visible = False
             render_maps()
         except (FileNotFoundError, RuntimeError, ValueError) as exc:
@@ -151,7 +158,19 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     apply_button.on_click(apply_preview)
 
     table = _correction_table(controller)
-    editor = pn.widgets.TextInput(name="Editor")
+    correction_shift_lat = pn.widgets.FloatInput(
+        name="Correction row shift", value=0, step=1
+    )
+    correction_shift_lon = pn.widgets.FloatInput(
+        name="Correction column shift", value=0, step=1
+    )
+    correction_rotation = pn.widgets.FloatInput(
+        name="Correction rotation (°)", value=0, step=1
+    )
+    correction_factor = pn.widgets.FloatInput(
+        name="Correction multiplication factor", value=1, step=0.05, start=0.01
+    )
+    editor = pn.widgets.TextInput(name="Correction editor")
     reason = pn.widgets.TextInput(name="Correction reason")
     add_button = pn.widgets.Button(name="Add correction", button_type="light")
     save_button = pn.widgets.Button(
@@ -166,12 +185,12 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     def add_row(_: Any) -> None:
         try:
             controller.add_forecast_correction(
-                t0_step=t0.value,
-                t1_step=t1.value,
-                shift_lat=shift_lat.value,
-                shift_lon=shift_lon.value,
-                rotation_deg=rotation.value,
-                multiplication_factor=factor.value,
+                t0_step=correction_t0.value,
+                t1_step=correction_t1.value,
+                shift_lat=correction_shift_lat.value,
+                shift_lon=correction_shift_lon.value,
+                rotation_deg=correction_rotation.value,
+                multiplication_factor=correction_factor.value,
                 editor=editor.value,
                 reason=reason.value,
             )
@@ -228,10 +247,19 @@ def _forecast_view(controller: DashboardState) -> pn.viewable.Viewable:
     )
     corrections = pn.Card(
         pn.pane.Markdown(
-            "Edit typed cells, mark rows for removal, then save the replacement set transactionally."
+            "Add a correction below, then edit typed cells or mark rows for removal before saving the replacement set transactionally."
         ),
+        pn.Row(correction_t0, correction_t1, sizing_mode="stretch_width"),
+        pn.Row(
+            correction_shift_lat,
+            correction_shift_lon,
+            correction_rotation,
+            correction_factor,
+            sizing_mode="stretch_width",
+        ),
+        pn.Row(editor, reason, add_button, sizing_mode="stretch_width"),
         table,
-        pn.Row(editor, reason, add_button, save_button, sizing_mode="stretch_width"),
+        pn.Row(save_button, sizing_mode="stretch_width"),
         title="Forecast Corrections",
         sizing_mode="stretch_width",
     )
