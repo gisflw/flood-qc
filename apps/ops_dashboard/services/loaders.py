@@ -73,6 +73,17 @@ def _observed_series(
     )
 
 
+
+@pn.cache(max_items=256)
+def _station_reference_levels(
+    station_id: str,
+    database_path: str,
+    workspace: str,
+    source_version: str,
+) -> pd.DataFrame:
+    del workspace, source_version
+    return dashboard_data.load_station_reference_levels(station_id, Path(database_path))
+
 @pn.cache(max_items=8)
 def _mini_segments(
     gpkg_path: str, workspace: str, source_version: str

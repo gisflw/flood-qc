@@ -20,6 +20,7 @@ def _comparison_chart(
     model_series: Mapping[str, pd.DataFrame],
     station_id: str | None,
     mini_id: int | None,
+    reference_levels: pd.DataFrame | None = None,
 ) -> go.Figure:
     """Build one ordered station/mini comparison figure from prepared series."""
     fig = make_subplots(
@@ -82,6 +83,45 @@ def _comparison_chart(
         if has_data:
             scenario_legends.append((label or "Basin forecast", color, group))
 
+    reference_styles = {
+        "attention": ("Attention", "#facc15", "solid"),
+        "alert": ("Alert", "#d4a017", "solid"),
+        "flood": ("Flood", "#dc2626", "solid"),
+        "severe": ("Severe", "#3b0764", "solid"),
+        "historical_flood": ("Historical flood", "#2563eb", "dash"),
+    }
+    if reference_levels is not None and not reference_levels.empty:
+        for _, reference in reference_levels.iterrows():
+            reference_type = str(reference["reference_type"])
+            style = reference_styles.get(reference_type)
+            level = pd.to_numeric(reference["level_cm"], errors="coerce")
+            if style is None or pd.isna(level):
+                continue
+            label, color, dash = style
+            event_date = reference.get("event_date")
+            if reference_type == "historical_flood" and pd.notna(event_date):
+                label = f"{label} · {event_date}"
+
+            fig.add_shape(
+                type="line",
+                x0=0,
+                x1=1,
+                xref="x3 domain",
+                y0=float(level),
+                y1=float(level),
+                yref="y3",
+                line={"color": color, "dash": dash, "width": 2},
+            )
+            fig.add_annotation(
+                x=1,
+                xref="x3 domain",
+                y=float(level),
+                yref="y3",
+                text=label,
+                showarrow=False,
+                xanchor="right",
+                yanchor="bottom",
+            )
     def add_legend(name: str, color: str, group: str) -> None:
         fig.add_bar(x=[None], y=[None], name=name, marker_color=color, legendgroup=group, showlegend=True, hoverinfo="skip")
 

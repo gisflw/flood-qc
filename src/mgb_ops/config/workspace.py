@@ -66,6 +66,14 @@ class RuntimePaths:
         return self.source_dir / "history_station_inventory.csv"
 
     @property
+    def station_level_boundaries_csv_path(self) -> Path:
+        return self.source_dir / "station_level_boundaries.csv"
+
+    @property
+    def registered_floods_csv_path(self) -> Path:
+        return self.source_dir / "registered_floods.csv"
+
+    @property
     def logs_dir(self) -> Path:
         return self.workspace / "logs"
 

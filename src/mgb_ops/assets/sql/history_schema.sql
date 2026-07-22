@@ -36,6 +36,20 @@ CREATE TABLE IF NOT EXISTS station_observed_variable (
     PRIMARY KEY (station_id, variable_code)
 );
 
+CREATE TABLE IF NOT EXISTS station_level_boundary (
+    station_id TEXT NOT NULL REFERENCES station(station_id) ON DELETE CASCADE,
+    boundary_code TEXT NOT NULL CHECK (boundary_code IN ('attention', 'alert', 'flood', 'severe')),
+    level_cm REAL NOT NULL,
+    PRIMARY KEY (station_id, boundary_code)
+);
+
+CREATE TABLE IF NOT EXISTS historical_flood_level (
+    station_id TEXT NOT NULL REFERENCES station(station_id) ON DELETE CASCADE,
+    level_cm REAL NOT NULL,
+    event_date TEXT NOT NULL,
+    PRIMARY KEY (station_id, level_cm, event_date)
+);
+
 CREATE TABLE IF NOT EXISTS asset (
     asset_id TEXT PRIMARY KEY,
     asset_kind TEXT NOT NULL,
@@ -132,6 +146,8 @@ CREATE TABLE IF NOT EXISTS run_catalog (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_station_level_boundary_station ON station_level_boundary(station_id);
+CREATE INDEX IF NOT EXISTS idx_historical_flood_level_station ON historical_flood_level(station_id, event_date);
 CREATE INDEX IF NOT EXISTS idx_observed_series_station_var ON observed_series(station_id, variable_code);
 CREATE INDEX IF NOT EXISTS idx_observed_value_observed_at ON observed_value(observed_at);
 CREATE INDEX IF NOT EXISTS idx_station_observed_variable_variable ON station_observed_variable(variable_code);

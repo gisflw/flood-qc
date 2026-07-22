@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import csv
+from datetime import date
+import math
 import os
 import re
 import sqlite3
@@ -230,11 +232,112 @@ def load_history_station_inventory(
 
     return len(station_rows)
 
+def _read_reference_csv(csv_path: Path, required_columns: set[str]) -> list[dict[str, str]]:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Reference CSV not found: {csv_path}")
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        missing = required_columns.difference(reader.fieldnames or [])
+        if missing:
+            raise ValueError(f"Invalid reference CSV at {csv_path}: missing columns {sorted(missing)}")
+        rows = list(reader)
+    if any(None in row for row in rows):
+        raise ValueError(f"Invalid reference CSV at {csv_path}: found rows with too many columns.")
+    return rows
+
+
+def _parse_reference_level(value: str, *, row_label: str, column: str) -> float | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        level = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{row_label}: {column} must be numeric.") from exc
+    if not math.isfinite(level):
+        raise ValueError(f"{row_label}: {column} must be finite.")
+    return level
+
+
+def load_station_reference_levels(
+    database_path: Path, boundaries_csv_path: Path, historical_floods_csv_path: Path,
+) -> tuple[int, int]:
+    """Replace station reference levels from immutable ANA source CSVs."""
+    boundaries_path, floods_path = Path(boundaries_csv_path), Path(historical_floods_csv_path)
+    boundary_source = _read_reference_csv(boundaries_path, {
+        "station_code", "station_name", "level_atention", "level_alert", "level_flood", "level_severe",
+    })
+    flood_source = _read_reference_csv(floods_path, {"station_code", "level_registered", "date"})
+    station_codes = {
+        _normalize_station_code("ana", str(row["station_code"]))
+        for row in [*boundary_source, *flood_source]
+    }
+    with sqlite3.connect(database_path) as connection:
+        station_ids = {
+            str(code): str(station_id)
+            for code, station_id in connection.execute(
+                "SELECT station_code, station_id FROM station WHERE provider_code = 'ana'"
+            )
+        }
+
+    boundary_rows: list[tuple[str, str, float]] = []
+    fields = {"attention": "level_atention", "alert": "level_alert", "flood": "level_flood", "severe": "level_severe"}
+    seen_boundaries: set[tuple[str, str]] = set()
+    for number, row in enumerate(boundary_source, start=2):
+        station_code = _normalize_station_code("ana", row["station_code"])
+        if station_code not in station_ids:
+            continue
+        for code, column in fields.items():
+            level = _parse_reference_level(row[column], row_label=f"{boundaries_path}:{number}", column=column)
+            if level is None:
+                continue
+            key = (station_code, code)
+            if key in seen_boundaries:
+                raise ValueError(f"{boundaries_path}:{number}: duplicate {code} boundary for station {station_code}.")
+            seen_boundaries.add(key)
+            boundary_rows.append((station_ids[station_code], code, level))
+
+    flood_rows: list[tuple[str, float, str]] = []
+    seen_floods: set[tuple[str, float, str]] = set()
+    for number, row in enumerate(flood_source, start=2):
+        station_code = _normalize_station_code("ana", row["station_code"])
+        if station_code not in station_ids:
+            continue
+        label = f"{floods_path}:{number}"
+        level = _parse_reference_level(row["level_registered"], row_label=label, column="level_registered")
+        if level is None:
+            raise ValueError(f"{label}: level_registered is required.")
+        try:
+            event_date = date.fromisoformat(str(row["date"]).strip()).isoformat()
+        except ValueError as exc:
+            raise ValueError(f"{label}: date must be an ISO YYYY-MM-DD value.") from exc
+        item = (station_ids[station_code], level, event_date)
+        if item in seen_floods:
+            raise ValueError(f"{label}: duplicate historical flood record.")
+        seen_floods.add(item)
+        flood_rows.append(item)
+
+    with sqlite3.connect(database_path) as connection:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute("DELETE FROM station_level_boundary")
+        connection.execute("DELETE FROM historical_flood_level")
+        connection.executemany(
+            "INSERT INTO station_level_boundary (station_id, boundary_code, level_cm) VALUES (?, ?, ?)", boundary_rows,
+        )
+        connection.executemany(
+            "INSERT INTO historical_flood_level (station_id, level_cm, event_date) VALUES (?, ?, ?)", flood_rows,
+        )
+        connection.commit()
+    return len(boundary_rows), len(flood_rows)
+
+
 
 def initialize_history_db(
     database_path: Path,
     inventory_csv_path: Path,
     schema_path: Path,
+    boundaries_csv_path: Path | None = None,
+    historical_floods_csv_path: Path | None = None,
 ) -> Path:
     target = Path(database_path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -255,6 +358,10 @@ def initialize_history_db(
         HistoryRepository.validate_database(target, allow_missing_station_observed_variable=True)
         apply_schema(target, Path(schema_path))
         load_history_station_inventory(target, inventory_csv_path)
+        if boundaries_csv_path is not None or historical_floods_csv_path is not None:
+            if boundaries_csv_path is None or historical_floods_csv_path is None:
+                raise ValueError("Both reference-level CSV paths must be provided together.")
+            load_station_reference_levels(target, boundaries_csv_path, historical_floods_csv_path)
         HistoryRepository.validate_database(target)
         return target
 
@@ -266,6 +373,10 @@ def initialize_history_db(
     try:
         apply_schema(temporary, Path(schema_path))
         load_history_station_inventory(temporary, inventory_csv_path)
+        if boundaries_csv_path is not None or historical_floods_csv_path is not None:
+            if boundaries_csv_path is None or historical_floods_csv_path is None:
+                raise ValueError("Both reference-level CSV paths must be provided together.")
+            load_station_reference_levels(temporary, boundaries_csv_path, historical_floods_csv_path)
         from mgb_ops.assets.history import HistoryRepository
         HistoryRepository.validate_database(temporary)
         packed = temporary.with_suffix(temporary.suffix + ".packed")

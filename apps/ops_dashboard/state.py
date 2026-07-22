@@ -33,6 +33,7 @@ from apps.ops_dashboard.services.loaders import (
     parse_signed_rainfall_period,
     _observed_series,
     _station_rainfall_accumulations,
+    _station_reference_levels,
     _station_catalog,
     BasinSpatialData,
 )
@@ -527,6 +528,16 @@ class DashboardState(param.Parameterized):
             self.source_versions.get("history", ""),
             self.window,
         )
+    def station_reference_levels(self) -> pd.DataFrame:
+        if self.station_id is None or not self.history_path.exists():
+            return pd.DataFrame(columns=["reference_type", "level_cm", "event_date"])
+        return _station_reference_levels(
+            self.station_id,
+            str(self.history_path),
+            str(self.workspace),
+            self.source_versions.get("history", ""),
+        )
+
 
     def _scenario_path(self, scenario_id: str | None = None) -> Path:
         selected = scenario_id or self.scenario_id
