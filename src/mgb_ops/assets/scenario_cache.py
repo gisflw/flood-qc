@@ -19,6 +19,7 @@ class ScenarioCache:
     provider_code: str | None
     asset_id: str | None
     correction_id: int | None
+    forecast_grid_path: Path | None = None
 
 
 def scenario_cache_root(cache_dir: Path) -> Path:
@@ -41,6 +42,10 @@ def discover_latest_scenario_caches(cache_dir: Path) -> tuple[ScenarioCache, ...
         if not scenario_id or kind not in {"zero", "raw", "corrected"}:
             raise ValueError(f"Scenario cache has invalid scenario metadata: {path}")
         raw_correction_id = attrs.get("correction_id")
+        raw_grid_path = str(attrs.get("forecast_grid_relative_path") or "").strip()
+        forecast_grid_path = root / raw_grid_path if raw_grid_path else None
+        if forecast_grid_path is not None and not forecast_grid_path.is_file():
+            forecast_grid_path = None
         caches.append(
             ScenarioCache(
                 scenario_id=scenario_id,
@@ -54,6 +59,7 @@ def discover_latest_scenario_caches(cache_dir: Path) -> tuple[ScenarioCache, ...
                 correction_id=int(raw_correction_id)
                 if raw_correction_id not in (None, "")
                 else None,
+                forecast_grid_path=forecast_grid_path,
             )
         )
     order = {"zero": 0, "raw": 1, "corrected": 2}

@@ -21,7 +21,7 @@ def _monitoring_view(
         cache.label: cache.scenario_id for cache in controller.scenario_caches
     }
     scenario = pn.widgets.Select(
-        name="Primary forecast scenario",
+        name="Forecast to display",
         options=scenario_options,
         value=controller.scenario_id,
         sizing_mode="stretch_width",
@@ -185,12 +185,8 @@ def _monitoring_view(
     )
     return pn.Column(
         pn.Card(
-            pn.Row(scenario, comparisons, sizing_mode="stretch_width"),
-            title="Forecast Scenarios",
-            sizing_mode="stretch_width",
-        ),
-        pn.Card(
             pn.Row(
+                scenario,
                 rainfall_period,
                 basin_mini,
                 apply_map_configuration,
@@ -205,6 +201,7 @@ def _monitoring_view(
             sizing_mode="stretch_width",
         ),
         pn.Card(
+            comparisons,
             selected_area_summary,
             title="Selected Area",
             sizing_mode="stretch_width",

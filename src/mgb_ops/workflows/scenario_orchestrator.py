@@ -17,6 +17,7 @@ from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
 from mgb_ops.model.mgb_execution import execute_mgb_plan, prepare_mgb_execution
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import (
+    MGB_FORECAST_CACHE_FILENAME,
     MGB_OBSERVED_CACHE_FILENAME,
     prepare_mgb_rainfall,
 )
@@ -79,7 +80,9 @@ def _safe_name(scenario: ForecastScenario) -> str:
     return f"{scenario.kind}-{digest}"
 
 
-def _scenario_metadata(scenario: ForecastScenario) -> dict[str, str | int]:
+def _scenario_metadata(
+    scenario: ForecastScenario, *, forecast_grid_relative_path: str | None = None
+) -> dict[str, str | int]:
     metadata: dict[str, str | int] = {
         "scenario_id": scenario.scenario_id,
         "scenario_label": scenario.label,
@@ -91,6 +94,8 @@ def _scenario_metadata(scenario: ForecastScenario) -> dict[str, str | int]:
         metadata["source_forecast_asset_id"] = scenario.asset_id
     if scenario.correction_id is not None:
         metadata["correction_id"] = scenario.correction_id
+    if forecast_grid_relative_path is not None:
+        metadata["forecast_grid_relative_path"] = forecast_grid_relative_path
     return metadata
 
 
@@ -174,6 +179,17 @@ def _execute_scenario(
         env=execution_env,
     )
     cache_path = staging_dir / f"{safe_name}.nc"
+    forecast_grid_relative_path: str | None = None
+    if scenario.kind != "zero":
+        forecast_grid_source = work_dir / "cache" / MGB_FORECAST_CACHE_FILENAME
+        if not forecast_grid_source.is_file():
+            raise FileNotFoundError(
+                f"Scenario forecast grid was not generated: {forecast_grid_source}"
+            )
+        forecast_grid_target = staging_dir / "grids" / f"{safe_name}.nc"
+        forecast_grid_target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(forecast_grid_source, forecast_grid_target)
+        forecast_grid_relative_path = str(forecast_grid_target.relative_to(staging_dir))
     export_mgb_outputs(
         reference_time=reference_time,
         output_days_before=int(mgb_settings["output_days_before"]),
@@ -184,7 +200,9 @@ def _execute_scenario(
         output_dir=output_dir,
         output_nc_path=cache_path,
         logger=logger,
-        scenario_metadata=_scenario_metadata(scenario),
+        scenario_metadata=_scenario_metadata(
+            scenario, forecast_grid_relative_path=forecast_grid_relative_path
+        ),
     )
     logger.info("scenario_complete scenario_id=%s cache=%s", scenario.scenario_id, cache_path)
     return ScenarioRunResult(scenario=scenario, cache_path=cache_path, run_id=run_id)

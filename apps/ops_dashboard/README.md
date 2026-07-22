@@ -15,7 +15,7 @@ panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hyd
 The dashboard consumes:
 
 - `<workspace>/data/history.sqlite` for station registry and observed series;
-- `<workspace>/data/cache/forecast_scenarios/` containing direct per-scenario NetCDF files for MGB series;
+- `<workspace>/data/cache/forecast_scenarios/` containing direct per-scenario NetCDF files for MGB series and, for raw/corrected scenarios, persisted forecast working grids used by the operational map;
 - registered canonical forecast NetCDF assets for forecast precipitation;
 - observed rainfall in `history.sqlite`, materialized through the asset-owned
   canonical precipitation cache;
@@ -55,6 +55,5 @@ package-level `create_dashboard` export is the supported Python embedding
 interface.
 
 
-The Monitoring tab selects a primary forecast scenario and can overlay multiple
-scenario results. Forecast asset preview and correction editing continue to read
+The Monitoring tab selects the forecast scenario displayed on the operational map and can overlay multiple scenario results in the selected-area comparison. Forecast asset preview and correction editing continue to read
 the normalized asset and manual_edit registries directly.

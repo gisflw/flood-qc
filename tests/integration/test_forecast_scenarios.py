@@ -120,7 +120,9 @@ def test_enabled_provider_registry_and_scenario_derivation(tmp_path: Path) -> No
     assert scenarios[2].correction.multiplication_factor == 2
 
 
-def _write_scenario_output(path: Path, scenario: ForecastScenario) -> None:
+def _write_scenario_output(
+    path: Path, scenario: ForecastScenario, *, forecast_grid_relative_path: str | None = None
+) -> None:
     attrs: dict[str, str | int] = {
         "window_start": "2026-03-11T00:00:00",
         "reference_time": "2026-03-12T00:00:00",
@@ -135,6 +137,8 @@ def _write_scenario_output(path: Path, scenario: ForecastScenario) -> None:
         attrs["source_forecast_asset_id"] = scenario.asset_id
     if scenario.correction_id is not None:
         attrs["correction_id"] = scenario.correction_id
+    if forecast_grid_relative_path is not None:
+        attrs["forecast_grid_relative_path"] = forecast_grid_relative_path
     write_model_outputs_netcdf(
         path=path,
         variables={"flow": np.array([[1.0], [2.0]])},
@@ -156,13 +160,19 @@ def test_scenario_cache_discovery_reads_direct_current_files(tmp_path: Path) -> 
         "raw:ecmwf.asset", "ECMWF raw", "raw", "ecmwf", "ecmwf.asset"
     )
     output = root / "raw.nc"
-    _write_scenario_output(output, scenario)
+    forecast_grid = root / "grids" / "raw.nc"
+    forecast_grid.parent.mkdir()
+    forecast_grid.touch()
+    _write_scenario_output(
+        output, scenario, forecast_grid_relative_path="grids/raw.nc"
+    )
 
     caches = discover_latest_scenario_caches(tmp_path)
 
     assert len(caches) == 1
     assert caches[0].scenario_id == scenario.scenario_id
     assert caches[0].path == output
+    assert caches[0].forecast_grid_path == forecast_grid
 
 
 def _context(tmp_path: Path) -> RuntimeContext:

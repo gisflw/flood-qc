@@ -274,6 +274,19 @@ def test_forecast_rainfall_uses_separate_hours_and_cache(
         "_rebuild_map",
         lambda self, **kwargs: None,
     )
+    forecast_grid = tmp_path / "raw_forecast_grid.nc"
+    forecast_grid.touch()
+    from mgb_ops.assets.scenario_cache import ScenarioCache
+    monkeypatch.setattr(
+        dashboard_state,
+        "discover_latest_scenario_caches",
+        lambda cache_dir: (
+            ScenarioCache(
+                "raw:asset", "Raw", "raw", tmp_path / "raw.nc",
+                "ecmwf", "asset", None, forecast_grid
+            ),
+        ),
+    )
     state = dashboard_state.DashboardState(tmp_path)
     state.rainfall_hours = 12
     state.forecast_rainfall_hours = 48
@@ -283,7 +296,7 @@ def test_forecast_rainfall_uses_separate_hours_and_cache(
 
     assert calls[-1] == (
         "forecast",
-        "precipitations_mgb_forecast.nc",
+        "raw_forecast_grid.nc",
         48,
     )
     assert state.rainfall_hours == 12

@@ -41,6 +41,8 @@ def test_monitoring_and_forecast_views_compose_from_controlled_state(
         widget.name for widget in monitoring.select(pn.widgets.Widget)
     }
     assert {
+        "Forecast to display",
+        "Compare scenarios",
         "Rainfall source",
         "Hours before reference time",
         "Hours after reference time",

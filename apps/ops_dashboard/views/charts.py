@@ -42,6 +42,7 @@ def _comparison_chart(
         "level": "cm",
         "flow": "m³/s",
     }
+    has_station_data = False
     for variable_code, observed_code in station_codes.items():
         if observed.empty:
             break
@@ -61,6 +62,7 @@ def _comparison_chart(
                 name=name,
                 marker_color=STATION_COLOR,
                 legendgroup="station",
+                showlegend=False,
                 row=row,
                 col=1,
             )
@@ -72,9 +74,11 @@ def _comparison_chart(
                 mode="lines",
                 line={"color": STATION_COLOR},
                 legendgroup="station",
+                showlegend=False,
                 row=row,
                 col=1,
             )
+        has_station_data = True
 
     nested = bool(model_series) and all(
         isinstance(value, Mapping) for value in model_series.values()
@@ -92,6 +96,7 @@ def _comparison_chart(
         "#0b7285",
         "#c2255c",
     )
+    visible_scenarios: list[tuple[str, str]] = []
     for scenario_index, (scenario_label, variables) in enumerate(scenario_groups):
         color = scenario_colors[scenario_index % len(scenario_colors)]
         for variable_code, row in VARIABLE_ROWS.items():
@@ -107,7 +112,7 @@ def _comparison_chart(
                     continue
                 level_mean = current_levels["value"].mean()
             for flag, dash, suffix in (
-                (0, "solid", "current"),
+                (0, "solid", "observed"),
                 (1, "dash", "forecast"),
             ):
                 data = frame[frame["prev_flag"] == flag].dropna(subset=["value"])
@@ -133,6 +138,8 @@ def _comparison_chart(
                     if scenario_label is not None
                     else f"mini-{suffix}"
                 )
+                if scenario_label is not None and (scenario_label, color) not in visible_scenarios:
+                    visible_scenarios.append((scenario_label, color))
                 if variable_code == "precipitation":
                     fig.add_bar(
                         x=data["dt"],
@@ -144,6 +151,7 @@ def _comparison_chart(
                         },
                         opacity=0.85 if flag == 0 else 0.55,
                         legendgroup=legend_group,
+                        showlegend=False,
                         row=row,
                         col=1,
                     )
@@ -155,9 +163,31 @@ def _comparison_chart(
                         mode="lines",
                         line={"color": color, "dash": dash},
                         legendgroup=legend_group,
+                        showlegend=False,
                         row=row,
                         col=1,
                     )
+
+    has_series_data = bool(fig.data)
+    if has_station_data:
+        fig.add_scatter(
+            x=[None], y=[None], name=f"Station {station_id}", mode="lines",
+            line={"color": STATION_COLOR}, showlegend=True, visible="legendonly"
+        )
+    for scenario_label, color in visible_scenarios:
+        fig.add_scatter(
+            x=[None], y=[None], name=scenario_label, mode="lines",
+            line={"color": color}, showlegend=True, visible="legendonly"
+        )
+    if has_series_data:
+        fig.add_scatter(
+            x=[None], y=[None], name="Observed", mode="lines",
+            line={"color": "#adb5bd"}, showlegend=True, visible="legendonly"
+        )
+        fig.add_scatter(
+            x=[None], y=[None], name="Forecast", mode="lines",
+            line={"color": "#adb5bd", "dash": "dash"}, showlegend=True, visible="legendonly"
+        )
 
     if not fig.data:
         text = (

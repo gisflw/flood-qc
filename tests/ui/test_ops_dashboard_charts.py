@@ -180,8 +180,13 @@ def test_comparison_chart_overlays_scenarios_without_repeating_observations() ->
         7,
     )
 
-    station_traces = [trace for trace in figure.data if trace.name.startswith("Station")]
+    station_traces = [
+        trace for trace in figure.data
+        if trace.name.startswith("Station") and trace.showlegend is False
+    ]
     scenario_traces = [trace for trace in figure.data if "Mini 7" in trace.name]
+    legend_names = [trace.name for trace in figure.data if trace.showlegend]
     assert len(station_traces) == 1
     assert len(scenario_traces) == 4
     assert len({trace.line.color for trace in scenario_traces}) == 2
+    assert legend_names == ["Station ana:1", "Zero", "ECMWF raw", "Observed", "Forecast"]

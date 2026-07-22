@@ -42,10 +42,7 @@ from mgb_ops.assets.spatial_grid import RegularGridSpec
 from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.config.workspace import resolve_workspace_path
 from mgb_ops.utils.time import resolve_reference_time
-from mgb_ops.model.prepare_mgb_rainfall import (
-    MGB_FORECAST_CACHE_FILENAME,
-    MGB_OBSERVED_CACHE_FILENAME,
-)
+from mgb_ops.model.prepare_mgb_rainfall import MGB_OBSERVED_CACHE_FILENAME
 from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
@@ -155,9 +152,6 @@ class DashboardState(param.Parameterized):
         self.window = self._resolve_dashboard_window(configured_window)
         self.observed_precipitation_path = (
             self.context.paths.cache_dir / MGB_OBSERVED_CACHE_FILENAME
-        )
-        self.forecast_precipitation_path = (
-            self.context.paths.cache_dir / MGB_FORECAST_CACHE_FILENAME
         )
         self.gpkg_path = resolve_workspace_path(
             self.workspace, self.context.settings["spatial"]["gpkg_path"]
@@ -409,7 +403,15 @@ class DashboardState(param.Parameterized):
 
     def _rainfall_cache_path(self, rainfall_mode: str | None = None) -> Path:
         mode = rainfall_mode or self._selected_rainfall_mode()
-        return self.observed_precipitation_path if mode == "observed" else self.forecast_precipitation_path
+        if mode == "observed":
+            return self.observed_precipitation_path
+        scenario = self._scenario_cache_by_id.get(self.scenario_id or "")
+        if scenario is None or scenario.forecast_grid_path is None:
+            label = self.scenario_label(self.scenario_id or "selected scenario")
+            raise ValueError(
+                f"Forecast rainfall map unavailable for {label}: this scenario has no persisted forecast grid."
+            )
+        return scenario.forecast_grid_path
 
     def _selected_rainfall_hours(self) -> int:
         return parse_signed_rainfall_period(int(self.rainfall_period))[1]
