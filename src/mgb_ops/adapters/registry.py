@@ -186,6 +186,11 @@ def get_forecast_adapter(provider_code: str) -> ForecastAdapter:
         raise ValueError(f"Unsupported forecast provider_code {provider_code!r}.") from exc
 
 
+def list_forecast_adapter_codes() -> tuple[str, ...]:
+    """Return forecast providers supported by the in-process adapter registry."""
+    return tuple(sorted(_FORECAST_ADAPTERS))
+
+
 def register_observation_adapter(adapter: ObservationAdapter) -> None:
     _OBSERVATION_ADAPTERS[adapter.provider_code.strip().lower()] = adapter
 

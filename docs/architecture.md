@@ -147,3 +147,14 @@ Some decisions remain canonical targets but are not fully materialized yet:
 
 In the meantime, the system still preserves and consumes some legacy artifacts,
 especially in the spatial domain.
+
+
+## Forecast scenario boundary
+
+Forecast provider enablement, normalized forecast assets, and manual correction
+instructions remain in the history registry. Scenario definitions are derived from
+those records for each runtime window and are never persisted as configuration.
+The scenario orchestrator owns only isolated MGB input preparation, concurrent
+execution, canonical NetCDF cache export, and atomic batch publication. The Panel
+application discovers those disposable caches and owns selection, comparison, and
+visualization.

@@ -151,3 +151,37 @@ def test_comparison_chart_supports_each_selection_independently() -> None:
     assert station.layout.title.text == "Station 1001"
     assert mini.data
     assert mini.layout.title.text == "Mini 7"
+
+
+def test_comparison_chart_overlays_scenarios_without_repeating_observations() -> None:
+    observed = pd.DataFrame(
+        {
+            "variable_code": ["flow"],
+            "datetime": pd.to_datetime(["2026-03-12T00:00:00"]),
+            "value": [5.0],
+        }
+    )
+    frame_a = pd.DataFrame(
+        {
+            "dt": pd.to_datetime(["2026-03-12T00:00:00", "2026-03-12T01:00:00"]),
+            "prev_flag": [0, 1],
+            "value": [1.0, 2.0],
+        }
+    )
+    frame_b = frame_a.assign(value=[1.5, 3.0])
+
+    figure = _comparison_chart(
+        observed,
+        {
+            "Zero": {"flow": frame_a},
+            "ECMWF raw": {"flow": frame_b},
+        },
+        "ana:1",
+        7,
+    )
+
+    station_traces = [trace for trace in figure.data if trace.name.startswith("Station")]
+    scenario_traces = [trace for trace in figure.data if "Mini 7" in trace.name]
+    assert len(station_traces) == 1
+    assert len(scenario_traces) == 4
+    assert len({trace.line.color for trace in scenario_traces}) == 2

@@ -14,7 +14,7 @@ from mgb_ops.utils.time import validate_timestep_hours
 
 DEFAULT_SETTINGS: dict[str, Any] = {
     "run": {
-        "reference_time": "yesterday",
+        "reference_time": "now",
         "timestep_hours": 1,
     },
     "ingest": {
@@ -28,7 +28,6 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         },
     },
     "forecast": {
-        "provider": "ecmwf",
         "lookback_cycles": 12,
         "buffer_fraction": 2.0,
     },
@@ -86,18 +85,18 @@ def _require_mapping(value: Any, context: str) -> dict[str, Any]:
 
 def _validate_reference_time(value: Any, context: str) -> None:
     if not isinstance(value, str):
-        raise ValueError(f"{context} must be an ISO string, 'now', or 'yesterday'.")
+        raise ValueError(f"{context} must be an ISO string or 'now'.")
     normalized = value.strip()
     if not normalized:
         raise ValueError(f"{context} cannot be empty.")
-    if normalized in {"now", "yesterday"}:
+    if normalized == "now":
         return
     if normalized.endswith("Z"):
         normalized = normalized[:-1] + "+00:00"
     try:
         datetime.fromisoformat(normalized)
     except ValueError as exc:
-        raise ValueError(f"{context} must be a valid ISO string, 'now', or 'yesterday'.") from exc
+        raise ValueError(f"{context} must be a valid ISO string or 'now'.") from exc
 
 
 def _validate_positive_int(value: Any, context: str) -> None:
@@ -131,11 +130,6 @@ def _validate_nonnegative_number(value: Any, context: str) -> None:
 def _validate_bool(value: Any, context: str) -> None:
     if not isinstance(value, bool):
         raise ValueError(f"{context} must be boolean.")
-
-
-def _validate_forecast_provider(value: Any, context: str) -> None:
-    if not isinstance(value, str) or value.strip().lower() not in {"ecmwf", "noaa"}:
-        raise ValueError(f"{context} must be one of ['ecmwf', 'noaa'].")
 
 
 def _validate_nonempty_path(value: Any, context: str) -> None:
@@ -221,7 +215,6 @@ def _validate_settings(settings: dict[str, Any]) -> None:
             "observed_aggregation": _validate_observed_aggregation,
         },
         "forecast": {
-            "provider": _validate_forecast_provider,
             "lookback_cycles": _validate_positive_int,
             "buffer_fraction": _validate_nonnegative_number,
         },

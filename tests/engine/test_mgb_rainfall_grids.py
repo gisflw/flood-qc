@@ -96,3 +96,59 @@ def test_inclusive_working_grid_keeps_all_bbox_touching_cells():
     np.testing.assert_allclose(grid.longitudes, [-0.5, 0.5, 1.5, 2.5])
     np.testing.assert_allclose(grid.latitudes, [-0.5, 0.5, 1.5])
     assert grid.effective_bbox == (-1.0, -1.0, 3.0, 2.0)
+
+
+def test_forecast_working_cache_applies_one_correction_only_inside_half_open_window(tmp_path):
+    from mgb_ops.edit.forcing import ForecastCorrectionInstruction
+
+    source = tmp_path / "native_corrected.nc"
+    bounds = [
+        (
+            datetime(2026, 3, 12, 0, tzinfo=timezone.utc),
+            datetime(2026, 3, 12, 3, tzinfo=timezone.utc),
+        ),
+        (
+            datetime(2026, 3, 12, 3, tzinfo=timezone.utc),
+            datetime(2026, 3, 12, 6, tzinfo=timezone.utc),
+        ),
+    ]
+    source_values = np.stack(
+        [np.full((2, 2), 6.0), np.full((2, 2), 9.0)]
+    )
+    write_spatial_grid(
+        source,
+        variable="precipitation",
+        grid_type="forecast",
+        source="cropped_from_native_grid",
+        providers=["ecmwf"],
+        units="mm",
+        bbox=(-52.0, -31.0, -51.0, -30.0),
+        resolution_degrees=0.5,
+        times_utc=[end for _, end in bounds],
+        time_bounds_utc=bounds,
+        latitudes=np.array([-30.75, -30.25]),
+        longitudes=np.array([-51.75, -51.25]),
+        values=source_values,
+        timestep_hours=None,
+    )
+
+    target = _build_forecast_working_cache(
+        source,
+        tmp_path / "working_corrected.nc",
+        grid_spec=RegularGridSpec((-52.0, -31.0, -51.0, -30.0), 0.5),
+        forecast_start_time=datetime(2026, 3, 12, 0),
+        forecast_nt=4,
+        timestep_hours=1,
+        correction=ForecastCorrectionInstruction(
+            asset_id="asset",
+            t0_step=0,
+            t1_step=3,
+            multiplication_factor=2.0,
+        ),
+    )
+
+    np.testing.assert_allclose(
+        read_spatial_grid(target).values[:, 0, 0],
+        [4.0, 3.0, 3.0, 3.0],
+    )
+    np.testing.assert_allclose(read_spatial_grid(source).values, source_values)

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from typing import Mapping
 from uuid import uuid4
 
 import numpy as np
@@ -410,6 +411,7 @@ def write_output_netcdf(
     nt_current: int,
     nt_forecast: int,
     chunk_hours: int,
+    extra_global_attrs: Mapping[str, str | int] | None = None,
 ) -> ExportSummary:
     logger = logging.getLogger(LOGGER_NAME)
     total_nt = nt_current + nt_forecast
@@ -490,6 +492,15 @@ def write_output_netcdf(
         variable_attrs[spec.variable_code] = _build_variable_attrs(spec)
         logger.info("variable_done variable=%s", spec.variable_code)
 
+    global_attrs = _build_global_attrs(
+        start_time=start_time,
+        dt_seconds=dt_seconds,
+        export_window=export_window,
+        nt_current=nt_current,
+        nt_forecast=nt_forecast,
+    )
+    if extra_global_attrs:
+        global_attrs.update(dict(extra_global_attrs))
     write_model_outputs_netcdf(
         path=netcdf_path,
         variables=data_values,
@@ -497,13 +508,7 @@ def write_output_netcdf(
         time_values=time_values,
         time_segment=time_segment,
         mini_ids=mini_ids,
-        global_attrs=_build_global_attrs(
-            start_time=start_time,
-            dt_seconds=dt_seconds,
-            export_window=export_window,
-            nt_current=nt_current,
-            nt_forecast=nt_forecast,
-        ),
+        global_attrs=global_attrs,
     )
     logger.info("netcdf_written path=%s variables=%s values=%s", netcdf_path, len(data_values), value_count)
 
@@ -533,6 +538,7 @@ def export_mgb_outputs(
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     logs_dir: Path | None = None,
     logger: logging.Logger | None = None,
+    scenario_metadata: Mapping[str, str | int] | None = None,
 ) -> ExportSummary:
     run_logger = logger
     if run_logger is None and logs_dir is not None:
@@ -602,6 +608,7 @@ def export_mgb_outputs(
             nt_current=nt_current,
             nt_forecast=nt_forecast,
             chunk_hours=chunk_hours,
+            extra_global_attrs=scenario_metadata,
         )
         temp_nc_path.replace(output_nc_path)
         run_logger.info("netcdf_finalized path=%s", output_nc_path)

@@ -90,18 +90,10 @@ def test_history_repository_observed_series_and_values(tmp_path) -> None:
     assert values == [("2026-03-10 00:00", 3.5), ("2026-03-10 01:00", 2.0)]
 
 
-def test_fetch_observed_ana_resolve_reference_time_accepts_yesterday(monkeypatch) -> None:
-    monkeypatch.setattr(time_utils, "datetime", FakeDateTime)
-
-    reference_time = observed_ana.resolve_reference_time("yesterday")
-
-    assert reference_time == datetime(2026, 3, 18, 23, 0, 0)
-
-
-def test_fetch_observed_ana_resolve_reference_time_date_only_assumes_last_hour() -> None:
+def test_fetch_observed_ana_resolve_reference_time_date_only_assumes_midnight() -> None:
     reference_time = observed_ana.resolve_reference_time("2026-03-18")
 
-    assert reference_time == datetime(2026, 3, 18, 23, 0, 0)
+    assert reference_time == datetime(2026, 3, 18, 0, 0, 0)
 
 
 def test_history_repository_rebuild_assumption_uses_canonical_series_id(tmp_path) -> None:

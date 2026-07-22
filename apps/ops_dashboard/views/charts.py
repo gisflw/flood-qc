@@ -76,60 +76,88 @@ def _comparison_chart(
                 col=1,
             )
 
-    for variable_code, row in VARIABLE_ROWS.items():
-        frame = model_series.get(variable_code, pd.DataFrame())
-        if frame.empty:
-            continue
-        level_mean = None
-        if variable_code == "level":
-            current_levels = frame[frame["prev_flag"] == 0].dropna(
-                subset=["value"]
-            )
-            if current_levels.empty:
+    nested = bool(model_series) and all(
+        isinstance(value, Mapping) for value in model_series.values()
+    )
+    scenario_groups = (
+        list(model_series.items())
+        if nested
+        else [(None, model_series)]
+    )
+    scenario_colors = (
+        MINI_COLOR,
+        "#2f9e44",
+        "#7048e8",
+        "#d9480f",
+        "#0b7285",
+        "#c2255c",
+    )
+    for scenario_index, (scenario_label, variables) in enumerate(scenario_groups):
+        color = scenario_colors[scenario_index % len(scenario_colors)]
+        for variable_code, row in VARIABLE_ROWS.items():
+            frame = variables.get(variable_code, pd.DataFrame())
+            if frame.empty:
                 continue
-            level_mean = current_levels["value"].mean()
-        for flag, dash, suffix in (
-            (0, "solid", "current"),
-            (1, "dash", "forecast"),
-        ):
-            data = frame[frame["prev_flag"] == flag].dropna(subset=["value"])
-            if data.empty:
-                continue
-            values = (
-                data["value"] - level_mean
-                if variable_code == "level"
-                else data["value"]
-            )
-            name = (
-                f"Basin precipitation · {suffix}"
-                if variable_code == "precipitation"
-                else f"Mini {mini_id} · {suffix}"
-            )
-            if variable_code == "precipitation":
-                fig.add_bar(
-                    x=data["dt"],
-                    y=values,
-                    name=name,
-                    marker={
-                        "color": MINI_COLOR,
-                        "pattern": {"shape": "/" if flag else ""},
-                    },
-                    opacity=0.85 if flag == 0 else 0.55,
-                    legendgroup=f"mini-{suffix}",
-                    row=row,
-                    col=1,
+            level_mean = None
+            if variable_code == "level":
+                current_levels = frame[frame["prev_flag"] == 0].dropna(
+                    subset=["value"]
                 )
-            else:
-                fig.add_scatter(
-                    x=data["dt"],
-                    y=values,
-                    name=name,
-                    mode="lines",
-                    line={"color": MINI_COLOR, "dash": dash},
-                    legendgroup=f"mini-{suffix}",
-                    row=row,
-                    col=1,
+                if current_levels.empty:
+                    continue
+                level_mean = current_levels["value"].mean()
+            for flag, dash, suffix in (
+                (0, "solid", "current"),
+                (1, "dash", "forecast"),
+            ):
+                data = frame[frame["prev_flag"] == flag].dropna(subset=["value"])
+                if data.empty:
+                    continue
+                values = (
+                    data["value"] - level_mean
+                    if variable_code == "level"
+                    else data["value"]
                 )
+                base_name = (
+                    f"Basin precipitation - {suffix}"
+                    if variable_code == "precipitation"
+                    else f"Mini {mini_id} - {suffix}"
+                )
+                name = (
+                    f"{scenario_label} - {base_name}"
+                    if scenario_label is not None
+                    else base_name
+                )
+                legend_group = (
+                    f"{scenario_label}-{suffix}"
+                    if scenario_label is not None
+                    else f"mini-{suffix}"
+                )
+                if variable_code == "precipitation":
+                    fig.add_bar(
+                        x=data["dt"],
+                        y=values,
+                        name=name,
+                        marker={
+                            "color": color,
+                            "pattern": {"shape": "/" if flag else ""},
+                        },
+                        opacity=0.85 if flag == 0 else 0.55,
+                        legendgroup=legend_group,
+                        row=row,
+                        col=1,
+                    )
+                else:
+                    fig.add_scatter(
+                        x=data["dt"],
+                        y=values,
+                        name=name,
+                        mode="lines",
+                        line={"color": color, "dash": dash},
+                        legendgroup=legend_group,
+                        row=row,
+                        col=1,
+                    )
 
     if not fig.data:
         text = (

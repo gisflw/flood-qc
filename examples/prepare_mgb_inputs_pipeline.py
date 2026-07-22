@@ -98,7 +98,7 @@ if not paths.history_db.exists():
 # %% [markdown]
 # ## 4. Resolve reference, fetch, and MGB horizon windows
 #
-# `run.reference_time` may be an ISO timestamp, `now`, or `yesterday`. MGB input
+# `run.reference_time` may be an ISO timestamp or `now`. MGB input
 # timing is derived from that reference time and the configured MGB observed-history
 # and forecast horizon lengths. Observed ingestion uses the separate request window.
 

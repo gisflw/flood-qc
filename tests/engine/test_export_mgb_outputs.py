@@ -107,6 +107,11 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         output_days_before=30,
         forecast_horizon_days=15,
         chunk_hours=24,
+        scenario_metadata={
+            "scenario_id": "raw:asset",
+            "scenario_kind": "raw",
+            "scenario_label": "Raw asset",
+        },
     )
 
     assert summary.netcdf_path == output_nc_path
@@ -133,6 +138,8 @@ def test_export_mgb_outputs_creates_expected_netcdf(tmp_path, monkeypatch) -> No
         assert exported.attrs["reference_time"] == "2026-02-09T23:00:00"
         assert exported.attrs["reference_date"] == "2026-02-09"
         assert exported.attrs["window_start"] == "2026-01-10T00:00:00"
+        assert exported.attrs["scenario_id"] == "raw:asset"
+        assert exported.attrs["scenario_kind"] == "raw"
         assert exported.attrs["window_end_exclusive"] == "2026-02-25T00:00:00"
         assert exported.attrs["mgb_start_time"] == "2026-01-01T00:00:00"
         assert exported.attrs["dt_seconds"] == 3600

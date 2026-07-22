@@ -17,6 +17,44 @@ from apps.ops_dashboard.views.summaries import (
 def _monitoring_view(
     controller: DashboardState,
 ) -> pn.viewable.Viewable:
+    scenario_options = {
+        cache.label: cache.scenario_id for cache in controller.scenario_caches
+    }
+    scenario = pn.widgets.Select(
+        name="Primary forecast scenario",
+        options=scenario_options,
+        value=controller.scenario_id,
+        sizing_mode="stretch_width",
+    )
+    comparisons = pn.widgets.MultiChoice(
+        name="Compare scenarios",
+        options=scenario_options,
+        value=list(controller.comparison_scenario_ids),
+        sizing_mode="stretch_width",
+    )
+
+    def select_scenario(event: Any) -> None:
+        if event.new:
+            controller.select_scenario(str(event.new))
+
+    scenario.param.watch(select_scenario, "value")
+    comparisons.param.watch(
+        lambda event: setattr(
+            controller, "comparison_scenario_ids", list(event.new or [])
+        ),
+        "value",
+    )
+
+    def refresh_scenario_widgets(_: Any = None) -> None:
+        options = {
+            cache.label: cache.scenario_id for cache in controller.scenario_caches
+        }
+        scenario.options = options
+        comparisons.options = options
+        scenario.value = controller.scenario_id
+        comparisons.value = list(controller.comparison_scenario_ids)
+
+    controller.param.watch(refresh_scenario_widgets, "scenario_caches")
     artifacts = controller.map_artifacts
     map_pane = pn.pane.DeckGL(
         artifacts.spec,
@@ -122,28 +160,15 @@ def _monitoring_view(
         controller.param.summary_previous_hours,
         controller.param.summary_forecast_hours,
         controller.param.source_versions,
+        controller.param.scenario_id,
     )
     def comparison_plot(*_: Any) -> pn.viewable.Viewable:
         observed = controller.observed_series()
-        try:
-            precipitation = controller.basin_precipitation()
-        except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
-            precipitation = pd.DataFrame()
-            if controller.mini_id is not None:
-                controller.add_warning(f"Basin precipitation unavailable: {exc}")
-        try:
-            levels = controller.mgb_series("level")
-            flows = controller.mgb_series("flow")
-        except (FileNotFoundError, OSError, ValueError):
-            levels = flows = pd.DataFrame()
+        model_series = controller.comparison_model_series()
         return pn.pane.Plotly(
             _comparison_chart(
                 observed,
-                {
-                    "precipitation": precipitation,
-                    "level": levels,
-                    "flow": flows,
-                },
+                model_series,
                 controller.station_id,
                 controller.mini_id,
             ),
@@ -156,8 +181,14 @@ def _monitoring_view(
         controller.param.station_id,
         controller.param.mini_id,
         controller.param.source_versions,
+        controller.param.comparison_scenario_ids,
     )
     return pn.Column(
+        pn.Card(
+            pn.Row(scenario, comparisons, sizing_mode="stretch_width"),
+            title="Forecast Scenarios",
+            sizing_mode="stretch_width",
+        ),
         pn.Card(
             pn.Row(
                 rainfall_period,

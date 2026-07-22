@@ -18,6 +18,10 @@ from mgb_ops.assets.observed_precipitation import build_observed_precipitation_c
 from mgb_ops.utils.time import TIMEZONE, build_horizon_window, validate_timestep_hours
 from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
 from mgb_ops.assets.spatial_grid import RegularGridSpec, read_spatial_grid, write_spatial_grid
+from mgb_ops.edit.forcing import (
+    ForecastCorrectionInstruction,
+    apply_forcing_correction,
+)
 from mgb_ops.assets.history_queries import (
     open_history_read_only,
     read_observed_values,
@@ -321,6 +325,7 @@ def _build_forecast_working_cache(
     forecast_start_time: datetime,
     forecast_nt: int,
     timestep_hours: int,
+    correction: ForecastCorrectionInstruction | None = None,
 ) -> Path:
     source = read_spatial_grid(source_path)
     if source.variable != "precipitation" or source.grid_type != "forecast":
@@ -351,7 +356,20 @@ def _build_forecast_working_cache(
         source_hours = (source_end - source_start).total_seconds() / 3600.0
         if source_hours % timestep_hours:
             raise ValueError("Forecast native interval cannot be split into MGB timesteps.")
-        per_step = source.values[source_index] / (source_hours / timestep_hours)
+        source_values = source.values[source_index]
+        if correction is not None:
+            cycle_start = source.time_bounds_utc[0][0]
+            correction_start = cycle_start + timedelta(hours=correction.t0_step)
+            correction_end = cycle_start + timedelta(hours=correction.t1_step)
+            if source_start >= correction_start and source_end <= correction_end:
+                source_values = apply_forcing_correction(
+                    source_values,
+                    shift_lat=correction.shift_lat,
+                    shift_lon=correction.shift_lon,
+                    rotation_deg=correction.rotation_deg,
+                    multiplication_factor=correction.multiplication_factor,
+                )
+        per_step = source_values / (source_hours / timestep_hours)
         fields.append(
             resample_regular_grid(
                 per_step,
@@ -430,6 +448,7 @@ def prepare_mgb_rainfall(
     timestep_hours: int = 1,
     chunk_hours: int = DEFAULT_CHUNK_HOURS,
     forecast_asset_path: Path | None = None,
+    forecast_correction: ForecastCorrectionInstruction | None = None,
     cache_dir: Path | None = None,
     spatial_bbox: tuple[float, float, float, float] | None = None,
     spatial_resolution_degrees: float | None = None,
@@ -565,6 +584,7 @@ def prepare_mgb_rainfall(
                 forecast_start_time=window.forecast_start_time,
                 forecast_nt=window.forecast_nt,
                 timestep_hours=timestep_hours,
+                correction=forecast_correction,
             )
             forecast_grid = read_spatial_grid(forecast_cache_path)
             forecast_mini_matrix = _grid_to_mini_matrix(

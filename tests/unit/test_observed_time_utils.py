@@ -7,7 +7,15 @@ from mgb_ops.utils.time import (
     iter_forecast_cycle_candidates,
     iter_observed_request_dates,
     resolve_forecast_cycle,
+    resolve_reference_time,
 )
+
+
+def test_resolve_reference_time_date_only_uses_local_midnight_and_previous_utc_cycle() -> None:
+    for raw in ("2026-03-18", "20260318"):
+        reference_time = resolve_reference_time(raw)
+        assert reference_time == datetime(2026, 3, 18, 0, 0, 0)
+        assert resolve_forecast_cycle(reference_time) == datetime(2026, 3, 18, 0, 0, 0)
 
 
 def test_build_horizon_window_includes_forecast_horizon() -> None:

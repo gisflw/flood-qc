@@ -177,6 +177,19 @@ class HistoryRepository:
             )
         return stations
 
+    def list_enabled_providers(self, provider_type: str) -> list[dict[str, Any]]:
+        """List active providers of one registry type in deterministic order."""
+        rows = self.connection.execute(
+            """
+            SELECT provider_code, provider_name, provider_type, is_active
+            FROM provider
+            WHERE provider_type = ? AND is_active = 1
+            ORDER BY provider_code
+            """,
+            (str(provider_type).strip().lower(),),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def _get_observed_series_id(self, station_id: str, variable_code: str, state: str) -> str | None:
         row = self.connection.execute(
             """

@@ -7,6 +7,7 @@ from mgb_ops.adapters.registry import (
     ObservationAdapter,
     get_forecast_adapter,
     get_observation_adapter,
+    list_forecast_adapter_codes,
     register_forecast_adapter,
     register_observation_adapter,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "ObservationAdapter",
     "get_forecast_adapter",
     "get_observation_adapter",
+    "list_forecast_adapter_codes",
     "register_forecast_adapter",
     "register_observation_adapter",
 ]

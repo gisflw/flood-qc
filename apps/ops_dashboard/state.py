@@ -37,6 +37,7 @@ from apps.ops_dashboard.services.loaders import (
 from mgb_ops.analysis import timeseries as dashboard_data
 from mgb_ops.analysis.windows import build_analysis_window
 from mgb_ops.assets.model_outputs import validate_model_outputs_netcdf
+from mgb_ops.assets.scenario_cache import discover_latest_scenario_caches
 from mgb_ops.assets.spatial_grid import RegularGridSpec
 from mgb_ops.config.runtime import RuntimeContext, build_runtime_context
 from mgb_ops.config.workspace import resolve_workspace_path
@@ -46,6 +47,7 @@ from mgb_ops.model.prepare_mgb_rainfall import (
     MGB_OBSERVED_CACHE_FILENAME,
 )
 from mgb_ops.edit.sqlite import list_forecast_corrections, replace_forecast_corrections
+from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +105,10 @@ class DashboardState(param.Parameterized):
     forecast_view_state = param.Dict(default={})
     forecast_draft = param.DataFrame(default=empty_forecast_edit_frame())
 
+    scenario_id = param.String(default=None, allow_None=True)
+    comparison_scenario_ids = param.List(default=[])
+    scenario_caches = param.List(default=[], precedence=-1)
+
     def __init__(
         self,
         workspace: str | Path | None = None,
@@ -117,7 +123,30 @@ class DashboardState(param.Parameterized):
         run_settings = self.context.settings["run"]
         mgb_settings = self.context.settings["mgb"]
         self.history_path = self.context.paths.history_db
-        self.model_path = self.context.paths.processed_dir / "model_outputs.nc"
+        try:
+            initial_caches = list(
+                discover_latest_scenario_caches(self.context.paths.cache_dir)
+            )
+            self._scenario_cache_error = None
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            initial_caches = []
+            self._scenario_cache_error = str(exc)
+        self._scenario_cache_by_id = {item.scenario_id: item for item in initial_caches}
+        initial = next((item for item in initial_caches if item.kind == "raw"), None)
+        if initial is None:
+            initial = next((item for item in initial_caches if item.kind == "zero"), None)
+        self.model_path = (
+            initial.path
+            if initial is not None
+            else self.context.paths.processed_dir / "model_outputs.nc"
+        )
+        params.setdefault("scenario_caches", initial_caches)
+        params.setdefault("scenario_id", initial.scenario_id if initial else None)
+        comparison_defaults = [initial.scenario_id] if initial else []
+        zero = next((item for item in initial_caches if item.kind == "zero"), None)
+        if zero is not None and zero.scenario_id not in comparison_defaults:
+            comparison_defaults.append(zero.scenario_id)
+        params.setdefault("comparison_scenario_ids", comparison_defaults)
         configured_window = build_analysis_window(
             resolve_reference_time(str(run_settings["reference_time"])),
             output_days_before=int(mgb_settings["output_days_before"]),
@@ -151,6 +180,58 @@ class DashboardState(param.Parameterized):
             return configured_window
         return metadata.get("window", configured_window)
 
+    def _refresh_scenario_caches(self) -> None:
+        try:
+            caches = list(discover_latest_scenario_caches(self.context.paths.cache_dir))
+            self._scenario_cache_error = None
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            caches = []
+            self._scenario_cache_error = str(exc)
+        self._scenario_cache_by_id = {item.scenario_id: item for item in caches}
+        valid_ids = set(self._scenario_cache_by_id)
+        selected = self.scenario_id if self.scenario_id in valid_ids else None
+        if selected is None:
+            raw = next((item for item in caches if item.kind == "raw"), None)
+            zero = next((item for item in caches if item.kind == "zero"), None)
+            selected = (raw or zero).scenario_id if (raw or zero) else None
+        self.scenario_caches = caches
+        self.scenario_id = selected
+        self.comparison_scenario_ids = [
+            value for value in self.comparison_scenario_ids if value in valid_ids
+        ]
+        if selected and selected not in self.comparison_scenario_ids:
+            self.comparison_scenario_ids = [selected, *self.comparison_scenario_ids]
+        zero = next((item for item in caches if item.kind == "zero"), None)
+        if zero and zero.scenario_id not in self.comparison_scenario_ids:
+            self.comparison_scenario_ids = [*self.comparison_scenario_ids, zero.scenario_id]
+        self.model_path = (
+            self._scenario_cache_by_id[selected].path
+            if selected is not None
+            else self.context.paths.processed_dir / "model_outputs.nc"
+        )
+        if self.model_path.is_file():
+            try:
+                metadata = validate_model_outputs_netcdf(self.model_path)
+                self.window = metadata.get("window", self.window)
+            except (OSError, ValueError):
+                pass
+
+    def select_scenario(self, scenario_id: str) -> None:
+        if scenario_id not in self._scenario_cache_by_id:
+            raise ValueError(f"Unknown forecast scenario: {scenario_id}")
+        self.scenario_id = scenario_id
+        self.model_path = self._scenario_cache_by_id[scenario_id].path
+        self.source_versions = {
+            **self.source_versions,
+            "model": dashboard_map.build_file_version(self.model_path),
+        }
+        metadata = validate_model_outputs_netcdf(self.model_path)
+        self.window = metadata.get("window", self.window)
+        self.model_variables = _model_variables(
+            str(self.model_path), str(self.workspace),
+            self.source_versions["model"], self.window,
+        )
+
     def _versions(self) -> DashboardSources:
         return DashboardSources(
             history=dashboard_map.build_sqlite_version(self.history_path),
@@ -164,13 +245,18 @@ class DashboardState(param.Parameterized):
 
     def refresh(self) -> None:
         """Re-version sources and refresh only this state/session."""
+        self._refresh_scenario_caches()
         versions = self._versions()
         self.source_versions = {
             "history": versions.history,
             "spatial": versions.spatial,
             "model": versions.model,
         }
-        self.warnings = []
+        self.warnings = (
+            [f"Scenario caches unavailable: {self._scenario_cache_error}"]
+            if self._scenario_cache_error
+            else []
+        )
         workspace = str(self.workspace)
         if self.history_path.exists():
             try:
@@ -403,15 +489,25 @@ class DashboardState(param.Parameterized):
             self.window,
         )
 
-    def mgb_series(self, variable_code: str) -> pd.DataFrame:
+    def _scenario_path(self, scenario_id: str | None = None) -> Path:
+        selected = scenario_id or self.scenario_id
+        if selected and selected in self._scenario_cache_by_id:
+            return self._scenario_cache_by_id[selected].path
+        return self.model_path
+
+    def scenario_label(self, scenario_id: str) -> str:
+        cache = self._scenario_cache_by_id.get(scenario_id)
+        return cache.label if cache is not None else scenario_id
+
+    def mgb_series(self, variable_code: str, scenario_id: str | None = None) -> pd.DataFrame:
         if self.mini_id is None:
             return pd.DataFrame()
         return _mgb_series(
             self.mini_id,
             variable_code,
-            str(self.model_path),
+            str(self._scenario_path(scenario_id)),
             str(self.workspace),
-            self.source_versions.get("model", ""),
+            dashboard_map.build_file_version(self._scenario_path(scenario_id)),
             self.window,
         )
 
@@ -426,18 +522,31 @@ class DashboardState(param.Parameterized):
             self.source_versions.get("spatial", ""),
         )
 
-    def basin_precipitation(self) -> pd.DataFrame:
+    def basin_precipitation(self, scenario_id: str | None = None) -> pd.DataFrame:
         if self.mini_id is None:
             return pd.DataFrame()
         basin = self.basin_spatial_data()
         return _basin_precipitation(
             basin.mini_ids,
             basin.weights,
-            str(self.model_path),
+            str(self._scenario_path(scenario_id)),
             str(self.workspace),
-            self.source_versions.get("model", ""),
+            dashboard_map.build_file_version(self._scenario_path(scenario_id)),
             self.window,
         )
+
+    def comparison_model_series(self) -> dict[str, dict[str, pd.DataFrame]]:
+        result: dict[str, dict[str, pd.DataFrame]] = {}
+        for scenario_id in self.comparison_scenario_ids:
+            try:
+                result[self.scenario_label(scenario_id)] = {
+                    "precipitation": self.basin_precipitation(scenario_id),
+                    "level": self.mgb_series("level", scenario_id),
+                    "flow": self.mgb_series("flow", scenario_id),
+                }
+            except (FileNotFoundError, OSError, TypeError, ValueError):
+                continue
+        return result
 
     def _analysis_grid(self) -> RegularGridSpec:
         bbox = self.context.settings["spatial_grid"]["bbox"]
@@ -457,27 +566,42 @@ class DashboardState(param.Parameterized):
         self.forecast_steps = pd.DataFrame()
         if not self.history_path.exists():
             return
+        frames: list[pd.DataFrame] = []
         try:
-            self.forecast_assets = _forecast_assets(
-                str(self.history_path),
-                str(self.workspace),
-                self.source_versions.get("history", ""),
-                self.window,
-                str(self.context.settings["forecast"]["provider"]),
-                int(self.context.settings["forecast"].get("lookback_cycles", 1)),
-            )
-        except (
-            FileNotFoundError,
-            sqlite3.Error,
-            pd.errors.DatabaseError,
-            RuntimeError,
-            ValueError,
-        ) as exc:
-            self.warnings = [
-                *self.warnings,
-                f"Forecast assets unavailable: {exc}",
-            ]
+            providers = list_enabled_forecast_providers(self.history_path)
+        except (FileNotFoundError, sqlite3.Error, RuntimeError, ValueError) as exc:
+            self.warnings = [*self.warnings, f"Forecast providers unavailable: {exc}"]
             return
+        for provider in providers:
+            try:
+                frame = _forecast_assets(
+                    str(self.history_path),
+                    str(self.workspace),
+                    self.source_versions.get("history", ""),
+                    self.window,
+                    provider,
+                    int(self.context.settings["forecast"].get("lookback_cycles", 1)),
+                )
+                if not frame.empty:
+                    frames.append(frame)
+            except (
+                FileNotFoundError,
+                sqlite3.Error,
+                pd.errors.DatabaseError,
+                RuntimeError,
+                ValueError,
+            ) as exc:
+                self.warnings = [
+                    *self.warnings,
+                    f"{provider.upper()} forecast assets unavailable: {exc}",
+                ]
+        self.forecast_assets = (
+            pd.concat(frames, ignore_index=True)
+            .sort_values(["provider_code", "asset_id"])
+            .reset_index(drop=True)
+            if frames
+            else pd.DataFrame()
+        )
         if self.forecast_assets.empty:
             return
         options = self.forecast_assets["asset_id"].astype(str).tolist()

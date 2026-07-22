@@ -1,6 +1,6 @@
 # Ops Dashboard
 
-Panel interface layer for operational monitoring and manual ECMWF forecast
+Panel interface layer for operational monitoring and manual forecast
 correction. The dashboard uses native Panel reactivity, DeckGL maps, Plotly
 charts, and Tabulator editing. UI/session behavior stays here while reusable
 data access, model, ingestion, and correction logic lives in `mgb_ops`.
@@ -15,7 +15,7 @@ panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hyd
 The dashboard consumes:
 
 - `<workspace>/data/history.sqlite` for station registry and observed series;
-- `<workspace>/data/processed/model_outputs.nc` for MGB series;
+- `<workspace>/data/cache/forecast_scenarios/latest.json` and its referenced per-scenario NetCDF files for MGB series;
 - registered canonical forecast NetCDF assets for forecast precipitation;
 - observed rainfall in `history.sqlite`, materialized through the asset-owned
   canonical precipitation cache;
@@ -53,3 +53,8 @@ persistence in `mgb_ops.assets`. Dashboard services may cache or reshape those
 results for widgets, but must not become the owner of domain rules. The
 package-level `create_dashboard` export is the supported Python embedding
 interface.
+
+
+The Monitoring tab selects a primary forecast scenario and can overlay multiple
+scenario results. Forecast asset preview and correction editing continue to read
+the normalized asset and manual_edit registries directly.

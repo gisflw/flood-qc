@@ -161,7 +161,9 @@ def execute_mgb_plan(
         raise ValueError("logs_dir is required when executing an MGB plan.")
     log_root = logs_dir
     log_path = log_root / script_stem() / f"{execution_id}.log"
-    logger = configure_run_logger(log_path)
+    logger = _configure_run_logger(
+        f"{LOGGER_NAME}.{plan.metadata['run_id']}", log_path
+    )
     plan.metadata["log_path"] = str(log_path)
 
     logger.info(

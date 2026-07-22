@@ -7,7 +7,12 @@ import json
 from pathlib import Path
 from typing import Iterable
 
-from mgb_ops.adapters import DEFAULT_FORECAST_ADAPTER, ForecastAdapter, get_forecast_adapter
+from mgb_ops.adapters import (
+    DEFAULT_FORECAST_ADAPTER,
+    ForecastAdapter,
+    get_forecast_adapter,
+    list_forecast_adapter_codes,
+)
 from mgb_ops.adapters.forecast_ecmwf import (
     FORECAST_BBOX_BUFFER_FRACTION,
     build_bbox_with_buffer,
@@ -48,14 +53,28 @@ class ForecastDownloadSummary:
     raw_grib_paths: tuple[Path, ...]
 
 
-def _forecast_settings(settings: dict[str, object]) -> tuple[str, int, float]:
+def list_enabled_forecast_providers(database_path: Path) -> tuple[str, ...]:
+    """Resolve enabled forecast providers from the persistent provider registry."""
+    with HistoryRepository(Path(database_path)) as repository:
+        rows = repository.list_enabled_providers("forecast")
+    providers = tuple(str(row["provider_code"]).strip().lower() for row in rows)
+    supported = set(list_forecast_adapter_codes())
+    unsupported = sorted(set(providers).difference(supported))
+    if unsupported:
+        raise ValueError(
+            "Enabled forecast providers have no registered adapter: "
+            f"{unsupported}."
+        )
+    return providers
+
+
+def _forecast_settings(settings: dict[str, object]) -> tuple[int, float]:
     forecast_settings = settings.get("forecast", {})
     if not isinstance(forecast_settings, dict):
         raise ValueError("forecast settings must be a mapping.")
-    provider = str(forecast_settings.get("provider", DEFAULT_FORECAST_ADAPTER.provider_code)).strip().lower()
     lookback_cycles = int(forecast_settings.get("lookback_cycles", 12))
     buffer_fraction = float(forecast_settings.get("buffer_fraction", FORECAST_BBOX_BUFFER_FRACTION))
-    return provider, lookback_cycles, buffer_fraction
+    return lookback_cycles, buffer_fraction
 
 
 def _metadata_value(grid, key: str) -> str:
@@ -107,6 +126,129 @@ def _validate_reusable_grid(
     )
 
 
+
+class ForecastProviderBatchError(RuntimeError):
+    def __init__(
+        self,
+        failures: dict[str, Exception],
+        summary: ForecastDownloadSummary | None = None,
+    ) -> None:
+        self.failures = dict(failures)
+        self.summary = summary
+        details = "; ".join(
+            f"{provider}: {type(error).__name__}: {error}"
+            for provider, error in sorted(failures.items())
+        )
+        super().__init__(f"Forecast provider update failed: {details}")
+
+
+def _download_forecast_provider(
+    context: RuntimeContext,
+    provider: str,
+    *,
+    assets,
+    reference: datetime,
+    lookback_cycles: int,
+    bbox: tuple[float, ...],
+    forecast_bbox: tuple[float, ...],
+    resolution: float,
+    timestep: int,
+    required_start: datetime,
+    required_end: datetime,
+    buffer_fraction: float,
+) -> tuple[str, Path, Path | None]:
+    adapter = get_forecast_adapter(provider)
+    target_cycle = resolve_forecast_cycle(reference)
+    last_error: Exception | None = None
+    for cycle in iter_forecast_cycle_candidates(
+        target_cycle, lookback_cycles=lookback_cycles
+    ):
+        asset_id = adapter.asset_id(cycle)
+        matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
+        if not matches.empty:
+            path = Path(matches.iloc[0]["asset_path"])
+            if not path.exists():
+                raise FileNotFoundError(f"Registered forecast asset is missing: {path}")
+            if _validate_reusable_grid(
+                path,
+                provider=provider,
+                adapter=adapter,
+                cycle_time=cycle,
+                bbox=bbox,
+                resolution=resolution,
+                timestep_hours=timestep,
+                required_start=required_start,
+                required_end=required_end,
+                expected_buffer_fraction=buffer_fraction,
+            ):
+                return "reused", path, None
+        logger = None
+        download_kwargs: dict[str, object] = {
+            "cycle_time": cycle,
+            "downloads_dir": context.paths.downloads_dir,
+            "bbox": forecast_bbox if provider == "noaa" else bbox,
+        }
+        if provider == "noaa":
+            logger = configure_run_logger(
+                "forecast_noaa",
+                context.paths.logs_dir
+                / "forecast_noaa"
+                / f"{cycle:%Y%m%dT%H%M%S}.log",
+                console=False,
+            )
+            logger.info(
+                "noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s",
+                cycle.isoformat(),
+                bbox,
+                forecast_bbox,
+            )
+            download_kwargs["required_end"] = required_end
+            download_kwargs["logger"] = logger
+        try:
+            grib = adapter.download_grib(**download_kwargs)
+        except Exception as exc:
+            if logger is not None:
+                logger.exception("noaa_acquisition_failed cycle=%s", cycle.isoformat())
+            last_error = exc
+            continue
+
+        try:
+            normalized = adapter.process_grib(
+                grib,
+                cycle_time=cycle,
+                assets_dir=context.paths.assets_dir,
+                bbox=bbox,
+                forecast_bbox=forecast_bbox,
+                buffer_fraction=buffer_fraction,
+                resolution_degrees=resolution,
+                timestep_hours=timestep,
+            )
+        except Exception:
+            if logger is not None:
+                logger.exception("noaa_conversion_failed cycle=%s", cycle.isoformat())
+            raise
+
+        required_start_naive = required_start.replace(tzinfo=None)
+        required_end_naive = required_end.replace(tzinfo=None)
+        try:
+            if (
+                normalized.valid_from > required_start_naive
+                or normalized.valid_to < required_end_naive
+            ):
+                raise ValueError(
+                    "Downloaded forecast asset does not cover the required forecast window."
+                )
+        except Exception:
+            if logger is not None:
+                logger.exception("noaa_validation_failed cycle=%s", cycle.isoformat())
+            raise
+        return "produced", normalized.asset_path, grib
+    raise RuntimeError(
+        f"No usable forecast asset found for provider {provider!r} "
+        f"within {lookback_cycles} cycle(s)."
+    ) from last_error
+
+
 def download_forecast_data(
     context: RuntimeContext,
     providers: str | Iterable[str] | None = None,
@@ -114,8 +256,15 @@ def download_forecast_data(
     reference_time: datetime | None = None,
 ) -> ForecastDownloadSummary:
     settings = context.settings
-    configured_provider, lookback_cycles, buffer_fraction = _forecast_settings(settings)
-    provider_codes = normalize_provider_codes(providers or configured_provider, get_forecast_adapter)
+    lookback_cycles, buffer_fraction = _forecast_settings(settings)
+    provider_selection = (
+        providers
+        if providers is not None
+        else list_enabled_forecast_providers(context.paths.history_db)
+    )
+    provider_codes = normalize_provider_codes(provider_selection, get_forecast_adapter)
+    if not provider_codes:
+        raise ValueError("No enabled forecast providers were found in the provider registry.")
     reference = reference_time or resolve_reference_time(str(settings["run"]["reference_time"]))
     timestep = int(settings["run"]["timestep_hours"])
     bbox_value = settings["spatial_grid"]["bbox"]
@@ -136,94 +285,67 @@ def download_forecast_data(
     assets = list_forecast_assets(
         context.paths.history_db, workspace_path=context.paths.workspace
     )
+    failures: dict[str, Exception] = {}
     for provider in provider_codes:
-        adapter = get_forecast_adapter(provider)
-        target_cycle = resolve_forecast_cycle(reference)
-        last_error: Exception | None = None
-        for cycle in iter_forecast_cycle_candidates(target_cycle, lookback_cycles=lookback_cycles):
-            asset_id = adapter.asset_id(cycle)
-            matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
-            if not matches.empty:
-                path = Path(matches.iloc[0]["asset_path"])
-                if not path.exists():
-                    raise FileNotFoundError(f"Registered forecast asset is missing: {path}")
-                if _validate_reusable_grid(
-                    path,
-                    provider=provider,
-                    adapter=adapter,
-                    cycle_time=cycle,
-                    bbox=bbox,
-                    resolution=resolution,
-                    timestep_hours=timestep,
-                    required_start=required_start,
-                    required_end=required_end,
-                    expected_buffer_fraction=buffer_fraction,
-                ):
-                    reused.append(path)
-                    break
-            logger = None
-            download_kwargs: dict[str, object] = {
-                "cycle_time": cycle,
-                "downloads_dir": context.paths.downloads_dir,
-                "bbox": forecast_bbox if provider == "noaa" else bbox,
-            }
-            if provider == "noaa":
-                logger = configure_run_logger(
-                    "forecast_noaa",
-                    context.paths.logs_dir / "forecast_noaa" / f"{cycle:%Y%m%dT%H%M%S}.log",
-                    console=False,
-                )
-                logger.info("noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s", cycle.isoformat(), bbox, forecast_bbox)
-                download_kwargs["required_end"] = required_end
-                download_kwargs["logger"] = logger
-            try:
-                grib = adapter.download_grib(**download_kwargs)
-            except Exception as exc:
-                if logger is not None:
-                    logger.exception("noaa_acquisition_failed cycle=%s", cycle.isoformat())
-                last_error = exc
-                continue
-
-            try:
-                normalized = adapter.process_grib(
-                    grib,
-                    cycle_time=cycle,
-                    assets_dir=context.paths.assets_dir,
-                    bbox=bbox,
-                    forecast_bbox=forecast_bbox,
-                    buffer_fraction=buffer_fraction,
-                    resolution_degrees=resolution,
-                    timestep_hours=timestep,
-                )
-            except Exception:
-                if logger is not None:
-                    logger.exception("noaa_conversion_failed cycle=%s", cycle.isoformat())
-                raise
-
-            required_start_naive = required_start.replace(tzinfo=None)
-            required_end_naive = required_end.replace(tzinfo=None)
-            try:
-                if (
-                    normalized.valid_from > required_start_naive
-                    or normalized.valid_to < required_end_naive
-                ):
-                    raise ValueError(
-                        "Downloaded forecast asset does not cover the required forecast window."
-                    )
-            except Exception:
-                if logger is not None:
-                    logger.exception("noaa_validation_failed cycle=%s", cycle.isoformat())
-                raise
-
-            raw.append(grib)
-            produced.append(normalized.asset_path)
-            break
-        else:
-            raise RuntimeError(
-                f"No usable forecast asset found for provider {provider!r} "
-                f"within {lookback_cycles} cycle(s)."
-            ) from last_error
+        try:
+            status, path, grib = _download_forecast_provider(
+                context,
+                provider,
+                assets=assets,
+                reference=reference,
+                lookback_cycles=lookback_cycles,
+                bbox=bbox,
+                forecast_bbox=forecast_bbox,
+                resolution=resolution,
+                timestep=timestep,
+                required_start=required_start,
+                required_end=required_end,
+                buffer_fraction=buffer_fraction,
+            )
+            if status == "reused":
+                reused.append(path)
+            else:
+                produced.append(path)
+                if grib is not None:
+                    raw.append(grib)
+        except Exception as exc:
+            failures[provider] = exc
+    if failures:
+        if len(provider_codes) == 1:
+            raise next(iter(failures.values()))
+        raise ForecastProviderBatchError(failures)
     return ForecastDownloadSummary(tuple(reused), tuple(produced), tuple(raw))
+
+
+def update_enabled_forecast_providers(
+    context: RuntimeContext,
+    *,
+    reference_time: datetime | None = None,
+) -> ForecastDownloadSummary:
+    """Download and register every enabled forecast provider, then report failures."""
+    providers = list_enabled_forecast_providers(context.paths.history_db)
+    reused: list[Path] = []
+    produced: list[Path] = []
+    raw: list[Path] = []
+    failures: dict[str, Exception] = {}
+    for provider in providers:
+        try:
+            summary = download_forecast_data(
+                context,
+                providers=(provider,),
+                reference_time=reference_time,
+            )
+            reused.extend(summary.reused_asset_paths)
+            raw.extend(summary.raw_grib_paths)
+            for path in summary.new_asset_paths:
+                ingest_forecast_asset(context, path)
+                produced.append(path)
+        except Exception as exc:
+            failures[provider] = exc
+    summary = ForecastDownloadSummary(tuple(reused), tuple(produced), tuple(raw))
+    if failures:
+        raise ForecastProviderBatchError(failures, summary)
+    return summary
 
 
 def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, object]:
@@ -259,7 +381,7 @@ def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, obje
         buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("Forecast asset is missing valid bbox buffer metadata.") from exc
-    _, _, expected_buffer_fraction = _forecast_settings(context.settings)
+    _, expected_buffer_fraction = _forecast_settings(context.settings)
     if (
         buffer_fraction != expected_buffer_fraction
         or buffered_bbox != list(build_bbox_with_buffer(tuple(model_bbox), buffer_fraction=expected_buffer_fraction))

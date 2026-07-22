@@ -155,3 +155,19 @@ Even with implementation gaps, the canonical direction remains:
 - reusable derived outputs such as `data/processed/model_outputs.nc` in `data/processed/`;
 - report artifacts in `data/reports/`;
 - current configuration in YAML, with `.toml` still under evaluation.
+
+
+## Multi-scenario forecast execution
+
+Operational forecast runs are derived at runtime from history.sqlite. The provider
+registry selects active forecast providers; each eligible registered asset produces
+a raw scenario, and each linked manual_edit row produces one independent corrected
+scenario. A zero-rain scenario is always included. YAML does not select
+forecast providers; enablement belongs exclusively to the provider registry.
+
+mgb_ops.workflows.derive_forecast_scenarios() builds immutable, transient scenario
+descriptions. mgb_ops.workflows.execute_forecast_scenarios() runs them in isolated
+runner directories concurrently and publishes a complete batch only when every run
+succeeds. Dashboard artifacts live under data/cache/forecast_scenarios/<batch>/,
+with latest.json pointing to the current complete batch. These caches and scenario
+descriptions are not registered as persistent inputs.

@@ -441,3 +441,30 @@ def test_state_uses_model_output_window_when_reference_time_is_now(tmp_path: Pat
     state = dashboard_state.DashboardState(tmp_path)
 
     assert state.window == model_window
+
+
+def test_state_defaults_to_raw_scenario_and_zero_comparison(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from mgb_ops.assets.scenario_cache import ScenarioCache
+
+    zero_path = tmp_path / "zero.nc"
+    raw_path = tmp_path / "raw.nc"
+    caches = (
+        ScenarioCache("zero", "Zero", "zero", zero_path, None, None, None),
+        ScenarioCache(
+            "raw:asset", "Raw asset", "raw", raw_path, "ecmwf", "asset", None
+        ),
+    )
+    monkeypatch.setattr(
+        dashboard_state,
+        "discover_latest_scenario_caches",
+        lambda cache_dir: caches,
+    )
+    monkeypatch.setattr(dashboard_state.DashboardState, "refresh", lambda self: None)
+
+    state = dashboard_state.DashboardState(tmp_path)
+
+    assert state.scenario_id == "raw:asset"
+    assert state.model_path == raw_path
+    assert state.comparison_scenario_ids == ["raw:asset", "zero"]

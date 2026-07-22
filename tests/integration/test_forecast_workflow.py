@@ -40,7 +40,7 @@ class FakeNoaaAdapter:
 
 def _context(tmp_path: Path) -> RuntimeContext:
     settings = deepcopy(DEFAULT_SETTINGS)
-    settings["forecast"].update(provider="noaa", lookback_cycles=2)
+    settings["forecast"]["lookback_cycles"] = 2
     settings["spatial_grid"].update(bbox=[-52.0, -31.0, -50.0, -30.0], resolution_degrees=0.25)
     settings["mgb"]["forecast_horizon_days"] = 1
     return RuntimeContext(paths=RuntimePaths(tmp_path), settings=settings, env=RuntimeEnv({}))
@@ -71,7 +71,7 @@ def test_forecast_retries_only_acquisition_failures(monkeypatch, tmp_path) -> No
     _install_adapter(monkeypatch, adapter)
     context = _context(tmp_path)
 
-    summary = forecast.download_forecast_data(context, reference_time=datetime(2026, 3, 18, 15))
+    summary = forecast.download_forecast_data(context, providers="noaa", reference_time=datetime(2026, 3, 18, 15))
 
     assert len(adapter.download_cycles) == 2
     assert adapter.download_cycles[1] == adapter.download_cycles[0] - timedelta(hours=6)
@@ -91,7 +91,7 @@ def test_forecast_conversion_failure_does_not_try_an_older_cycle(monkeypatch, tm
     context = _context(tmp_path)
 
     with pytest.raises(ValueError, match="NetCDF conversion failed") as exc_info:
-        forecast.download_forecast_data(context, reference_time=datetime(2026, 3, 18, 15))
+        forecast.download_forecast_data(context, providers="noaa", reference_time=datetime(2026, 3, 18, 15))
 
     assert exc_info.value is conversion_error
     assert len(adapter.download_cycles) == 1
@@ -110,10 +110,43 @@ def test_forecast_coverage_failure_does_not_try_an_older_cycle(monkeypatch, tmp_
     context = _context(tmp_path)
 
     with pytest.raises(ValueError, match="does not cover the required forecast window"):
-        forecast.download_forecast_data(context, reference_time=datetime(2026, 3, 18, 15))
+        forecast.download_forecast_data(context, providers="noaa", reference_time=datetime(2026, 3, 18, 15))
 
     assert len(adapter.download_cycles) == 1
     log_path = context.paths.logs_dir / "forecast_noaa" / f"{adapter.download_cycles[0]:%Y%m%dT%H%M%S}.log"
     log_text = log_path.read_text(encoding="utf-8")
     assert "noaa_validation_failed" in log_text
     assert "noaa_acquisition_failed" not in log_text
+
+
+def test_forecast_updates_other_providers_before_raising_batch_error(monkeypatch, tmp_path) -> None:
+    calls: list[str] = []
+
+    def failing_download(cycle):
+        calls.append("ecmwf")
+        raise RuntimeError("ecmwf unavailable")
+
+    def successful_download(cycle):
+        calls.append("noaa")
+        return Path("/downloads/noaa.grib2")
+
+    failing = FakeNoaaAdapter(failing_download, lambda grib, cycle: _normalized(cycle))
+    failing.provider_code = "ecmwf"
+    successful = FakeNoaaAdapter(
+        successful_download,
+        lambda grib, cycle: _normalized(cycle),
+    )
+    adapters = {"ecmwf": failing, "noaa": successful}
+    monkeypatch.setattr(forecast, "get_forecast_adapter", lambda provider: adapters[provider])
+    monkeypatch.setattr(forecast, "list_forecast_assets", lambda *args, **kwargs: pd.DataFrame())
+    context = _context(tmp_path)
+
+    with pytest.raises(forecast.ForecastProviderBatchError, match="ecmwf"):
+        forecast.download_forecast_data(
+            context,
+            providers=("ecmwf", "noaa"),
+            reference_time=datetime(2026, 3, 18, 15),
+        )
+
+    assert "ecmwf" in calls
+    assert "noaa" in calls
