@@ -384,3 +384,54 @@ def test_initialize_run_db(tmp_path) -> None:
     with sqlite3.connect(db_path) as connection:
         row = connection.execute("SELECT run_id FROM run").fetchone()
     assert row[0] == "20260310T120000"
+
+
+def test_history_station_inventory_rejects_duplicate_mini_id_before_writing(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    inventory_path = tmp_path / "duplicate_mini.csv"
+    inventory_path.write_text(
+        "\n".join(
+            [
+                "provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables",
+                "ana,1,ONE,99,-29,-51,1,level",
+                "ana,2,TWO,99,-29,-51,1,level",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Duplicate mini_id"):
+        initialize_history_db(db_path, inventory_path, SQL_DIR / "history_schema.sql")
+    assert not db_path.exists()
+
+
+def test_inventory_refresh_deletes_removed_station_and_observations(tmp_path) -> None:
+    db_path = tmp_path / "history.sqlite"
+    _init_history(db_path)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            "INSERT INTO observed_series (series_id, station_id, variable_code, state) VALUES (?, ?, ?, ?)",
+            ("ana:74100000.level.raw", "ana:74100000", "level", "raw"),
+        )
+        connection.execute(
+            "INSERT INTO observed_value (series_id, observed_at, value) VALUES (?, ?, ?)",
+            ("ana:74100000.level.raw", "2026-03-10 00:00", 10.0),
+        )
+        connection.commit()
+    inventory_path = tmp_path / "without_station.csv"
+    inventory_path.write_text(
+        "\n".join(
+            [
+                "provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables",
+                "ana,2650035,UHE ITA CACADOR PLU,,-26.8192,-50.9856,960,rain",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    initialize_history_db(db_path, inventory_path, SQL_DIR / "history_schema.sql")
+
+    with sqlite3.connect(db_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM station WHERE station_id = 'ana:74100000'").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM observed_series WHERE series_id = 'ana:74100000.level.raw'").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM observed_value WHERE series_id = 'ana:74100000.level.raw'").fetchone()[0] == 0

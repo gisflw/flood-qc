@@ -7,13 +7,14 @@ import numpy as np
 import pandas as pd
 import panel as pn
 
+from apps.ops_dashboard.services.formatting import truncate_one_decimal
 from apps.ops_dashboard.state import DashboardState
 
 
 def _format_number(value: Any, unit: str, precision: int = 1) -> str:
     if value is None or pd.isna(value):
         return "unavailable"
-    return f"{float(value):.{precision}f} {unit}".strip()
+    return f"{truncate_one_decimal(value):.{precision}f} {unit}".strip()
 
 
 def _network_summary(

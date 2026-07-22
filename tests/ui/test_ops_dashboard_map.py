@@ -100,6 +100,8 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
                     "station_code": "A1",
                     "color": ops_dashboard_map.KIND_COLORS["rain"],
                     "status": "ok",
+                    "rainfall_mm": None,
+                    "rainfall_label": "",
                 },
             }
         ],
@@ -111,6 +113,33 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
         "mini-segments",
     }
     assert "tooltip" not in artifacts.spec
+
+
+def test_station_rainfall_labels_are_non_pickable_and_only_include_valid_totals() -> None:
+    stations = pd.DataFrame(
+        [
+            {
+                "station_id": "rain", "station_name": "Rain", "provider_code": "ana",
+                "station_code": "1", "lat": -30.0, "lon": -52.0, "kind": "rain",
+                "status": "ok", "rainfall_mm": 12.25,
+            },
+            {
+                "station_id": "level", "station_name": "Level", "provider_code": "ana",
+                "station_code": "2", "lat": -30.5, "lon": -52.5, "kind": "level",
+                "status": "ok", "rainfall_mm": np.nan,
+            },
+        ]
+    )
+
+    artifacts = ops_dashboard_map.build_ops_map(None, 0.5, stations, None, {})
+
+    labels = next(
+        layer for layer in artifacts.spec["layers"]
+        if layer["id"] == "station-rainfall-labels"
+    )
+    assert labels["@@type"] == "TextLayer"
+    assert labels["pickable"] is False
+    assert labels["data"] == [{"position": [-52.0, -30.0], "text": "12.2 mm"}]
 
 
 def test_build_map_adds_non_pickable_dissolved_basin_overlay() -> None:

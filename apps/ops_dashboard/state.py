@@ -28,9 +28,11 @@ from apps.ops_dashboard.services.loaders import (
     _forecast_steps,
     _mgb_series,
     _mini_segment_paths,
+    _prepared_mgb_level,
     _model_variables,
     parse_signed_rainfall_period,
     _observed_series,
+    _station_rainfall_accumulations,
     _station_catalog,
     BasinSpatialData,
 )
@@ -137,8 +139,6 @@ class DashboardState(param.Parameterized):
         initial_caches = self._filter_runtime_scenario_caches(initial_caches)
         self._scenario_cache_by_id = {item.scenario_id: item for item in initial_caches}
         initial = next((item for item in initial_caches if item.kind == "raw"), None)
-        if initial is None:
-            initial = next((item for item in initial_caches if item.kind == "zero"), None)
         self.model_path = (
             initial.path
             if initial is not None
@@ -172,7 +172,13 @@ class DashboardState(param.Parameterized):
 
     def _filter_runtime_scenario_caches(self, caches):
         expected = self._normalize_runtime_time(self._runtime_reference_time)
-        return [cache for cache in caches if cache.reference_time is not None and self._normalize_runtime_time(cache.reference_time) == expected]
+        return [
+            cache
+            for cache in caches
+            if cache.kind != "zero"
+            and cache.reference_time is not None
+            and self._normalize_runtime_time(cache.reference_time) == expected
+        ]
 
     def _resolve_dashboard_window(self, configured_window):
         if not self.model_path.exists():
@@ -197,8 +203,7 @@ class DashboardState(param.Parameterized):
         selected = self.scenario_id if self.scenario_id in valid_ids else None
         if selected is None:
             raw = next((item for item in caches if item.kind == "raw"), None)
-            zero = next((item for item in caches if item.kind == "zero"), None)
-            selected = (raw or zero).scenario_id if (raw or zero) else None
+            selected = raw.scenario_id if raw is not None else None
         self.scenario_caches = caches
         self.scenario_id = selected
         self.comparison_scenario_ids = [
@@ -278,6 +283,7 @@ class DashboardState(param.Parameterized):
                 *self.warnings,
                 f"History database not found: {self.history_path}",
             ]
+        self._update_station_rainfall_labels()
 
         segments = None
         try:
@@ -397,6 +403,7 @@ class DashboardState(param.Parameterized):
             self.selected_raster = raster_name
             if apply_basin:
                 self.applied_basin_mini_id = next_basin_mini
+        self._update_station_rainfall_labels()
         current_map = self.map_artifacts
         with param.parameterized.discard_events(self):
             self._rebuild_map()
@@ -421,6 +428,30 @@ class DashboardState(param.Parameterized):
 
     def _selected_rainfall_hours(self) -> int:
         return parse_signed_rainfall_period(int(self.rainfall_period))[1]
+
+    def _update_station_rainfall_labels(self) -> None:
+        """Attach selected observed-period totals for the operation-map label layer."""
+        if self.stations.empty:
+            return
+        base = self.stations.drop(columns=["rainfall_mm"], errors="ignore").copy()
+        if self._selected_rainfall_mode() != "observed" or not self.history_path.exists():
+            self.stations = base
+            return
+        end_time = self.window.cutoff_time
+        start_time = end_time - pd.Timedelta(hours=self._selected_rainfall_hours())
+        try:
+            accumulations = _station_rainfall_accumulations(
+                str(self.history_path),
+                str(self.workspace),
+                self.source_versions.get("history", ""),
+                start_time.to_pydatetime() if isinstance(start_time, pd.Timestamp) else start_time,
+                end_time,
+            )
+        except (sqlite3.Error, pd.errors.DatabaseError, RuntimeError, ValueError) as exc:
+            self.add_warning(f"Station rainfall labels unavailable: {exc}")
+            self.stations = base
+            return
+        self.stations = base.merge(accumulations, on="station_id", how="left")
 
     def _parse_draft_basin_mini(self) -> int | None:
         value = str(self.draft_basin_mini or "").strip()
@@ -511,12 +542,23 @@ class DashboardState(param.Parameterized):
     def mgb_series(self, variable_code: str, scenario_id: str | None = None) -> pd.DataFrame:
         if self.mini_id is None:
             return pd.DataFrame()
+        model_path = self._scenario_path(scenario_id)
+        model_version = dashboard_map.build_file_version(model_path)
+        if variable_code == "level":
+            return _prepared_mgb_level(
+                self.mini_id,
+                str(model_path),
+                str(self.workspace),
+                model_version,
+                str(self.history_path),
+                self.window,
+            )
         return _mgb_series(
             self.mini_id,
             variable_code,
-            str(self._scenario_path(scenario_id)),
+            str(model_path),
             str(self.workspace),
-            dashboard_map.build_file_version(self._scenario_path(scenario_id)),
+            model_version,
             self.window,
         )
 

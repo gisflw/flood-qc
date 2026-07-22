@@ -122,6 +122,7 @@ def load_history_station_inventory(
     inventory_station_ids: list[tuple[str]] = []
     seen_keys: set[tuple[str, str]] = set()
     seen_station_ids: set[str] = set()
+    station_id_by_mini_id: dict[int, str] = {}
 
     with inventory_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -158,6 +159,14 @@ def load_history_station_inventory(
             if station_id in seen_station_ids:
                 raise ValueError(f"Duplicate station_id in inventory CSV for {row_key}: {station_id}")
             seen_station_ids.add(station_id)
+            if mini_id is not None:
+                existing_station_id = station_id_by_mini_id.get(mini_id)
+                if existing_station_id is not None:
+                    raise ValueError(
+                        f"Duplicate mini_id in inventory CSV: {mini_id} is assigned to "
+                        f"{existing_station_id} and {station_id}"
+                    )
+                station_id_by_mini_id[mini_id] = station_id
             inventory_station_ids.append((station_id,))
 
             station_rows.append(
@@ -176,6 +185,15 @@ def load_history_station_inventory(
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
+        existing_station_ids = {
+            str(row[0]) for row in connection.execute("SELECT station_id FROM station")
+        }
+        removed_station_ids = existing_station_ids.difference(seen_station_ids)
+        if removed_station_ids:
+            connection.executemany(
+                "DELETE FROM station WHERE station_id = ?",
+                [(station_id,) for station_id in sorted(removed_station_ids)],
+            )
         connection.executemany(
             """
             INSERT INTO station (

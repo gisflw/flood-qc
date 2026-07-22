@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from apps.ops_dashboard.services import forecast as ops_dashboard_forecast
 from db_helpers import initialize_history_db
@@ -112,6 +114,10 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
 
     assert assets["asset_id"].tolist() == ["ecmwf.ifs.fc.20260311T000000Z.buffered"]
     assert steps["step_hours"].tolist() == [3, 6]
+    assert steps["label"].tolist() == [
+        "t=3h | 11/03 00:00",
+        "t=6h | 11/03 03:00",
+    ]
     assert np.allclose(accum_preview.data, 6.0)
     assert np.allclose(incr_preview.data, 4.0)
 
@@ -125,6 +131,30 @@ def test_ops_dashboard_forecast_lists_steps_and_builds_previews(tmp_path, monkey
     )
     assert native_preview.source_grid is not None
     assert native_preview.source_grid.bounds == (-52.0, -31.0, -50.0, -29.0)
+
+
+def test_forecast_step_labels_convert_utc_day_boundary_to_sao_paulo(monkeypatch) -> None:
+    intervals = pd.DataFrame(
+        [{
+            "start_step_hours": 0, "start_time": "2026-03-11T00:00:00Z",
+            "end_step_hours": 3, "end_time": "2026-03-11T03:00:00Z",
+        }]
+    )
+    monkeypatch.setattr(
+        ops_dashboard_forecast.forecast_analysis,
+        "list_dashboard_forecast_intervals",
+        lambda *args, **kwargs: intervals,
+    )
+
+    steps = ops_dashboard_forecast.list_forecast_steps(
+        "asset", database_path=Path("history.sqlite"), workspace_path=Path("."),
+        window=AnalysisWindow(
+            start_time=datetime(2026, 3, 1), cutoff_time=datetime(2026, 3, 10),
+            forecast_end_exclusive=datetime(2026, 3, 12),
+        ),
+    )
+
+    assert steps["label"].tolist() == ["t=0h | 10/03 21:00", "t=3h | 11/03 00:00"]
 
 
 def test_ops_dashboard_forecast_applies_preview_correction() -> None:

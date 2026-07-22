@@ -304,6 +304,37 @@ def test_forecast_rainfall_uses_separate_hours_and_cache(
     assert state.selected_raster == "forecast_accum_48h"
 
 
+def test_station_rainfall_labels_follow_the_selected_observed_period(
+    tmp_path: Path, monkeypatch
+) -> None:
+    _write_config(tmp_path)
+    initialize_history_db(tmp_path / "data" / "history.sqlite")
+    state = dashboard_state.DashboardState(tmp_path)
+    state.stations = pd.DataFrame(
+        [{
+            "station_id": "ana:1001", "station_code": "1001",
+            "provider_code": "ana", "station_name": "Station", "mini_id": None,
+            "lat": -30.5, "lon": -51.5, "kind": "rain", "status": "ok",
+        }]
+    )
+    calls = []
+
+    def accumulations(*args):
+        calls.append((args[3], args[4]))
+        return pd.DataFrame([{"station_id": "ana:1001", "rainfall_mm": 18.0}])
+
+    monkeypatch.setattr(dashboard_state, "_station_rainfall_accumulations", accumulations)
+    state.rainfall_period = -48
+    state._update_station_rainfall_labels()
+
+    assert calls[0][1] - calls[0][0] == pd.Timedelta(hours=48)
+    assert state.stations["rainfall_mm"].tolist() == [18.0]
+
+    state.rainfall_period = 48
+    state._update_station_rainfall_labels()
+    assert "rainfall_mm" not in state.stations
+
+
 def test_failed_rainfall_apply_retains_last_valid_map(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -457,7 +488,7 @@ def test_state_uses_model_output_window_when_reference_time_is_now(tmp_path: Pat
     assert state.window == model_window
 
 
-def test_state_defaults_to_raw_scenario_and_zero_comparison(
+def test_state_hides_zero_scenario_from_dashboard_choices(
     tmp_path: Path, monkeypatch
 ) -> None:
     from mgb_ops.assets.scenario_cache import ScenarioCache
@@ -482,4 +513,5 @@ def test_state_defaults_to_raw_scenario_and_zero_comparison(
 
     assert state.scenario_id == "raw:asset"
     assert state.model_path == raw_path
-    assert state.comparison_scenario_ids == ["zero", "raw:asset"]
+    assert state.comparison_scenario_ids == ["raw:asset"]
+    assert [cache.scenario_id for cache in state.scenario_caches] == ["raw:asset"]

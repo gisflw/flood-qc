@@ -9,15 +9,16 @@ import pandas as pd
 
 from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.assets.history_queries import (
+    open_history_read_only,
     read_station_catalog_tables,
     read_station_observed_tables,
     select_preferred_series_rows,
 )
 from mgb_ops.assets.model_outputs import (
-    MGB_VARIABLE_METADATA,
-    StaleModelOutputsError,
-    TimeSegment,
-    list_model_variables,
+    MGB_VARIABLE_METADATA,  # noqa: F401
+    StaleModelOutputsError,  # noqa: F401
+    TimeSegment,  # noqa: F401
+    list_model_variables,  # noqa: F401
     load_mgb_series,
     load_weighted_mgb_series,
     validate_model_outputs_netcdf,
@@ -107,6 +108,60 @@ def load_station_catalog(
     result = result.merge(pd.DataFrame(rows), on="station_id", how="left")
     result["kind"] = result["kind"].fillna("no_data")
     return result.reindex(columns=columns).sort_values(["provider_code", "station_code"]).reset_index(drop=True)
+
+
+def load_station_rainfall_accumulations(
+    database_path: Path,
+    *,
+    start_time: datetime,
+    end_time: datetime,
+) -> pd.DataFrame:
+    """Return preferred-series rainfall totals per station in ``(start, end]``."""
+    if end_time < start_time:
+        raise ValueError("end_time must be >= start_time.")
+    _, series, values = read_station_catalog_tables(
+        database_path, start_time=start_time, end_time=end_time
+    )
+    if series.empty or values.empty:
+        return pd.DataFrame(columns=["station_id", "rainfall_mm"])
+    preferred = select_preferred_series_rows(series)
+    rain_series_ids = set(
+        preferred.loc[
+            preferred["variable_code"].astype(str).str.lower() == "rain", "series_id"
+        ].astype(str)
+    )
+    rain = values[values["series_id"].astype(str).isin(rain_series_ids)].copy()
+    rain["station_id"] = rain["station_id"].astype(str)
+    rain["datetime"] = pd.to_datetime(rain["datetime"], errors="coerce")
+    rain = rain[rain["datetime"] > pd.Timestamp(start_time)]
+    if rain.empty:
+        return pd.DataFrame(columns=["station_id", "rainfall_mm"])
+    rain["value"] = pd.to_numeric(rain["value"], errors="coerce")
+    rain = rain.dropna(subset=["value"])
+    if rain.empty:
+        return pd.DataFrame(columns=["station_id", "rainfall_mm"])
+    return (
+        rain.groupby("station_id", as_index=False)["value"]
+        .sum()
+        .rename(columns={"value": "rainfall_mm"})
+    )
+
+
+def load_mini_station_id(
+    mini_id: int,
+    database_path: Path,
+) -> str | None:
+    """Return the unique inventory station assigned to a mini basin."""
+    with open_history_read_only(database_path) as connection:
+        rows = connection.execute(
+            "SELECT station_id FROM station WHERE mini_id = ? ORDER BY station_id",
+            (int(mini_id),),
+        ).fetchall()
+    if not rows:
+        return None
+    if len(rows) != 1:
+        raise ValueError(f"Mini {mini_id} has multiple associated stations.")
+    return str(rows[0][0])
 
 
 def load_observed_series(

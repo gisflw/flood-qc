@@ -42,6 +42,20 @@ def _station_catalog(
     )
 
 
+@pn.cache(max_items=64)
+def _station_rainfall_accumulations(
+    database_path: str,
+    workspace: str,
+    source_version: str,
+    start_time,
+    end_time,
+) -> pd.DataFrame:
+    del workspace, source_version
+    return dashboard_data.load_station_rainfall_accumulations(
+        Path(database_path), start_time=start_time, end_time=end_time
+    )
+
+
 @pn.cache(max_items=256)
 def _observed_series(
     station_id: str,
@@ -194,6 +208,59 @@ def _mgb_series(
         variable_code=variable_code,
         window=window,
     )
+
+
+def prepare_mgb_level_series(
+    model_levels: pd.DataFrame,
+    station_observed: pd.DataFrame,
+) -> pd.DataFrame:
+    """Apply a latest-overlap station offset to one complete MGB level series."""
+    if model_levels.empty or station_observed.empty or "prev_flag" not in model_levels:
+        return model_levels.iloc[0:0].copy()
+    station = station_observed.loc[
+        station_observed["variable_code"] == "level", ["datetime", "value"]
+    ].copy()
+    model = model_levels.loc[
+        model_levels["prev_flag"] == 0, ["dt", "value"]
+    ].copy()
+    station["datetime"] = pd.to_datetime(station["datetime"], errors="coerce")
+    model["dt"] = pd.to_datetime(model["dt"], errors="coerce")
+    station["value"] = pd.to_numeric(station["value"], errors="coerce")
+    model["value"] = pd.to_numeric(model["value"], errors="coerce")
+    overlap = station.dropna().merge(
+        model.dropna(), left_on="datetime", right_on="dt", suffixes=("_station", "_mgb")
+    )
+    if overlap.empty:
+        return model_levels.iloc[0:0].copy()
+    latest = overlap.sort_values("datetime").iloc[-1]
+    prepared = model_levels.copy()
+    prepared["value"] = pd.to_numeric(prepared["value"], errors="coerce") + (
+        float(latest["value_station"]) - float(latest["value_mgb"])
+    )
+    return prepared
+
+
+@pn.cache(max_items=256)
+def _prepared_mgb_level(
+    mini_id: int,
+    model_path: str,
+    workspace: str,
+    model_version: str,
+    database_path: str,
+    window: AnalysisWindow,
+) -> pd.DataFrame:
+    """Build a cached, dashboard-only aligned level series for one mini."""
+    del workspace, model_version
+    station_id = dashboard_data.load_mini_station_id(mini_id, Path(database_path))
+    model_levels = dashboard_data.load_mgb_series(
+        Path(model_path), mini_id=mini_id, variable_code="level", window=window
+    )
+    if station_id is None:
+        return model_levels.iloc[0:0].copy()
+    station_observed = dashboard_data.load_observed_series(
+        station_id, Path(database_path), start_time=window.start_time, end_time=window.cutoff_time
+    )
+    return prepare_mgb_level_series(model_levels, station_observed)
 
 
 @pn.cache(max_items=256)
@@ -393,7 +460,10 @@ __all__ = [
     "_mini_segment_paths",
     "_mini_segments",
     "_model_variables",
+    "_prepared_mgb_level",
+    "prepare_mgb_level_series",
     "_observed_series",
     "_station_catalog",
+    "_station_rainfall_accumulations",
     "parse_signed_rainfall_period",
 ]

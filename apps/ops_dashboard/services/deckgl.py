@@ -13,6 +13,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from apps.ops_dashboard.services.formatting import truncate_one_decimal
 from mgb_ops.assets.spatial_grid import PrecipitationGrid
 
 
@@ -157,7 +158,7 @@ def build_raster_legend_html(spec: RasterLegendSpec) -> str:
     return (
         f"**{spec.caption}**  \n"
         f"<div style='height:12px;border-radius:8px;background:linear-gradient(90deg,{gradient})'></div>"
-        f"<small>{spec.vmin:.1f} mm — {spec.vmax:.1f} mm</small>"
+        f"<small>{truncate_one_decimal(spec.vmin):.1f} mm — {truncate_one_decimal(spec.vmax):.1f} mm</small>"
     )
 
 
@@ -255,6 +256,14 @@ def _station_records(stations: pd.DataFrame) -> list[dict[str, Any]]:
             if status == "data_issue"
             else KIND_COLORS.get(str(getattr(row, "kind", "no_data")), KIND_COLORS["no_data"])
         )
+        rainfall_mm = pd.to_numeric(
+            getattr(row, "rainfall_mm", np.nan), errors="coerce"
+        )
+        rainfall_label = (
+            f"{truncate_one_decimal(rainfall_mm):.1f} mm"
+            if np.isfinite(rainfall_mm)
+            else ""
+        )
         records.append(
             {
                 "type": "Feature",
@@ -271,6 +280,10 @@ def _station_records(stations: pd.DataFrame) -> list[dict[str, Any]]:
                     "station_code": str(getattr(row, "station_code", "")),
                     "color": color,
                     "status": status,
+                    "rainfall_mm": truncate_one_decimal(rainfall_mm)
+                    if np.isfinite(rainfall_mm)
+                    else None,
+                    "rainfall_label": rainfall_label,
                 },
             }
         )
@@ -407,6 +420,31 @@ def build_ops_map(
             MapSelection(station_id=str(feature["properties"]["station_id"]))
             for feature in station_data
         )
+        label_data = [
+            {
+                "position": feature["geometry"]["coordinates"],
+                "text": feature["properties"]["rainfall_label"],
+            }
+            for feature in station_data
+            if feature["properties"]["rainfall_label"]
+        ]
+        if label_data:
+            layers.append(
+                {
+                    "@@type": "TextLayer",
+                    "id": "station-rainfall-labels",
+                    "data": label_data,
+                    "pickable": False,
+                    "getPosition": "@@=position",
+                    "getText": "@@=text",
+                    "getColor": [20, 20, 20, 255],
+                    "getSize": 13,
+                    "sizeUnits": "pixels",
+                    "getPixelOffset": [0, -12],
+                    "fontFamily": "Arial",
+                    "fontWeight": "bold",
+                }
+            )
 
     spec = {
         "initialViewState": default_view_state(stations=stations, bounds=raster_bounds),
@@ -419,7 +457,8 @@ def build_ops_map(
             "html": (
                 "<b>{properties.station_name}</b><br/>"
                 "{properties.provider_code}:{properties.station_code}<br/>"
-                "{properties.status}"
+                "{properties.status}<br/>"
+                "{properties.rainfall_label}"
             )
         },
         "mini-segments": {"html": "<b>Mini {mini_id}</b>"},

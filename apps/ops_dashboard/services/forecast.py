@@ -14,7 +14,7 @@ from mgb_ops.analysis import forecast as forecast_analysis
 from mgb_ops.assets.spatial_grid import PrecipitationGrid, RegularGridSpec
 from mgb_ops.assets.types import AnalysisWindow
 from mgb_ops.edit.forcing import apply_corrections
-from mgb_ops.utils.time import iter_forecast_cycle_candidates, resolve_forecast_cycle
+from mgb_ops.utils.time import TIMEZONE, iter_forecast_cycle_candidates, resolve_forecast_cycle
 
 
 @dataclass(frozen=True, slots=True)
@@ -139,14 +139,22 @@ def list_forecast_steps(
     )
     if frame.empty:
         return pd.DataFrame(columns=["step_hours", "valid_time", "label"])
+
+    def step_label(step_hours: int, valid_time: object) -> str:
+        timestamp = pd.Timestamp(valid_time)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.tz_localize("UTC")
+        else:
+            timestamp = timestamp.tz_convert("UTC")
+        return f"t={step_hours}h | {timestamp.tz_convert(TIMEZONE):%d/%m %H:%M}"
+
     first = pd.DataFrame(
         [
             {
                 "step_hours": int(frame.iloc[0]["start_step_hours"]),
                 "valid_time": frame.iloc[0]["start_time"],
-                "label": (
-                    f"t={int(frame.iloc[0]['start_step_hours'])}h | "
-                    f"{pd.Timestamp(frame.iloc[0]['start_time']):%d/%m %H:%M}"
+                "label": step_label(
+                    int(frame.iloc[0]["start_step_hours"]), frame.iloc[0]["start_time"]
                 ),
             }
         ]
@@ -155,10 +163,7 @@ def list_forecast_steps(
         columns={"end_step_hours": "step_hours", "end_time": "valid_time"}
     ).copy()
     ends["label"] = ends.apply(
-        lambda row: (
-            f"t={int(row['step_hours'])}h | "
-            f"{pd.Timestamp(row['valid_time']):%d/%m %H:%M}"
-        ),
+        lambda row: step_label(int(row["step_hours"]), row["valid_time"]),
         axis=1,
     )
     return pd.concat(
