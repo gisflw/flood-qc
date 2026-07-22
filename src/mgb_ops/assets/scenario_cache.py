@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
-from typing import Any
 
 import xarray as xr
 
 from mgb_ops.assets.model_outputs import validate_model_outputs_netcdf
 
 SCENARIO_CACHE_DIRNAME = "forecast_scenarios"
-LATEST_SCENARIO_CACHE_INDEX = "latest.json"
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,19 +27,11 @@ def scenario_cache_root(cache_dir: Path) -> Path:
 
 def discover_latest_scenario_caches(cache_dir: Path) -> tuple[ScenarioCache, ...]:
     root = scenario_cache_root(cache_dir)
-    index_path = root / LATEST_SCENARIO_CACHE_INDEX
-    if not index_path.is_file():
+    if not root.is_dir():
         return ()
-    try:
-        payload: dict[str, Any] = json.loads(index_path.read_text(encoding="utf-8"))
-        batch_dir = root / str(payload["batch"])
-        names = list(payload["files"])
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Invalid scenario cache index: {index_path}") from exc
 
     caches: list[ScenarioCache] = []
-    for name in names:
-        path = batch_dir / str(name)
+    for path in sorted(root.glob("*.nc")):
         validate_model_outputs_netcdf(path)
         with xr.open_dataset(path, decode_times=False) as dataset:
             attrs = dict(dataset.attrs)
@@ -59,8 +48,12 @@ def discover_latest_scenario_caches(cache_dir: Path) -> tuple[ScenarioCache, ...
                 kind=kind,
                 path=path,
                 provider_code=str(attrs["provider_code"]) if attrs.get("provider_code") else None,
-                asset_id=str(attrs["source_forecast_asset_id"]) if attrs.get("source_forecast_asset_id") else None,
-                correction_id=int(raw_correction_id) if raw_correction_id not in (None, "") else None,
+                asset_id=str(attrs["source_forecast_asset_id"])
+                if attrs.get("source_forecast_asset_id")
+                else None,
+                correction_id=int(raw_correction_id)
+                if raw_correction_id not in (None, "")
+                else None,
             )
         )
     order = {"zero": 0, "raw": 1, "corrected": 2}

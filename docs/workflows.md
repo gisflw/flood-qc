@@ -168,6 +168,6 @@ forecast providers; enablement belongs exclusively to the provider registry.
 mgb_ops.workflows.derive_forecast_scenarios() builds immutable, transient scenario
 descriptions. mgb_ops.workflows.execute_forecast_scenarios() runs them in isolated
 runner directories concurrently and publishes a complete batch only when every run
-succeeds. Dashboard artifacts live under data/cache/forecast_scenarios/<batch>/,
-with latest.json pointing to the current complete batch. These caches and scenario
-descriptions are not registered as persistent inputs.
+succeeds. Dashboard artifacts are the direct NetCDF files under data/cache/forecast_scenarios/.
+The directory is atomically replaced only after a complete batch succeeds. These
+caches and scenario descriptions are not registered as persistent inputs.

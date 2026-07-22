@@ -15,7 +15,7 @@ panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hyd
 The dashboard consumes:
 
 - `<workspace>/data/history.sqlite` for station registry and observed series;
-- `<workspace>/data/cache/forecast_scenarios/latest.json` and its referenced per-scenario NetCDF files for MGB series;
+- `<workspace>/data/cache/forecast_scenarios/` containing direct per-scenario NetCDF files for MGB series;
 - registered canonical forecast NetCDF assets for forecast precipitation;
 - observed rainfall in `history.sqlite`, materialized through the asset-owned
   canonical precipitation cache;

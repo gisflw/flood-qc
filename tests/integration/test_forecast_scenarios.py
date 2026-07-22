@@ -3,7 +3,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 from threading import Barrier
 
@@ -150,19 +149,14 @@ def _write_scenario_output(path: Path, scenario: ForecastScenario) -> None:
     )
 
 
-def test_scenario_cache_discovery_reads_latest_batch_metadata(tmp_path: Path) -> None:
+def test_scenario_cache_discovery_reads_direct_current_files(tmp_path: Path) -> None:
     root = scenario_cache_root(tmp_path)
-    batch = root / "batch-a"
-    batch.mkdir(parents=True)
+    root.mkdir(parents=True)
     scenario = ForecastScenario(
         "raw:ecmwf.asset", "ECMWF raw", "raw", "ecmwf", "ecmwf.asset"
     )
-    output = batch / "raw.nc"
+    output = root / "raw.nc"
     _write_scenario_output(output, scenario)
-    (root / "latest.json").write_text(
-        json.dumps({"batch": "batch-a", "files": ["raw.nc"]}),
-        encoding="utf-8",
-    )
 
     caches = discover_latest_scenario_caches(tmp_path)
 
@@ -232,7 +226,47 @@ def test_orchestrator_runs_concurrently_and_publishes_complete_batch(
         "raw:asset",
     ]
     assert all(item.cache_path.is_file() for item in result.results)
-    assert json.loads(result.index_path.read_text())["batch"] == result.batch_id
+    assert result.cache_dir == scenario_cache_root(context.paths.cache_dir)
+    assert sorted(path.name for path in result.cache_dir.iterdir()) == ["raw.nc", "zero.nc"]
+
+
+def test_orchestrator_replaces_current_cache_after_complete_second_run(
+    tmp_path: Path, monkeypatch
+) -> None:
+    context = _context(tmp_path)
+    monkeypatch.setattr(
+        "mgb_ops.workflows.scenario_orchestrator._scenario_executor",
+        _thread_executor,
+    )
+    scenario = ForecastScenario("zero", "Zero", "zero")
+    writes = iter((b"first", b"second"))
+
+    def fake_execute(context, scenario, *, batch_id, staging_dir, **kwargs):
+        path = staging_dir / "zero.nc"
+        path.write_bytes(next(writes))
+        return ScenarioRunResult(scenario, path, f"{batch_id}-zero")
+
+    monkeypatch.setattr(
+        "mgb_ops.workflows.scenario_orchestrator._execute_scenario",
+        fake_execute,
+    )
+    first = execute_forecast_scenarios(
+        context,
+        (scenario,),
+        observed_provider_codes=("ana",),
+        reference_time=datetime(2026, 3, 12),
+    )
+    assert (first.cache_dir / "zero.nc").read_bytes() == b"first"
+
+    second = execute_forecast_scenarios(
+        context,
+        (scenario,),
+        observed_provider_codes=("ana",),
+        reference_time=datetime(2026, 3, 13),
+    )
+    assert second.cache_dir == first.cache_dir
+    assert (second.cache_dir / "zero.nc").read_bytes() == b"second"
+    assert [path.name for path in second.cache_dir.iterdir()] == ["zero.nc"]
 
 
 def test_orchestrator_removes_orphaned_staging_directories(tmp_path: Path, monkeypatch) -> None:
@@ -242,11 +276,12 @@ def test_orchestrator_removes_orphaned_staging_directories(tmp_path: Path, monke
         _thread_executor,
     )
     root = scenario_cache_root(context.paths.cache_dir)
-    orphan = root / ".staging-crashed"
+    orphan = root.parent / ".forecast_scenarios.staging-crashed"
     orphan.mkdir(parents=True)
     (orphan / "partial.nc").write_bytes(b"partial")
-    published = root / "published"
+    published = root
     published.mkdir()
+    (published / "current.nc").write_bytes(b"current")
 
     scenario = ForecastScenario("zero", "Zero", "zero")
 
@@ -279,10 +314,9 @@ def test_orchestrator_failure_keeps_previous_batch(
         _thread_executor,
     )
     root = scenario_cache_root(context.paths.cache_dir)
-    old = root / "old"
-    old.mkdir(parents=True)
-    index = root / "latest.json"
-    index.write_text(json.dumps({"batch": "old", "files": []}), encoding="utf-8")
+    root.mkdir(parents=True)
+    old = root / "old.nc"
+    old.write_bytes(b"published")
     scenarios = (
         ForecastScenario("zero", "Zero", "zero"),
         ForecastScenario("raw:asset", "Raw", "raw"),
@@ -307,5 +341,5 @@ def test_orchestrator_failure_keeps_previous_batch(
             reference_time=datetime(2026, 3, 12),
         )
 
-    assert json.loads(index.read_text())["batch"] == "old"
-    assert old.is_dir()
+    assert root.is_dir()
+    assert old.read_bytes() == b"published"

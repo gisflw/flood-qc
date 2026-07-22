@@ -4,17 +4,13 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime
 import hashlib
-import json
 from multiprocessing import get_context
 from pathlib import Path
 from typing import Mapping
 import shutil
 from uuid import uuid4
 
-from mgb_ops.assets.scenario_cache import (
-    LATEST_SCENARIO_CACHE_INDEX,
-    scenario_cache_root,
-)
+from mgb_ops.assets.scenario_cache import scenario_cache_root
 from mgb_ops.assets.types import RunMetadata
 from mgb_ops.config.runtime import RuntimeContext
 from mgb_ops.model.export_mgb_outputs import export_mgb_outputs
@@ -39,7 +35,7 @@ class ScenarioRunResult:
 class ScenarioBatchResult:
     batch_id: str
     results: tuple[ScenarioRunResult, ...]
-    index_path: Path
+    cache_dir: Path
 
 
 class ScenarioBatchError(RuntimeError):
@@ -59,11 +55,24 @@ def _scenario_executor(max_workers: int) -> ProcessPoolExecutor:
     )
 
 
-def _cleanup_orphaned_staging(root: Path) -> None:
-    for candidate in root.iterdir():
-        if candidate.is_dir() and candidate.name.startswith(".staging-"):
-            shutil.rmtree(candidate)
+def _private_cache_dir(parent: Path, *, kind: str, token: str) -> Path:
+    return parent / f".forecast_scenarios.{kind}-{token}"
 
+
+def _recover_orphaned_cache_dirs(root: Path) -> None:
+    parent = root.parent
+    previous = sorted(
+        candidate
+        for candidate in parent.glob(".forecast_scenarios.previous-*")
+        if candidate.is_dir()
+    )
+    if not root.exists() and previous:
+        previous.pop().replace(root)
+    for candidate in previous:
+        shutil.rmtree(candidate)
+    for candidate in parent.glob(".forecast_scenarios.staging-*"):
+        if candidate.is_dir():
+            shutil.rmtree(candidate)
 
 def _safe_name(scenario: ForecastScenario) -> str:
     digest = hashlib.sha256(scenario.scenario_id.encode("utf-8")).hexdigest()[:12]
@@ -181,10 +190,9 @@ def _execute_scenario(
     return ScenarioRunResult(scenario=scenario, cache_path=cache_path, run_id=run_id)
 
 
-def _publish_batch(
+def _publish_current_cache(
     root: Path,
     staging_dir: Path,
-    batch_id: str,
     results: tuple[ScenarioRunResult, ...],
 ) -> Path:
     work_dir = staging_dir / "work"
@@ -204,26 +212,24 @@ def _publish_batch(
             observed_temp.replace(observed_target)
     if work_dir.exists():
         shutil.rmtree(work_dir)
-    batch_dir = root / batch_id
-    staging_dir.replace(batch_dir)
-    files = [result.cache_path.name for result in results]
-    payload = {"batch": batch_id, "files": files}
-    index_path = root / LATEST_SCENARIO_CACHE_INDEX
-    previous_batch: str | None = None
-    if index_path.is_file():
-        try:
-            previous_batch = str(json.loads(index_path.read_text(encoding="utf-8"))["batch"])
-        except (KeyError, TypeError, json.JSONDecodeError):
-            previous_batch = None
-    temp_index = root / f".{LATEST_SCENARIO_CACHE_INDEX}.{uuid4().hex}.tmp"
-    temp_index.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
-    temp_index.replace(index_path)
-    if previous_batch and previous_batch != batch_id:
-        old_dir = root / previous_batch
-        if old_dir.parent == root and old_dir.is_dir():
-            shutil.rmtree(old_dir)
-    return index_path
 
+    previous_dir: Path | None = None
+    if root.exists():
+        previous_dir = _private_cache_dir(
+            root.parent,
+            kind="previous",
+            token=uuid4().hex,
+        )
+        root.replace(previous_dir)
+    try:
+        staging_dir.replace(root)
+    except BaseException:
+        if previous_dir is not None and previous_dir.exists() and not root.exists():
+            previous_dir.replace(root)
+        raise
+    if previous_dir is not None and previous_dir.exists():
+        shutil.rmtree(previous_dir)
+    return root
 
 def execute_forecast_scenarios(
     context: RuntimeContext,
@@ -262,10 +268,10 @@ def execute_forecast_scenarios(
     if not executable.is_file():
         raise FileNotFoundError(f"MGB executable not found: {executable}")
     root = scenario_cache_root(context.paths.cache_dir)
-    root.mkdir(parents=True, exist_ok=True)
-    _cleanup_orphaned_staging(root)
+    root.parent.mkdir(parents=True, exist_ok=True)
+    _recover_orphaned_cache_dirs(root)
     batch_id = resolved_reference.strftime("%Y%m%dT%H%M%S") + "-" + uuid4().hex[:8]
-    staging_dir = root / f".staging-{batch_id}"
+    staging_dir = _private_cache_dir(root.parent, kind="staging", token=batch_id)
     staging_dir.mkdir()
 
     results_by_id: dict[str, ScenarioRunResult] = {}
@@ -297,13 +303,13 @@ def execute_forecast_scenarios(
         raise ScenarioBatchError(failures)
 
     results = tuple(results_by_id[scenario.scenario_id] for scenario in ordered)
-    index_path = _publish_batch(root, staging_dir, batch_id, results)
+    cache_dir = _publish_current_cache(root, staging_dir, results)
     published = tuple(
         ScenarioRunResult(
             scenario=result.scenario,
-            cache_path=root / batch_id / result.cache_path.name,
+            cache_path=cache_dir / result.cache_path.name,
             run_id=result.run_id,
         )
         for result in results
     )
-    return ScenarioBatchResult(batch_id=batch_id, results=published, index_path=index_path)
+    return ScenarioBatchResult(batch_id=batch_id, results=published, cache_dir=cache_dir)
