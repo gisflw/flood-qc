@@ -173,6 +173,7 @@ def test_scenario_cache_discovery_reads_direct_current_files(tmp_path: Path) -> 
     assert caches[0].scenario_id == scenario.scenario_id
     assert caches[0].path == output
     assert caches[0].forecast_grid_path == forecast_grid
+    assert caches[0].reference_time == datetime(2026, 3, 12)
 
 
 def _context(tmp_path: Path) -> RuntimeContext:

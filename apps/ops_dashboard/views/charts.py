@@ -1,4 +1,5 @@
 """Pure Plotly chart builders."""
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -6,7 +7,6 @@ from collections.abc import Mapping
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-
 
 STATION_COLOR = "#1864ab"
 MINI_COLOR = "#e8590c"
@@ -31,30 +31,23 @@ def _comparison_chart(
         vertical_spacing=0.08,
         subplot_titles=("Precipitation", "Flow", "Water Level Variation"),
     )
-
-    station_codes = {
-        "precipitation": "rain",
-        "level": "level",
-        "flow": "flow",
-    }
-    station_units = {
-        "precipitation": "mm",
-        "level": "cm",
-        "flow": "m³/s",
-    }
+    station_codes = {"precipitation": "rain", "level": "level", "flow": "flow"}
+    station_units = {"precipitation": "mm", "level": "cm", "flow": "m³/s"}
     has_station_data = False
     for variable_code, observed_code in station_codes.items():
         if observed.empty:
             break
-        data = observed[
-            observed["variable_code"] == observed_code
-        ].dropna(subset=["value"])
+        data = observed[observed["variable_code"] == observed_code].dropna(
+            subset=["value"]
+        )
         if data.empty:
             continue
         if variable_code == "level":
             data = data.assign(value=data["value"] - data["value"].mean())
-        row = VARIABLE_ROWS[variable_code]
-        name = f"Station {station_id} · {station_units[variable_code]}"
+        row, name = (
+            VARIABLE_ROWS[variable_code],
+            f"Station {station_id} · {station_units[variable_code]}",
+        )
         if variable_code == "precipitation":
             fig.add_bar(
                 x=data["datetime"],
@@ -79,38 +72,28 @@ def _comparison_chart(
                 col=1,
             )
         has_station_data = True
-
     nested = bool(model_series) and all(
         isinstance(value, Mapping) for value in model_series.values()
     )
-    scenario_groups = (
-        list(model_series.items())
-        if nested
-        else [(None, model_series)]
-    )
-    scenario_colors = (
-        MINI_COLOR,
-        "#2f9e44",
-        "#7048e8",
-        "#d9480f",
-        "#0b7285",
-        "#c2255c",
-    )
-    visible_scenarios: list[tuple[str, str]] = []
-    for scenario_index, (scenario_label, variables) in enumerate(scenario_groups):
-        color = scenario_colors[scenario_index % len(scenario_colors)]
+    scenario_groups = list(model_series.items()) if nested else [(None, model_series)]
+    colors = (MINI_COLOR, "#2f9e44", "#7048e8", "#d9480f", "#0b7285", "#c2255c")
+    scenario_legends, basin_observed_added = [], False
+    for index, (label, variables) in enumerate(scenario_groups):
+        color, group, has_data = (
+            colors[index % len(colors)],
+            f"scenario:{label}" if label else "basin-forecast",
+            False,
+        )
         for variable_code, row in VARIABLE_ROWS.items():
             frame = variables.get(variable_code, pd.DataFrame())
             if frame.empty:
                 continue
             level_mean = None
             if variable_code == "level":
-                current_levels = frame[frame["prev_flag"] == 0].dropna(
-                    subset=["value"]
-                )
-                if current_levels.empty:
+                current = frame[frame["prev_flag"] == 0].dropna(subset=["value"])
+                if current.empty:
                     continue
-                level_mean = current_levels["value"].mean()
+                level_mean = current["value"].mean()
             for flag, dash, suffix in (
                 (0, "solid", "observed"),
                 (1, "dash", "forecast"),
@@ -118,39 +101,48 @@ def _comparison_chart(
                 data = frame[frame["prev_flag"] == flag].dropna(subset=["value"])
                 if data.empty:
                     continue
+                if variable_code == "precipitation" and flag == 0:
+                    if basin_observed_added:
+                        continue
+                    basin_observed_added = True
+                    fig.add_bar(
+                        x=data["dt"],
+                        y=data["value"],
+                        name="Basin precipitation",
+                        marker_color=MINI_COLOR,
+                        opacity=0.85,
+                        legendgroup="basin-observed",
+                        showlegend=False,
+                        row=row,
+                        col=1,
+                    )
+                    continue
+                if (
+                    variable_code == "precipitation"
+                    and flag == 1
+                    and data["value"].eq(0).all()
+                ):
+                    continue
                 values = (
                     data["value"] - level_mean
                     if variable_code == "level"
                     else data["value"]
                 )
-                base_name = (
+                base = (
                     f"Basin precipitation - {suffix}"
                     if variable_code == "precipitation"
                     else f"Mini {mini_id} - {suffix}"
                 )
-                name = (
-                    f"{scenario_label} - {base_name}"
-                    if scenario_label is not None
-                    else base_name
-                )
-                legend_group = (
-                    f"{scenario_label}-{suffix}"
-                    if scenario_label is not None
-                    else f"mini-{suffix}"
-                )
-                if scenario_label is not None and (scenario_label, color) not in visible_scenarios:
-                    visible_scenarios.append((scenario_label, color))
+                name = f"{label} - {base}" if label else base
+                has_data = True
                 if variable_code == "precipitation":
                     fig.add_bar(
                         x=data["dt"],
                         y=values,
                         name=name,
-                        marker={
-                            "color": color,
-                            "pattern": {"shape": "/" if flag else ""},
-                        },
-                        opacity=0.85 if flag == 0 else 0.55,
-                        legendgroup=legend_group,
+                        marker={"color": color, "pattern": {"shape": "/"}},
+                        opacity=0.55,
+                        legendgroup=group,
                         showlegend=False,
                         row=row,
                         col=1,
@@ -162,33 +154,31 @@ def _comparison_chart(
                         name=name,
                         mode="lines",
                         line={"color": color, "dash": dash},
-                        legendgroup=legend_group,
+                        legendgroup=group,
                         showlegend=False,
                         row=row,
                         col=1,
                     )
+        if has_data:
+            scenario_legends.append((label or "Basin forecast", color, group))
 
-    has_series_data = bool(fig.data)
+    def add_legend(name: str, color: str, group: str) -> None:
+        fig.add_bar(
+            x=[None],
+            y=[None],
+            name=name,
+            marker_color=color,
+            legendgroup=group,
+            showlegend=True,
+            hoverinfo="skip",
+        )
+
     if has_station_data:
-        fig.add_scatter(
-            x=[None], y=[None], name=f"Station {station_id}", mode="lines",
-            line={"color": STATION_COLOR}, showlegend=True, visible="legendonly"
-        )
-    for scenario_label, color in visible_scenarios:
-        fig.add_scatter(
-            x=[None], y=[None], name=scenario_label, mode="lines",
-            line={"color": color}, showlegend=True, visible="legendonly"
-        )
-    if has_series_data:
-        fig.add_scatter(
-            x=[None], y=[None], name="Observed", mode="lines",
-            line={"color": "#adb5bd"}, showlegend=True, visible="legendonly"
-        )
-        fig.add_scatter(
-            x=[None], y=[None], name="Forecast", mode="lines",
-            line={"color": "#adb5bd", "dash": "dash"}, showlegend=True, visible="legendonly"
-        )
-
+        add_legend(f"Station {station_id}", STATION_COLOR, "station")
+    if basin_observed_added:
+        add_legend("Basin precipitation", MINI_COLOR, "basin-observed")
+    for label, color, group in scenario_legends:
+        add_legend(label, color, group)
     if not fig.data:
         text = (
             "Click a station and/or a mini on the map."
@@ -196,14 +186,8 @@ def _comparison_chart(
             else "No series data are available for the current selection."
         )
         fig.add_annotation(
-            text=text,
-            x=0.5,
-            y=0.5,
-            xref="paper",
-            yref="paper",
-            showarrow=False,
+            text=text, x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False
         )
-
     selections = []
     if station_id is not None:
         selections.append(f"Station {station_id}")
@@ -218,6 +202,9 @@ def _comparison_chart(
         margin={"t": 55, "r": 15, "b": 25, "l": 55},
         hovermode="x unified",
         barmode="group",
-        title=" · ".join(selections) if selections else "Observed and Modeled Comparison",
+        legend={"groupclick": "togglegroup"},
+        title=(
+            " · ".join(selections) if selections else "Observed and Modeled Comparison"
+        ),
     )
     return fig

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,7 @@ def _write_config(workspace: Path) -> None:
     config = workspace / "config"
     config.mkdir(parents=True)
     (config / "custom.yaml").write_text(
-        "spatial_grid:\n  bbox: [-52.5, -31.5, -50.5, -29.5]\n",
+        "run:\n  reference_time: '2026-03-12T00:00:00'\nspatial_grid:\n  bbox: [-52.5, -31.5, -50.5, -29.5]\n",
         encoding="utf-8",
     )
 
@@ -283,7 +284,7 @@ def test_forecast_rainfall_uses_separate_hours_and_cache(
         lambda cache_dir: (
             ScenarioCache(
                 "raw:asset", "Raw", "raw", tmp_path / "raw.nc",
-                "ecmwf", "asset", None, forecast_grid
+                "ecmwf", "asset", None, forecast_grid, datetime(2026, 3, 12)
             ),
         ),
     )
@@ -461,12 +462,13 @@ def test_state_defaults_to_raw_scenario_and_zero_comparison(
 ) -> None:
     from mgb_ops.assets.scenario_cache import ScenarioCache
 
+    _write_config(tmp_path)
     zero_path = tmp_path / "zero.nc"
     raw_path = tmp_path / "raw.nc"
     caches = (
-        ScenarioCache("zero", "Zero", "zero", zero_path, None, None, None),
+        ScenarioCache("zero", "Zero", "zero", zero_path, None, None, None, reference_time=datetime(2026, 3, 12)),
         ScenarioCache(
-            "raw:asset", "Raw asset", "raw", raw_path, "ecmwf", "asset", None
+            "raw:asset", "Raw asset", "raw", raw_path, "ecmwf", "asset", None, reference_time=datetime(2026, 3, 12)
         ),
     )
     monkeypatch.setattr(
@@ -480,4 +482,4 @@ def test_state_defaults_to_raw_scenario_and_zero_comparison(
 
     assert state.scenario_id == "raw:asset"
     assert state.model_path == raw_path
-    assert state.comparison_scenario_ids == ["raw:asset", "zero"]
+    assert state.comparison_scenario_ids == ["zero", "raw:asset"]

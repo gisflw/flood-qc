@@ -119,6 +119,12 @@ class DashboardState(param.Parameterized):
         self.workspace = self.context.paths.workspace
         run_settings = self.context.settings["run"]
         mgb_settings = self.context.settings["mgb"]
+        configured_window = build_analysis_window(
+            resolve_reference_time(str(run_settings["reference_time"])),
+            output_days_before=int(mgb_settings["output_days_before"]),
+            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        )
+        self._runtime_reference_time = configured_window.cutoff_time
         self.history_path = self.context.paths.history_db
         try:
             initial_caches = list(
@@ -128,6 +134,7 @@ class DashboardState(param.Parameterized):
         except (FileNotFoundError, OSError, ValueError) as exc:
             initial_caches = []
             self._scenario_cache_error = str(exc)
+        initial_caches = self._filter_runtime_scenario_caches(initial_caches)
         self._scenario_cache_by_id = {item.scenario_id: item for item in initial_caches}
         initial = next((item for item in initial_caches if item.kind == "raw"), None)
         if initial is None:
@@ -139,16 +146,7 @@ class DashboardState(param.Parameterized):
         )
         params.setdefault("scenario_caches", initial_caches)
         params.setdefault("scenario_id", initial.scenario_id if initial else None)
-        comparison_defaults = [initial.scenario_id] if initial else []
-        zero = next((item for item in initial_caches if item.kind == "zero"), None)
-        if zero is not None and zero.scenario_id not in comparison_defaults:
-            comparison_defaults.append(zero.scenario_id)
-        params.setdefault("comparison_scenario_ids", comparison_defaults)
-        configured_window = build_analysis_window(
-            resolve_reference_time(str(run_settings["reference_time"])),
-            output_days_before=int(mgb_settings["output_days_before"]),
-            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
-        )
+        params.setdefault("comparison_scenario_ids", [cache.scenario_id for cache in initial_caches])
         self.window = self._resolve_dashboard_window(configured_window)
         self.observed_precipitation_path = (
             self.context.paths.cache_dir / MGB_OBSERVED_CACHE_FILENAME
@@ -165,6 +163,17 @@ class DashboardState(param.Parameterized):
         super().__init__(**params)
         self.refresh()
 
+    @staticmethod
+    def _normalize_runtime_time(value: datetime | pd.Timestamp) -> pd.Timestamp:
+        timestamp = pd.Timestamp(value)
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.tz_convert("America/Sao_Paulo").tz_localize(None)
+        return timestamp
+
+    def _filter_runtime_scenario_caches(self, caches):
+        expected = self._normalize_runtime_time(self._runtime_reference_time)
+        return [cache for cache in caches if cache.reference_time is not None and self._normalize_runtime_time(cache.reference_time) == expected]
+
     def _resolve_dashboard_window(self, configured_window):
         if not self.model_path.exists():
             return configured_window
@@ -176,7 +185,9 @@ class DashboardState(param.Parameterized):
 
     def _refresh_scenario_caches(self) -> None:
         try:
-            caches = list(discover_latest_scenario_caches(self.context.paths.cache_dir))
+            caches = self._filter_runtime_scenario_caches(
+                discover_latest_scenario_caches(self.context.paths.cache_dir)
+            )
             self._scenario_cache_error = None
         except (FileNotFoundError, OSError, ValueError) as exc:
             caches = []
@@ -193,11 +204,6 @@ class DashboardState(param.Parameterized):
         self.comparison_scenario_ids = [
             value for value in self.comparison_scenario_ids if value in valid_ids
         ]
-        if selected and selected not in self.comparison_scenario_ids:
-            self.comparison_scenario_ids = [selected, *self.comparison_scenario_ids]
-        zero = next((item for item in caches if item.kind == "zero"), None)
-        if zero and zero.scenario_id not in self.comparison_scenario_ids:
-            self.comparison_scenario_ids = [*self.comparison_scenario_ids, zero.scenario_id]
         self.model_path = (
             self._scenario_cache_by_id[selected].path
             if selected is not None
@@ -499,7 +505,8 @@ class DashboardState(param.Parameterized):
 
     def scenario_label(self, scenario_id: str) -> str:
         cache = self._scenario_cache_by_id.get(scenario_id)
-        return cache.label if cache is not None else scenario_id
+        label = cache.label if cache is not None else scenario_id
+        return label.split(" - ", maxsplit=1)[0]
 
     def mgb_series(self, variable_code: str, scenario_id: str | None = None) -> pd.DataFrame:
         if self.mini_id is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 import xarray as xr
@@ -20,6 +21,7 @@ class ScenarioCache:
     asset_id: str | None
     correction_id: int | None
     forecast_grid_path: Path | None = None
+    reference_time: datetime | None = None
 
 
 def scenario_cache_root(cache_dir: Path) -> Path:
@@ -43,6 +45,12 @@ def discover_latest_scenario_caches(cache_dir: Path) -> tuple[ScenarioCache, ...
             raise ValueError(f"Scenario cache has invalid scenario metadata: {path}")
         raw_correction_id = attrs.get("correction_id")
         raw_grid_path = str(attrs.get("forecast_grid_relative_path") or "").strip()
+        raw_reference_time = str(attrs.get("reference_time") or "").strip()
+        reference_time = (
+            datetime.fromisoformat(raw_reference_time.replace("Z", "+00:00"))
+            if raw_reference_time
+            else None
+        )
         forecast_grid_path = root / raw_grid_path if raw_grid_path else None
         if forecast_grid_path is not None and not forecast_grid_path.is_file():
             forecast_grid_path = None
@@ -60,6 +68,7 @@ def discover_latest_scenario_caches(cache_dir: Path) -> tuple[ScenarioCache, ...
                 if raw_correction_id not in (None, "")
                 else None,
                 forecast_grid_path=forecast_grid_path,
+                reference_time=reference_time,
             )
         )
     order = {"zero": 0, "raw": 1, "corrected": 2}

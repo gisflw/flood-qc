@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import pandas as pd
 import panel as pn
 
 from apps.ops_dashboard.state import DashboardState
@@ -18,7 +17,8 @@ def _monitoring_view(
     controller: DashboardState,
 ) -> pn.viewable.Viewable:
     scenario_options = {
-        cache.label: cache.scenario_id for cache in controller.scenario_caches
+        controller.scenario_label(cache.scenario_id): cache.scenario_id
+        for cache in controller.scenario_caches
     }
     scenario = pn.widgets.Select(
         name="Forecast to display",
@@ -47,7 +47,8 @@ def _monitoring_view(
 
     def refresh_scenario_widgets(_: Any = None) -> None:
         options = {
-            cache.label: cache.scenario_id for cache in controller.scenario_caches
+            controller.scenario_label(cache.scenario_id): cache.scenario_id
+        for cache in controller.scenario_caches
         }
         scenario.options = options
         comparisons.options = options
@@ -103,7 +104,6 @@ def _monitoring_view(
         name="Raster opacity",
         sizing_mode="stretch_width",
     )
-    show_basin = None
     opacity_slider.jscallback(
         args={"deck": map_pane},
         value="""

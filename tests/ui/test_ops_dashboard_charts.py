@@ -189,4 +189,17 @@ def test_comparison_chart_overlays_scenarios_without_repeating_observations() ->
     assert len(station_traces) == 1
     assert len(scenario_traces) == 4
     assert len({trace.line.color for trace in scenario_traces}) == 2
-    assert legend_names == ["Station ana:1", "Zero", "ECMWF raw", "Observed", "Forecast"]
+    assert legend_names == ["Station ana:1", "Zero", "ECMWF raw"]
+    assert all(trace.type == "bar" for trace in figure.data if trace.showlegend)
+    assert all(trace.visible is None for trace in figure.data)
+    assert figure.layout.legend.groupclick == "togglegroup"
+
+
+def test_comparison_chart_shares_observed_precipitation_and_omits_zero_forecast() -> None:
+    frame = _model("precipitation", [4.0, 0.0])
+    figure = _comparison_chart(pd.DataFrame(), {"Zero-rain horizon": {"precipitation": frame}, "ECMWF raw": {"precipitation": frame.assign(value=[4.0, 2.0])}}, None, 7)
+    precipitation = [trace for trace in figure.data if trace.yaxis == "y"]
+    observed_basin = [trace for trace in precipitation if trace.name == "Basin precipitation" and not trace.showlegend]
+    forecast = [trace for trace in precipitation if "forecast" in trace.name]
+    assert len(observed_basin) == 1
+    assert [trace.name for trace in forecast] == ["ECMWF raw - Basin precipitation - forecast"]
