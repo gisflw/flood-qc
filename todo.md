@@ -12,4 +12,7 @@
 
 - Series index as integer (xxhash)
 
-- include var columns in station metadata (?)
+- Tab for filtering observed precipitation
+    - Above treshold mask
+    - Same value +- tolerance for a long sequence
+    - leave-one-out interpolation map
