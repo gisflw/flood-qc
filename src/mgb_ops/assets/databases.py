@@ -21,6 +21,7 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
         connection.execute("PRAGMA busy_timeout = 5000")
         connection.executescript(schema_sql)
         _migrate_station_mini_id(connection)
+        _migrate_station_level_reference(connection)
         connection.commit()
 
 
@@ -31,6 +32,19 @@ def _migrate_station_mini_id(connection: sqlite3.Connection) -> None:
     }
     if station_columns and "mini_id" not in station_columns:
         connection.execute("ALTER TABLE station ADD COLUMN mini_id INTEGER")
+
+def _migrate_station_level_reference(connection: sqlite3.Connection) -> None:
+    """Move the renamed station-level reference table to its current schema."""
+    legacy_table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_level_boundary'"
+    ).fetchone()
+    if legacy_table is None:
+        return
+    connection.execute(
+        "INSERT OR REPLACE INTO station_level_reference (station_id, reference_code, level_cm) "
+        "SELECT station_id, boundary_code, level_cm FROM station_level_boundary"
+    )
+    connection.execute("DROP TABLE station_level_boundary")
 
 
 def _normalize_station_name(name: str) -> str:
@@ -319,10 +333,10 @@ def load_station_reference_levels(
 
     with sqlite3.connect(database_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("DELETE FROM station_level_boundary")
+        connection.execute("DELETE FROM station_level_reference")
         connection.execute("DELETE FROM historical_flood_level")
         connection.executemany(
-            "INSERT INTO station_level_boundary (station_id, boundary_code, level_cm) VALUES (?, ?, ?)", boundary_rows,
+            "INSERT INTO station_level_reference (station_id, reference_code, level_cm) VALUES (?, ?, ?)", boundary_rows,
         )
         connection.executemany(
             "INSERT INTO historical_flood_level (station_id, level_cm, event_date) VALUES (?, ?, ?)", flood_rows,

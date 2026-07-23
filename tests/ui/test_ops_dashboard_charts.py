@@ -55,8 +55,8 @@ def test_comparison_chart_keeps_station_and_prepared_mini_levels_independent() -
         7,
     )
 
-    station_level = next(trace for trace in figure.data if trace.name == "Station 1001 · cm")
-    mini_levels = [trace for trace in figure.data if trace.name.startswith("Mini 7") and trace.yaxis == "y3"]
+    station_level = next(trace for trace in figure.data if trace.name == "Observed" and trace.yaxis == "y3")
+    mini_levels = [trace for trace in figure.data if trace.name in {"Simulated", "Basin forecast"} and trace.yaxis == "y3"]
     assert list(station_level.y) == [120.0, 125.0]
     assert [list(trace.y) for trace in mini_levels] == [[120.0], [120.1]]
     assert station_level.line.color == STATION_COLOR
@@ -103,9 +103,9 @@ def test_unassociated_mini_keeps_selected_station_data_and_mini_flow() -> None:
         7,
     )
 
-    assert next(trace for trace in figure.data if trace.name == "Station 1001 · cm")
-    assert [trace for trace in figure.data if trace.name.startswith("Mini 7") and trace.yaxis == "y2"]
-    assert not [trace for trace in figure.data if trace.name.startswith("Mini 7") and trace.yaxis == "y3"]
+    assert next(trace for trace in figure.data if trace.name == "Observed" and trace.yaxis == "y3")
+    assert [trace for trace in figure.data if trace.name in {"Simulated", "Basin forecast"} and trace.yaxis == "y2"]
+    assert not [trace for trace in figure.data if trace.name in {"Simulated", "Basin forecast"} and trace.yaxis == "y3"]
 
 
 def test_unrelated_station_remains_visible_with_prepared_mini_level() -> None:
@@ -116,8 +116,8 @@ def test_unrelated_station_remains_visible_with_prepared_mini_level() -> None:
         7,
     )
 
-    station_level = next(trace for trace in figure.data if trace.name == "Station unrelated · cm")
-    mini_levels = [trace for trace in figure.data if trace.name.startswith("Mini 7")]
+    station_level = next(trace for trace in figure.data if trace.name == "Observed" and trace.yaxis == "y3")
+    mini_levels = [trace for trace in figure.data if trace.name in {"Simulated", "Basin forecast"} and trace.showlegend is False]
     assert list(station_level.y) == [120.0, 125.0]
     assert [list(trace.y) for trace in mini_levels] == [[50.0], [51.0]]
 
@@ -137,11 +137,86 @@ def test_comparison_chart_overlays_scenarios_without_repeating_observations() ->
 
     figure = _comparison_chart(observed, {"Zero": {"flow": frame_a}, "ECMWF raw": {"flow": frame_b}}, "ana:1", 7)
 
-    station_traces = [trace for trace in figure.data if trace.name.startswith("Station") and trace.showlegend is False]
-    scenario_traces = [trace for trace in figure.data if "Mini 7" in trace.name]
+    station_traces = [trace for trace in figure.data if trace.name == "Observed" and trace.showlegend is False]
+    scenario_traces = [trace for trace in figure.data if trace.name in {"Simulated", "Zero", "ECMWF raw"} and trace.showlegend is False]
     assert len(station_traces) == 1
-    assert len(scenario_traces) == 4
-    assert len({trace.line.color for trace in scenario_traces}) == 2
+    assert len(scenario_traces) == 3
+    simulated = next(trace for trace in scenario_traces if trace.name == "Simulated")
+    forecasts = [trace for trace in scenario_traces if trace.line.dash == "dash"]
+    assert simulated.line.color == MINI_COLOR
+    assert len(forecasts) == 2
+    assert len({trace.line.color for trace in forecasts}) == 2
+
+    flow_legend = [trace for trace in figure.data if trace.showlegend and trace.legend == "legend2"]
+    assert [trace.name for trace in flow_legend] == ["Observed", "Simulated", "Zero", "ECMWF raw"]
+    assert all(trace.type == "scatter" for trace in flow_legend)
+    assert [trace.legendgrouptitle.text for trace in flow_legend] == ["Up to present", "Up to present", "Future scenarios", "Future scenarios"]
+    assert [trace.line.dash for trace in flow_legend] == ["solid", "solid", "dash", "dash"]
+
+
+def test_precipitation_legend_matches_bar_styles() -> None:
+    figure = _comparison_chart(
+        _observed(),
+        {"precipitation": _model("precipitation", [3.0, 4.0])},
+        "1001",
+        7,
+    )
+
+    legend = [trace for trace in figure.data if trace.showlegend and trace.legend == "legend"]
+    assert [trace.name for trace in legend] == ["observed at station", "aggregated at basin", "Basin forecast"]
+    assert [trace.legendgrouptitle.text for trace in legend] == ["Observed", "Observed", "Forecast"]
+    plotted = [trace for trace in figure.data if not trace.showlegend and trace.type == "bar"]
+    assert {trace.name for trace in plotted} == {trace.name for trace in legend}
+    assert all(trace.type == "bar" for trace in legend)
+    assert legend[1].opacity == 0.85
+    assert legend[2].opacity == 0.55
+    assert legend[2].marker.pattern.shape == "/"
+
+
+
+def test_station_bar_width_is_capped_when_observations_are_sparse() -> None:
+    observed = pd.DataFrame({
+        "datetime": pd.to_datetime(["2026-01-01", "2026-01-10"]),
+        "variable_code": ["rain", "rain"],
+        "value": [1.0, 2.0],
+    })
+
+    figure = _comparison_chart(observed, {}, "1001", None)
+
+    station_bars = next(trace for trace in figure.data if trace.name == "observed at station" and not trace.showlegend)
+    assert station_bars.width == 2_880_000.0
+
+
+def test_reference_levels_appear_in_the_legend_without_annotations() -> None:
+    references = pd.DataFrame({
+        "reference_type": ["alert", "historical_flood"],
+        "level_cm": [650.0, 700.0],
+        "event_date": [None, "2024-05-03"],
+    })
+
+    figure = _comparison_chart(pd.DataFrame(), {}, "1001", None, references)
+
+    legend = [trace for trace in figure.data if trace.showlegend and trace.legend == "legend2"]
+    assert [trace.name for trace in legend] == ["Historical flood · 2024-05-03 (700 cm)", "Alert (650 cm)"]
+    assert [trace.legendgrouptitle.text for trace in legend] == ["Reference levels", "Reference levels"]
+    assert not any(annotation.text.startswith("Alert") for annotation in figure.layout.annotations)
+
+
+
+def test_reference_time_marker_spans_all_subplots_without_a_legend_entry() -> None:
+    reference_time = pd.Timestamp("2026-03-12 06:00")
+    figure = _comparison_chart(
+        _observed(), {"flow": _model("flow", [1.0, 2.0])}, "1001", 7, reference_time=reference_time
+    )
+
+    assert len(figure.layout.shapes) == 3
+    assert all(shape.line.color == "rgba(128, 128, 128, 0.2)" for shape in figure.layout.shapes)
+    assert all(shape.line.dash == "dash" for shape in figure.layout.shapes)
+    assert sum(annotation.text == "Reference time<br>12/03/2026 06:00" for annotation in figure.layout.annotations) == 3
+    assert [figure.layout.yaxis.title.text, figure.layout.yaxis2.title.text, figure.layout.yaxis3.title.text] == [
+        "Precipitation<br>mm", "Discharge<br>m³/s", "Water Level<br>cm"
+    ]
+
 
 
 @pytest.mark.parametrize("value, expected", [(1.29, 1.2), (-1.29, -1.2)])

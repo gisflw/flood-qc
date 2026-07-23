@@ -186,6 +186,7 @@ def _monitoring_view(
                 controller.station_id,
                 controller.mini_id,
                 controller.station_reference_levels(),
+                controller._runtime_reference_time,
             ),
             config={"responsive": True},
             sizing_mode="stretch_width",

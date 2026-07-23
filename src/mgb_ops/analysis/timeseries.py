@@ -166,20 +166,28 @@ def load_mini_station_id(
 
 
 def load_station_reference_levels(station_id: str, database_path: Path) -> pd.DataFrame:
-    """Return alert boundaries and registered flood levels for one station."""
+    """Return optional alert references and registered flood levels for one station."""
     boundary_order = {"attention": 0, "alert": 1, "flood": 2, "severe": 3}
     with open_history_read_only(database_path) as connection:
-        boundaries = pd.read_sql_query(
-            "SELECT boundary_code AS reference_type, level_cm, NULL AS event_date "
-            "FROM station_level_boundary WHERE station_id = ?",
-            connection,
-            params=(str(station_id),),
+        tables = {str(row[0]) for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('station_level_reference', 'historical_flood_level')"
+        )}
+        boundaries = (
+            pd.read_sql_query(
+                "SELECT reference_code AS reference_type, level_cm, NULL AS event_date "
+                "FROM station_level_reference WHERE station_id = ?", connection, params=(str(station_id),)
+            ) if "station_level_reference" in tables else pd.DataFrame(
+                columns=["reference_type", "level_cm", "event_date"]
+            )
         )
-        floods = pd.read_sql_query(
-            "SELECT 'historical_flood' AS reference_type, level_cm, event_date "
-            "FROM historical_flood_level WHERE station_id = ?",
-            connection,
-            params=(str(station_id),),
+        floods = (
+            pd.read_sql_query(
+                "SELECT 'historical_flood' AS reference_type, level_cm, event_date "
+                "FROM historical_flood_level WHERE station_id = ?", connection, params=(str(station_id),)
+            ) if "historical_flood_level" in tables else pd.DataFrame(
+                columns=["reference_type", "level_cm", "event_date"]
+            )
         )
     result = pd.concat([boundaries, floods], ignore_index=True)
     if result.empty:

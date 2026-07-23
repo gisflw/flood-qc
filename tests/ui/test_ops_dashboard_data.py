@@ -66,6 +66,36 @@ def insert_observed_value(connection: sqlite3.Connection, *, series_id: str, obs
     )
 
 
+
+def test_load_station_reference_levels_uses_optional_new_schema_tables(tmp_path) -> None:
+    database = initialize_history_db(tmp_path / "history.sqlite")
+    with sqlite3.connect(database) as connection:
+        insert_station(connection, station_id=1001, station_code="1001", station_name="Reference station")
+        connection.execute(
+            "INSERT INTO station_level_reference (station_id, reference_code, level_cm) VALUES (?, ?, ?)",
+            (1001, "alert", 100.0),
+        )
+        connection.execute(
+            "INSERT INTO historical_flood_level (station_id, level_cm, event_date) VALUES (?, ?, ?)",
+            (1001, 130.0, "2024-05-03"),
+        )
+
+    references = ops_dashboard_data.load_station_reference_levels("1001", database)
+
+    assert references.to_dict("records") == [
+        {"reference_type": "alert", "level_cm": 100.0, "event_date": None},
+        {"reference_type": "historical_flood", "level_cm": 130.0, "event_date": "2024-05-03"},
+    ]
+
+
+def test_load_station_reference_levels_is_empty_when_optional_tables_are_absent(tmp_path) -> None:
+    database = tmp_path / "history.sqlite"
+    with sqlite3.connect(database):
+        pass
+
+    assert ops_dashboard_data.load_station_reference_levels("1001", database).empty
+
+
 def test_select_preferred_series_rows_uses_state_precedence() -> None:
     series = pd.DataFrame(
         [

@@ -49,6 +49,7 @@ def test_initialize_history_db(tmp_path) -> None:
         "variable",
         "station",
         "station_observed_variable",
+        "station_level_reference",
         "asset",
         "observed_series",
         "observed_value",
