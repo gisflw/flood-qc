@@ -1,6 +1,6 @@
 ---
 name: sdd
-description: Guide lightweight spec-driven development with one concise, temporary change specification that evolves through discussion and implementation. Use only when the user explicitly invokes $sdd; never invoke this skill implicitly.
+description: Guide lightweight spec-driven development with one concise, temporary change specification that evolves through discussion and implementation.
 ---
 
 # Lightweight Spec-Driven Development
