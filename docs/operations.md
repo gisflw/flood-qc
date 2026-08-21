@@ -61,7 +61,7 @@ from mgb_ops.config.runtime import build_runtime_context
 from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 
-context = build_runtime_context(workspace=Path("scratch/rs_hydro"))
+context = build_runtime_context(workspace=Path("path/to/my/workspace"))
 paths = context.paths
 settings = context.settings
 mgb_settings = settings["mgb"]

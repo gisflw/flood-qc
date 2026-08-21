@@ -103,7 +103,7 @@ For the operational dashboard:
 
 ```bash
 python -m pip install -e '.[dashboard]'
-panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hydro
+panel serve apps/ops_dashboard/serve.py --show --args --workspace path/to/my/workspace
 ```
 
 For a reverse proxy, pass its public host with
@@ -122,7 +122,7 @@ from mgb_ops.utils.time import resolve_reference_time
 from mgb_ops.model.prepare_mgb_meta import rewrite_mgb_meta
 from mgb_ops.model.prepare_mgb_rainfall import prepare_mgb_rainfall
 
-context = build_runtime_context(workspace=Path("scratch/rs_hydro"))
+context = build_runtime_context(workspace=Path("path/to/my/workspace"))
 paths = context.paths
 settings = context.settings
 mgb_settings = settings["mgb"]
