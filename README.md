@@ -90,13 +90,13 @@ the reporting workflow is designed.
 Install dependencies into the current root Python environment for full local use:
 
 ```bash
-python -m pip install -e '.[dev,data,geo]'
+python -m pip install -e '.[dev,data,forecast,geo]'
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python -m pip install -e ".[dev,data,geo]"
+python -m pip install -e ".[dev,data,forecast,geo]"
 ```
 
 For the operational dashboard:

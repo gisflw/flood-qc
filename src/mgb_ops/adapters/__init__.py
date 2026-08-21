@@ -11,9 +11,11 @@ from mgb_ops.adapters.registry import (
     register_forecast_adapter,
     register_observation_adapter,
 )
+from mgb_ops.adapters.forecast_errors import ForecastCycleUnavailableError
 
 __all__ = [
     "DEFAULT_FORECAST_ADAPTER",
+    "ForecastCycleUnavailableError",
     "ForecastAdapter",
     "ObservationAdapter",
     "get_forecast_adapter",

@@ -18,6 +18,7 @@ from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 from mgb_ops.analysis.observations import load_preferred_rainfall_observations
 from mgb_ops.qc.precipitation import PrecipitationQCPolicy, detect_suspect_precipitation
+from mgb_ops.utils.time import build_forecast_coverage_window_utc
 
 ScenarioKind = Literal["zero", "raw", "corrected"]
 
@@ -106,7 +107,17 @@ def build_current_artifact(
     reason: str | None = None,
     precipitation_qc_settings: Mapping[str, Any] | None = None,
 ) -> CurrentRunArtifact:
-    refs = resolve_forecast_scenario_references(history_database_path, workspace_path, required_start=pd.Timestamp(reference_time).to_pydatetime(), required_end=pd.Timestamp(forecast_end_exclusive).to_pydatetime())
+    coverage_start, coverage_end = build_forecast_coverage_window_utc(
+        pd.Timestamp(reference_time).to_pydatetime(),
+        horizon_days=int(mgb_settings["forecast_horizon_days"]),
+        timestep_hours=int(timestep_hours),
+    )
+    refs = resolve_forecast_scenario_references(
+        history_database_path,
+        workspace_path,
+        required_start=coverage_start,
+        required_end=coverage_end,
+    )
     policy = PrecipitationQCPolicy.from_mapping(precipitation_qc_settings)
     seeded_replacements: tuple[ObservedReplacement, ...] = ()
     if not Path(database_path).exists():

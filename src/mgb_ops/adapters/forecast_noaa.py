@@ -15,6 +15,7 @@ from mgb_ops.adapters._grib2 import (
     TpGribMessage,
     read_precipitation_grib_messages,
 )
+from mgb_ops.adapters.forecast_errors import ForecastCycleUnavailableError
 from mgb_ops.adapters.forecast_ecmwf import (
     FORECAST_BBOX_BUFFER_FRACTION,
     ForecastProductConfig,
@@ -32,6 +33,7 @@ GFS_MODEL = "gfs"
 GFS_PRODUCT_TYPE = "fc"
 GFS_RESOLUTION = "0p25"
 GFS_PARAM = "APCP"
+GFS_FORECAST_CYCLE_HOURS = (0, 6, 12, 18)
 GFS_NOMADS_FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 GFS_FORECAST_PRODUCT = ForecastProductConfig(
     provider_code="noaa",
@@ -139,6 +141,15 @@ def _require_requests():
     return requests
 
 
+def preflight_forecast_dependencies() -> None:
+    """Verify every runtime dependency before a GFS cycle is attempted."""
+    _require_requests()
+    from mgb_ops.adapters._grib2 import require_eccodes
+
+    require_eccodes()
+
+
+
 def request_gfs_file(
     *,
     cycle_time: datetime,
@@ -225,8 +236,9 @@ def download_gfs_grib_to_path(
     requests = _require_requests()
     steps = list(forecast_hours or build_gfs_steps(product_config))
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    cycle_label = cycle_time.strftime("%Y%m%dT%H%MZ")
     with requests.Session() as session, target_path.open("wb") as handle, tqdm(
-        steps, desc="NOAA GFS", unit="step"
+        steps, desc=f"NOAA GFS {cycle_label}", unit="step"
     ) as progress:
         for forecast_hour in progress:
             progress.set_postfix_str(f"f{forecast_hour:03d}")
@@ -276,14 +288,25 @@ def download_forecast_grib(
     try:
         if logger is not None:
             logger.info("noaa_download_start cycle=%s bbox=%s steps=%s", cycle_time.isoformat(), bbox, steps)
-        download_gfs_grib_to_path(
-            temporary,
-            cycle_time=cycle_time,
-            bbox=bbox,
-            forecast_hours=steps,
-            logger=logger,
-            product_config=product_config,
-        )
+        try:
+            download_gfs_grib_to_path(
+                temporary,
+                cycle_time=cycle_time,
+                bbox=bbox,
+                forecast_hours=steps,
+                logger=logger,
+                product_config=product_config,
+            )
+        except Exception as exc:
+            requests = _require_requests()
+            request_error = getattr(getattr(requests, "exceptions", None), "RequestException", ())
+            if request_error and isinstance(exc, request_error):
+                raise ForecastCycleUnavailableError(
+                    f"NOAA GFS cycle {cycle_time:%Y%m%dT%H%MZ} is unavailable: {exc}",
+                    provider="noaa",
+                    cycle_time=cycle_time,
+                ) from exc
+            raise
         messages = read_gfs_precipitation_messages(temporary)
         found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
         found_steps = {message.step_hours for message in messages}

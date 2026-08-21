@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
+import requests
+
 import numpy as np
 
 from mgb_ops.adapters._grib2 import (
@@ -17,6 +19,7 @@ from mgb_ops.adapters._grib2 import (
     require_eccodes,
     set_regular_ll_grid,
 )
+from mgb_ops.adapters.forecast_errors import ForecastCycleUnavailableError
 from mgb_ops.assets.spatial_grid import (
     SPATIAL_GRID_ASSET_KIND,
     write_spatial_grid,
@@ -31,6 +34,7 @@ ECMWF_PRODUCT_TYPE = "fc"
 ECMWF_RESOLUTION = "0p25"
 ECMWF_PARAM = "tp"
 FORECAST_BBOX_BUFFER_FRACTION = 2.0
+ECMWF_FORECAST_CYCLE_HOURS = (0, 12)
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,8 +91,33 @@ def _require_opendata_client():
     return Client
 
 
+def preflight_forecast_dependencies() -> None:
+    """Verify ECMWF Open Data and GRIB bindings before a cycle is attempted."""
+    _require_opendata_client()
+    require_eccodes()
+
+
 def build_ecmwf_steps(product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT) -> list[int]:
     return list(product_config.step_schedule)
+
+
+def build_required_ecmwf_steps(
+    cycle_time: datetime,
+    required_end: datetime,
+    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+) -> list[int]:
+    """Return only native ECMWF steps needed to cover ``required_end``."""
+    cycle = cycle_time.replace(tzinfo=timezone.utc) if cycle_time.tzinfo is None else cycle_time.astimezone(timezone.utc)
+    end = required_end.replace(tzinfo=timezone.utc) if required_end.tzinfo is None else required_end.astimezone(timezone.utc)
+    required_hours = max(0, (end - cycle).total_seconds() / 3600)
+    available = build_ecmwf_steps(product_config)
+    steps = [step for step in available if step <= required_hours]
+    following = next((step for step in available if step > required_hours), None)
+    if following is not None:
+        steps.append(following)
+    if not steps:
+        raise ValueError("Requested forecast end is before the first available ECMWF interval.")
+    return steps
 
 
 def build_bbox_with_buffer(
@@ -490,20 +519,30 @@ def download_ecmwf_grib_to_path(
     *,
     cycle_time: datetime,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
+    forecast_hours: list[int] | None = None,
 ) -> None:
     Client = _require_opendata_client()
     client = Client()
-    client.retrieve(
-        date=cycle_time.strftime("%Y-%m-%d"),
-        model=product_config.model,
-        time=cycle_time.hour,
-        step=build_ecmwf_steps(product_config),
-        resol=product_config.resolution,
-        type=product_config.product_type,
-        levtype="sfc",
-        param=[product_config.param],
-        target=str(target_path),
-    )
+    try:
+        client.retrieve(
+            date=cycle_time.strftime("%Y-%m-%d"),
+            model=product_config.model,
+            time=cycle_time.hour,
+            step=forecast_hours or build_ecmwf_steps(product_config),
+            resol=product_config.resolution,
+            type=product_config.product_type,
+            levtype="sfc",
+            param=[product_config.param],
+            target=str(target_path),
+        )
+    except requests.RequestException as exc:
+        raise ForecastCycleUnavailableError(
+            f"ECMWF IFS cycle {cycle_time:%Y%m%dT%H%MZ} is unavailable: {exc}",
+            provider="ecmwf",
+            cycle_time=cycle_time,
+        ) from exc
+    except OSError:
+        raise
 
 
 def download_forecast_grib(
@@ -511,15 +550,21 @@ def download_forecast_grib(
     cycle_time: datetime,
     downloads_dir: Path,
     bbox: tuple[float, float, float, float] | None = None,
+    required_end: datetime | None = None,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> Path:
     target = build_grib_path(downloads_dir, cycle_time, product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
+    steps = (
+        build_required_ecmwf_steps(cycle_time, required_end, product_config)
+        if required_end is not None
+        else build_ecmwf_steps(product_config)
+    )
     if target.exists():
         messages = read_tp_grib_messages(target)
         found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
         found_steps = {message.step_hours for message in messages}
-        if found_cycle == cycle_time and set(build_ecmwf_steps(product_config)).issubset(found_steps):
+        if found_cycle == cycle_time and set(steps).issubset(found_steps):
             return target
         target.unlink()
     descriptor, temporary_name = tempfile.mkstemp(
@@ -529,12 +574,12 @@ def download_forecast_grib(
     temporary = Path(temporary_name)
     try:
         download_ecmwf_grib_to_path(
-            temporary, cycle_time=cycle_time, product_config=product_config
+            temporary, cycle_time=cycle_time, product_config=product_config, forecast_hours=steps
         )
         messages = read_tp_grib_messages(temporary)
         found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
         found_steps = {message.step_hours for message in messages}
-        if found_cycle != cycle_time or not set(build_ecmwf_steps(product_config)).issubset(found_steps):
+        if found_cycle != cycle_time or not set(steps).issubset(found_steps):
             raise ValueError("Downloaded ECMWF GRIB2 has an unexpected cycle or incomplete steps.")
         os.replace(temporary, target)
     finally:

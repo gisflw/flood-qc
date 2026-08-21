@@ -87,6 +87,35 @@ def validate_timestep_hours(timestep_hours: int) -> int:
     return timestep_hours
 
 
+def build_forecast_coverage_window_utc(
+    reference_time: datetime,
+    *,
+    horizon_days: int,
+    timestep_hours: int = 1,
+) -> tuple[datetime, datetime]:
+    """Return the UTC interval required by the MGB forecast forcing window."""
+    timestep_hours = validate_timestep_hours(timestep_hours)
+    if horizon_days < 1:
+        raise ValueError("horizon_days must be >= 1.")
+
+    if reference_time.tzinfo is None:
+        local_reference = reference_time
+    else:
+        local_reference = reference_time.astimezone(TIMEZONE).replace(tzinfo=None)
+    require_datetime_aligned_to_timestep(
+        local_reference,
+        timestep_hours=timestep_hours,
+        name="reference_time",
+    )
+
+    required_start_local = local_reference + timedelta(hours=timestep_hours)
+    required_end_local = required_start_local + timedelta(days=horizon_days)
+    return (
+        required_start_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc),
+        required_end_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc),
+    )
+
+
 def require_datetime_aligned_to_timestep(value: datetime, *, timestep_hours: int, name: str) -> None:
     validate_timestep_hours(timestep_hours)
     if value.minute != 0 or value.second != 0 or value.microsecond != 0:

@@ -7,6 +7,7 @@ from mgb_ops.workflows.observed import (
 )
 from mgb_ops.workflows.forecast import (
     ForecastDownloadSummary,
+    ForecastCycleUnavailableError,
     ForecastProviderBatchError,
     download_forecast_data,
     ingest_forecast_asset,
@@ -16,6 +17,7 @@ from mgb_ops.workflows.forecast import (
 
 __all__ = [
     "ForecastDownloadSummary",
+    "ForecastCycleUnavailableError",
     "ForecastProviderBatchError",
     "ObservedDownloadSummary",
     "download_forecast_data",

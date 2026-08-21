@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 
 from mgb_ops.utils.time import (
+    build_forecast_coverage_window_utc,
     build_horizon_window,
     iter_forecast_cycle_candidates,
     iter_observed_request_dates,
@@ -16,6 +17,23 @@ def test_resolve_reference_time_date_only_uses_local_midnight_and_previous_utc_c
         reference_time = resolve_reference_time(raw)
         assert reference_time == datetime(2026, 3, 18, 0, 0, 0)
         assert resolve_forecast_cycle(reference_time) == datetime(2026, 3, 18, 0, 0, 0)
+
+
+def test_build_forecast_coverage_window_uses_local_time_and_timestep() -> None:
+    assert build_forecast_coverage_window_utc(
+        datetime(2026, 3, 18, 15), horizon_days=5, timestep_hours=1
+    ) == (
+        datetime(2026, 3, 18, 19, tzinfo=timezone.utc),
+        datetime(2026, 3, 23, 19, tzinfo=timezone.utc),
+    )
+    assert build_forecast_coverage_window_utc(
+        datetime(2026, 3, 18, 18, tzinfo=timezone.utc),
+        horizon_days=2,
+        timestep_hours=3,
+    ) == (
+        datetime(2026, 3, 18, 21, tzinfo=timezone.utc),
+        datetime(2026, 3, 20, 21, tzinfo=timezone.utc),
+    )
 
 
 def test_build_horizon_window_includes_forecast_horizon() -> None:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -9,6 +9,7 @@ from typing import Iterable
 
 from mgb_ops.adapters import (
     DEFAULT_FORECAST_ADAPTER,
+    ForecastCycleUnavailableError,
     ForecastAdapter,
     get_forecast_adapter,
     list_forecast_adapter_codes,
@@ -24,6 +25,8 @@ from mgb_ops.assets.spatial_grid import (
 )
 from mgb_ops.assets.types import DataState, RasterAsset, RunMetadata
 from mgb_ops.utils.time import (
+    DEFAULT_FORECAST_CYCLE_HOURS,
+    build_forecast_coverage_window_utc,
     iter_forecast_cycle_candidates,
     resolve_forecast_cycle,
     resolve_reference_time,
@@ -32,7 +35,6 @@ from mgb_ops.assets.forecast_registry import build_relative_asset_path, register
 from mgb_ops.assets.forecast_registry import list_forecast_assets
 from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.config.runtime import RuntimeContext
-from mgb_ops.utils.time import TIMEZONE
 from mgb_ops.workflows._providers import normalize_provider_codes
 from mgb_ops.utils.logging import configure_run_logger
 
@@ -142,6 +144,11 @@ class ForecastProviderBatchError(RuntimeError):
         super().__init__(f"Forecast provider update failed: {details}")
 
 
+
+def _cycle_log_path(context: RuntimeContext, provider: str, cycle: datetime) -> Path:
+    return context.paths.logs_dir / f"forecast_{provider}" / f"{cycle:%Y%m%dT%H%M%S}.log"
+
+
 def _download_forecast_provider(
     context: RuntimeContext,
     provider: str,
@@ -158,11 +165,32 @@ def _download_forecast_provider(
     buffer_fraction: float,
 ) -> tuple[str, Path, Path | None]:
     adapter = get_forecast_adapter(provider)
-    target_cycle = resolve_forecast_cycle(reference)
+    preflight = getattr(adapter, "preflight_dependencies", None)
+    if callable(preflight):
+        preflight()
+
+    cycle_hours = getattr(adapter, "forecast_cycle_hours", DEFAULT_FORECAST_CYCLE_HOURS)
+    target_cycle = resolve_forecast_cycle(reference, cycle_hours=cycle_hours)
+    attempted_cycles: list[str] = []
     last_error: Exception | None = None
     for cycle in iter_forecast_cycle_candidates(
-        target_cycle, lookback_cycles=lookback_cycles
+        target_cycle, lookback_cycles=lookback_cycles, cycle_hours=cycle_hours
     ):
+        cycle_id = f"{cycle:%Y%m%dT%H%MZ}"
+        attempted_cycles.append(cycle_id)
+        attempt_number = len(attempted_cycles)
+        logger = configure_run_logger(
+            f"forecast_{provider}",
+            _cycle_log_path(context, provider, cycle),
+            console=False,
+        )
+        logger.info(
+            "forecast_cycle_start provider=%s cycle=%s attempt=%d required_end=%s",
+            provider,
+            cycle_id,
+            attempt_number,
+            required_end.isoformat(timespec="seconds"),
+        )
         asset_id = adapter.asset_id(cycle)
         matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
         if not matches.empty:
@@ -181,36 +209,33 @@ def _download_forecast_provider(
                 required_end=required_end,
                 expected_buffer_fraction=buffer_fraction,
             ):
+                logger.info("forecast_cycle_reused provider=%s cycle=%s", provider, cycle_id)
                 return "reused", path, None
-        logger = None
+
         download_kwargs: dict[str, object] = {
             "cycle_time": cycle,
             "downloads_dir": context.paths.downloads_dir,
             "bbox": forecast_bbox if provider == "noaa" else bbox,
         }
-        if provider == "noaa":
-            logger = configure_run_logger(
-                "forecast_noaa",
-                context.paths.logs_dir
-                / "forecast_noaa"
-                / f"{cycle:%Y%m%dT%H%M%S}.log",
-                console=False,
-            )
-            logger.info(
-                "noaa_cycle_start cycle=%s model_bbox=%s forecast_bbox=%s",
-                cycle.isoformat(),
-                bbox,
-                forecast_bbox,
-            )
+        if getattr(adapter, "supports_required_end", False):
             download_kwargs["required_end"] = required_end
+        if provider == "noaa":
             download_kwargs["logger"] = logger
         try:
             grib = adapter.download_grib(**download_kwargs)
-        except Exception as exc:
-            if logger is not None:
-                logger.exception("noaa_acquisition_failed cycle=%s", cycle.isoformat())
+        except ForecastCycleUnavailableError as exc:
+            logger.exception(
+                "forecast_acquisition_unavailable provider=%s cycle=%s attempt=%d required_end=%s",
+                provider, cycle_id, attempt_number, required_end.isoformat(timespec="seconds"),
+            )
             last_error = exc
             continue
+        except Exception:
+            logger.exception(
+                "forecast_acquisition_failed provider=%s cycle=%s attempt=%d required_end=%s",
+                provider, cycle_id, attempt_number, required_end.isoformat(timespec="seconds"),
+            )
+            raise
 
         try:
             normalized = adapter.process_grib(
@@ -224,28 +249,29 @@ def _download_forecast_provider(
                 timestep_hours=timestep,
             )
         except Exception:
-            if logger is not None:
-                logger.exception("noaa_conversion_failed cycle=%s", cycle.isoformat())
+            logger.exception("forecast_conversion_failed provider=%s cycle=%s", provider, cycle_id)
             raise
 
         required_start_naive = required_start.replace(tzinfo=None)
         required_end_naive = required_end.replace(tzinfo=None)
         try:
-            if (
-                normalized.valid_from > required_start_naive
-                or normalized.valid_to < required_end_naive
-            ):
-                raise ValueError(
-                    "Downloaded forecast asset does not cover the required forecast window."
-                )
+            if normalized.valid_from > required_start_naive or normalized.valid_to < required_end_naive:
+                raise ValueError("Downloaded forecast asset does not cover the required forecast window.")
         except Exception:
-            if logger is not None:
-                logger.exception("noaa_validation_failed cycle=%s", cycle.isoformat())
+            logger.exception("forecast_validation_failed provider=%s cycle=%s", provider, cycle_id)
             raise
+        logger.info("forecast_cycle_done provider=%s cycle=%s", provider, cycle_id)
         return "produced", normalized.asset_path, grib
+
+    attempted = ", ".join(attempted_cycles) or "none (short ECMWF cycles cannot cover the required horizon)"
+    detail = (
+        f"{type(last_error).__name__}: {last_error}"
+        if last_error is not None
+        else "no eligible cycle could cover the required horizon"
+    )
     raise RuntimeError(
-        f"No usable forecast asset found for provider {provider!r} "
-        f"within {lookback_cycles} cycle(s)."
+        f"Forecast lookback exhausted for provider {provider!r}; attempted cycles: {attempted}; "
+        f"final underlying exception: {detail}"
     ) from last_error
 
 
@@ -273,12 +299,11 @@ def download_forecast_data(
     bbox = tuple(float(value) for value in bbox_value)
     resolution = float(settings["spatial_grid"]["resolution_degrees"])
     forecast_bbox = build_bbox_with_buffer(bbox, buffer_fraction=buffer_fraction)
-    required_start_local = reference + timedelta(hours=timestep)
-    required_end_local = required_start_local + timedelta(
-        days=int(settings["mgb"]["forecast_horizon_days"])
+    required_start, required_end = build_forecast_coverage_window_utc(
+        reference,
+        horizon_days=int(settings["mgb"]["forecast_horizon_days"]),
+        timestep_hours=timestep,
     )
-    required_start = required_start_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
-    required_end = required_end_local.replace(tzinfo=TIMEZONE).astimezone(timezone.utc)
     reused: list[Path] = []
     produced: list[Path] = []
     raw: list[Path] = []

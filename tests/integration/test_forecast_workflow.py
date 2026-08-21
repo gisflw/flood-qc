@@ -8,6 +8,9 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from mgb_ops.adapters import ForecastCycleUnavailableError
+from mgb_ops.adapters.forecast_ecmwf import ECMWF_FORECAST_PRODUCT
+from mgb_ops.adapters import forecast_ecmwf, forecast_noaa
 from mgb_ops.config.env import RuntimeEnv
 from mgb_ops.config.runtime import RuntimeContext
 from mgb_ops.config.settings import DEFAULT_SETTINGS
@@ -64,7 +67,7 @@ def test_forecast_retries_only_acquisition_failures(monkeypatch, tmp_path) -> No
 
     def download(cycle: datetime) -> Path:
         if len(adapter.download_cycles) == 1:
-            raise RuntimeError("newest cycle unavailable")
+            raise ForecastCycleUnavailableError("newest cycle unavailable")
         return first_grib
 
     adapter = FakeNoaaAdapter(download, lambda grib, cycle: _normalized(cycle))
@@ -78,7 +81,7 @@ def test_forecast_retries_only_acquisition_failures(monkeypatch, tmp_path) -> No
     assert adapter.processed_gribs == [first_grib]
     assert summary.raw_grib_paths == (first_grib,)
     newest_log = context.paths.logs_dir / "forecast_noaa" / f"{adapter.download_cycles[0]:%Y%m%dT%H%M%S}.log"
-    assert "noaa_acquisition_failed" in newest_log.read_text(encoding="utf-8")
+    assert "forecast_acquisition_unavailable" in newest_log.read_text(encoding="utf-8")
 
 
 def test_forecast_conversion_failure_does_not_try_an_older_cycle(monkeypatch, tmp_path) -> None:
@@ -97,7 +100,7 @@ def test_forecast_conversion_failure_does_not_try_an_older_cycle(monkeypatch, tm
     assert len(adapter.download_cycles) == 1
     log_path = context.paths.logs_dir / "forecast_noaa" / f"{adapter.download_cycles[0]:%Y%m%dT%H%M%S}.log"
     log_text = log_path.read_text(encoding="utf-8")
-    assert "noaa_conversion_failed" in log_text
+    assert "forecast_conversion_failed" in log_text
     assert "noaa_acquisition_failed" not in log_text
 
 
@@ -115,7 +118,7 @@ def test_forecast_coverage_failure_does_not_try_an_older_cycle(monkeypatch, tmp_
     assert len(adapter.download_cycles) == 1
     log_path = context.paths.logs_dir / "forecast_noaa" / f"{adapter.download_cycles[0]:%Y%m%dT%H%M%S}.log"
     log_text = log_path.read_text(encoding="utf-8")
-    assert "noaa_validation_failed" in log_text
+    assert "forecast_validation_failed" in log_text
     assert "noaa_acquisition_failed" not in log_text
 
 
@@ -150,3 +153,62 @@ def test_forecast_updates_other_providers_before_raising_batch_error(monkeypatch
 
     assert "ecmwf" in calls
     assert "noaa" in calls
+
+
+
+def test_missing_preflight_dependency_stops_before_any_download(monkeypatch, tmp_path) -> None:
+    dependency_error = ModuleNotFoundError("No module named eccodes")
+    adapter = FakeNoaaAdapter(lambda cycle: Path("/downloads/should-not-run.grib2"), lambda grib, cycle: _normalized(cycle))
+    adapter.preflight_dependencies = lambda: (_ for _ in ()).throw(dependency_error)
+    _install_adapter(monkeypatch, adapter)
+
+    with pytest.raises(ModuleNotFoundError, match="No module named eccodes") as exc_info:
+        forecast.download_forecast_data(
+            _context(tmp_path), providers="noaa", reference_time=datetime(2026, 3, 18, 15)
+        )
+
+    assert exc_info.value is dependency_error
+    assert adapter.download_cycles == []
+
+
+def test_ecmwf_cycle_logs_include_context_and_full_unavailable_traceback(monkeypatch, tmp_path) -> None:
+    first_grib = Path("/downloads/ecmwf.grib2")
+
+    def download(cycle: datetime) -> Path:
+        if len(adapter.download_cycles) == 1:
+            raise ForecastCycleUnavailableError("remote cycle missing")
+        return first_grib
+
+    adapter = FakeNoaaAdapter(download, lambda grib, cycle: _normalized(cycle))
+    adapter.provider_code = "ecmwf"
+    adapter.product_config = ECMWF_FORECAST_PRODUCT
+    adapter.forecast_cycle_hours = (0, 12)
+    _install_adapter(monkeypatch, adapter)
+    context = _context(tmp_path)
+
+    summary = forecast.download_forecast_data(
+        context, providers="ecmwf", reference_time=datetime(2026, 3, 18, 15)
+    )
+
+    assert summary.raw_grib_paths == (first_grib,)
+    assert [cycle.hour for cycle in adapter.download_cycles] == [12, 0]
+    first_cycle = adapter.download_cycles[0]
+    log_text = (context.paths.logs_dir / "forecast_ecmwf" / f"{first_cycle:%Y%m%dT%H%M%S}.log").read_text(encoding="utf-8")
+    assert "provider=ecmwf" in log_text
+    assert "attempt=1" in log_text
+    assert "required_end=" in log_text
+    assert "ForecastCycleUnavailableError: remote cycle missing" in log_text
+
+
+
+def test_builtin_forecast_preflights_check_the_expected_dependencies(monkeypatch) -> None:
+    missing_eccodes = ModuleNotFoundError("No module named eccodes")
+    monkeypatch.setattr(forecast_noaa, "_require_requests", lambda: object())
+    monkeypatch.setattr("mgb_ops.adapters._grib2.require_eccodes", lambda: (_ for _ in ()).throw(missing_eccodes))
+    with pytest.raises(ModuleNotFoundError, match="No module named eccodes"):
+        forecast_noaa.preflight_forecast_dependencies()
+
+    missing_opendata = ModuleNotFoundError("No module named ecmwf")
+    monkeypatch.setattr(forecast_ecmwf, "_require_opendata_client", lambda: (_ for _ in ()).throw(missing_opendata))
+    with pytest.raises(ModuleNotFoundError, match="No module named ecmwf"):
+        forecast_ecmwf.preflight_forecast_dependencies()

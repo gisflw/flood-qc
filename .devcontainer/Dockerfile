@@ -7,7 +7,8 @@ ARG USER_GID=1000
 RUN groupadd -g ${USER_GID} ${USERNAME} \
  && useradd -m -u ${USER_UID} -g ${USER_GID} -s /bin/bash ${USERNAME} \
  && apt-get update \
- && apt-get install -y sudo \
+ && apt-get install -y sudo libeccodes-dev libeccodes-tools \
+ && python -m pip install --no-cache-dir eccodes ecmwf-opendata \
  && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/${USERNAME} \
  && chmod 0440 /etc/sudoers.d/${USERNAME} \
  && rm -rf /var/lib/apt/lists/*

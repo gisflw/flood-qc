@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Barrier
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from mgb_ops.assets.current_run import CurrentRunArtifact, ForecastScenarioReference, create_current_artifact
@@ -18,6 +19,7 @@ from mgb_ops.config.settings import DEFAULT_SETTINGS
 from mgb_ops.config.workspace import RuntimePaths
 from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.scenario_orchestrator import ScenarioBatchError, ScenarioRunResult, execute_forecast_scenarios
+from mgb_ops.workflows import scenarios as scenario_workflow
 from mgb_ops.workflows.scenarios import ForecastScenario, derive_forecast_scenarios
 
 
@@ -315,3 +317,106 @@ def test_orchestrator_failure_keeps_previous_batch(tmp_path: Path, monkeypatch) 
 
     assert root.is_dir()
     assert old.read_bytes() == b"published"
+
+
+def test_build_current_artifact_resolves_the_mgb_coverage_window(
+    tmp_path: Path, monkeypatch
+) -> None:
+    captured: dict[str, datetime] = {}
+
+    def fake_resolve(database_path, workspace_path, *, required_start, required_end):
+        captured["start"] = required_start
+        captured["end"] = required_end
+        return (ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon"),)
+
+    monkeypatch.setattr(scenario_workflow, "resolve_forecast_scenario_references", fake_resolve)
+    monkeypatch.setattr(scenario_workflow, "create_current_artifact", lambda path, artifact: artifact)
+    existing_database = tmp_path / "current_run.sqlite"
+    existing_database.touch()
+
+    artifact = scenario_workflow.build_current_artifact(
+        existing_database,
+        tmp_path / "history.sqlite",
+        tmp_path,
+        reference_time="2026-03-18T15:00:00",
+        forecast_end_exclusive="2026-03-24T00:00:00",
+        timestep_hours=1,
+        mgb_settings={"forecast_horizon_days": 5},
+        spatial_settings={},
+        interpolation_settings={},
+        review_window={},
+        observed_providers=("ana",),
+    )
+
+    assert captured == {
+        "start": datetime(2026, 3, 18, 19, tzinfo=timezone.utc),
+        "end": datetime(2026, 3, 23, 19, tzinfo=timezone.utc),
+    }
+    assert artifact.forecast_end_exclusive == "2026-03-24T00:00:00"
+
+
+@pytest.mark.parametrize(
+    ("valid_from", "valid_to"),
+    (
+        ("2026-03-18T19:00:01+00:00", "2026-03-23T19:00:00+00:00"),
+        ("2026-03-18T19:00:00+00:00", "2026-03-23T18:59:59+00:00"),
+    ),
+)
+def test_forecast_scenario_resolution_rejects_incomplete_boundaries(
+    tmp_path: Path, monkeypatch, valid_from: str, valid_to: str
+) -> None:
+    asset_path = tmp_path / "forecast.nc"
+    asset_path.touch()
+    assets = pd.DataFrame(
+        [{
+            "asset_id": "ecmwf.asset",
+            "provider_code": "ecmwf",
+            "cycle_time": "2026-03-18T12:00:00Z",
+            "valid_from": valid_from,
+            "valid_to": valid_to,
+            "asset_path": asset_path,
+        }]
+    )
+    monkeypatch.setattr(scenario_workflow, "list_enabled_forecast_providers", lambda path: ("ecmwf",))
+    monkeypatch.setattr(scenario_workflow, "get_forecast_adapter", lambda provider: object())
+    monkeypatch.setattr(scenario_workflow, "list_forecast_assets", lambda *args, **kwargs: assets)
+
+    with pytest.raises(RuntimeError, match="ecmwf"):
+        scenario_workflow.resolve_forecast_scenario_references(
+            tmp_path / "history.sqlite",
+            tmp_path,
+            required_start=datetime(2026, 3, 18, 19, tzinfo=timezone.utc),
+            required_end=datetime(2026, 3, 23, 19, tzinfo=timezone.utc),
+        )
+
+
+def test_forecast_scenario_resolution_accepts_exact_coverage(
+    tmp_path: Path, monkeypatch
+) -> None:
+    asset_path = tmp_path / "forecast.nc"
+    asset_path.touch()
+    assets = pd.DataFrame(
+        [{
+            "asset_id": "ecmwf.asset",
+            "provider_code": "ecmwf",
+            "cycle_time": "2026-03-18T12:00:00Z",
+            "valid_from": "2026-03-18T19:00:00+00:00",
+            "valid_to": "2026-03-23T19:00:00+00:00",
+            "asset_path": asset_path,
+        }]
+    )
+    monkeypatch.setattr(scenario_workflow, "list_enabled_forecast_providers", lambda path: ("ecmwf",))
+    monkeypatch.setattr(scenario_workflow, "get_forecast_adapter", lambda provider: object())
+    monkeypatch.setattr(scenario_workflow, "list_forecast_assets", lambda *args, **kwargs: assets)
+
+    references = scenario_workflow.resolve_forecast_scenario_references(
+        tmp_path / "history.sqlite",
+        tmp_path,
+        required_start=datetime(2026, 3, 18, 19, tzinfo=timezone.utc),
+        required_end=datetime(2026, 3, 23, 19, tzinfo=timezone.utc),
+    )
+
+    assert [reference.scenario_id for reference in references] == [
+        "zero",
+        "raw:ecmwf.asset",
+    ]

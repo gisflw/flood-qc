@@ -6,9 +6,13 @@ import json
 from datetime import datetime, timezone
 from pathlib import Path
 
+import requests
+
 import numpy as np
+import pytest
 
 from mgb_ops.adapters import forecast_ecmwf
+from mgb_ops.adapters.forecast_errors import ForecastCycleUnavailableError
 from mgb_ops.adapters import _grib2 as grib2
 from mgb_ops.adapters._grib2 import TpGribMessage
 from mgb_ops.assets.spatial_grid import read_spatial_grid
@@ -184,3 +188,61 @@ def test_grib2_grid_array_reader_uses_coordinate_arrays_for_wrapped_global_grid(
     assert latitudes.tolist() == [1.0, -1.0]
     assert longitudes.tolist() == [-179.75, -179.5, -179.25, 180.0]
     assert values.tolist() == [[2.0, 3.0, 4.0, 1.0], [20.0, 30.0, 40.0, 10.0]]
+
+
+
+def test_ecmwf_steps_are_horizon_aware_for_the_long_cycle_product() -> None:
+    cycle = datetime(2026, 3, 18, 12)
+    steps = forecast_ecmwf.build_required_ecmwf_steps(cycle, datetime(2026, 3, 22, 13))
+
+    assert steps[-1] == 99
+
+
+def test_ecmwf_download_passes_only_required_steps(tmp_path, monkeypatch) -> None:
+    requested: list[int] = []
+    cycle = datetime(2026, 3, 18)
+
+    def fake_download(target_path, *, cycle_time, product_config, forecast_hours=None):
+        requested.extend(forecast_hours or [])
+        target_path.write_bytes(b"grib")
+
+    messages = [
+        TpGribMessage(cycle, 0, np.array([-30.0]), np.array([-52.0]), np.array([[0.0]])),
+        TpGribMessage(cycle + forecast_ecmwf.timedelta(hours=3), 3, np.array([-30.0]), np.array([-52.0]), np.array([[1.0]])),
+        TpGribMessage(cycle + forecast_ecmwf.timedelta(hours=6), 6, np.array([-30.0]), np.array([-52.0]), np.array([[2.0]])),
+    ]
+    monkeypatch.setattr(forecast_ecmwf, "download_ecmwf_grib_to_path", fake_download)
+    monkeypatch.setattr(forecast_ecmwf, "read_tp_grib_messages", lambda _: messages)
+
+    forecast_ecmwf.download_forecast_grib(
+        cycle_time=cycle,
+        downloads_dir=tmp_path,
+        required_end=cycle + forecast_ecmwf.timedelta(hours=4),
+    )
+
+    assert requested == [0, 3, 6]
+
+
+
+def test_ecmwf_http_error_is_cycle_unavailable_but_local_io_error_is_not(monkeypatch, tmp_path) -> None:
+    cycle = datetime(2026, 3, 18, 12)
+
+    class HttpClient:
+        def retrieve(self, **kwargs):
+            raise requests.HTTPError("404 cycle index is not published")
+
+    monkeypatch.setattr(forecast_ecmwf, "_require_opendata_client", lambda: HttpClient)
+    with pytest.raises(ForecastCycleUnavailableError, match="404 cycle index"):
+        forecast_ecmwf.download_ecmwf_grib_to_path(tmp_path / "forecast.grib2", cycle_time=cycle)
+
+    local_error = OSError("cannot write local target")
+
+    class LocalIoClient:
+        def retrieve(self, **kwargs):
+            raise local_error
+
+    monkeypatch.setattr(forecast_ecmwf, "_require_opendata_client", lambda: LocalIoClient)
+    with pytest.raises(OSError) as exc_info:
+        forecast_ecmwf.download_ecmwf_grib_to_path(tmp_path / "forecast.grib2", cycle_time=cycle)
+
+    assert exc_info.value is local_error

@@ -45,6 +45,9 @@ class ForecastAdapter(Protocol):
     def download_grib(self, **kwargs: Any) -> Path: ...
     def process_grib(self, grib_path: Path, **kwargs: Any) -> Any: ...
 
+    def preflight_dependencies(self) -> None: ...
+    forecast_cycle_hours: tuple[int, ...]
+
 
 @dataclass(slots=True)
 class _ObservationAdapter:
@@ -106,6 +109,9 @@ class _ForecastAdapter:
     store_grid_function: Callable[..., Any]
     download_grib_function: Callable[..., Path]
     process_grib_function: Callable[..., Any]
+    preflight_function: Callable[[], None] | None = None
+    supports_required_end: bool = True
+    forecast_cycle_hours: tuple[int, ...] = (0, 6, 12, 18)
 
     def asset_id(self, cycle_time: datetime) -> str:
         return self.asset_id_function(cycle_time, self.product_config)
@@ -125,6 +131,10 @@ class _ForecastAdapter:
         return self.process_grib_function(
             grib_path, **kwargs, product_config=self.product_config
         )
+
+    def preflight_dependencies(self) -> None:
+        if self.preflight_function is not None:
+            self.preflight_function()
 
 
 _OBSERVATION_ADAPTERS: dict[str, ObservationAdapter] = {
@@ -155,6 +165,8 @@ DEFAULT_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
     store_grid_function=forecast_ecmwf.store_normalized_forecast_grid,
     download_grib_function=forecast_ecmwf.download_forecast_grib,
     process_grib_function=forecast_ecmwf.process_forecast_grib,
+    preflight_function=forecast_ecmwf.preflight_forecast_dependencies,
+    forecast_cycle_hours=forecast_ecmwf.ECMWF_FORECAST_CYCLE_HOURS,
 )
 NOAA_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
     provider_code=forecast_noaa.GFS_FORECAST_PRODUCT.provider_code,
@@ -163,6 +175,8 @@ NOAA_FORECAST_ADAPTER: ForecastAdapter = _ForecastAdapter(
     store_grid_function=forecast_noaa.store_normalized_forecast_grid,
     download_grib_function=forecast_noaa.download_forecast_grib,
     process_grib_function=forecast_noaa.process_forecast_grib,
+    preflight_function=forecast_noaa.preflight_forecast_dependencies,
+    forecast_cycle_hours=forecast_noaa.GFS_FORECAST_CYCLE_HOURS,
 )
 _FORECAST_ADAPTERS: dict[str, ForecastAdapter] = {
     DEFAULT_FORECAST_ADAPTER.provider_code: DEFAULT_FORECAST_ADAPTER,

@@ -193,3 +193,54 @@ def test_gfs_cumulative_conversion_keeps_240_to_252_contiguous(monkeypatch, tmp_
         datetime(2026, 3, 28, tzinfo=timezone.utc), datetime(2026, 3, 28, 12, tzinfo=timezone.utc)
     )
     assert grid.values[:3, 0, 0].tolist() == [3.0, 3.0, 3.0]
+
+
+
+def test_noaa_progress_uses_the_utc_cycle_label(tmp_path, monkeypatch) -> None:
+    observed: dict[str, str] = {}
+
+    class FakeProgress:
+        def __init__(self, values, *, desc, unit):
+            self.values = values
+            observed["desc"] = desc
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def __iter__(self):
+            return iter(self.values)
+
+        def set_postfix_str(self, value):
+            return None
+
+    class Response:
+        content = b"GRIB"
+
+    class Session:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+    class Requests:
+        @staticmethod
+        def Session():
+            return Session()
+
+    monkeypatch.setattr(forecast_noaa, "tqdm", FakeProgress)
+    monkeypatch.setattr(forecast_noaa, "_require_requests", lambda: Requests())
+    monkeypatch.setattr(forecast_noaa, "request_gfs_file", lambda **kwargs: Response())
+
+    forecast_noaa.download_gfs_grib_to_path(
+        tmp_path / "gfs.grib2",
+        cycle_time=datetime(2026, 3, 18, 6),
+        bbox=(-56.0, -33.0, -46.0, -28.0),
+        forecast_hours=[3],
+        pause_seconds=0,
+    )
+
+    assert observed["desc"] == "NOAA GFS 20260318T0600Z"
