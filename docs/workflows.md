@@ -56,7 +56,7 @@ Library modules:
 Install the optional forecast dependencies in the operational environment:
 
 ```bash
-python -m pip install -e ".[forecast]"
+uv sync --extra forecast
 ```
 
 1. Resolve the cycle from `reference_time`.

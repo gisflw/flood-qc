@@ -45,7 +45,7 @@ rainfall preparation consumes the NetCDF contract through `mgb_ops.model`.
 Install the optional forecast dependencies in the runtime environment:
 
 ```bash
-python -m pip install -e ".[forecast]"
+uv sync --extra forecast
 ```
 
 - `ecmwf-opendata` for downloading deterministic ECMWF source GRIB assets.

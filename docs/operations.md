@@ -7,21 +7,21 @@ flow.
 
 ## Local Setup
 
-1. Use the current root Python environment with `Python 3.11+`.
-2. Install dependencies with `python -m pip install -e '.[dev,data,geo]'`.
+1. Use the project environment with `Python 3.11+`.
+2. Install dependencies with `uv sync --all-extras`.
 3. Use `<workspace>/config/custom.yaml` for optional regional settings overrides.
 4. Use `<workspace>/.env` only for runtime convenience values consumed by `mgb_ops.config`.
 
 Typical Linux/macOS setup:
 
 ```bash
-python -m pip install -e '.[dev,data,geo]'
+uv sync --all-extras
 ```
 
 Typical Windows PowerShell setup:
 
 ```powershell
-python -m pip install -e ".[dev,data,geo]"
+uv sync --all-extras
 ```
 
 ## Operational Configuration

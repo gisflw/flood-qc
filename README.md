@@ -87,23 +87,23 @@ the reporting workflow is designed.
 
 ## Local Setup
 
-Install dependencies into the current root Python environment for full local use:
+Create and synchronize the project environment for full local use:
 
 ```bash
-python -m pip install -e '.[dev,data,forecast,geo]'
+uv sync --all-extras
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python -m pip install -e ".[dev,data,forecast,geo]"
+uv sync --all-extras
 ```
 
 For the operational dashboard:
 
 ```bash
-python -m pip install -e '.[dashboard]'
-panel serve apps/ops_dashboard/serve.py --show --args --workspace path/to/my/workspace
+uv sync --extra dashboard
+uv run panel serve apps/ops_dashboard/serve.py --show --args --workspace path/to/my/workspace
 ```
 
 For a reverse proxy, pass its public host with

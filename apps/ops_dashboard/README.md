@@ -8,8 +8,8 @@ data access, model, ingestion, and correction logic lives in `mgb_ops`.
 Install and run:
 
 ```bash
-python -m pip install -e '.[dashboard]'
-panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hydro
+uv sync --extra dashboard
+uv run panel serve apps/ops_dashboard/serve.py --show --args --workspace scratch/rs_hydro
 ```
 
 The dashboard consumes:
@@ -36,7 +36,7 @@ Additional behavior:
 Behind a reverse proxy, allow the public origin and forward WebSocket upgrades:
 
 ```bash
-panel serve apps/ops_dashboard/serve.py \
+uv run panel serve apps/ops_dashboard/serve.py \
   --allow-websocket-origin dashboard.example.org \
   --prefix /hydrology \
   --args --workspace /srv/rs_hydro

@@ -43,6 +43,8 @@ dashboard = [
   "plotly>=5.20",
   "geopandas>=1.0",
 ]
+
+[dependency-groups]
 dev = [
   "pytest>=8.0",
   "playwright>=1.49",

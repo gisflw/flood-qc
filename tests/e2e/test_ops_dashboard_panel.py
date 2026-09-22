@@ -1,7 +1,7 @@
 """Opt-in Playwright smoke test for the Panel dashboard.
 
-Run with ``RUN_DASHBOARD_BROWSER_TESTS=1 pytest tests/e2e`` after
-``playwright install chromium``.
+Run with ``RUN_DASHBOARD_BROWSER_TESTS=1 uv run pytest tests/e2e`` after
+``uv run playwright install chromium``.
 """
 from __future__ import annotations
 
