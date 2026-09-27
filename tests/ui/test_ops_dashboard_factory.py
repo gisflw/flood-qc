@@ -33,6 +33,15 @@ def test_factory_constructs_with_missing_sources_and_reports_warnings(
     assert any("not found" in warning.lower() for warning in template.state.warnings)
 
 
+def test_factory_displays_actionable_error_without_current_run_artifact(tmp_path: Path) -> None:
+    (tmp_path / "data" / "cache" / "current_run.sqlite").unlink()
+
+    template = create_dashboard(tmp_path)
+
+    assert "Build the current run artifact" in str(template.main[0].object)
+    assert not hasattr(template, "state")
+
+
 def test_monitoring_and_forecast_views_compose_from_controlled_state(
     tmp_path: Path,
 ) -> None:

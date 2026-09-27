@@ -62,6 +62,10 @@ from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 from mgb_ops.workflows.forecast import list_enabled_forecast_providers
 
 
+class CurrentRunArtifactError(ValueError):
+    """Raised when dashboard startup cannot load a valid current-run artifact."""
+
+
 @dataclass(frozen=True, slots=True)
 class DashboardSources:
     history: str
@@ -157,14 +161,33 @@ class DashboardState(param.Parameterized):
             workspace=workspace, require_custom_settings=False
         )
         self.workspace = self.context.paths.workspace
-        run_settings = self.context.settings["run"]
-        mgb_settings = self.context.settings["mgb"]
-        configured_window = build_analysis_window(
-            resolve_reference_time(str(run_settings["reference_time"])),
-            observed_horizon_days=int(mgb_settings["observed_horizon_days"]),
-            forecast_horizon_days=int(mgb_settings["forecast_horizon_days"]),
-        )
-        self._runtime_reference_time = configured_window.cutoff_time
+        self._artifact_path = self.context.paths.current_run_db
+        self._current_run_artifact = self._load_required_current_artifact()
+        try:
+            artifact_reference_time = resolve_reference_time(
+                self._current_run_artifact.reference_time
+            )
+            artifact_mgb_settings = self._current_run_artifact.mgb_settings
+            self.window = build_analysis_window(
+                artifact_reference_time,
+                observed_horizon_days=int(artifact_mgb_settings["observed_horizon_days"]),
+                forecast_horizon_days=int(artifact_mgb_settings["forecast_horizon_days"]),
+            )
+            artifact_forecast_end = resolve_reference_time(
+                self._current_run_artifact.forecast_end_exclusive
+            )
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise CurrentRunArtifactError(
+                f"Current-run artifact {self._artifact_path} has invalid timing or MGB horizon settings. "
+                "Rebuild the current run artifact before opening the dashboard."
+            ) from exc
+        if artifact_forecast_end != self.window.forecast_end_exclusive:
+            raise CurrentRunArtifactError(
+                f"Current-run artifact {self._artifact_path} has inconsistent forecast timing. "
+                "Rebuild the current run artifact before opening the dashboard."
+            )
+        self._runtime_reference_time = self.window.cutoff_time
+        self._model_output_error: str | None = None
         self.history_path = self.context.paths.history_db
         try:
             initial_caches = list(
@@ -185,7 +208,7 @@ class DashboardState(param.Parameterized):
         params.setdefault("scenario_caches", initial_caches)
         params.setdefault("scenario_id", initial.scenario_id if initial else None)
         params.setdefault("comparison_scenario_ids", [cache.scenario_id for cache in initial_caches])
-        self.window = self._resolve_dashboard_window(configured_window)
+        self.window = self._resolve_dashboard_window(self.window)
         params.setdefault("start_time", self.window.start_time)
         self.observed_precipitation_path = (
             self.context.paths.cache_dir / MGB_OBSERVED_CACHE_FILENAME
@@ -199,28 +222,46 @@ class DashboardState(param.Parameterized):
         params.setdefault("forecast_rainfall_hours", default_hours)
         params.setdefault("summary_previous_hours", default_hours)
         params.setdefault("summary_forecast_hours", default_hours)
-        self._artifact_path = self.context.paths.current_run_db
-        restored_artifact = load_current_artifact(self._artifact_path) if self._artifact_path.exists() else None
-        review = restored_artifact.review_window if restored_artifact is not None else {}
-        params.setdefault("review_window_start", pd.Timestamp(review.get("start", self.window.start_time)).to_pydatetime())
-        params.setdefault("review_window_end", pd.Timestamp(review.get("end", self.window.cutoff_time)).to_pydatetime())
-        qc = PrecipitationQCPolicy.from_mapping(restored_artifact.precipitation_qc_settings if restored_artifact else self.context.settings.get("precipitation_qc"))
+        restored_artifact = self._current_run_artifact
+        review = restored_artifact.review_window
+        try:
+            params.setdefault("review_window_start", pd.Timestamp(review.get("start", self.window.start_time)).to_pydatetime())
+            params.setdefault("review_window_end", pd.Timestamp(review.get("end", self.window.cutoff_time)).to_pydatetime())
+            qc = PrecipitationQCPolicy.from_mapping(restored_artifact.precipitation_qc_settings)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise CurrentRunArtifactError(
+                f"Current-run artifact {self._artifact_path} has invalid review or QC settings. "
+                "Rebuild the current run artifact before opening the dashboard."
+            ) from exc
         params.setdefault("qc_threshold_mm", qc.threshold_mm)
         params.setdefault("qc_sequence_min_length", qc.sequence_min_length)
         params.setdefault("qc_sequence_lower_mm", qc.sequence_lower_mm)
         params.setdefault("qc_sequence_upper_mm", qc.sequence_upper_mm)
-        if restored_artifact is not None:
-            params.setdefault("observed_replacement_draft", pd.DataFrame([{"station_id": x.station_id, "observed_at": x.observed_at, "value": x.value} for x in restored_artifact.observed_replacements], columns=["station_id", "observed_at", "value"]))
-            params.setdefault("station_exclusion_draft", pd.DataFrame([{"station_id": x.station_id, "start_time": x.start_time, "end_time": x.end_time} for x in restored_artifact.station_exclusions], columns=["station_id", "start_time", "end_time"]))
-            params.setdefault("responsible_person", restored_artifact.responsible_person or "")
-            params.setdefault("update_reason", restored_artifact.reason or "")
-            params.setdefault("execution_status", restored_artifact.execution.status)
-            params.setdefault("execution_error", restored_artifact.execution.error_message or "")
-            params.setdefault("execution_generation", restored_artifact.execution.execution_id or "")
+        params.setdefault("observed_replacement_draft", pd.DataFrame([{"station_id": x.station_id, "observed_at": x.observed_at, "value": x.value} for x in restored_artifact.observed_replacements], columns=["station_id", "observed_at", "value"]))
+        params.setdefault("station_exclusion_draft", pd.DataFrame([{"station_id": x.station_id, "start_time": x.start_time, "end_time": x.end_time} for x in restored_artifact.station_exclusions], columns=["station_id", "start_time", "end_time"]))
+        params.setdefault("responsible_person", restored_artifact.responsible_person or "")
+        params.setdefault("update_reason", restored_artifact.reason or "")
+        params.setdefault("execution_status", restored_artifact.execution.status)
+        params.setdefault("execution_error", restored_artifact.execution.error_message or "")
+        params.setdefault("execution_generation", restored_artifact.execution.execution_id or "")
         super().__init__(**params)
         self._execution_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="observed-qc-refresh")
         self._execution_lock = threading.Lock()
         self.refresh()
+
+    def _load_required_current_artifact(self) -> CurrentRunArtifact:
+        if not self._artifact_path.is_file():
+            raise CurrentRunArtifactError(
+                f"Current-run artifact not found: {self._artifact_path}. "
+                "Build the current run artifact before opening the dashboard."
+            )
+        try:
+            return load_current_artifact(self._artifact_path)
+        except (OSError, sqlite3.Error, RuntimeError, ValueError, KeyError, TypeError) as exc:
+            raise CurrentRunArtifactError(
+                f"Current-run artifact is invalid: {self._artifact_path} ({exc}). "
+                "Rebuild the current run artifact before opening the dashboard."
+            ) from exc
 
     @staticmethod
     def _normalize_runtime_time(value: datetime | pd.Timestamp) -> pd.Timestamp:
@@ -238,14 +279,15 @@ class DashboardState(param.Parameterized):
             and self._normalize_runtime_time(cache.reference_time) == expected
         ]
 
-    def _resolve_dashboard_window(self, configured_window):
+    def _resolve_dashboard_window(self, artifact_window):
         if not self.model_path.exists():
-            return configured_window
+            return artifact_window
         try:
-            metadata = validate_model_outputs_netcdf(self.model_path)
-        except (FileNotFoundError, OSError, ValueError):
-            return configured_window
-        return metadata.get("window", configured_window)
+            validate_model_outputs_netcdf(self.model_path, expected_window=artifact_window)
+            self._model_output_error = None
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            self._model_output_error = str(exc)
+        return artifact_window
 
     def _refresh_scenario_caches(self) -> None:
         try:
@@ -275,10 +317,10 @@ class DashboardState(param.Parameterized):
         )
         if self.model_path.is_file():
             try:
-                metadata = validate_model_outputs_netcdf(self.model_path)
-                self.window = metadata.get("window", self.window)
-            except (OSError, ValueError):
-                pass
+                validate_model_outputs_netcdf(self.model_path, expected_window=self.window)
+                self._model_output_error = None
+            except (OSError, ValueError) as exc:
+                self._model_output_error = str(exc)
 
     def select_scenario(self, scenario_id: str) -> None:
         if scenario_id not in self._scenario_cache_by_id:
@@ -289,8 +331,14 @@ class DashboardState(param.Parameterized):
             **self.source_versions,
             "model": self._published_version(self.model_path),
         }
-        metadata = validate_model_outputs_netcdf(self.model_path)
-        self.window = metadata.get("window", self.window)
+        try:
+            validate_model_outputs_netcdf(self.model_path, expected_window=self.window)
+            self._model_output_error = None
+        except (OSError, ValueError) as exc:
+            self._model_output_error = str(exc)
+            self.add_warning(self._model_output_error)
+            self.model_variables = dashboard_data.list_model_variables()
+            return
         self.model_variables = _model_variables(
             str(self.model_path), str(self.workspace),
             self.source_versions["model"], self.window,
@@ -324,6 +372,8 @@ class DashboardState(param.Parameterized):
             if self._scenario_cache_error
             else []
         )
+        if self._model_output_error:
+            self.warnings = [*self.warnings, self._model_output_error]
         workspace = str(self.workspace)
         if self.history_path.exists():
             try:
@@ -989,19 +1039,7 @@ class DashboardState(param.Parameterized):
         return tuple(replace(item, position=index) for index, item in enumerate(scenarios))
 
     def _dashboard_artifact(self) -> CurrentRunArtifact:
-        path = self.context.paths.current_run_db
-        if path.exists():
-            return load_current_artifact(path)
-        refs = [ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon")]
-        for position, row in enumerate(self.forecast_assets.itertuples(), 1):
-            refs.append(ForecastScenarioReference(f"raw:{row.asset_id}", position, "raw", f"{row.provider_code.upper()} raw - {row.asset_id}", str(row.provider_code), str(row.asset_id), str(row.asset_path)))
-        return CurrentRunArtifact(
-            self._runtime_reference_time.isoformat(timespec="seconds"),
-            self.window.forecast_end_exclusive.isoformat(timespec="seconds"), int(self.context.settings["run"]["timestep_hours"]),
-            dict(self.context.settings["mgb"]), dict(self.context.settings["spatial_grid"]), dict(self.context.settings["rainfall_interpolation"]),
-            {"start": pd.Timestamp(self.review_window_start).isoformat(), "end": pd.Timestamp(self.review_window_end).isoformat()},
-            ("ana", "inmet"), precipitation_qc_settings=self._qc_policy().as_dict(), scenarios=tuple(refs),
-        )
+        return self._load_required_current_artifact()
 
     def apply_forecast_draft(self, *, responsible_person: str = "", reason: str = "") -> list[dict[str, Any]]:
         """Validate and stage forecast corrections; centralized Update performs the write."""

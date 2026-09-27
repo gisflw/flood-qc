@@ -86,7 +86,7 @@ def test_state_selection_and_raster_inspection(tmp_path: Path) -> None:
 
 def test_chart_start_time_only_changes_chart_window(tmp_path: Path, monkeypatch) -> None:
     data = tmp_path / "data"
-    data.mkdir()
+    data.mkdir(parents=True, exist_ok=True)
     (data / "history.sqlite").touch()
     windows = []
     monkeypatch.setattr(dashboard_state, "_observed_series", lambda *args: windows.append(args[-1]) or pd.DataFrame())
@@ -103,7 +103,7 @@ def test_chart_start_time_only_changes_chart_window(tmp_path: Path, monkeypatch)
     assert windows[1].start_time == datetime(2026, 3, 1, 6)
     assert state.window == full_window
     assert (state.review_window_start, state.review_window_end) == review_window
-    assert not state.context.paths.current_run_db.exists()
+    assert state.context.paths.current_run_db.is_file()
 
 
 
@@ -111,7 +111,7 @@ def test_state_does_not_preselect_an_available_station(
     tmp_path: Path, monkeypatch
 ) -> None:
     data = tmp_path / "data"
-    data.mkdir()
+    data.mkdir(parents=True, exist_ok=True)
     (data / "history.sqlite").touch()
     monkeypatch.setattr(
         dashboard_state,
@@ -175,7 +175,7 @@ def test_opacity_change_does_not_rebuild_map_or_reload_spatial_data(
 def test_state_refresh_recomputes_source_versions(tmp_path: Path) -> None:
     state = dashboard_state.DashboardState(tmp_path)
     before = state.source_versions["history"]
-    (tmp_path / "data").mkdir()
+    (tmp_path / "data").mkdir(parents=True, exist_ok=True)
     (tmp_path / "data" / "history.sqlite").touch()
 
     state.refresh()
@@ -215,7 +215,7 @@ def test_state_draft_validation_failure_sets_status(tmp_path: Path) -> None:
 
 def test_state_persists_artifact_backed_replacement(tmp_path: Path) -> None:
     path = tmp_path / "data" / "cache" / "current_run.sqlite"
-    create_current_artifact(path, CurrentRunArtifact("2026-03-12T00:00:00", "2026-03-26T00:00:00", 1, {}, {}, {}, {}, ("ana",), scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero"), ForecastScenarioReference("raw:asset", 1, "raw", "Raw", "ecmwf", "asset", "forecast.nc"))))
+    create_current_artifact(path, CurrentRunArtifact("2026-03-12T00:00:00", "2026-03-27T00:00:00", 1, {"observed_horizon_days": 56, "forecast_horizon_days": 14}, {}, {}, {}, ("ana",), scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero"), ForecastScenarioReference("raw:asset", 1, "raw", "Raw", "ecmwf", "asset", "forecast.nc"))))
     state = dashboard_state.DashboardState(tmp_path)
     state.forecast_asset_id = "asset"
     state.forecast_draft = dashboard_state.empty_forecast_edit_frame()
@@ -471,43 +471,81 @@ def test_river_click_populates_draft_basin_without_replacing_applied_basin(tmp_p
 
 
 
-def test_state_uses_model_output_window_when_reference_time_is_now(tmp_path: Path, monkeypatch) -> None:
-    from mgb_ops.assets.types import AnalysisWindow
+def test_state_keeps_artifact_window_when_model_output_metadata_disagrees(tmp_path: Path, monkeypatch) -> None:
+    from mgb_ops.assets.current_run import CurrentRunArtifact, ForecastScenarioReference, create_current_artifact
 
     _write_config(tmp_path)
+    artifact_time = "2026-03-15T06:00:00"
+    create_current_artifact(
+        tmp_path / "data" / "cache" / "current_run.sqlite",
+        CurrentRunArtifact(
+            artifact_time,
+            "2026-03-30T00:00:00",
+            1,
+            {"observed_horizon_days": 56, "forecast_horizon_days": 14},
+            {}, {}, {}, ("ana",),
+            scenarios=(ForecastScenarioReference("zero", 0, "zero", "Zero-rain horizon"),),
+        ),
+    )
     model_path = tmp_path / "data" / "processed" / "model_outputs.nc"
     model_path.parent.mkdir(parents=True)
     model_path.touch()
-    model_window = AnalysisWindow(
-        start_time=pd.Timestamp("2026-07-05T00:00:00").to_pydatetime(),
-        cutoff_time=pd.Timestamp("2026-07-20T09:00:00").to_pydatetime(),
-        forecast_end_exclusive=pd.Timestamp("2026-07-31T00:00:00").to_pydatetime(),
-    )
+    expected = []
+
+    def reject_stale_output(*args, **kwargs):
+        expected.append(kwargs.get("expected_window"))
+        raise ValueError("Stale model output metadata")
+
     monkeypatch.setattr(
         dashboard_state,
         "validate_model_outputs_netcdf",
-        lambda *args, **kwargs: {"window": model_window, "variables": ("flow",)},
+        reject_stale_output,
     )
-    monkeypatch.setattr(dashboard_state.DashboardState, "refresh", lambda self: None)
 
     state = dashboard_state.DashboardState(tmp_path)
 
-    assert state.window == model_window
+    assert state._runtime_reference_time == datetime(2026, 3, 15, 6)
+    assert state.window.cutoff_time == datetime(2026, 3, 15, 6)
+    assert state.window.forecast_end_exclusive == datetime(2026, 3, 30)
+    assert expected and all(window == state.window for window in expected)
+    assert "Stale model output metadata" in state.warnings
+
+
+def test_dashboard_state_requires_a_valid_current_run_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "data" / "cache" / "current_run.sqlite"
+    path.unlink()
+    with pytest.raises(dashboard_state.CurrentRunArtifactError, match="Build the current run artifact"):
+        dashboard_state.DashboardState(tmp_path)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not a sqlite artifact", encoding="utf-8")
+    with pytest.raises(dashboard_state.CurrentRunArtifactError, match="Rebuild the current run artifact"):
+        dashboard_state.DashboardState(tmp_path)
 
 
 def test_state_keeps_zero_scenario_available_for_chart_comparisons(
     tmp_path: Path, monkeypatch
 ) -> None:
+    from mgb_ops.assets.current_run import CurrentRunArtifact, create_current_artifact
     from mgb_ops.assets.scenario_cache import ScenarioCache
 
     _write_config(tmp_path)
+    create_current_artifact(
+        tmp_path / "data" / "cache" / "current_run.sqlite",
+        CurrentRunArtifact(
+            "2026-03-13T00:00:00", "2026-03-28T00:00:00", 1,
+            {"observed_horizon_days": 56, "forecast_horizon_days": 14},
+            {}, {}, {}, ("ana",),
+        ),
+    )
     zero_path = tmp_path / "zero.nc"
     raw_path = tmp_path / "raw.nc"
     caches = (
-        ScenarioCache("zero", "Zero", "zero", zero_path, None, None, None, reference_time=datetime(2026, 3, 12)),
+        ScenarioCache("zero", "Zero", "zero", zero_path, None, None, None, reference_time=datetime(2026, 3, 13)),
         ScenarioCache(
-            "raw:asset", "Raw asset", "raw", raw_path, "ecmwf", "asset", None, reference_time=datetime(2026, 3, 12)
+            "raw:asset", "Raw asset", "raw", raw_path, "ecmwf", "asset", None, reference_time=datetime(2026, 3, 13)
         ),
+        ScenarioCache("old:asset", "Old asset", "raw", tmp_path / "old.nc", "ecmwf", "old", None, reference_time=datetime(2026, 3, 12)),
     )
     monkeypatch.setattr(
         dashboard_state,
@@ -520,5 +558,6 @@ def test_state_keeps_zero_scenario_available_for_chart_comparisons(
 
     assert state.scenario_id == "raw:asset"
     assert state.model_path == raw_path
+    assert state.window.cutoff_time == datetime(2026, 3, 13)
     assert state.comparison_scenario_ids == ["zero", "raw:asset"]
     assert [cache.scenario_id for cache in state.scenario_caches] == ["zero", "raw:asset"]

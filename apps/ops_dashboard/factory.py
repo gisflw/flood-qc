@@ -5,7 +5,7 @@ from pathlib import Path
 
 import panel as pn
 
-from apps.ops_dashboard.state import DashboardState
+from apps.ops_dashboard.state import CurrentRunArtifactError, DashboardState
 from apps.ops_dashboard.views.shell import _build_template
 
 
@@ -14,7 +14,13 @@ def create_dashboard(
 ) -> pn.template.base.BasicTemplate:
     """Create one servable dashboard with isolated session state."""
     pn.extension("deckgl", "plotly", "tabulator", notifications=True)
-    state = DashboardState(workspace)
+    try:
+        state = DashboardState(workspace)
+    except CurrentRunArtifactError as exc:
+        return pn.template.FastListTemplate(
+            title="Operational Hydrology",
+            main=[pn.pane.Alert(str(exc), alert_type="danger", sizing_mode="stretch_width")],
+        )
     return _build_template(state)
 
 
