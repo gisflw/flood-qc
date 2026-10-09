@@ -12,7 +12,10 @@ import requests
 
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS, iter_fetch_date_windows
 from mgb_ops.assets.observations import write_normalized_observed_csv
-from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
+from mgb_ops.utils.logging import (
+    configure_run_logger as _configure_run_logger,
+    log_observed_progress,
+)
 from mgb_ops.utils.time import TIMEZONE
 
 DEFAULT_INMET_BASE_URL = "https://api-bndmet.decea.mil.br/v1"
@@ -67,7 +70,7 @@ def build_run_id(reference_time: datetime) -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    return _configure_run_logger("adapters.observed_inmet", log_file)
+    return _configure_run_logger("adapters.observed_inmet", log_file, observed_progress=True)
 
 
 def normalize_inmet_station_code(station_code: str | None) -> str | None:
@@ -110,6 +113,9 @@ def fetch_station_payload(
     session: requests.Session | None = None,
     retry_attempts: int = RETRY_ATTEMPTS,
     retry_sleep_seconds: float = RETRY_SLEEP_SECONDS,
+    logger: logging.Logger | None = None,
+    station_id: str | None = None,
+    rows_parsed: int = 0,
 ) -> Any:
     if request_date is not None:
         request_start_date = request_date
@@ -142,6 +148,22 @@ def fetch_station_payload(
             last_exc = exc
             if attempt == retry_attempts - 1:
                 break
+            if isinstance(exc, requests.Timeout):
+                failure = "timed out"
+            elif isinstance(exc, requests.RequestException):
+                failure = "no response"
+            else:
+                failure = "invalid response"
+            log_observed_progress(
+                logger,
+                event="retry",
+                provider_code="inmet",
+                station_id=station_id or station_code,
+                window_start=request_start_date.isoformat(),
+                window_end=request_end_date.isoformat(),
+                rows=rows_parsed,
+                status=f"{failure}; retrying {attempt + 2}/{retry_attempts}",
+            )
             time.sleep(retry_sleep_seconds)
 
     assert last_exc is not None
@@ -381,14 +403,37 @@ def fetch_observed_inmet(
                         no_data=True,
                     )
                 )
+                log_observed_progress(
+                    logger,
+                    event="station_complete",
+                    provider_code="inmet",
+                    station_id=station_id,
+                    window_start=None,
+                    window_end=None,
+                    rows=0,
+                    status="no data",
+                )
                 continue
 
             frames = []
+            rows_parsed = 0
             try:
                 for request_start_date, request_end_date in iter_fetch_date_windows(
                     request_dates,
                     fetch_window_days=fetch_window_days,
                 ):
+                    window_start = request_start_date.isoformat()
+                    window_end = request_end_date.isoformat()
+                    log_observed_progress(
+                        logger,
+                        event="request_start",
+                        provider_code="inmet",
+                        station_id=station_id,
+                        window_start=window_start,
+                        window_end=window_end,
+                        rows=rows_parsed,
+                        status="requesting",
+                    )
                     payload = fetch_station_payload(
                         station_code,
                         request_start_date=request_start_date,
@@ -400,6 +445,19 @@ def fetch_observed_inmet(
                         session=session,
                         retry_attempts=retry_attempts,
                         retry_sleep_seconds=retry_sleep_seconds,
+                        logger=logger,
+                        station_id=station_id,
+                        rows_parsed=rows_parsed,
+                    )
+                    log_observed_progress(
+                        logger,
+                        event="loading",
+                        provider_code="inmet",
+                        station_id=station_id,
+                        window_start=window_start,
+                        window_end=window_end,
+                        rows=rows_parsed,
+                        status="loading",
                     )
                     if save_raw:
                         raw_payload_path = save_raw_payload(
@@ -416,6 +474,17 @@ def fetch_observed_inmet(
                     frame = parse_payload(payload_to_parse, station_code=station_code)
                     if not frame.empty:
                         frames.append(frame)
+                    rows_parsed += len(frame)
+                    log_observed_progress(
+                        logger,
+                        event="parsed",
+                        provider_code="inmet",
+                        station_id=station_id,
+                        window_start=window_start,
+                        window_end=window_end,
+                        rows=rows_parsed,
+                        status="loading",
+                    )
                     if logger is not None:
                         logger.info(
                             "station_window_fetched station_id=%s station_code=%s window_start=%s window_end=%s raw_payload=%s rows=%s",
@@ -450,6 +519,16 @@ def fetch_observed_inmet(
                         no_data=combined.empty,
                     )
                 )
+                log_observed_progress(
+                    logger,
+                    event="station_complete",
+                    provider_code="inmet",
+                    station_id=station_id,
+                    window_start=min(request_dates).isoformat(),
+                    window_end=max(request_dates).isoformat(),
+                    rows=len(combined),
+                    status="no data" if combined.empty else "complete",
+                )
                 if logger is not None:
                     logger.info(
                         "station_complete station_id=%s station_code=%s window_start=%s window_end=%s rows_parsed=%s normalized_csv=%s no_data=%s",
@@ -461,7 +540,38 @@ def fetch_observed_inmet(
                         csv_path,
                         combined.empty,
                     )
+            except KeyboardInterrupt:
+                log_observed_progress(
+                    logger,
+                    event="station_failure",
+                    provider_code="inmet",
+                    station_id=station_id,
+                    window_start=min(request_dates).isoformat(),
+                    window_end=max(request_dates).isoformat(),
+                    rows=rows_parsed,
+                    status="interrupted",
+                )
+                raise
             except Exception as exc:
+                cause = exc
+                while cause.__cause__ is not None:
+                    cause = cause.__cause__
+                if isinstance(cause, requests.Timeout):
+                    status = "timed out"
+                elif isinstance(cause, requests.RequestException):
+                    status = "no response"
+                else:
+                    status = "failed"
+                log_observed_progress(
+                    logger,
+                    event="station_failure",
+                    provider_code="inmet",
+                    station_id=station_id,
+                    window_start=min(request_dates).isoformat(),
+                    window_end=max(request_dates).isoformat(),
+                    rows=rows_parsed,
+                    status=status,
+                )
                 combined = (
                     pd.concat(frames, ignore_index=True)
                     if frames

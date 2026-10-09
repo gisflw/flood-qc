@@ -11,7 +11,10 @@ import requests
 
 from mgb_ops.adapters.observed_fetch_windows import DEFAULT_FETCH_WINDOW_DAYS, iter_fetch_date_windows
 from mgb_ops.assets.observations import write_normalized_observed_csv
-from mgb_ops.utils.logging import configure_run_logger as _configure_run_logger
+from mgb_ops.utils.logging import (
+    configure_run_logger as _configure_run_logger,
+    log_observed_progress,
+)
 from mgb_ops.utils.time import TIMEZONE, resolve_reference_time
 
 DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
@@ -62,7 +65,7 @@ def build_run_id(reference_time: datetime) -> str:
 
 
 def configure_run_logger(log_file: Path) -> logging.Logger:
-    return _configure_run_logger("adapters.observed_ana", log_file)
+    return _configure_run_logger("adapters.observed_ana", log_file, observed_progress=True)
 
 
 def parse_float(value: str | None) -> float | None:
@@ -257,20 +260,53 @@ def fetch_observed_ana(
                     no_data=True,
                 )
             )
+            log_observed_progress(
+                logger,
+                event="station_complete",
+                provider_code="ana",
+                station_id=station_id,
+                window_start=None,
+                window_end=None,
+                rows=0,
+                status="no data",
+            )
             continue
 
         frames = []
+        rows_parsed = 0
         try:
             for request_start_date, request_end_date in iter_fetch_date_windows(
                 request_dates,
                 fetch_window_days=fetch_window_days,
             ):
+                window_start = request_start_date.isoformat()
+                window_end = request_end_date.isoformat()
+                log_observed_progress(
+                    logger,
+                    event="request_start",
+                    provider_code="ana",
+                    station_id=station_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                    rows=rows_parsed,
+                    status="requesting",
+                )
                 xml_text = fetch_station_xml(
                     station_code,
                     request_start_date=request_start_date,
                     request_end_date=request_end_date,
                     base_url=base_url,
                     timeout_seconds=timeout_seconds,
+                )
+                log_observed_progress(
+                    logger,
+                    event="loading",
+                    provider_code="ana",
+                    station_id=station_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                    rows=rows_parsed,
+                    status="loading",
                 )
                 if save_raw:
                     raw_xml_path = save_raw_xml(
@@ -286,6 +322,17 @@ def fetch_observed_ana(
                 if not frame.empty:
                     frame = frame[frame["station_code"].astype(str) == normalize_ana_station_code(station_code)]
                     frames.append(frame)
+                rows_parsed += len(frame)
+                log_observed_progress(
+                    logger,
+                    event="parsed",
+                    provider_code="ana",
+                    station_id=station_id,
+                    window_start=window_start,
+                    window_end=window_end,
+                    rows=rows_parsed,
+                    status="loading",
+                )
                 if logger is not None:
                     logger.info(
                         "station_window_fetched station_id=%s station_code=%s window_start=%s window_end=%s raw_xml=%s rows=%s",
@@ -320,6 +367,16 @@ def fetch_observed_ana(
                     no_data=combined.empty,
                 )
             )
+            log_observed_progress(
+                logger,
+                event="station_complete",
+                provider_code="ana",
+                station_id=station_id,
+                window_start=min(request_dates).isoformat(),
+                window_end=max(request_dates).isoformat(),
+                rows=len(combined),
+                status="no data" if combined.empty else "complete",
+            )
             if logger is not None:
                 logger.info(
                     "station_complete station_id=%s station_code=%s window_start=%s window_end=%s rows_parsed=%s normalized_csv=%s no_data=%s",
@@ -331,7 +388,32 @@ def fetch_observed_ana(
                     csv_path,
                     combined.empty,
                 )
+        except KeyboardInterrupt:
+            log_observed_progress(
+                logger,
+                event="station_failure",
+                provider_code="ana",
+                station_id=station_id,
+                window_start=min(request_dates).isoformat(),
+                window_end=max(request_dates).isoformat(),
+                rows=rows_parsed,
+                status="interrupted",
+            )
+            raise
         except Exception as exc:
+            status = "timed out" if isinstance(exc, requests.Timeout) else (
+                "no response" if isinstance(exc, requests.RequestException) else "failed"
+            )
+            log_observed_progress(
+                logger,
+                event="station_failure",
+                provider_code="ana",
+                station_id=station_id,
+                window_start=min(request_dates).isoformat(),
+                window_end=max(request_dates).isoformat(),
+                rows=rows_parsed,
+                status=status,
+            )
             station_summaries.append(
                 ObservedFetchStationSummary(
                     station_id=station_id,
