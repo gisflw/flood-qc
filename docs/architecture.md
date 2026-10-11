@@ -33,6 +33,7 @@ The package is split by responsibility rather than by user interface:
 | `mgb_ops.qc` | Validation rules, checks, and structured QC results |
 | `mgb_ops.model` | MGB input preparation, execution, and output production |
 | `mgb_ops.workflows` | Use-case orchestration across adapters, assets, and model capabilities |
+| `apps/cli` | Command parsing, dispatch, terminal output, and dashboard launching |
 | `apps/ops_dashboard` | Panel rendering, callbacks, session state, caching, and UI-specific presentation |
 
 The assets layer owns canonical in-memory and persisted data structures,
@@ -61,7 +62,7 @@ of the library, and peer-module cycles should be avoided.
 
 Subprocess execution is a model capability when exposed through an explicit
 plan and structured result. CLI parsing, Panel state, and interface-only output
-remain in wrappers.
+remain in wrappers. The CLI implementation lives in `apps/cli`.
 
 ## Implemented Status
 

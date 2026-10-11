@@ -12,6 +12,9 @@ dependencies = [
   "PyYAML>=6.0",
 ]
 
+[project.scripts]
+mgb-ops = "apps.cli:main"
+
 [project.optional-dependencies]
 data = [
   "numpy>=1.26",
@@ -54,10 +57,12 @@ dev = [
 ]
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "src", "apps" = "apps"}
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["src", "."]
+include = ["mgb_ops*", "apps", "apps.cli*", "apps.ops_dashboard*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 "mgb_ops.assets" = ["sql/*.sql"]

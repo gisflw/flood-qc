@@ -182,3 +182,47 @@ behavior, prefer a reusable library function first.
 
 The run schema exists and bootstrap is implemented, but complete operational run
 assembly is not finished in this phase.
+
+## Operational CLI
+
+The CLI implementation lives in `apps/cli`, alongside the dashboard.
+
+Install with `pip install '.[data,forecast,geo,dashboard]'` or use
+`uv sync --all-extras`. `mgb-ops` exposes:
+
+```bash
+mgb-ops runtime --workspace /path/to/rs_hydro_forecast
+mgb-ops download-observed --workspace /path/to/rs_hydro_forecast
+mgb-ops download-forecast --workspace /path/to/rs_hydro_forecast
+mgb-ops run-current --workspace /path/to/rs_hydro_forecast
+mgb-ops run-all --workspace /path/to/rs_hydro_forecast
+mgb-ops panel --workspace /path/to/rs_hydro_forecast
+```
+
+`--workspace` and `--dotenv` work before or after the command and use the
+existing runtime environment resolution when omitted. Operational commands
+accept `--reference-time` (ISO time or `now`); otherwise they use
+`config/custom.yaml`. The sequence resolves its reference time once, downloads
+observations and forecasts, then builds and executes the current run. It stops
+on failure and excludes the dashboard.
+
+Observed downloads initialize the history database from the workspace station
+inventory and reference CSVs, fetch ANA/INMET data, and ingest the normalized
+files. INMET credentials belong in the runtime environment or dotenv file.
+Forecast downloads use enabled providers in the history database.
+
+`run-current` always rebuilds `data/cache/current_run.sqlite` before executing
+and publishing scenario caches. Rebuilding uses the library's existing artifact
+semantics: it replaces the artifact and its manual corrections; default QC
+replacements are seeded only when no artifact exists. To execute an edited
+artifact without rebuilding, use the library `execute_current_artifact` API or
+the retained regional execution script. `--executable` on `run-current` and
+`run-all` accepts an absolute or workspace-relative path. Without an override,
+the CLI prefers the standard runner filename, then `MGB_Inercial_Prev_RSH`.
+Provide the executable and model inputs in `mgb_runner/`.
+
+`panel` starts a local dashboard on port 5006 and opens the browser. Use
+`--no-show`, `--address`, or `--port` to customize serving. The dashboard ships
+in the installed package; its dependencies are optional. It consumes the
+current-run artifact, history, scenario caches, and GeoPackage configured by
+`spatial.gpkg_path`, with `mini_segments` and `mini_catchments` layers.
