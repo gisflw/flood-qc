@@ -15,7 +15,8 @@ COMMANDS = {
     "runtime": "Show resolved runtime paths and timing",
     "download-observed": "Initialize history, download and ingest ANA/INMET observations",
     "download-forecast": "Update enabled forecast providers",
-    "run-current": "Rebuild and execute the current-run artifact",
+    "build-current-run": "Build the current-run artifact from workspace settings",
+    "execute-current-run": "Execute the saved current-run artifact",
     "run-all": "Download observations and forecasts, then build and execute",
     "panel": "Serve the dashboard and open a browser",
 }
@@ -34,11 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
         command = commands.add_parser(name, help=description, description=description)
         command.add_argument("--workspace", default=argparse.SUPPRESS)
         command.add_argument("--dotenv", default=argparse.SUPPRESS)
-        if name != "panel":
+        if name not in ("panel", "execute-current-run"):
             command.add_argument(
                 "--reference-time", help="ISO time or 'now'; defaults to run.reference_time"
             )
-        if name in ("run-current", "run-all"):
+        if name in ("execute-current-run", "run-all"):
             command.add_argument(
                 "--executable", help="MGB executable, relative to workspace or absolute"
             )
@@ -58,7 +59,7 @@ def _port(value: str) -> int:
 
 def _context(args: argparse.Namespace) -> RuntimeContext:
     context = build_runtime_context(workspace=args.workspace, dotenv_path=args.dotenv)
-    if args.command == "panel":
+    if args.command in ("panel", "execute-current-run"):
         return context
     settings = deepcopy(context.settings)
     reference = resolve_reference_time(
@@ -72,9 +73,16 @@ def _context(args: argparse.Namespace) -> RuntimeContext:
     return RuntimeContext(context.paths, settings, context.env)
 
 
-def resolve_executable(context: RuntimeContext, override: str | None = None) -> Path:
+def resolve_executable(
+    context: RuntimeContext,
+    override: str | None = None,
+    artifact_settings: dict[str, object] | None = None,
+) -> Path:
     if override:
         return context.paths.resolve_path(override)
+    artifact_executable = (artifact_settings or {}).get("executable_path")
+    if artifact_executable:
+        return context.paths.resolve_path(str(artifact_executable))
     standard = context.paths.mgb_executable_path
     return standard if standard.exists() else context.paths.mgb_runner_dir / "MGB_Inercial_Prev_RSH"
 
@@ -153,16 +161,12 @@ def download_forecast(context: RuntimeContext) -> None:
         print(f"reused forecast asset: {path}")
 
 
-def run_current(context: RuntimeContext, executable: str | None = None) -> None:
+def build_current_run(context: RuntimeContext) -> None:
     from mgb_ops.analysis.windows import build_analysis_window
     from mgb_ops.assets.history import HistoryRepository
     from mgb_ops.workflows.scenarios import build_current_artifact
-    from mgb_ops.workflows import execute_current_artifact
 
     paths, settings = context.paths, context.settings
-    executable_path = resolve_executable(context, executable)
-    if not executable_path.is_file():
-        raise FileNotFoundError(f"MGB executable not found: {executable_path}")
     paths.ensure_standard_dirs()
     with HistoryRepository(paths.history_db) as repository:
         providers = tuple(
@@ -194,6 +198,23 @@ def run_current(context: RuntimeContext, executable: str | None = None) -> None:
         precipitation_qc_settings=settings["precipitation_qc"],
     )
     print(f"created current run artifact: {paths.current_run_db}")
+
+
+def execute_current_run(context: RuntimeContext, executable: str | None = None) -> None:
+    from mgb_ops.assets.current_run import validate_current_artifact
+    from mgb_ops.workflows import execute_current_artifact
+
+    artifact_path = context.paths.current_run_db
+    if not artifact_path.is_file():
+        raise FileNotFoundError(f"Current artifact does not exist: {artifact_path}")
+    artifact = validate_current_artifact(artifact_path)
+    executable_path = resolve_executable(context, executable, artifact.mgb_settings)
+    if not executable_path.is_file():
+        raise FileNotFoundError(f"MGB executable not found: {executable_path}")
+    print(f"executing current run artifact: {artifact_path}")
+    print(f"reference time: {artifact.reference_time}")
+    for scenario in artifact.scenarios:
+        print(f"scenario {scenario.position}: {scenario.scenario_id} | {scenario.label}")
     result = execute_current_artifact(
         context, executable_path=executable_path, execution_env=os.environ.copy()
     )
@@ -226,12 +247,15 @@ def main(argv: list[str] | None = None) -> int:
             download_observed(context)
         elif args.command == "download-forecast":
             download_forecast(context)
-        elif args.command == "run-current":
-            run_current(context, args.executable)
+        elif args.command == "build-current-run":
+            build_current_run(context)
+        elif args.command == "execute-current-run":
+            execute_current_run(context, args.executable)
         elif args.command == "run-all":
             download_observed(context)
             download_forecast(context)
-            run_current(context, args.executable)
+            build_current_run(context)
+            execute_current_run(context, args.executable)
         else:
             serve_panel(context, args)
         return 0

@@ -194,31 +194,32 @@ Install with `pip install '.[data,forecast,geo,dashboard]'` or use
 mgb-ops runtime --workspace /path/to/rs_hydro_forecast
 mgb-ops download-observed --workspace /path/to/rs_hydro_forecast
 mgb-ops download-forecast --workspace /path/to/rs_hydro_forecast
-mgb-ops run-current --workspace /path/to/rs_hydro_forecast
+mgb-ops build-current-run --workspace /path/to/rs_hydro_forecast
+mgb-ops execute-current-run --workspace /path/to/rs_hydro_forecast
 mgb-ops run-all --workspace /path/to/rs_hydro_forecast
 mgb-ops panel --workspace /path/to/rs_hydro_forecast
 ```
 
 `--workspace` and `--dotenv` work before or after the command and use the
-existing runtime environment resolution when omitted. Operational commands
-accept `--reference-time` (ISO time or `now`); otherwise they use
+existing runtime environment resolution when omitted. Download and build
+commands accept `--reference-time` (ISO time or `now`); otherwise they use
 `config/custom.yaml`. The sequence resolves its reference time once, downloads
-observations and forecasts, then builds and executes the current run. It stops
-on failure and excludes the dashboard.
+observations and forecasts, builds the artifact, then executes that saved
+artifact. It stops on failure and excludes the dashboard.
 
 Observed downloads initialize the history database from the workspace station
 inventory and reference CSVs, fetch ANA/INMET data, and ingest the normalized
 files. INMET credentials belong in the runtime environment or dotenv file.
 Forecast downloads use enabled providers in the history database.
 
-`run-current` always rebuilds `data/cache/current_run.sqlite` before executing
-and publishing scenario caches. Rebuilding uses the library's existing artifact
-semantics: it replaces the artifact and its manual corrections; default QC
-replacements are seeded only when no artifact exists. To execute an edited
-artifact without rebuilding, use the library `execute_current_artifact` API or
-the retained regional execution script. `--executable` on `run-current` and
-`run-all` accepts an absolute or workspace-relative path. Without an override,
-the CLI prefers the standard runner filename, then `MGB_Inercial_Prev_RSH`.
+`build-current-run` writes `data/cache/current_run.sqlite` from workspace
+settings and seeds default QC replacements when creating a new artifact.
+Rebuilding an existing artifact replaces its saved corrections under the
+existing library behavior. `execute-current-run` validates and executes the
+saved artifact without rebuilding it, using its recorded settings and scenario
+corrections. `--executable` on execution and `run-all` accepts an absolute or
+workspace-relative override. Otherwise, the CLI uses the executable recorded
+in the artifact, then the standard runner filename, then `MGB_Inercial_Prev_RSH`.
 Provide the executable and model inputs in `mgb_runner/`.
 
 `panel` starts a local dashboard on port 5006 and opens the browser. Use

@@ -4,12 +4,20 @@ from datetime import datetime
 from pathlib import Path
 import subprocess
 import sys
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 
 from apps import cli
+from mgb_ops.assets.current_run import (
+    CurrentRunArtifact,
+    ForecastScenarioReference,
+    create_current_artifact,
+    load_current_artifact,
+)
+from mgb_ops.edit.forcing import ForecastCorrectionInstruction
 
 
 @pytest.fixture
@@ -33,6 +41,8 @@ def test_runtime_options_before_and_after_command(tmp_path):
     )
     with pytest.raises(SystemExit):
         parser.parse_args(["panel", "--port", "65536"])
+    with pytest.raises(SystemExit):
+        parser.parse_args(["execute-current-run", "--reference-time", "now"])
 
 
 def test_context_uses_runtime_env_and_explicit_dotenv(tmp_path, monkeypatch):
@@ -52,6 +62,13 @@ def test_context_uses_runtime_env_and_explicit_dotenv(tmp_path, monkeypatch):
 def test_executable_selection(context):
     paths = context.paths
     assert cli.resolve_executable(context).name == "MGB_Inercial_Prev_RSH"
+    assert cli.resolve_executable(
+        context, artifact_settings={"executable_path": "saved-runner"}
+    ) == (paths.workspace / "saved-runner")
+    assert (
+        cli.resolve_executable(context, "override-runner", {"executable_path": "saved-runner"})
+        == paths.workspace / "override-runner"
+    )
     paths.mgb_runner_dir.mkdir()
     paths.mgb_executable_path.touch()
     assert cli.resolve_executable(context) == paths.mgb_executable_path
@@ -62,12 +79,22 @@ def test_executable_selection(context):
 def test_run_all_shares_context_and_orders_stages(context, monkeypatch):
     calls = []
     monkeypatch.setattr(cli, "_context", lambda args: context)
-    for name in ("download_observed", "download_forecast", "run_current"):
+    for name in (
+        "download_observed",
+        "download_forecast",
+        "build_current_run",
+        "execute_current_run",
+    ):
         monkeypatch.setattr(
             cli, name, lambda ctx, *extra, name=name: calls.append((name, ctx, extra))
         )
     assert cli.main(["run-all", "--executable", "runner"]) == 0
-    assert [call[0] for call in calls] == ["download_observed", "download_forecast", "run_current"]
+    assert [call[0] for call in calls] == [
+        "download_observed",
+        "download_forecast",
+        "build_current_run",
+        "execute_current_run",
+    ]
     assert all(call[1] is context for call in calls)
     assert calls[-1][2] == ("runner",)
 
@@ -82,13 +109,18 @@ def test_run_all_resolves_now_once(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "resolve_reference_time", resolve)
     seen = []
-    for name in ("download_observed", "download_forecast", "run_current"):
+    for name in (
+        "download_observed",
+        "download_forecast",
+        "build_current_run",
+        "execute_current_run",
+    ):
         monkeypatch.setattr(
             cli, name, lambda ctx, *extra: seen.append(ctx.settings["run"]["reference_time"])
         )
     assert cli.main(["run-all", "--workspace", str(tmp_path)]) == 0
     assert resolutions == ["now"]
-    assert seen == ["2026-10-11T09:00:00"] * 3
+    assert seen == ["2026-10-11T09:00:00"] * 4
 
 
 @pytest.mark.parametrize("error,status", [(RuntimeError("failed"), 1), (KeyboardInterrupt(), 130)])
@@ -96,12 +128,27 @@ def test_run_all_stops_on_failure(context, monkeypatch, error, status):
     monkeypatch.setattr(cli, "_context", lambda args: context)
     monkeypatch.setattr(cli, "download_observed", Mock(side_effect=error))
     forecast = Mock()
+    build = Mock()
     run = Mock()
     monkeypatch.setattr(cli, "download_forecast", forecast)
-    monkeypatch.setattr(cli, "run_current", run)
+    monkeypatch.setattr(cli, "build_current_run", build)
+    monkeypatch.setattr(cli, "execute_current_run", run)
     assert cli.main(["run-all"]) == status
     forecast.assert_not_called()
+    build.assert_not_called()
     run.assert_not_called()
+
+
+def test_run_all_stops_before_execution_when_build_fails(context, monkeypatch):
+    monkeypatch.setattr(cli, "_context", lambda args: context)
+    monkeypatch.setattr(cli, "download_observed", Mock())
+    monkeypatch.setattr(cli, "download_forecast", Mock())
+    monkeypatch.setattr(cli, "build_current_run", Mock(side_effect=RuntimeError("build failed")))
+    execute = Mock()
+    monkeypatch.setattr(cli, "execute_current_run", execute)
+
+    assert cli.main(["run-all"]) == 1
+    execute.assert_not_called()
 
 
 def test_observed_initializes_downloads_and_ingests(context, monkeypatch):
@@ -131,37 +178,123 @@ def test_forecast_delegates_to_workflow(context, monkeypatch):
     update.assert_called_once_with(context, reference_time=datetime(2026, 10, 11, 9))
 
 
-def test_current_builds_before_execution_with_qc(context, monkeypatch):
+def test_build_current_run_uses_config_and_does_not_execute(context, monkeypatch):
     import mgb_ops.assets.history as history
     import mgb_ops.workflows as workflows
     import mgb_ops.workflows.scenarios as scenarios
 
-    executable = context.paths.workspace / "runner"
-    executable.touch()
     repository = Mock()
     repository.__enter__ = Mock(return_value=repository)
     repository.__exit__ = Mock(return_value=False)
     repository.list_enabled_providers.return_value = [{"provider_code": "ana"}]
     monkeypatch.setattr(history, "HistoryRepository", Mock(return_value=repository))
-    calls = Mock()
     build = Mock()
-    execute = Mock(return_value=SimpleNamespace(batch_id="batch", cache_dir="cache", results=()))
-    calls.attach_mock(build, "build")
-    calls.attach_mock(execute, "execute")
+    execute = Mock()
     monkeypatch.setattr(scenarios, "build_current_artifact", build)
     monkeypatch.setattr(workflows, "execute_current_artifact", execute)
-    cli.run_current(context, "runner")
-    assert [call[0] for call in calls.mock_calls] == ["build", "execute"]
+    cli.build_current_run(context)
+    build.assert_called_once()
+    execute.assert_not_called()
     kwargs = build.call_args.kwargs
     assert kwargs["precipitation_qc_settings"] == context.settings["precipitation_qc"]
     assert kwargs["observed_providers"] == ("ana",)
     assert kwargs["reference_time"] == "2026-10-11T09:00:00"
-    assert execute.call_args.kwargs["executable_path"] == executable
-    build.side_effect = RuntimeError("build failed")
-    execute.reset_mock()
-    with pytest.raises(RuntimeError, match="build failed"):
-        cli.run_current(context, "runner")
-    execute.assert_not_called()
+
+
+def test_execute_current_run_uses_saved_artifact_and_preserves_corrections(context, monkeypatch):
+    import mgb_ops.workflows.scenario_orchestrator as orchestrator
+
+    artifact_runner = context.paths.workspace / "artifact-runner"
+    artifact_runner.touch()
+    artifact = CurrentRunArtifact(
+        reference_time="2026-03-12T00:00:00",
+        forecast_end_exclusive="2026-03-16T00:00:00",
+        timestep_hours=3,
+        mgb_settings={
+            "observed_horizon_days": 99,
+            "forecast_horizon_days": 4,
+            "executable_path": "artifact-runner",
+        },
+        spatial_settings={"bbox": [-50, -30, -45, -25], "resolution_degrees": 0.2},
+        interpolation_settings={"nearest_stations": 8, "power": 3.0},
+        review_window={"start": "2026-03-11T00:00:00", "end": "2026-03-12T00:00:00"},
+        observed_providers=("ana",),
+        scenarios=(
+            ForecastScenarioReference(
+                "corrected:asset",
+                0,
+                "corrected",
+                "Saved correction",
+                "ecmwf",
+                "asset",
+                "data/assets/asset.nc",
+                (ForecastCorrectionInstruction("asset", 0, 3, multiplication_factor=2),),
+            ),
+        ),
+    )
+    create_current_artifact(context.paths.current_run_db, artifact)
+    seen = {}
+
+    def execute_saved(context_arg, scenarios, **kwargs):
+        seen["settings"] = context_arg.settings
+        seen["scenarios"] = scenarios
+        seen.update(kwargs)
+        return SimpleNamespace(batch_id="batch", cache_dir="cache", results=())
+
+    monkeypatch.setattr(orchestrator, "execute_forecast_scenarios", execute_saved)
+    monkeypatch.setattr(
+        cli, "build_current_run", Mock(side_effect=AssertionError("must not rebuild"))
+    )
+
+    cli.execute_current_run(context)
+
+    assert seen["settings"]["run"] == {
+        "reference_time": "2026-03-12T00:00:00",
+        "timestep_hours": 3,
+    }
+    assert seen["settings"]["mgb"] == artifact.mgb_settings
+    assert seen["settings"]["spatial_grid"] == artifact.spatial_settings
+    assert seen["settings"]["rainfall_interpolation"] == artifact.interpolation_settings
+    assert seen["observed_provider_codes"] == ("ana",)
+    assert seen["executable_path"] == artifact_runner
+    assert seen["scenarios"][0].corrections[0].multiplication_factor == 2
+    persisted = load_current_artifact(context.paths.current_run_db)
+    assert persisted.scenarios[0].corrections[0].multiplication_factor == 2
+
+
+def test_execute_context_does_not_resolve_or_align_yaml_time(tmp_path):
+    custom = tmp_path / "config" / "custom.yaml"
+    custom.parent.mkdir()
+    custom.write_text(
+        "run:\n  reference_time: '2026-10-11T09:00:00'\n  timestep_hours: 8\n",
+        encoding="utf-8",
+    )
+    args = cli.build_parser().parse_args(["execute-current-run", "--workspace", str(tmp_path)])
+    context = cli._context(args)
+    assert context.settings["run"]["timestep_hours"] == 8
+    assert not hasattr(args, "reference_time")
+
+
+def test_execute_missing_artifact_fails_without_building(context, monkeypatch):
+    build = Mock(side_effect=AssertionError("must not rebuild"))
+    monkeypatch.setattr(cli, "build_current_run", build)
+
+    with pytest.raises(FileNotFoundError, match="Current artifact does not exist"):
+        cli.execute_current_run(context)
+
+    build.assert_not_called()
+
+
+def test_execute_invalid_artifact_fails_without_building(context, monkeypatch):
+    context.paths.current_run_db.parent.mkdir(parents=True)
+    context.paths.current_run_db.write_text("not a sqlite artifact", encoding="utf-8")
+    build = Mock(side_effect=AssertionError("must not rebuild"))
+    monkeypatch.setattr(cli, "build_current_run", build)
+
+    with pytest.raises(sqlite3.DatabaseError):
+        cli.execute_current_run(context)
+
+    build.assert_not_called()
 
 
 def test_panel_uses_factory_for_each_session(context, monkeypatch):
@@ -206,4 +339,5 @@ main(['--help'])
         [sys.executable, "-c", code, str(source)], capture_output=True, text=True
     )
     assert result.returncode == 0, result.stderr
-    assert "run-current" in result.stdout
+    assert "build-current-run" in result.stdout
+    assert "execute-current-run" in result.stdout
