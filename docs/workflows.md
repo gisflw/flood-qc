@@ -134,8 +134,9 @@ The dashboard supports artifact-backed rainfall replacements and station exclusi
 
 ### Reports
 
-Generation of durable report artifacts remains pending; history intentionally has no run catalog.
-Future reporting should be implemented as importable library behavior.
+Report generation is an importable workflow over the selected current-run artifact,
+history database, mini-basin GeoPackage, and published scenario caches. Report
+serialization and output files belong to `mgb_ops.assets.report`.
 
 ## Maintained Architectural Direction
 

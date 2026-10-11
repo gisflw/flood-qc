@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 from copy import deepcopy
+from dataclasses import asdict
+import json
 import os
 from pathlib import Path
 import sys
@@ -18,6 +20,7 @@ COMMANDS = {
     "build-current-run": "Build the current-run artifact from workspace settings",
     "execute-current-run": "Execute the saved current-run artifact",
     "run-all": "Download observations and forecasts, then build and execute",
+    "generate-report": "Generate an offline HTML or PDF report from a saved run",
     "panel": "Serve the dashboard and open a browser",
 }
 
@@ -37,7 +40,12 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--dotenv", default=argparse.SUPPRESS)
         if name not in ("panel", "execute-current-run"):
             command.add_argument(
-                "--reference-time", help="ISO time or 'now'; defaults to run.reference_time"
+                "--reference-time",
+                help=(
+                    "Report reference time; defaults to the selected current run"
+                    if name == "generate-report"
+                    else "ISO time or 'now'; defaults to run.reference_time"
+                ),
             )
         if name in ("execute-current-run", "run-all"):
             command.add_argument(
@@ -47,6 +55,25 @@ def build_parser() -> argparse.ArgumentParser:
             command.add_argument("--address", default="localhost")
             command.add_argument("--port", type=_port, default=5006)
             command.add_argument("--no-show", action="store_true", help="Do not open a browser")
+        if name == "generate-report":
+            command.add_argument("--history-db", help="History SQLite path, relative to workspace")
+            command.add_argument("--spatial-gpkg", help="Mini-catchment GeoPackage path")
+            command.add_argument("--run-artifact", help="Current-run SQLite artifact path")
+            command.add_argument("--cache-dir", help="Scenario cache root path")
+            command.add_argument("--output-dir", required=True, help="Directory for the generated report")
+            command.add_argument("--output-basin-name", required=True, help="Filename basin label")
+            command.add_argument("--format", choices=("html", "pdf"), default="html")
+            command.add_argument("--outlet-mini-id", required=True, type=int)
+            command.add_argument("--map-station-ids", nargs="+", required=True)
+            command.add_argument("--chart-station-ids", nargs="+", required=True)
+            command.add_argument("--markdown", help="UTF-8 Markdown summary file")
+            command.add_argument("--title", required=True)
+            command.add_argument("--author", required=True)
+            command.add_argument("--basin-name", required=True)
+            command.add_argument("--window-start", help="ISO window start")
+            command.add_argument("--window-end", help="ISO exclusive window end")
+            command.add_argument("--scenario-ids", nargs="+", help="Ordered canonical scenario IDs")
+            command.add_argument("--table-columns", help="JSON file with ordered numeric table column specs")
     return parser
 
 
@@ -59,7 +86,7 @@ def _port(value: str) -> int:
 
 def _context(args: argparse.Namespace) -> RuntimeContext:
     context = build_runtime_context(workspace=args.workspace, dotenv_path=args.dotenv)
-    if args.command in ("panel", "execute-current-run"):
+    if args.command in ("panel", "execute-current-run", "generate-report"):
         return context
     settings = deepcopy(context.settings)
     reference = resolve_reference_time(
@@ -237,6 +264,45 @@ def serve_panel(context: RuntimeContext, args: argparse.Namespace) -> None:
     )
 
 
+def generate_report_command(context: RuntimeContext, args: argparse.Namespace) -> None:
+    from mgb_ops.workflows.reporting import generate_report as build_report
+
+    paths = context.paths
+    spatial_path = args.spatial_gpkg or str(context.settings["spatial"]["gpkg_path"])
+    table_columns = None
+    if args.table_columns:
+        value = json.loads(paths.resolve_path(args.table_columns).read_text(encoding="utf-8"))
+        if not isinstance(value, list):
+            raise ValueError("--table-columns must point to a JSON array.")
+        table_columns = value
+    result = build_report(
+        history_path=paths.resolve_path(args.history_db or paths.history_db),
+        spatial_path=paths.resolve_path(spatial_path),
+        run_artifact_path=paths.resolve_path(args.run_artifact or paths.current_run_db),
+        cache_dir=paths.resolve_path(args.cache_dir or paths.cache_dir),
+        output_dir=paths.resolve_path(args.output_dir),
+        output_basin_name=args.output_basin_name,
+        format=args.format,
+        outlet_mini_id=args.outlet_mini_id,
+        map_station_ids=args.map_station_ids,
+        chart_station_ids=args.chart_station_ids,
+        markdown_path=paths.resolve_path(args.markdown) if args.markdown else None,
+        title=args.title,
+        author=args.author,
+        basin_name=args.basin_name,
+        reference_time=args.reference_time,
+        window_start=args.window_start,
+        window_end=args.window_end,
+        scenarios=args.scenario_ids,
+        table_columns=table_columns,
+    )
+    print(json.dumps({
+        "path": str(result.path),
+        "format": result.format,
+        "warnings": [asdict(item) for item in result.warnings],
+    }, ensure_ascii=False))
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -251,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
             build_current_run(context)
         elif args.command == "execute-current-run":
             execute_current_run(context, args.executable)
+        elif args.command == "generate-report":
+            generate_report_command(context, args)
         elif args.command == "run-all":
             download_observed(context)
             download_forecast(context)
@@ -263,7 +331,11 @@ def main(argv: list[str] | None = None) -> int:
         print("mgb-ops: interrupted", file=sys.stderr)
         return 130
     except ModuleNotFoundError as exc:
-        extras = "dashboard" if args.command == "panel" else "data,forecast,geo"
+        extras = (
+            "dashboard" if args.command == "panel"
+            else "report" if args.command == "generate-report"
+            else "data,forecast,geo"
+        )
         print(
             f"mgb-ops: missing module {exc.name!r}; install with pip install 'mgb-ops[{extras}]'",
             file=sys.stderr,

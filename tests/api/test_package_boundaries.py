@@ -27,6 +27,28 @@ def test_root_sql_and_config_directories_are_not_present() -> None:
     assert not (REPO_ROOT / "config").exists()
 
 
+def test_reporting_modules_live_in_their_library_layers() -> None:
+    package = REPO_ROOT / "src" / "mgb_ops"
+    assert not (package / "reporting.py").exists()
+    assert not (package / "analysis" / "calibration.py").exists()
+    assert (package / "analysis" / "adjust.py").is_file()
+    assert (package / "assets" / "report.py").is_file()
+    assert not (package / "assets" / "reporting.py").exists()
+    assert (package / "workflows" / "reporting.py").is_file()
+
+    old_names = (".".join(("mgb_ops", "reporting")), ".".join(("mgb_ops", "analysis", "calibration")))
+    sources = [*REPO_ROOT.rglob("*.py"), *REPO_ROOT.rglob("*.md")]
+    for path in sources:
+        contents = path.read_text(encoding="utf-8-sig")
+        assert all(name not in contents for name in old_names), path
+
+    workflow = (package / "workflows" / "reporting.py").read_text(encoding="utf-8-sig")
+    assert "sqlite3" not in workflow
+    assert "open_dataset" not in workflow
+    assert "read_file" not in workflow
+    assert "write_text" not in workflow
+
+
 
 def _domain_library_paths() -> list[Path]:
     roots = [

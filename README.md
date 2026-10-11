@@ -21,7 +21,6 @@ Still pending in this phase:
 - automatic QC for observations;
 - manual correction of observed rainfall;
 - complete materialization of operational runs in `<workspace>/data/runs/`;
-- generation of operational reports.
 
 ## Principles
 
@@ -70,8 +69,8 @@ Important: the user is responsible for providing a regional workspace containing
 - `workflows`: Python-first orchestration across those capabilities.
 - `apps/ops_dashboard`: thin Panel UI, session state, and presentation services.
 
-Future operational reporting should be added as a library capability only when
-the reporting workflow is designed.
+Offline operational reports are available through the `mgb_ops.workflows.reporting`
+library API and `mgb-ops generate-report`; see [docs/reports.md](docs/reports.md).
 
 ## Runtime and Configuration
 
@@ -197,6 +196,7 @@ mgb-ops download-forecast --workspace /path/to/rs_hydro_forecast
 mgb-ops build-current-run --workspace /path/to/rs_hydro_forecast
 mgb-ops execute-current-run --workspace /path/to/rs_hydro_forecast
 mgb-ops run-all --workspace /path/to/rs_hydro_forecast
+mgb-ops generate-report --workspace /path/to/rs_hydro_forecast --help
 mgb-ops panel --workspace /path/to/rs_hydro_forecast
 ```
 
@@ -227,3 +227,6 @@ Provide the executable and model inputs in `mgb_runner/`.
 in the installed package; its dependencies are optional. It consumes the
 current-run artifact, history, scenario caches, and GeoPackage configured by
 `spatial.gpkg_path`, with `mini_segments` and `mini_catchments` layers.
+
+Install the `report` extra to generate reports. PDF output also needs the local
+Playwright Chromium runtime; setup and CLI details are in [docs/reports.md](docs/reports.md).
