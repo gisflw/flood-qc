@@ -8,6 +8,7 @@ import panel as pn
 
 from apps.ops_dashboard.state import DashboardState
 from apps.ops_dashboard.services import deckgl as dashboard_map
+from apps.ops_dashboard.i18n import set_widget_text, table_titles, translate
 
 
 def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
@@ -23,12 +24,57 @@ def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
         state.detected_flags.copy(), name="Detected precipitation flags",
         pagination="local", page_size=20, selectable=1, header_filters=True,
         sizing_mode="stretch_width", height=420,
+        titles=table_titles(state.language, (
+            "station_id", "observed_at", "flag_type", "match_type", "sequence_id",
+            "raw_value", "effective_value", "replacement_state", "excluded",
+        )),
     )
+    status_error: str | None = None
 
     def show_message(kind: str = "warning", text: str | None = None) -> None:
-        status.object = text if text is not None else state.message
+        nonlocal status_error
+        if text is not None:
+            status_error = text
+            status.object = translate(
+                state.language, "message.operation_failed",
+                operation=translate(state.language, "message.operation_qc"), detail=text,
+            )
+        else:
+            status_error = None
+            status.object = state.message_for_display()
         status.alert_type = kind if text is not None else state.message_kind
         status.visible = bool(status.object)
+
+    def update_language(language: str) -> None:
+        for widget, key in (
+            (review_start, "qc.review_start"), (review_end, "qc.review_end"),
+            (threshold, "qc.threshold"), (sequence_length, "qc.sequence_length"),
+            (sequence_lower, "qc.sequence_lower"), (sequence_upper, "qc.sequence_upper"),
+            (scan, "qc.scan"), (custom_value, "qc.custom_value"),
+            (null_button, "qc.apply_null"), (value_button, "qc.apply_custom"),
+            (sequence_zero, "qc.sequence_zero"), (sequence_custom, "qc.sequence_custom"),
+            (remove_button, "qc.remove_instruction"), (exclude_button, "qc.exclude_station"),
+            (include_button, "qc.include_station"), (loo_station, "qc.leave_one_out_station"),
+            (run_loo, "qc.run_leave_one_out"), (responsible, "forecast.responsible"),
+            (reason, "forecast.run_reason"), (run_id, "qc.saved_run_id"),
+            (description, "qc.saved_description"), (update, "qc.update_current"),
+            (save, "qc.save_run"),
+        ):
+            set_widget_text(widget, language, key)
+        table.label = translate(language, "qc.flags")
+        table.titles = table_titles(language, (
+            "station_id", "observed_at", "flag_type", "match_type", "sequence_id",
+            "raw_value", "effective_value", "replacement_state", "excluded",
+        ))
+        policy.title = translate(language, "qc.policy_card")
+        edits.title = translate(language, "qc.draft_card")
+        analysis.title = translate(language, "qc.analysis_card")
+        qc_map_card.title = translate(language, "qc.map_card")
+        persistence.title = translate(language, "qc.persistence_card")
+        if status_error is not None:
+            show_message(status.alert_type, status_error)
+        else:
+            show_message()
 
     def scan_flags(_: Any) -> None:
         state.review_window_start, state.review_window_end = review_start.value, review_end.value
@@ -82,14 +128,32 @@ def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
     exclude_button.on_click(lambda _: edit(lambda row: state.exclude_station(str(row.station_id))))
     include_button.on_click(lambda _: edit(lambda row: state.include_station(str(row.station_id))))
 
-    def map_pane(artifacts):
-        if artifacts is None:
-            return pn.pane.Alert("Scan observations to build the QC station map.", alert_type="info")
-        return pn.pane.DeckGL(artifacts.spec, height=480, sizing_mode="stretch_width")
+    qc_map = pn.Column(sizing_mode="stretch_width")
+    qc_map_pane: pn.pane.DeckGL | None = None
 
-    qc_map = pn.bind(map_pane, state.param.qc_map_artifacts)
+    def update_qc_map(artifacts=None) -> None:
+        nonlocal qc_map_pane
+        if artifacts is None:
+            qc_map.objects = [pn.pane.Alert(translate(state.language, "qc.scan_map"), alert_type="info")]
+            qc_map_pane = None
+            return
+        spec, tooltips = dashboard_map.localize_map_display(artifacts, state.language)
+        if qc_map_pane is None:
+            qc_map_pane = pn.pane.DeckGL(spec, tooltips=tooltips, height=480, sizing_mode="stretch_width")
+            qc_map.objects = [qc_map_pane]
+        else:
+            view_state = qc_map_pane.view_state
+            qc_map_pane.object = spec
+            qc_map_pane.tooltips = tooltips
+            if view_state:
+                qc_map_pane.view_state = view_state
+
+    state.param.watch(lambda event: update_qc_map(event.new), "qc_map_artifacts")
+    state.param.watch(lambda event: update_qc_map(state.qc_map_artifacts), "language")
+    update_qc_map(state.qc_map_artifacts)
     loo_station = pn.widgets.Select(name="Leave-one-out station", options={})
     run_loo = pn.widgets.Button(name="Run leave-one-out", button_type="primary")
+    diagnostic_map_pane: pn.pane.DeckGL | None = None
 
     def station_options(_: Any = None) -> None:
         if state.stations.empty:
@@ -99,15 +163,18 @@ def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
 
     station_options()
 
-    def diagnostic(result):
+    def diagnostic(result, language):
+        nonlocal diagnostic_map_pane
         if result is None:
-            return pn.pane.Alert("Choose a station and run leave-one-out analysis.", alert_type="info")
+            diagnostic_map_pane = None
+            return pn.pane.Alert(translate(language, "qc.choose_station"), alert_type="info")
         if not result.sufficient_source:
-            return pn.pane.Alert(result.message, alert_type="warning")
-        residual = "suppressed" if result.residual is None else f"{result.residual:.2f} mm"
-        error = "suppressed" if result.absolute_error is None else f"{result.absolute_error:.2f} mm"
+            return pn.pane.Alert(translate(language, "qc.analysis_unavailable", detail=result.message), alert_type="warning")
+        previous_view_state = diagnostic_map_pane.view_state if diagnostic_map_pane is not None else None
+        residual = translate(language, "qc.suppressed") if result.residual is None else f"{result.residual:.2f} mm"
+        error = translate(language, "qc.suppressed") if result.absolute_error is None else f"{result.absolute_error:.2f} mm"
         layer, _, legend = dashboard_map.build_raster_layer(
-            result.grid, layer_id="qc-leave-one-out-raster", layer_name="Accumulated leave-one-out precipitation", opacity=0.75,
+            result.grid, layer_id="qc-leave-one-out-raster", layer_name=translate(language, "qc.residual_layer"), opacity=0.75,
         )
         layers = [layer] if layer is not None else []
         selected = state.stations[state.stations["station_id"].astype(str) == str(result.station_id)] if not state.stations.empty else pd.DataFrame()
@@ -117,7 +184,7 @@ def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
                 "@@type": "GeoJsonLayer", "id": "qc-omitted-station", "pickable": True,
                 "data": {"type": "FeatureCollection", "features": [{
                     "type": "Feature", "geometry": {"type": "Point", "coordinates": [float(row.lon), float(row.lat)]},
-                    "properties": {"station_id": result.station_id, "label": "Omitted target station"},
+                    "properties": {"station_id": result.station_id, "label": translate(language, "qc.omitted_station")},
                 }]},
                 "pointType": "circle", "filled": True, "getFillColor": [220, 38, 38, 255],
                 "getLineColor": [255, 255, 255, 255], "getLineWidth": 3,
@@ -127,17 +194,20 @@ def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
             "initialViewState": dashboard_map.default_view_state(bounds=result.grid.bounds),
             "controller": True, "layers": layers,
         }, height=480, sizing_mode="stretch_width")
+        diagnostic_map_pane = raster
+        if previous_view_state:
+            raster.view_state = previous_view_state
         metrics = pn.pane.Markdown(
-            f"Observed total: **{result.observed_total if result.observed_total is not None else 'missing'} mm**  \n"
-            f"Predicted total: **{result.predicted_total:.2f} mm**  \n"
-            f"Residual (predicted − observed): **{residual}**  \n"
-            f"Absolute error: **{error}**  \n"
-            f"Coverage expected / target / predicted: **{result.expected_timesteps} / {result.target_timesteps} / {result.predicted_timesteps}**"
+            f"{translate(language, 'qc.observed_total')}: **{result.observed_total if result.observed_total is not None else translate(language, 'qc.missing')} mm**  \n"
+            f"{translate(language, 'qc.predicted_total')}: **{result.predicted_total:.2f} mm**  \n"
+            f"{translate(language, 'qc.residual')}: **{residual}**  \n"
+            f"{translate(language, 'qc.absolute_error')}: **{error}**  \n"
+            f"{translate(language, 'qc.coverage')}: **{result.expected_timesteps} / {result.target_timesteps} / {result.predicted_timesteps}**"
         )
-        legend_pane = pn.pane.Markdown(dashboard_map.build_raster_legend_html(legend)) if legend is not None else pn.Spacer()
+        legend_pane = pn.pane.Markdown(dashboard_map.build_raster_legend_html(legend, caption=translate(language, "qc.residual_layer"))) if legend is not None else pn.Spacer()
         return pn.Column(metrics, raster, legend_pane)
 
-    diagnostic_view = pn.bind(diagnostic, state.param.qc_diagnostic_result)
+    diagnostic_view = pn.bind(diagnostic, state.param.qc_diagnostic_result, state.param.language)
 
     def run_diagnostic(_: Any) -> None:
         try:
@@ -181,15 +251,20 @@ def _observed_qc_view(state: DashboardState) -> pn.viewable.Viewable:
     save.on_click(save_copy)
     policy = pn.Card(
         pn.Row(review_start, review_end), pn.Row(threshold, sequence_length),
-        pn.Row(sequence_lower, sequence_upper), scan, title="Review window and QC policy",
+        pn.Row(sequence_lower, sequence_upper), scan, title=translate(state.language, "qc.policy_card"),
     )
     edits = pn.Card(
         custom_value, pn.Row(null_button, value_button), pn.Row(sequence_zero, sequence_custom),
-        pn.Row(remove_button, exclude_button, include_button), title="Session instruction draft",
+        pn.Row(remove_button, exclude_button, include_button), title=translate(state.language, "qc.draft_card"),
     )
-    analysis = pn.Card(pn.Row(loo_station, run_loo), diagnostic_view, title="Accumulated leave-one-out analysis")
-    persistence = pn.Card(pn.Row(responsible, reason), pn.Row(run_id, description), pn.Row(update, save), title="Artifact update and optional saved copy")
-    return pn.Column(policy, status, table, edits, pn.Card(qc_map, title="QC station map"), analysis, persistence, sizing_mode="stretch_width")
+    analysis = pn.Card(pn.Row(loo_station, run_loo), diagnostic_view, title=translate(state.language, "qc.analysis_card"))
+    qc_map_card = pn.Card(qc_map, title=translate(state.language, "qc.map_card"))
+    persistence = pn.Card(pn.Row(responsible, reason), pn.Row(run_id, description), pn.Row(update, save), title=translate(state.language, "qc.persistence_card"))
+    state.param.watch(lambda event: update_language(event.new), "language")
+    state.param.watch(lambda event: show_message(), "message")
+    state.param.watch(lambda event: show_message(), "message_kind")
+    update_language(state.language)
+    return pn.Column(policy, status, table, edits, qc_map_card, analysis, persistence, sizing_mode="stretch_width")
 
 
 __all__ = ["_observed_qc_view"]

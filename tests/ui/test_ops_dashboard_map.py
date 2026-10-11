@@ -115,6 +115,29 @@ def test_deckgl_layers_are_separate_and_json_compatible() -> None:
     assert "tooltip" not in artifacts.spec
 
 
+def test_map_presentation_translates_without_mutating_cached_artifacts() -> None:
+    stations = pd.DataFrame([{
+        "station_id": "1001", "station_name": "Test", "provider_code": "ana",
+        "station_code": "A1", "lat": -30.0, "lon": -52.0, "kind": "rain",
+        "status": "ok", "rainfall_mm": 12.25,
+    }])
+    artifacts = ops_dashboard_map.build_ops_map(None, 0.4, stations, None, {})
+
+    spec, tooltips = ops_dashboard_map.localize_map_display(artifacts, "pt-BR")
+    station = next(layer for layer in spec["layers"] if layer["id"] == "stations")
+    rainfall_labels = next(layer for layer in spec["layers"] if layer["id"] == "station-rainfall-labels")
+    properties = station["data"]["features"][0]["properties"]
+
+    assert properties["station_name"] == "Test"
+    assert properties["station_id"] == "1001"
+    assert properties["status_label"] == "Disponível"
+    assert isinstance(rainfall_labels["data"], list)
+    assert "Status: {properties.status_label}" in tooltips["stations"]["html"]
+    original_station = next(layer for layer in artifacts.spec["layers"] if layer["id"] == "stations")
+    original = original_station["data"]["features"][0]["properties"]
+    assert "status_label" not in original
+
+
 def test_station_rainfall_labels_are_non_pickable_and_only_include_valid_totals() -> None:
     stations = pd.DataFrame(
         [

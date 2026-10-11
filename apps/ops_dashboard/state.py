@@ -15,6 +15,7 @@ import param
 
 from apps.ops_dashboard.services import deckgl as dashboard_map
 from apps.ops_dashboard.services import forecast as dashboard_forecast
+from apps.ops_dashboard.i18n import translate
 from apps.ops_dashboard.services.corrections import (
     build_forecast_edit_row,
     build_forecast_instruction_from_request,
@@ -76,6 +77,7 @@ class DashboardSources:
 class DashboardState(param.Parameterized):
     """All mutable dashboard state; one instance is created per Panel session."""
 
+    language = param.Selector(default="en", objects={"English": "en", "Português": "pt-BR"})
     station_id = param.String(default=None, allow_None=True)
     mini_id = param.Integer(default=None, allow_None=True)
     selected_raster = param.Selector(default=None, objects=[None])
@@ -245,6 +247,9 @@ class DashboardState(param.Parameterized):
         params.setdefault("execution_error", restored_artifact.execution.error_message or "")
         params.setdefault("execution_generation", restored_artifact.execution.execution_id or "")
         super().__init__(**params)
+        self._warning_records: list[tuple[str | None, dict[str, Any], str]] = []
+        self._message_record: tuple[str | None, dict[str, Any], str] | None = None
+        self.param.watch(self._update_localized_state_text, "language")
         self._execution_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="observed-qc-refresh")
         self._execution_lock = threading.Lock()
         self.refresh()
@@ -336,7 +341,7 @@ class DashboardState(param.Parameterized):
             self._model_output_error = None
         except (OSError, ValueError) as exc:
             self._model_output_error = str(exc)
-            self.add_warning(self._model_output_error)
+            self.add_warning("", translation_key="warning.model_outputs", translation_args={"detail": self._model_output_error})
             self.model_variables = dashboard_data.list_model_variables()
             return
         self.model_variables = _model_variables(
@@ -354,9 +359,50 @@ class DashboardState(param.Parameterized):
             model=self._published_version(self.model_path),
         )
 
-    def add_warning(self, message: str) -> None:
-        if message not in self.warnings:
-            self.warnings = [*self.warnings, message]
+    def _update_localized_state_text(self, *_: Any) -> None:
+        self.warnings = [self._render_translation(key, args, raw) for key, args, raw in self._warning_records]
+        if self._message_record is not None:
+            key, args, raw = self._message_record
+            self.message = self._render_translation(key, args, raw)
+
+    def _render_translation(self, key: str | None, args: dict[str, Any], raw: str) -> str:
+        if key is None:
+            return raw
+        values = dict(args)
+        if "operation_key" in values:
+            values["operation"] = translate(self.language, values.pop("operation_key"))
+        if "mode_key" in values:
+            values["mode"] = translate(self.language, values.pop("mode_key"))
+        return translate(self.language, key, **values)
+
+    def clear_warnings(self) -> None:
+        self._warning_records = []
+        self.warnings = []
+
+    def add_warning(
+        self,
+        message: str,
+        *,
+        translation_key: str | None = None,
+        translation_args: dict[str, Any] | None = None,
+    ) -> None:
+        args = dict(translation_args or {})
+        rendered = self._render_translation(translation_key, args, message)
+        if rendered not in self.warnings:
+            self._warning_records.append((translation_key, args, message))
+            self.warnings = [*self.warnings, rendered]
+
+    def warning_for_display(self, message: str) -> str:
+        for current, (key, args, raw) in zip(self.warnings, self._warning_records):
+            if current == message:
+                return self._render_translation(key, args, raw) if key else translate(self.language, "message.external_detail", detail=raw)
+        return message
+
+    def message_for_display(self) -> str:
+        if self._message_record is None:
+            return self.message
+        key, args, raw = self._message_record
+        return self._render_translation(key, args, raw) if key else translate(self.language, "message.external_detail", detail=raw)
 
     def refresh(self) -> None:
         """Re-version sources and refresh only this state/session."""
@@ -367,13 +413,11 @@ class DashboardState(param.Parameterized):
             "spatial": versions.spatial,
             "model": versions.model,
         }
-        self.warnings = (
-            [f"Scenario caches unavailable: {self._scenario_cache_error}"]
-            if self._scenario_cache_error
-            else []
-        )
+        self.clear_warnings()
+        if self._scenario_cache_error:
+            self.add_warning("", translation_key="warning.scenario_cache", translation_args={"detail": self._scenario_cache_error})
         if self._model_output_error:
-            self.warnings = [*self.warnings, self._model_output_error]
+            self.add_warning("", translation_key="warning.model_outputs", translation_args={"detail": self._model_output_error})
         workspace = str(self.workspace)
         if self.history_path.exists():
             try:
@@ -385,16 +429,10 @@ class DashboardState(param.Parameterized):
                 )
             except (sqlite3.Error, pd.errors.DatabaseError, RuntimeError, ValueError) as exc:
                 self.stations = pd.DataFrame()
-                self.warnings = [
-                    *self.warnings,
-                    f"Observed database could not be read: {exc}",
-                ]
+                self.add_warning("", translation_key="warning.observed_database", translation_args={"detail": str(exc)})
         else:
             self.stations = pd.DataFrame()
-            self.warnings = [
-                *self.warnings,
-                f"History database not found: {self.history_path}",
-            ]
+            self.add_warning("", translation_key="warning.history_missing", translation_args={"path": self.history_path})
         self._update_station_rainfall_labels()
 
         segments = None
@@ -403,10 +441,7 @@ class DashboardState(param.Parameterized):
                 str(self.gpkg_path), workspace, versions.spatial
             )
         except (FileNotFoundError, ValueError) as exc:
-            self.warnings = [
-                *self.warnings,
-                f"Mini spatial layers unavailable: {exc}",
-            ]
+            self.add_warning("", translation_key="warning.mini_layers", translation_args={"detail": str(exc)})
 
         try:
             self.model_variables = _model_variables(
@@ -414,7 +449,7 @@ class DashboardState(param.Parameterized):
             )
         except (FileNotFoundError, OSError, ValueError) as exc:
             self.model_variables = dashboard_data.list_model_variables()
-            self.warnings = [*self.warnings, str(exc)]
+            self.add_warning("", translation_key="warning.model_variables", translation_args={"detail": str(exc)})
 
         self.accumulation_rasters = []
         bbox = self.context.settings["spatial_grid"]["bbox"]
@@ -438,15 +473,9 @@ class DashboardState(param.Parameterized):
                 pd.errors.DatabaseError,
                 ValueError,
             ) as exc:
-                self.warnings = [
-                    *self.warnings,
-                    f"{self._selected_rainfall_mode().title()} rainfall maps unavailable: {exc}",
-                ]
+                self.add_warning("", translation_key="warning.rainfall_maps", translation_args={"mode_key": f"rainfall.mode.{self._selected_rainfall_mode()}", "detail": str(exc)})
         elif bbox is None:
-            self.warnings = [
-                *self.warnings,
-                "Set spatial_grid.bbox in <workspace>/config/custom.yaml to enable rainfall maps.",
-            ]
+            self.add_warning("", translation_key="warning.configure_bbox")
 
         raster_names = [str(item["name"]) for item in self.accumulation_rasters]
         self.param.selected_raster.objects = [None, *raster_names]
@@ -464,20 +493,21 @@ class DashboardState(param.Parameterized):
         before_rasters = self.accumulation_rasters
         before_selection = self.selected_raster
         before_warnings = list(self.warnings)
+        before_records = list(self._warning_records)
         self.apply_map_configuration(apply_basin=False)
         if self.accumulation_rasters is before_rasters and self.selected_raster == before_selection:
-            new_warnings = [value for value in self.warnings if value not in before_warnings]
-            if new_warnings:
-                self.warnings = [
-                    *before_warnings,
-                    f"{mode.title()} rainfall map unavailable: {new_warnings[-1].split(': ', 1)[-1]}",
-                ]
+            new_records = [value for value in self._warning_records if value not in before_records]
+            if new_records:
+                detail = new_records[-1][1].get("detail", new_records[-1][2])
+                self._warning_records = before_records
+                self.warnings = before_warnings
+                self.add_warning("", translation_key="warning.rainfall_maps", translation_args={"mode_key": f"rainfall.mode.{mode}", "detail": detail})
 
     def apply_map_configuration(self, *, apply_basin: bool = True) -> None:
         """Atomically apply rainfall and optional basin-boundary map settings."""
         bbox = self.context.settings["spatial_grid"].get("bbox")
         if bbox is None:
-            self.warnings = [*self.warnings, "Rainfall maps are unavailable for this workspace."]
+            self.add_warning("", translation_key="warning.rainfall_unavailable")
             return
         try:
             rainfall_mode, rainfall_hours = parse_signed_rainfall_period(int(self.rainfall_period))
@@ -501,7 +531,7 @@ class DashboardState(param.Parameterized):
                         self.source_versions.get("spatial", ""),
                     )
         except (FileNotFoundError, sqlite3.Error, pd.errors.DatabaseError, ValueError) as exc:
-            self.warnings = [*self.warnings, f"Map configuration was not applied: {exc}"]
+            self.add_warning("", translation_key="warning.map_configuration", translation_args={"detail": str(exc)})
             return
         raster_name = str(raster["name"])
         with param.parameterized.discard_events(self):
@@ -558,7 +588,7 @@ class DashboardState(param.Parameterized):
                 end_time,
             )
         except (sqlite3.Error, pd.errors.DatabaseError, RuntimeError, ValueError) as exc:
-            self.add_warning(f"Station rainfall labels unavailable: {exc}")
+            self.add_warning("", translation_key="warning.station_rainfall", translation_args={"detail": str(exc)})
             self.stations = base
             return
         self.stations = base.merge(accumulations, on="station_id", how="left")
@@ -598,7 +628,7 @@ class DashboardState(param.Parameterized):
             try:
                 basin_geojson = self.basin_spatial_data(self.applied_basin_mini_id).geometry.__geo_interface__
             except (FileNotFoundError, TypeError, ValueError) as exc:
-                self.add_warning(f"Selected basin unavailable: {exc}")
+                self.add_warning("", translation_key="warning.basin", translation_args={"detail": str(exc)})
         self.map_artifacts = dashboard_map.build_ops_map(
             self.selected_raster,
             self.raster_opacity,
@@ -668,7 +698,14 @@ class DashboardState(param.Parameterized):
     def scenario_label(self, scenario_id: str) -> str:
         cache = self._scenario_cache_by_id.get(scenario_id)
         label = cache.label if cache is not None else scenario_id
-        return label.split(" - ", maxsplit=1)[0]
+        label = label.split(" - ", maxsplit=1)[0]
+        if cache is None:
+            return label
+        if cache.kind == "zero":
+            return translate(self.language, "forecast.scenario_zero")
+        if cache.kind in {"raw", "corrected"} and cache.provider_code:
+            return translate(self.language, f"forecast.scenario_{cache.kind}", provider=cache.provider_code.upper())
+        return label
 
     def mgb_series(self, variable_code: str, scenario_id: str | None = None) -> pd.DataFrame:
         if self.mini_id is None:
@@ -754,7 +791,7 @@ class DashboardState(param.Parameterized):
         try:
             providers = list_enabled_forecast_providers(self.history_path)
         except (FileNotFoundError, sqlite3.Error, RuntimeError, ValueError) as exc:
-            self.warnings = [*self.warnings, f"Forecast providers unavailable: {exc}"]
+            self.add_warning("", translation_key="warning.forecast_providers", translation_args={"detail": str(exc)})
             return
         for provider in providers:
             try:
@@ -775,10 +812,7 @@ class DashboardState(param.Parameterized):
                 RuntimeError,
                 ValueError,
             ) as exc:
-                self.warnings = [
-                    *self.warnings,
-                    f"{provider.upper()} forecast assets unavailable: {exc}",
-                ]
+                self.add_warning("", translation_key="warning.forecast_assets", translation_args={"provider": provider.upper(), "detail": str(exc)})
         self.forecast_assets = (
             pd.concat(frames, ignore_index=True)
             .sort_values(["provider_code", "asset_id"])
@@ -805,7 +839,7 @@ class DashboardState(param.Parameterized):
             )
         except (FileNotFoundError, ModuleNotFoundError, ValueError) as exc:
             self.forecast_steps = pd.DataFrame()
-            self.set_message(str(exc), "warning")
+            self.set_message("", "warning", translation_key="message.operation_failed", translation_args={"operation_key": "message.operation_forecast_asset", "detail": str(exc)})
             return
         if not self.forecast_steps.empty:
             steps = self.forecast_steps["step_hours"].astype(int).tolist()
@@ -892,7 +926,7 @@ class DashboardState(param.Parameterized):
         if not self.forecast_asset_id: raise ValueError("Select a forecast asset first.")
         row = build_forecast_edit_row(asset_id=self.forecast_asset_id, t0_step=int(values.get("t0_step", self.forecast_t0_step)), t1_step=int(values.get("t1_step", self.forecast_t1_step)), shift_lat=float(values.get("shift_lat", self.forecast_shift_lat)), shift_lon=float(values.get("shift_lon", self.forecast_shift_lon)), rotation_deg=float(values.get("rotation_deg", self.forecast_rotation_deg)), multiplication_factor=float(values.get("multiplication_factor", self.forecast_multiplication_factor)), metadata=values.get("metadata"))
         self.update_forecast_draft(pd.concat([self.forecast_draft, pd.DataFrame([row])], ignore_index=True))
-        self.set_message("Correction added to artifact draft.", "success")
+        self.set_message("", "success", translation_key="message.correction_added")
 
     def _qc_policy(self) -> PrecipitationQCPolicy:
         return PrecipitationQCPolicy(
@@ -948,7 +982,7 @@ class DashboardState(param.Parameterized):
             self.stations, self.detected_flags, self.observed_replacement_draft,
             self.station_exclusion_draft, selected_station=self.qc_selected_station,
         )
-        self.set_message(f"Detected {len(self.detected_flags)} precipitation QC matches in this session.", "success")
+        self.set_message("", "success", translation_key="message.qc_detected", translation_args={"count": len(self.detected_flags)})
         return self.detected_flags
 
     scan_precipitation_qc = scan_observed_precipitation
@@ -1048,13 +1082,13 @@ class DashboardState(param.Parameterized):
         try:
             rows = validate_forecast_edit_draft(self.forecast_asset_id, self.forecast_draft)
         except ValueError as exc:
-            self.set_message(str(exc), "warning")
+            self.set_message("", "warning", translation_key="message.operation_failed", translation_args={"operation_key": "message.operation_apply_forecast", "detail": str(exc)})
             raise
         if responsible_person:
             self.responsible_person = responsible_person.strip()
         if reason:
             self.update_reason = reason.strip()
-        self.set_message("Forecast corrections applied to the session artifact draft.", "success")
+        self.set_message("", "success", translation_key="message.forecast_applied")
         return rows
 
     def save_forecast_corrections(self, *, responsible_person: str = "", reason: str = "") -> list[dict[str, Any]]:
@@ -1077,7 +1111,7 @@ class DashboardState(param.Parameterized):
             persisted = update_current_artifact(self.context.paths.current_run_db, artifact, require_reason=True)
         else:
             persisted = create_current_artifact(self.context.paths.current_run_db, artifact)
-        self.set_message("Current run updated transactionally.", "success")
+        self.set_message("", "success", translation_key="message.run_updated")
         return persisted
 
     def save_run(self):
@@ -1085,7 +1119,7 @@ class DashboardState(param.Parameterized):
             self.context.paths.current_run_db, self.context.paths.runs_dir,
             run_id=self.save_run_id, description=self.save_run_description,
         )
-        self.set_message(f"Saved run {result.run_id}.", "success")
+        self.set_message("", "success", translation_key="message.run_saved", translation_args={"run_id": result.run_id})
         return result
 
     def artifact_summary(self) -> dict[str, Any]:
@@ -1153,8 +1187,17 @@ class DashboardState(param.Parameterized):
         future.add_done_callback(finish)
         return future
 
-    def set_message(self, text: str, kind: str = "info") -> None:
-        self.message = text
+    def set_message(
+        self,
+        text: str,
+        kind: str = "info",
+        *,
+        translation_key: str | None = None,
+        translation_args: dict[str, Any] | None = None,
+    ) -> None:
+        args = dict(translation_args or {})
+        self._message_record = (translation_key, args, text)
+        self.message = self._render_translation(translation_key, args, text)
         self.message_kind = kind
 
 

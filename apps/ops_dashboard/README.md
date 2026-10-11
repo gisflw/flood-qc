@@ -30,6 +30,8 @@ Observed rainfall maps are read from
 Additional behavior:
 
 - each browser session owns its selections, forecast draft, messages, and applied preview;
+- the dashboard supports English (default) and Brazilian Portuguese; language choice lasts for the current browser session only;
+- dashboard-owned labels and messages switch languages, while user-authored content, raw technical keys, built-in table pagination and chart toolbar controls, and external diagnostic details stay in their original language;
 - manual refresh re-versions source files and refreshes only the active session;
 - original and corrected forecast maps share their DeckGL view state.
 

@@ -131,6 +131,15 @@ def test_selected_area_summary_shows_identity_reference_and_window_totals() -> N
     assert "Basin rainfall in the next 2 hours" in metric_html[2]
 
 
+def test_selected_area_summary_translates_labels_without_reformatting_values() -> None:
+    summary = _selected_area_summary(SummaryState(), language="pt-BR")
+
+    assert "Estação" in summary[0].object
+    assert "Bacia modelada 7" in summary[0].object
+    assert "3.0 mm" in summary[1][0][0].object
+    assert "Precipitação na estação nas últimas 2 horas" in summary[1][0][0].object
+
+
 def test_selected_area_summary_keeps_partial_empty_selection() -> None:
     state = SummaryState()
     state.station_id = None

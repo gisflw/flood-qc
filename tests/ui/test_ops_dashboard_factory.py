@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import panel as pn
@@ -9,6 +10,9 @@ import panel as pn
 from apps.ops_dashboard import create_dashboard
 from mgb_ops.assets.scenario_cache import ScenarioCache
 from apps.ops_dashboard.state import DashboardState
+from apps.ops_dashboard.i18n import validate_catalogs
+from apps.ops_dashboard.services.corrections import build_forecast_edit_row
+from apps.ops_dashboard.services.deckgl import RasterLegendSpec
 from apps.ops_dashboard.views.forecast import _forecast_view
 from apps.ops_dashboard.services import forecast as dashboard_forecast
 from apps.ops_dashboard.views.monitoring import _monitoring_view
@@ -40,6 +44,111 @@ def test_factory_displays_actionable_error_without_current_run_artifact(tmp_path
 
     assert "Build the current run artifact" in str(template.main[0].object)
     assert not hasattr(template, "state")
+
+    template.language_selector.value = "pt-BR"
+    assert "Não foi possível iniciar o painel" in template.main[0].object
+
+
+def test_language_catalogs_have_matching_keys_and_placeholders() -> None:
+    validate_catalogs()
+
+
+def test_language_switch_is_session_local_and_preserves_live_view_state(
+    tmp_path: Path, monkeypatch
+) -> None:
+    template = create_dashboard(tmp_path)
+    other_session = create_dashboard(tmp_path)
+    tabs = next(item for item in template.main if isinstance(item, pn.Tabs))
+    other_tabs = next(item for item in other_session.main if isinstance(item, pn.Tabs))
+    views = list(tabs.objects)
+    tabs.active = 1
+    root = tabs.get_root()
+
+    monitoring = tabs[0]
+    qc = tabs[1]
+    forecast = tabs[2]
+    monitor_widgets = {widget.name: widget for widget in monitoring.select(pn.widgets.Widget)}
+    qc_widgets = {widget.name: widget for widget in qc.select(pn.widgets.Widget)}
+    basin = monitor_widgets["Basin mini"]
+    threshold = qc_widgets["Threshold (mm)"]
+    forecast_widgets = {widget.name: widget for widget in forecast.select(pn.widgets.Widget)}
+    correction_shift = forecast_widgets["Correction row shift"]
+    basin.value = "42"
+    threshold.value = 17.5
+    correction_shift.value = 5
+    template.state.station_id = "ana:1001"
+    template.state.mini_id = 7
+
+    table = forecast.select(pn.widgets.Tabulator)[0]
+    table.value = pd.DataFrame([build_forecast_edit_row(
+        asset_id="asset", t0_step=0, t1_step=3, shift_lat=2, shift_lon=-1,
+        rotation_deg=4, multiplication_factor=1.25,
+    )])
+    table.selection = [0]
+    map_pane = monitoring.select(pn.pane.DeckGL)[0]
+    map_pane.view_state = {"latitude": -30.0, "longitude": -52.0, "zoom": 7}
+    artifact_before = template.state._artifact_path.read_bytes()
+    execution_before = (
+        template.state.execution_status, template.state.execution_generation,
+    )
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("Language changes must not refresh, persist, or execute.")
+
+    monkeypatch.setattr(template.state, "refresh", unexpected)
+    monkeypatch.setattr(template.state, "_rebuild_map", unexpected)
+    monkeypatch.setattr(template.state, "run_current_artifact_async", unexpected)
+    monkeypatch.setattr(template.state, "apply_forecast_draft", unexpected)
+
+    template.language_selector.value = "pt-BR"
+
+    assert template.state.language == "pt-BR"
+    assert other_session.state.language == "en"
+    assert template.sidebar[3].object == "## Controles"
+    assert tabs._names == ["Monitoramento", "CQ de observações", "CQ de previsão"]
+    assert [panel.title for panel in root.tabs] == tabs._names
+    assert other_tabs._names == ["Monitoring", "Observed QC", "Forecast QC"]
+    assert tabs.active == 1
+    assert all(current is original for current, original in zip(tabs.objects, views))
+    assert basin.name == "Mini da bacia" and basin.value == "42"
+    assert threshold.name == "Limite (mm)" and threshold.value == 17.5
+    assert correction_shift.name == "Deslocamento da linha da correção"
+    assert correction_shift.value == 5
+    assert table.selection == [0]
+    assert table.titles["shift_lat"] == "Deslocamento de linha"
+    assert template.state.forecast_draft.iloc[0].shift_lat == 2
+    assert template.state.station_id == "ana:1001" and template.state.mini_id == 7
+    assert map_pane.view_state == {"latitude": -30.0, "longitude": -52.0, "zoom": 7}
+    assert template.state._artifact_path.read_bytes() == artifact_before
+    assert (
+        template.state.execution_status, template.state.execution_generation,
+    ) == execution_before
+
+
+def test_language_switch_preserves_displayed_forecast_preview(tmp_path: Path) -> None:
+    state = DashboardState(tmp_path)
+    state.applied_preview_request = SimpleNamespace(t0_step=0, t1_step=3)
+    state.forecast_map_artifacts = SimpleNamespace(
+        original=SimpleNamespace(
+            spec={"layers": []},
+            legend=RasterLegendSpec("raw caption", 1.0, 2.0),
+        ),
+        corrected=None,
+    )
+
+    view = _forecast_view(state)
+    card = view[1][0]
+    map_pane = view.select(pn.pane.DeckGL)[0]
+    map_pane.view_state = {"latitude": -30.0, "longitude": -52.0, "zoom": 8}
+    original_spec = map_pane.object
+
+    state.language = "pt-BR"
+
+    assert view[1][0] is card
+    assert card[0] is map_pane
+    assert map_pane.object is original_spec
+    assert map_pane.view_state == {"latitude": -30.0, "longitude": -52.0, "zoom": 8}
+    assert "Acúmulo da previsão t=0h–t=3h" in card[1].object
 
 
 def test_monitoring_and_forecast_views_compose_from_controlled_state(
@@ -99,7 +208,7 @@ def test_map_controls_are_not_in_global_sidebar(tmp_path: Path) -> None:
         sidebar_names.update(
             widget.name for widget in item.select(pn.widgets.Widget)
         )
-    assert sidebar_names == {"Refresh data"}
+    assert sidebar_names == {"Language", "Refresh data"}
 
 
 def test_tab_labels_and_order_match_quality_control_workflow(tmp_path: Path) -> None:

@@ -5,6 +5,8 @@ from typing import Any
 
 import panel as pn
 
+from apps.ops_dashboard.services import deckgl as dashboard_map
+from apps.ops_dashboard.i18n import set_widget_text, translate
 from apps.ops_dashboard.state import DashboardState
 from apps.ops_dashboard.views.charts import _comparison_chart
 from apps.ops_dashboard.views.summaries import (
@@ -70,6 +72,7 @@ def _monitoring_view(
         comparisons.value = list(controller.comparison_scenario_ids)
 
     controller.param.watch(refresh_scenario_widgets, "scenario_caches")
+    controller.param.watch(refresh_scenario_widgets, "language")
     artifacts = controller.map_artifacts
     map_pane = pn.pane.DeckGL(
         artifacts.spec,
@@ -79,19 +82,26 @@ def _monitoring_view(
         name="Operational map",
     )
 
-    def update_map(event: Any) -> None:
-        map_pane.object = event.new.spec
-        map_pane.tooltips = event.new.tooltips
+    def update_map(artifacts: Any) -> None:
+        if artifacts is None:
+            return
+        view_state = getattr(map_pane, "view_state", None)
+        spec, tooltips = dashboard_map.localize_map_display(artifacts, controller.language)
+        map_pane.object = spec
+        map_pane.tooltips = tooltips
+        if view_state:
+            map_pane.view_state = view_state
 
-    controller.param.watch(update_map, "map_artifacts")
+    controller.param.watch(lambda event: update_map(event.new), "map_artifacts")
+    controller.param.watch(lambda event: update_map(controller.map_artifacts), "language")
+    update_map(controller.map_artifacts)
     rainfall_period = pn.widgets.IntInput.from_param(
         controller.param.rainfall_period,
         name="Rainfall period",
         sizing_mode="stretch_width",
     )
     rainfall_help = pn.pane.Markdown(
-        "`-N` accumulates observations from the previous N hours; `+N` accumulates forecast rainfall for the next N hours. Valid values are -999..-1 or 1..999.",
-        sizing_mode="stretch_width",
+        translate(controller.language, "monitor.rainfall_help"), sizing_mode="stretch_width",
     )
     basin_mini = pn.widgets.TextInput.from_param(
         controller.param.draft_basin_mini,
@@ -145,13 +155,17 @@ def _monitoring_view(
             ""
             if value is None
             else (
-                f"**{value.layer_name}:** "
-                f"{_format_number(value.value, 'mm')} at "
-                f"{value.latitude:.4f}, {value.longitude:.4f}"
+                translate(
+                    controller.language, "monitor.inspection",
+                    layer=value.layer_name,
+                    value=_format_number(value.value, "mm", language=controller.language),
+                    latitude=f"{value.latitude:.4f}", longitude=f"{value.longitude:.4f}",
+                )
             )
         )
 
     controller.param.watch(update_inspection, "raster_inspection")
+    controller.param.watch(update_inspection, "language")
     previous_hours = pn.widgets.IntInput.from_param(
         controller.param.summary_previous_hours,
         name="Previous rainfall period (hours)",
@@ -168,13 +182,14 @@ def _monitoring_view(
         sizing_mode="stretch_width",
     )
     selected_area_summary = pn.bind(
-        lambda *_: _selected_area_summary(controller, period_controls),
+        lambda *_: _selected_area_summary(controller, period_controls, controller.language),
         controller.param.station_id,
         controller.param.mini_id,
         controller.param.summary_previous_hours,
         controller.param.summary_forecast_hours,
         controller.param.source_versions,
         controller.param.scenario_id,
+        controller.param.language,
     )
     def comparison_plot(*_: Any) -> pn.viewable.Viewable:
         observed = controller.chart_observed_series()
@@ -187,6 +202,7 @@ def _monitoring_view(
                 controller.mini_id,
                 controller.station_reference_levels(),
                 controller._runtime_reference_time,
+                controller.language,
             ),
             config={"responsive": True},
             sizing_mode="stretch_width",
@@ -199,14 +215,14 @@ def _monitoring_view(
         controller.param.source_versions,
         controller.param.comparison_scenario_ids,
         controller.param.start_time,
+        controller.param.language,
     )
     chart_start = pn.widgets.DatetimeInput.from_param(
         controller.param.start_time,
         name="Chart start time",
         sizing_mode="stretch_width",
     )
-    return pn.Column(
-        pn.Card(
+    map_card = pn.Card(
             pn.Row(
                 scenario,
                 rainfall_period,
@@ -219,20 +235,50 @@ def _monitoring_view(
             legacy_controls,
             map_pane,
             inspection,
-            title="Operational Map",
+            title=translate(controller.language, "monitor.map"),
             sizing_mode="stretch_width",
-        ),
-        pn.Card(
+        )
+    area_card = pn.Card(
             comparisons,
             selected_area_summary,
-            title="Selected Area",
+            title=translate(controller.language, "monitor.selected_area"),
             sizing_mode="stretch_width",
-        ),
-        pn.Card(
+        )
+    comparison_card = pn.Card(
             chart_start,
             comparison,
-            title="Observed and Modeled Comparison",
+            title=translate(controller.language, "monitor.comparison"),
             sizing_mode="stretch_width",
-        ),
+        )
+
+    def update_language(language: str) -> None:
+        for widget, key in (
+            (scenario, "monitor.scenario"),
+            (comparisons, "monitor.compare"),
+            (rainfall_period, "monitor.rainfall_period"),
+            (apply_map_configuration, "monitor.apply_map"),
+            (opacity_slider, "monitor.raster_opacity"),
+            (previous_hours, "monitor.previous_rain_hours"),
+            (forecast_hours, "monitor.forecast_rain_hours"),
+            (chart_start, "monitor.chart_start"),
+            (legacy_controls[0], "monitor.rainfall_source"),
+            (legacy_controls[1], "monitor.hours_before"),
+            (legacy_controls[2], "monitor.hours_after"),
+            (legacy_controls[3], "monitor.apply_rainfall"),
+            (legacy_controls[4], "monitor.show_basin"),
+        ):
+            set_widget_text(widget, language, key)
+        set_widget_text(basin_mini, language, "monitor.basin_mini", placeholder="monitor.basin_placeholder")
+        rainfall_help.object = translate(language, "monitor.rainfall_help")
+        map_card.title = translate(language, "monitor.map")
+        area_card.title = translate(language, "monitor.selected_area")
+        comparison_card.title = translate(language, "monitor.comparison")
+
+    controller.param.watch(lambda event: update_language(event.new), "language")
+    update_language(controller.language)
+    return pn.Column(
+        map_card,
+        area_card,
+        comparison_card,
         sizing_mode="stretch_width",
     )

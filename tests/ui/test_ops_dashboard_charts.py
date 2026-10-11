@@ -42,6 +42,16 @@ def test_comparison_chart_is_empty_without_selections() -> None:
     assert figure.layout.annotations[-1].text == "Click a station and/or a mini on the map."
 
 
+def test_comparison_chart_translates_presentation_and_keeps_series_values() -> None:
+    figure = _comparison_chart(_observed(), {}, "1001", None, language="pt-BR")
+
+    station_rain = next(trace for trace in figure.data if trace.type == "bar")
+    assert station_rain.name == "Observado na estação"
+    assert list(station_rain.y) == [1.0, 2.0]
+    assert figure.layout.title.text == "Estação 1001"
+    assert figure.layout.yaxis.title.text.startswith("Precipitação")
+
+
 def test_comparison_chart_keeps_station_and_prepared_mini_levels_independent() -> None:
     prepared_level = _model("level", [120.0, 120.1])
     figure = _comparison_chart(

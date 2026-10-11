@@ -116,7 +116,11 @@ def live_server(tmp_path: Path):
 
 def test_panel_dashboard_click_updates_station_summary(page, live_server) -> None:
     page.goto(live_server.url)
-    page.get_by_text("RS Flood Alert System").wait_for()
+    page.get_by_text("Operational Hydrology", exact=True).wait_for()
+    page.get_by_text("Operational MGB System", exact=True).wait_for()
+    page.get_by_label("Language").select_option(label="Português")
+    page.get_by_text("Sistema MGB Operacional").wait_for()
+    page.get_by_role("tab", name="Monitoramento").wait_for()
     canvas = page.locator(".deck-container canvas").first
     canvas.wait_for()
     # The controlled station is exactly at the initial map center.

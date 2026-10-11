@@ -376,6 +376,24 @@ def test_failed_rainfall_apply_retains_last_valid_map(
     assert any("Forecast rainfall map unavailable" in value for value in state.warnings)
 
 
+def test_dashboard_owned_messages_retranslate_and_keep_external_details(
+    tmp_path: Path,
+) -> None:
+    state = dashboard_state.DashboardState(tmp_path)
+    state.set_message(
+        "", "warning", translation_key="message.operation_failed",
+        translation_args={
+            "operation_key": "message.operation_forecast_asset",
+            "detail": "Original library diagnostic",
+        },
+    )
+
+    state.language = "pt-BR"
+
+    assert state.message.startswith("Falha ao selecionar ativo de previsão")
+    assert "Original library diagnostic" in state.message
+
+
 def test_changing_rainfall_hours_preserves_station_map_layer(
     tmp_path: Path, monkeypatch
 ) -> None:
@@ -508,7 +526,7 @@ def test_state_keeps_artifact_window_when_model_output_metadata_disagrees(tmp_pa
     assert state.window.cutoff_time == datetime(2026, 3, 15, 6)
     assert state.window.forecast_end_exclusive == datetime(2026, 3, 30)
     assert expected and all(window == state.window for window in expected)
-    assert "Stale model output metadata" in state.warnings
+    assert any("Stale model output metadata" in warning for warning in state.warnings)
 
 
 def test_dashboard_state_requires_a_valid_current_run_artifact(tmp_path: Path) -> None:

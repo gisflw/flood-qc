@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import hashlib
 import json
 import struct
@@ -12,6 +13,8 @@ from typing import Any, Mapping
 
 import numpy as np
 import pandas as pd
+
+from apps.ops_dashboard.i18n import translate
 
 from apps.ops_dashboard.services.formatting import truncate_one_decimal
 from mgb_ops.assets.spatial_grid import PrecipitationGrid
@@ -149,17 +152,67 @@ def build_raster_legend_spec(data: np.ndarray, *, caption: str) -> RasterLegendS
     return RasterLegendSpec(caption=caption, vmin=float(vmin), vmax=float(vmax))
 
 
-def build_raster_legend_html(spec: RasterLegendSpec) -> str:
+def build_raster_legend_html(spec: RasterLegendSpec, *, caption: str | None = None) -> str:
     colors = ["#{:02x}{:02x}{:02x}".format(*row.astype(int)) for row in BLUES]
     gradient = ", ".join(
         f"{color} {round(index * 100 / (len(colors) - 1))}%"
         for index, color in enumerate(colors)
     )
     return (
-        f"**{spec.caption}**  \n"
+        f"**{caption if caption is not None else spec.caption}**  \n"
         f"<div style='height:12px;border-radius:8px;background:linear-gradient(90deg,{gradient})'></div>"
         f"<small>{truncate_one_decimal(spec.vmin):.1f} mm — {truncate_one_decimal(spec.vmax):.1f} mm</small>"
     )
+
+
+def localize_map_display(artifacts: DeckGLArtifacts, language: str) -> tuple[dict[str, Any], dict[str, dict[str, str]]]:
+    """Translate generated map labels without mutating cached map data."""
+    spec = deepcopy(artifacts.spec)
+    for layer in spec.get("layers", []):
+        layer_id = str(layer.get("id", ""))
+        if layer_id not in {"stations", "qc-stations"}:
+            continue
+        data = layer.get("data")
+        if not isinstance(data, dict):
+            continue
+        features = data.get("features", [])
+        if layer_id == "stations":
+            for feature in features:
+                properties = feature.get("properties", {})
+                status = str(properties.get("status", ""))
+                properties["status_label"] = translate(language, f"map.status.{status}")
+        elif layer_id == "qc-stations":
+            for feature in features:
+                properties = feature.get("properties", {})
+                category = str(properties.get("qc_category", ""))
+                category_key = {
+                    "available": "map.qc.available",
+                    "threshold_flagged": "map.qc.threshold",
+                    "sequence_flagged": "map.qc.sequence",
+                    "replaced": "map.qc.replaced",
+                    "excluded": "map.qc.excluded",
+                }.get(category)
+                if category_key:
+                    properties["qc_category_label"] = translate(language, category_key)
+    tooltips = {
+        layer_id: dict(config)
+        for layer_id, config in artifacts.tooltips.items()
+    }
+    if "stations" in tooltips:
+        tooltips["stations"]["html"] = (
+            "<b>{properties.station_name}</b><br/>"
+            "{properties.provider_code}:{properties.station_code}<br/>"
+            f"{translate(language, 'map.status_label')}: "
+            "{properties.status_label}<br/>"
+            "{properties.rainfall_label}"
+        )
+    if "mini-segments" in tooltips:
+        tooltips["mini-segments"]["html"] = (
+            f"<b>{translate(language, 'map.mini')} {{mini_id}}</b>"
+        )
+    if "qc-stations" in tooltips:
+        tooltips["qc-stations"]["html"] = "<b>{station_name}</b><br/>{qc_category_label}"
+    return spec, tooltips
 
 
 def _png_chunk(kind: bytes, payload: bytes) -> bytes:

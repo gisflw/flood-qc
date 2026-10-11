@@ -8,18 +8,20 @@ import pandas as pd
 import panel as pn
 
 from apps.ops_dashboard.services.formatting import truncate_one_decimal
+from apps.ops_dashboard.i18n import translate
 from apps.ops_dashboard.state import DashboardState
 
 
-def _format_number(value: Any, unit: str, precision: int = 1) -> str:
+def _format_number(value: Any, unit: str, precision: int = 1, *, language: str = "en") -> str:
     if value is None or pd.isna(value):
-        return "unavailable"
+        return translate(language, "summary.unavailable")
     return f"{truncate_one_decimal(value):.{precision}f} {unit}".strip()
 
 
 def _network_summary(
     stations: pd.DataFrame,
     reference_time: pd.Timestamp,
+    language: str = "en",
 ) -> pn.viewable.Viewable:
     if stations.empty:
         values = (0, 0, 0, 0, np.nan, np.nan)
@@ -39,13 +41,13 @@ def _network_summary(
             rain.quantile(0.9) if not rain.empty else np.nan,
         )
     cards = [
-        ("Reference time", pd.Timestamp(reference_time).strftime("%d/%m/%Y %H:%M")),
-        ("Total stations", str(values[0])),
-        ("With data", str(values[1])),
-        ("No data", str(values[2])),
-        ("Data issue", str(values[3])),
-        ("Mean rainfall 24h", _format_number(values[4], "mm")),
-        ("P90 rainfall 24h", _format_number(values[5], "mm")),
+        (translate(language, "summary.reference_time"), pd.Timestamp(reference_time).strftime("%d/%m/%Y %H:%M")),
+        (translate(language, "summary.total_stations"), str(values[0])),
+        (translate(language, "summary.with_data"), str(values[1])),
+        (translate(language, "summary.no_data"), str(values[2])),
+        (translate(language, "summary.data_issue"), str(values[3])),
+        (translate(language, "summary.mean_rainfall"), _format_number(values[4], "mm", language=language)),
+        (translate(language, "summary.p90_rainfall"), _format_number(values[5], "mm", language=language)),
     ]
     return pn.Column(
         *[
@@ -92,14 +94,16 @@ def _rainfall_total(
 def _selected_area_summary(
     state: DashboardState,
     period_controls: pn.viewable.Viewable | None = None,
+    language: str | None = None,
 ) -> pn.viewable.Viewable:
+    language = language or getattr(state, "language", "en")
     cutoff = pd.Timestamp(state.window.cutoff_time)
     previous_hours = int(state.summary_previous_hours)
     forecast_hours = int(state.summary_forecast_hours)
     previous_duration = pd.Timedelta(hours=previous_hours)
     forecast_duration = pd.Timedelta(hours=forecast_hours)
 
-    station_label = "No station selected"
+    station_label = translate(language, "summary.no_station")
     station_rain = np.nan
     if state.station_id is not None:
         selected = (
@@ -110,7 +114,7 @@ def _selected_area_summary(
             else pd.DataFrame()
         )
         if selected.empty:
-            station_label = f"Station {state.station_id} (unavailable)"
+            station_label = translate(language, "summary.station_unavailable", station_id=state.station_id)
         else:
             row = selected.iloc[0]
             station_label = (
@@ -131,16 +135,16 @@ def _selected_area_summary(
             )
 
     basin_label = (
-        f"Modeled basin {state.mini_id}"
+        translate(language, "summary.modeled_basin", mini_id=state.mini_id)
         if state.mini_id is not None
-        else "No modeled basin selected"
+        else translate(language, "summary.no_basin")
     )
     basin_past = basin_forecast = np.nan
     if state.mini_id is not None:
         try:
             precipitation = state.basin_precipitation()
         except (FileNotFoundError, OSError, TypeError, ValueError) as exc:
-            state.add_warning(f"Basin precipitation unavailable: {exc}")
+            state.add_warning("", translation_key="warning.basin_precipitation", translation_args={"detail": str(exc)})
             precipitation = pd.DataFrame()
         basin_past = _rainfall_total(
             precipitation,
@@ -159,15 +163,15 @@ def _selected_area_summary(
 
     cards = [
         (
-            f"Station rainfall in the last {previous_hours} hours",
+            translate(language, "summary.station_rain_past", hours=previous_hours),
             station_rain,
         ),
         (
-            f"Basin rainfall in the last {previous_hours} hours",
+            translate(language, "summary.basin_rain_past", hours=previous_hours),
             basin_past,
         ),
         (
-            f"Basin rainfall in the next {forecast_hours} hours",
+            translate(language, "summary.basin_rain_future", hours=forecast_hours),
             basin_forecast,
         ),
     ]
@@ -176,7 +180,7 @@ def _selected_area_summary(
             pn.Card(
                 pn.pane.HTML(
                     f"<div style='font-size:0.82rem;line-height:1.25'>"
-                    f"<strong style='font-size:1.2rem'>{_format_number(value, 'mm')}</strong>"
+                    f"<strong style='font-size:1.2rem'>{_format_number(value, 'mm', language=language)}</strong>"
                     f"<br>{label}</div>"
                 ),
                 hide_header=True,
@@ -188,8 +192,8 @@ def _selected_area_summary(
         sizing_mode="stretch_width",
     )
     identity = pn.pane.Markdown(
-            f"**Station:** {station_label}  \n"
-            f"**Basin:** {basin_label}"
+            f"**{translate(language, 'summary.station')}:** {station_label}  \n"
+            f"**{translate(language, 'summary.basin')}:** {basin_label}"
     )
     contents = [identity]
     if period_controls is not None:
