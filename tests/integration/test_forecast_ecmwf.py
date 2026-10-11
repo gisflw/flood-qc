@@ -191,14 +191,7 @@ def test_grib2_grid_array_reader_uses_coordinate_arrays_for_wrapped_global_grid(
 
 
 
-def test_ecmwf_steps_are_horizon_aware_for_the_long_cycle_product() -> None:
-    cycle = datetime(2026, 3, 18, 12)
-    steps = forecast_ecmwf.build_required_ecmwf_steps(cycle, datetime(2026, 3, 22, 13))
-
-    assert steps[-1] == 99
-
-
-def test_ecmwf_download_passes_only_required_steps(tmp_path, monkeypatch) -> None:
+def test_ecmwf_download_requests_the_full_native_schedule(tmp_path, monkeypatch) -> None:
     requested: list[int] = []
     cycle = datetime(2026, 3, 18)
 
@@ -207,9 +200,14 @@ def test_ecmwf_download_passes_only_required_steps(tmp_path, monkeypatch) -> Non
         target_path.write_bytes(b"grib")
 
     messages = [
-        TpGribMessage(cycle, 0, np.array([-30.0]), np.array([-52.0]), np.array([[0.0]])),
-        TpGribMessage(cycle + forecast_ecmwf.timedelta(hours=3), 3, np.array([-30.0]), np.array([-52.0]), np.array([[1.0]])),
-        TpGribMessage(cycle + forecast_ecmwf.timedelta(hours=6), 6, np.array([-30.0]), np.array([-52.0]), np.array([[2.0]])),
+        TpGribMessage(
+            cycle + forecast_ecmwf.timedelta(hours=step),
+            step,
+            np.array([-30.0]),
+            np.array([-52.0]),
+            np.array([[float(step)]]),
+        )
+        for step in forecast_ecmwf.build_ecmwf_steps()
     ]
     monkeypatch.setattr(forecast_ecmwf, "download_ecmwf_grib_to_path", fake_download)
     monkeypatch.setattr(forecast_ecmwf, "read_tp_grib_messages", lambda _: messages)
@@ -217,10 +215,55 @@ def test_ecmwf_download_passes_only_required_steps(tmp_path, monkeypatch) -> Non
     forecast_ecmwf.download_forecast_grib(
         cycle_time=cycle,
         downloads_dir=tmp_path,
-        required_end=cycle + forecast_ecmwf.timedelta(hours=4),
     )
 
-    assert requested == [0, 3, 6]
+    assert requested == forecast_ecmwf.build_ecmwf_steps()
+
+
+@pytest.mark.parametrize("download_fails", [False, True])
+def test_ecmwf_partial_raw_cache_is_replaced_only_after_full_download(
+    tmp_path, monkeypatch, download_fails: bool
+) -> None:
+    cycle = datetime(2026, 3, 18)
+    target = forecast_ecmwf.build_grib_path(tmp_path, cycle)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"usable-partial-cycle")
+    schedule = forecast_ecmwf.build_ecmwf_steps()
+
+    def messages(steps):
+        return [
+            TpGribMessage(
+                cycle + forecast_ecmwf.timedelta(hours=step), step,
+                np.array([-30.0]), np.array([-52.0]), np.array([[float(step)]]),
+            )
+            for step in steps
+        ]
+
+    monkeypatch.setattr(
+        forecast_ecmwf,
+        "read_tp_grib_messages",
+        lambda path: messages(schedule[:3] if Path(path) == target else schedule),
+    )
+
+    def fake_download(target_path, *, cycle_time, product_config, forecast_hours=None):
+        assert forecast_hours == schedule
+        if download_fails:
+            raise RuntimeError("provider download failed")
+        target_path.write_bytes(b"complete-cycle")
+
+    monkeypatch.setattr(forecast_ecmwf, "download_ecmwf_grib_to_path", fake_download)
+    if download_fails:
+        with pytest.raises(RuntimeError, match="provider download failed"):
+            forecast_ecmwf.download_forecast_grib(
+                cycle_time=cycle, downloads_dir=tmp_path
+            )
+        assert target.read_bytes() == b"usable-partial-cycle"
+    else:
+        result = forecast_ecmwf.download_forecast_grib(
+            cycle_time=cycle, downloads_dir=tmp_path
+        )
+        assert result == target
+        assert target.read_bytes() == b"complete-cycle"
 
 
 

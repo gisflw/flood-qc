@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -104,22 +104,21 @@ def test_forecast_conversion_failure_does_not_try_an_older_cycle(monkeypatch, tm
     assert "noaa_acquisition_failed" not in log_text
 
 
-def test_forecast_coverage_failure_does_not_try_an_older_cycle(monkeypatch, tmp_path) -> None:
-    adapter = FakeNoaaAdapter(
-        lambda cycle: Path("/downloads/newest.grib2"),
-        lambda grib, cycle: _normalized(cycle, valid_to=cycle),
+def test_cache_requires_every_native_step_through_the_last_interval() -> None:
+    cycle = datetime(2026, 3, 18, tzinfo=timezone.utc)
+    hours = tuple(step for step in forecast_noaa.GFS_FORECAST_PRODUCT.step_schedule if step > 0)
+    bounds = tuple(
+        (cycle + timedelta(hours=start), cycle + timedelta(hours=end))
+        for start, end in zip((0, *hours[:-1]), hours)
     )
-    _install_adapter(monkeypatch, adapter)
-    context = _context(tmp_path)
+    adapter = SimpleNamespace(product_config=forecast_noaa.GFS_FORECAST_PRODUCT)
 
-    with pytest.raises(ValueError, match="does not cover the required forecast window"):
-        forecast.download_forecast_data(context, providers="noaa", reference_time=datetime(2026, 3, 18, 15))
-
-    assert len(adapter.download_cycles) == 1
-    log_path = context.paths.logs_dir / "forecast_noaa" / f"{adapter.download_cycles[0]:%Y%m%dT%H%M%S}.log"
-    log_text = log_path.read_text(encoding="utf-8")
-    assert "forecast_validation_failed" in log_text
-    assert "noaa_acquisition_failed" not in log_text
+    assert forecast._has_complete_native_schedule(
+        SimpleNamespace(time_bounds_utc=bounds), adapter=adapter, cycle_time=cycle
+    )
+    assert not forecast._has_complete_native_schedule(
+        SimpleNamespace(time_bounds_utc=bounds[:-1]), adapter=adapter, cycle_time=cycle
+    )
 
 
 def test_forecast_updates_other_providers_before_raising_batch_error(monkeypatch, tmp_path) -> None:
@@ -153,6 +152,25 @@ def test_forecast_updates_other_providers_before_raising_batch_error(monkeypatch
 
     assert "ecmwf" in calls
     assert "noaa" in calls
+
+
+def test_forecast_update_registers_reused_and_new_assets(monkeypatch, tmp_path) -> None:
+    context = _context(tmp_path)
+    reused, produced = Path("/assets/reused.nc"), Path("/assets/produced.nc")
+    registered: list[Path] = []
+    monkeypatch.setattr(forecast, "list_enabled_forecast_providers", lambda _: ("noaa",))
+    monkeypatch.setattr(
+        forecast,
+        "download_forecast_data",
+        lambda *args, **kwargs: forecast.ForecastDownloadSummary((reused,), (produced,), ()),
+    )
+    monkeypatch.setattr(forecast, "ingest_forecast_asset", lambda _, path: registered.append(path))
+
+    summary = forecast.update_enabled_forecast_providers(context)
+
+    assert registered == [reused, produced]
+    assert summary.reused_asset_paths == (reused,)
+    assert summary.new_asset_paths == (produced,)
 
 
 
@@ -196,7 +214,7 @@ def test_ecmwf_cycle_logs_include_context_and_full_unavailable_traceback(monkeyp
     log_text = (context.paths.logs_dir / "forecast_ecmwf" / f"{first_cycle:%Y%m%dT%H%M%S}.log").read_text(encoding="utf-8")
     assert "provider=ecmwf" in log_text
     assert "attempt=1" in log_text
-    assert "required_end=" in log_text
+    assert "required_end=" not in log_text
     assert "ForecastCycleUnavailableError: remote cycle missing" in log_text
 
 

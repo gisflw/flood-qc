@@ -101,25 +101,6 @@ def build_ecmwf_steps(product_config: ForecastProductConfig = ECMWF_FORECAST_PRO
     return list(product_config.step_schedule)
 
 
-def build_required_ecmwf_steps(
-    cycle_time: datetime,
-    required_end: datetime,
-    product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
-) -> list[int]:
-    """Return only native ECMWF steps needed to cover ``required_end``."""
-    cycle = cycle_time.replace(tzinfo=timezone.utc) if cycle_time.tzinfo is None else cycle_time.astimezone(timezone.utc)
-    end = required_end.replace(tzinfo=timezone.utc) if required_end.tzinfo is None else required_end.astimezone(timezone.utc)
-    required_hours = max(0, (end - cycle).total_seconds() / 3600)
-    available = build_ecmwf_steps(product_config)
-    steps = [step for step in available if step <= required_hours]
-    following = next((step for step in available if step > required_hours), None)
-    if following is not None:
-        steps.append(following)
-    if not steps:
-        raise ValueError("Requested forecast end is before the first available ECMWF interval.")
-    return steps
-
-
 def build_bbox_with_buffer(
     bbox: tuple[float, float, float, float],
     *,
@@ -550,23 +531,25 @@ def download_forecast_grib(
     cycle_time: datetime,
     downloads_dir: Path,
     bbox: tuple[float, float, float, float] | None = None,
-    required_end: datetime | None = None,
     product_config: ForecastProductConfig = ECMWF_FORECAST_PRODUCT,
 ) -> Path:
     target = build_grib_path(downloads_dir, cycle_time, product_config)
     target.parent.mkdir(parents=True, exist_ok=True)
-    steps = (
-        build_required_ecmwf_steps(cycle_time, required_end, product_config)
-        if required_end is not None
-        else build_ecmwf_steps(product_config)
-    )
+    steps = build_ecmwf_steps(product_config)
     if target.exists():
-        messages = read_tp_grib_messages(target)
-        found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
-        found_steps = {message.step_hours for message in messages}
-        if found_cycle == cycle_time and set(steps).issubset(found_steps):
-            return target
-        target.unlink()
+        try:
+            messages = read_tp_grib_messages(target)
+        except ModuleNotFoundError:
+            raise
+        except Exception:
+            messages = []
+        if messages:
+            found_cycles = {
+                message.valid_time - timedelta(hours=message.step_hours) for message in messages
+            }
+            found_steps = {message.step_hours for message in messages}
+            if found_cycles == {cycle_time} and set(steps).issubset(found_steps):
+                return target
     descriptor, temporary_name = tempfile.mkstemp(
         prefix=f".{target.name}.", suffix=".tmp", dir=target.parent
     )
@@ -577,9 +560,11 @@ def download_forecast_grib(
             temporary, cycle_time=cycle_time, product_config=product_config, forecast_hours=steps
         )
         messages = read_tp_grib_messages(temporary)
-        found_cycle = min(message.valid_time - timedelta(hours=message.step_hours) for message in messages)
+        found_cycles = {
+            message.valid_time - timedelta(hours=message.step_hours) for message in messages
+        }
         found_steps = {message.step_hours for message in messages}
-        if found_cycle != cycle_time or not set(steps).issubset(found_steps):
+        if found_cycles != {cycle_time} or not set(steps).issubset(found_steps):
             raise ValueError("Downloaded ECMWF GRIB2 has an unexpected cycle or incomplete steps.")
         os.replace(temporary, target)
     finally:

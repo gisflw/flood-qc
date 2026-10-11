@@ -110,7 +110,6 @@ class _ForecastAdapter:
     download_grib_function: Callable[..., Path]
     process_grib_function: Callable[..., Any]
     preflight_function: Callable[[], None] | None = None
-    supports_required_end: bool = True
     forecast_cycle_hours: tuple[int, ...] = (0, 6, 12, 18)
 
     def asset_id(self, cycle_time: datetime) -> str:

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -26,7 +26,6 @@ from mgb_ops.assets.spatial_grid import (
 from mgb_ops.assets.types import DataState, RasterAsset, RunMetadata
 from mgb_ops.utils.time import (
     DEFAULT_FORECAST_CYCLE_HOURS,
-    build_forecast_coverage_window_utc,
     iter_forecast_cycle_candidates,
     resolve_forecast_cycle,
     resolve_reference_time,
@@ -86,6 +85,19 @@ def _metadata_value(grid, key: str) -> str:
     return value
 
 
+def _has_complete_native_schedule(grid, *, adapter: ForecastAdapter, cycle_time: datetime) -> bool:
+    schedule = tuple(int(step) for step in adapter.product_config.step_schedule)
+    if not schedule:
+        return False
+    cycle = cycle_time.replace(tzinfo=timezone.utc) if cycle_time.tzinfo is None else cycle_time.astimezone(timezone.utc)
+    expected_hours = tuple(step for step in schedule if step > 0)
+    expected_bounds = tuple(
+        (cycle + timedelta(hours=start), cycle + timedelta(hours=end))
+        for start, end in zip((0, *expected_hours[:-1]), expected_hours)
+    )
+    return grid.time_bounds_utc == expected_bounds
+
+
 def _validate_reusable_grid(
     path: Path,
     *,
@@ -93,10 +105,6 @@ def _validate_reusable_grid(
     adapter: ForecastAdapter,
     cycle_time: datetime,
     bbox: tuple[float, float, float, float],
-    resolution: float,
-    timestep_hours: int,
-    required_start: datetime,
-    required_end: datetime,
     expected_buffer_fraction: float,
 ) -> bool:
     try:
@@ -107,26 +115,29 @@ def _validate_reusable_grid(
         model_bbox = json.loads(str(grid.metadata["model_bbox"]))
         stored_buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
         requested_bbox = json.loads(str(grid.metadata["requested_bbox"]))
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return (
+            grid.grid_type == "forecast"
+            and grid.variable == "precipitation"
+            and grid.providers == (provider,)
+            and _metadata_value(grid, "provider") == provider
+            and _metadata_value(grid, "model") == adapter.product_config.model
+            and _metadata_value(grid, "product_type") == adapter.product_config.product_type
+            and _metadata_value(grid, "source_format") == "GRIB2"
+            and _metadata_value(grid, "source_resolution") == adapter.product_config.resolution
+            and _metadata_value(grid, "source_parameter") == adapter.product_config.param
+            and _metadata_value(grid, "source_cycle_time") == expected_cycle
+            and grid.timestep_hours is None
+            and grid.source == "cropped_from_native_grid"
+            and buffer_fraction == expected_buffer_fraction
+            and model_bbox == list(bbox)
+            and stored_buffered_bbox == list(buffered_bbox)
+            and requested_bbox == list(buffered_bbox)
+            and _has_complete_native_schedule(grid, adapter=adapter, cycle_time=cycle_time)
+        )
+    except ModuleNotFoundError:
+        raise
+    except Exception:
         return False
-    return (
-        grid.grid_type == "forecast"
-        and grid.variable == "precipitation"
-        and grid.providers == (provider,)
-        and _metadata_value(grid, "provider") == provider
-        and _metadata_value(grid, "model") == adapter.product_config.model
-        and _metadata_value(grid, "product_type") == adapter.product_config.product_type
-        and _metadata_value(grid, "source_cycle_time") == expected_cycle
-        and grid.timestep_hours is None
-        and grid.source == "cropped_from_native_grid"
-        and buffer_fraction == expected_buffer_fraction
-        and model_bbox == list(bbox)
-        and stored_buffered_bbox == list(buffered_bbox)
-        and requested_bbox == list(buffered_bbox)
-        and grid.time_bounds_utc[0][0] <= required_start
-        and grid.time_bounds_utc[-1][1] >= required_end
-    )
-
 
 
 class ForecastProviderBatchError(RuntimeError):
@@ -160,8 +171,6 @@ def _download_forecast_provider(
     forecast_bbox: tuple[float, ...],
     resolution: float,
     timestep: int,
-    required_start: datetime,
-    required_end: datetime,
     buffer_fraction: float,
 ) -> tuple[str, Path, Path | None]:
     adapter = get_forecast_adapter(provider)
@@ -185,11 +194,10 @@ def _download_forecast_provider(
             console=False,
         )
         logger.info(
-            "forecast_cycle_start provider=%s cycle=%s attempt=%d required_end=%s",
+            "forecast_cycle_start provider=%s cycle=%s attempt=%d",
             provider,
             cycle_id,
             attempt_number,
-            required_end.isoformat(timespec="seconds"),
         )
         asset_id = adapter.asset_id(cycle)
         matches = assets[assets["asset_id"] == asset_id] if not assets.empty else assets
@@ -203,10 +211,6 @@ def _download_forecast_provider(
                 adapter=adapter,
                 cycle_time=cycle,
                 bbox=bbox,
-                resolution=resolution,
-                timestep_hours=timestep,
-                required_start=required_start,
-                required_end=required_end,
                 expected_buffer_fraction=buffer_fraction,
             ):
                 logger.info("forecast_cycle_reused provider=%s cycle=%s", provider, cycle_id)
@@ -217,23 +221,21 @@ def _download_forecast_provider(
             "downloads_dir": context.paths.downloads_dir,
             "bbox": forecast_bbox if provider == "noaa" else bbox,
         }
-        if getattr(adapter, "supports_required_end", False):
-            download_kwargs["required_end"] = required_end
         if provider == "noaa":
             download_kwargs["logger"] = logger
         try:
             grib = adapter.download_grib(**download_kwargs)
         except ForecastCycleUnavailableError as exc:
             logger.exception(
-                "forecast_acquisition_unavailable provider=%s cycle=%s attempt=%d required_end=%s",
-                provider, cycle_id, attempt_number, required_end.isoformat(timespec="seconds"),
+                "forecast_acquisition_unavailable provider=%s cycle=%s attempt=%d",
+                provider, cycle_id, attempt_number,
             )
             last_error = exc
             continue
         except Exception:
             logger.exception(
-                "forecast_acquisition_failed provider=%s cycle=%s attempt=%d required_end=%s",
-                provider, cycle_id, attempt_number, required_end.isoformat(timespec="seconds"),
+                "forecast_acquisition_failed provider=%s cycle=%s attempt=%d",
+                provider, cycle_id, attempt_number,
             )
             raise
 
@@ -252,22 +254,15 @@ def _download_forecast_provider(
             logger.exception("forecast_conversion_failed provider=%s cycle=%s", provider, cycle_id)
             raise
 
-        required_start_naive = required_start.replace(tzinfo=None)
-        required_end_naive = required_end.replace(tzinfo=None)
-        try:
-            if normalized.valid_from > required_start_naive or normalized.valid_to < required_end_naive:
-                raise ValueError("Downloaded forecast asset does not cover the required forecast window.")
-        except Exception:
-            logger.exception("forecast_validation_failed provider=%s cycle=%s", provider, cycle_id)
-            raise
+        published_path = Path(normalized.asset_path)
         logger.info("forecast_cycle_done provider=%s cycle=%s", provider, cycle_id)
-        return "produced", normalized.asset_path, grib
+        return "produced", published_path, grib
 
-    attempted = ", ".join(attempted_cycles) or "none (short ECMWF cycles cannot cover the required horizon)"
+    attempted = ", ".join(attempted_cycles) or "none"
     detail = (
         f"{type(last_error).__name__}: {last_error}"
         if last_error is not None
-        else "no eligible cycle could cover the required horizon"
+        else "no eligible forecast cycle was available"
     )
     raise RuntimeError(
         f"Forecast lookback exhausted for provider {provider!r}; attempted cycles: {attempted}; "
@@ -299,11 +294,6 @@ def download_forecast_data(
     bbox = tuple(float(value) for value in bbox_value)
     resolution = float(settings["spatial_grid"]["resolution_degrees"])
     forecast_bbox = build_bbox_with_buffer(bbox, buffer_fraction=buffer_fraction)
-    required_start, required_end = build_forecast_coverage_window_utc(
-        reference,
-        horizon_days=int(settings["mgb"]["forecast_horizon_days"]),
-        timestep_hours=timestep,
-    )
     reused: list[Path] = []
     produced: list[Path] = []
     raw: list[Path] = []
@@ -323,8 +313,6 @@ def download_forecast_data(
                 forecast_bbox=forecast_bbox,
                 resolution=resolution,
                 timestep=timestep,
-                required_start=required_start,
-                required_end=required_end,
                 buffer_fraction=buffer_fraction,
             )
             if status == "reused":
@@ -362,9 +350,9 @@ def update_enabled_forecast_providers(
             )
             reused.extend(summary.reused_asset_paths)
             raw.extend(summary.raw_grib_paths)
-            for path in summary.new_asset_paths:
+            produced.extend(summary.new_asset_paths)
+            for path in (*summary.reused_asset_paths, *summary.new_asset_paths):
                 ingest_forecast_asset(context, path)
-                produced.append(path)
         except Exception as exc:
             failures[provider] = exc
     summary = ForecastDownloadSummary(tuple(reused), tuple(produced), tuple(raw))
@@ -418,87 +406,27 @@ def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, obje
     checksum = hashlib.sha256(target.read_bytes()).hexdigest()
     valid_from = grid.time_bounds_utc[0][0].isoformat(timespec="seconds")
     valid_to = grid.time_bounds_utc[-1][1].isoformat(timespec="seconds")
-    metadata = dict(grid.metadata)
-    metadata["cycle_time"] = cycle_text
-    metadata_json = json.dumps(
-        metadata,
-        sort_keys=True,
-        ensure_ascii=True,
-        default=lambda value: value.item() if hasattr(value, "item") else str(value),
+    metadata = json.loads(
+        json.dumps(
+            dict(grid.metadata),
+            sort_keys=True,
+            ensure_ascii=True,
+            default=lambda value: value.item() if hasattr(value, "item") else str(value),
+        )
     )
-    immutable = {
-        "asset_id": asset_id,
-        "asset_kind": SPATIAL_GRID_ASSET_KIND,
-        "format": SPATIAL_GRID_FORMAT,
-        "relative_path": relative_path,
-        "provider_code": provider,
-        "checksum": checksum,
-        "valid_from": valid_from,
-        "valid_to": valid_to,
-        "metadata_json": metadata_json,
-    }
+    metadata["cycle_time"] = cycle_text
     with HistoryRepository(context.paths.history_db) as repository:
-        by_id = repository.get_asset_by_id(asset_id)
-        by_path = repository.get_asset_by_relative_path(relative_path)
-        existing = by_id or by_path
-        if existing is not None:
-            if any(str(existing[key]) != str(value) for key, value in immutable.items()):
-                try:
-                    existing_metadata = json.loads(str(existing["metadata_json"] or "{}"))
-                    existing_buffer = float(existing_metadata.get("buffer_fraction", -1))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    existing_buffer = -1
-                if existing_buffer == FORECAST_BBOX_BUFFER_FRACTION:
-                    raise ValueError(f"Forecast asset conflicts with registered immutable metadata: {target}")
-                if str(existing["asset_id"]) != asset_id or str(existing["provider_code"]) != provider:
-                    raise ValueError(f"Obsolete forecast asset identity conflicts with replacement: {target}")
-                try:
-                    repository.connection.execute(
-                        """
-                        UPDATE asset
-                        SET asset_kind = ?, format = ?, relative_path = ?, provider_code = ?,
-                            checksum = ?, valid_from = ?, valid_to = ?, metadata_json = ?
-                        WHERE asset_id = ?
-                        """,
-                        (
-                            immutable["asset_kind"],
-                            immutable["format"],
-                            immutable["relative_path"],
-                            immutable["provider_code"],
-                            immutable["checksum"],
-                            immutable["valid_from"],
-                            immutable["valid_to"],
-                            immutable["metadata_json"],
-                            asset_id,
-                        ),
-                    )
-                    repository.connection.commit()
-                except Exception:
-                    repository.connection.rollback()
-                    raise
-                replaced = repository.get_asset_by_id(asset_id)
-                if replaced is None:
-                    raise RuntimeError(f"Failed to replace obsolete forecast asset {asset_id}.")
-                return replaced
-            return existing
-        try:
-            repository.connection.execute(
-                """
-                INSERT INTO asset (
-                    asset_id, asset_kind, format, relative_path, provider_code,
-                    checksum, valid_from, valid_to, metadata_json
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                tuple(immutable.values()),
-            )
-            repository.connection.commit()
-        except Exception:
-            repository.connection.rollback()
-            raise
-        result = repository.get_asset_by_id(asset_id)
-        if result is None:
-            raise RuntimeError(f"Failed to register forecast asset {asset_id}.")
-        return result
+        return repository.upsert_asset(
+            asset_id=asset_id,
+            asset_kind=SPATIAL_GRID_ASSET_KIND,
+            format=SPATIAL_GRID_FORMAT,
+            relative_path=relative_path,
+            provider_code=provider,
+            checksum=checksum,
+            valid_from=valid_from,
+            valid_to=valid_to,
+            metadata=metadata,
+        )
 
 
 def ingest_forecast_grids(

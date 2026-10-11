@@ -73,15 +73,87 @@ def test_gfs_interval_messages_preserve_native_accumulation_bounds() -> None:
     assert values[:, 0, 0].tolist() == [12.0]
 
 
-def test_gfs_steps_stop_after_the_required_forecast_window() -> None:
-    steps = forecast_noaa.build_required_gfs_steps(
-        datetime(2026, 3, 18, 0),
-        datetime(2026, 3, 28, 1),
+def test_noaa_download_requests_the_full_native_schedule(tmp_path, monkeypatch) -> None:
+    cycle = datetime(2026, 3, 18)
+    requested: list[int] = []
+
+    def fake_download(target_path, *, cycle_time, bbox, forecast_hours, logger, product_config):
+        requested.extend(forecast_hours)
+        target_path.write_bytes(b"full-grib")
+
+    messages = [
+        TpGribMessage(
+            valid_time=cycle + forecast_noaa.timedelta(hours=step),
+            step_hours=step,
+            latitudes=np.array([-30.0]),
+            longitudes=np.array([-52.0]),
+            values_mm=np.array([[float(step)]]),
+        )
+        for step in forecast_noaa.build_gfs_steps()
+    ]
+    monkeypatch.setattr(forecast_noaa, "download_gfs_grib_to_path", fake_download)
+    monkeypatch.setattr(forecast_noaa, "read_gfs_precipitation_messages", lambda _: messages)
+
+    forecast_noaa.download_forecast_grib(
+        cycle_time=cycle,
+        downloads_dir=tmp_path,
+        bbox=(-56.0, -33.0, -46.0, -28.0),
     )
 
-    assert steps[0] == 3
-    assert steps[-2:] == [240, 252]
-    assert len(steps) == 81
+    assert requested == forecast_noaa.build_gfs_steps()
+
+
+@pytest.mark.parametrize("download_fails", [False, True])
+def test_noaa_partial_raw_cache_is_replaced_only_after_full_download(
+    tmp_path, monkeypatch, download_fails: bool
+) -> None:
+    cycle = datetime(2026, 3, 18)
+    target = forecast_noaa.build_grib_path(tmp_path, cycle)
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"usable-partial-cycle")
+    schedule = forecast_noaa.build_gfs_steps()
+
+    def messages(steps):
+        return [
+            TpGribMessage(
+                cycle + forecast_noaa.timedelta(hours=step),
+                step,
+                np.array([-30.0]),
+                np.array([-52.0]),
+                np.array([[float(step)]]),
+            )
+            for step in steps
+        ]
+
+    monkeypatch.setattr(
+        forecast_noaa,
+        "read_gfs_precipitation_messages",
+        lambda path: messages(schedule[:2] if Path(path) == target else schedule),
+    )
+
+    def fake_download(target_path, *, cycle_time, bbox, forecast_hours, logger, product_config):
+        assert forecast_hours == schedule
+        if download_fails:
+            raise RuntimeError("provider download failed")
+        target_path.write_bytes(b"complete-cycle")
+
+    monkeypatch.setattr(forecast_noaa, "download_gfs_grib_to_path", fake_download)
+    if download_fails:
+        with pytest.raises(RuntimeError, match="provider download failed"):
+            forecast_noaa.download_forecast_grib(
+                cycle_time=cycle,
+                downloads_dir=tmp_path,
+                bbox=(-56.0, -33.0, -46.0, -28.0),
+            )
+        assert target.read_bytes() == b"usable-partial-cycle"
+    else:
+        result = forecast_noaa.download_forecast_grib(
+            cycle_time=cycle,
+            downloads_dir=tmp_path,
+            bbox=(-56.0, -33.0, -46.0, -28.0),
+        )
+        assert result == target
+        assert target.read_bytes() == b"complete-cycle"
 
 
 def test_gfs_request_uses_the_explicit_forecast_extent() -> None:

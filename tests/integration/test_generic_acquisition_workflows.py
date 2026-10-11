@@ -85,7 +85,7 @@ def test_ingest_from_csv_rolls_back_when_a_late_row_is_invalid(tmp_path) -> None
         assert repository.connection.execute("SELECT COUNT(*) FROM observed_value").fetchone()[0] == 0
 
 
-def test_ingest_forecast_asset_is_idempotent_and_detects_changed_content(tmp_path) -> None:
+def test_ingest_forecast_asset_refreshes_registered_metadata(tmp_path) -> None:
     context = _context(tmp_path)
     asset_path = context.paths.assets_dir / "ecmwf" / "forecast.nc"
     times = [
@@ -125,9 +125,41 @@ def test_ingest_forecast_asset_is_idempotent_and_detects_changed_content(tmp_pat
     second = ingest_forecast_asset(context, asset_path)
 
     assert first["asset_id"] == second["asset_id"]
-    asset_path.write_bytes(asset_path.read_bytes() + b"changed")
-    with pytest.raises((ValueError, OSError)):
-        ingest_forecast_asset(context, asset_path)
+    write_spatial_grid(
+        asset_path,
+        variable="precipitation",
+        grid_type="forecast",
+        source="resampled_from_grid",
+        providers=["ecmwf"],
+        units="mm",
+        bbox=(-52.0, -30.0, -51.0, -29.0),
+        resolution_degrees=1.0,
+        times_utc=[
+            datetime(2026, 3, 12, hour, tzinfo=timezone.utc)
+            for hour in (1, 2, 3)
+        ],
+        latitudes=np.array([-29.5]),
+        longitudes=np.array([-51.5]),
+        values=np.ones((3, 1, 1)),
+        processing_metadata={
+            "provider": "ecmwf",
+            "model": "ifs",
+            "product_type": "fc",
+            "source_format": "GRIB2",
+            "source_cycle_time": "2026-03-12T00:00:00Z",
+            "source_resolution": "0p25",
+            "source_parameter": "tp",
+            "model_bbox": [-51.75, -29.75, -51.25, -29.25],
+            "buffered_bbox": [-52.75, -30.75, -50.25, -28.25],
+            "requested_bbox": [-52.75, -30.75, -50.25, -28.25],
+            "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
+            "buffer_fraction": 2.0,
+        },
+    )
+    updated = ingest_forecast_asset(context, asset_path)
+
+    assert updated["checksum"] != first["checksum"]
+    assert updated["valid_to"] == "2026-03-12T03:00:00+00:00"
 
 
 def test_ingest_forecast_asset_replaces_obsolete_unbuffered_registration(tmp_path) -> None:
