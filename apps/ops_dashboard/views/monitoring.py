@@ -81,12 +81,31 @@ def _monitoring_view(
         sizing_mode="stretch_width",
         name="Operational map",
     )
+    map_pane.jscallback(
+        args={"deck": map_pane},
+        view_state=f"""
+        const view = Bokeh.index.find_one_by_id(deck.id)
+        if (view == null || view.deckGL == null) return
+        const visible = Number(cb_obj.viewState.zoom || 0) >=
+          {dashboard_map.STATION_RAINFALL_LABEL_MIN_ZOOM}
+        const layers = view.deckGL.props.layers.map((layer) =>
+          layer.id === "station-rainfall-labels" ? layer.clone({{visible}}) : layer
+        )
+        view.deckGL.setProps({{layers}})
+        """,
+    )
 
     def update_map(artifacts: Any) -> None:
         if artifacts is None:
             return
         view_state = getattr(map_pane, "view_state", None)
         spec, tooltips = dashboard_map.localize_map_display(artifacts, controller.language)
+        zoom = (view_state or {}).get(
+            "zoom", spec["initialViewState"].get("zoom", 0)
+        )
+        for layer in spec["layers"]:
+            if layer.get("id") == "station-rainfall-labels":
+                layer["visible"] = zoom >= dashboard_map.STATION_RAINFALL_LABEL_MIN_ZOOM
         map_pane.object = spec
         map_pane.tooltips = tooltips
         if view_state:
@@ -191,24 +210,20 @@ def _monitoring_view(
         controller.param.scenario_id,
         controller.param.language,
     )
-    def comparison_plot(*_: Any) -> pn.viewable.Viewable:
+    def comparison_plot(*_: Any) -> Any:
         observed = controller.chart_observed_series()
         model_series = controller.comparison_model_series()
-        return pn.pane.Plotly(
-            _comparison_chart(
-                observed,
-                model_series,
-                controller.station_id,
-                controller.mini_id,
-                controller.station_reference_levels(),
-                controller._runtime_reference_time,
-                controller.language,
-            ),
-            config={"responsive": True},
-            sizing_mode="stretch_width",
+        return _comparison_chart(
+            observed,
+            model_series,
+            controller.station_id,
+            controller.mini_id,
+            controller.station_reference_levels(),
+            controller._runtime_reference_time,
+            controller.language,
         )
 
-    comparison = pn.bind(
+    comparison_figure = pn.bind(
         comparison_plot,
         controller.param.station_id,
         controller.param.mini_id,
@@ -217,6 +232,43 @@ def _monitoring_view(
         controller.param.start_time,
         controller.param.language,
     )
+    png_resolution = pn.widgets.Select(
+        name=translate(controller.language, "monitor.png_resolution"),
+        options={"1×": 1, "2×": 2, "3×": 3},
+        value=1,
+        sizing_mode="stretch_width",
+    )
+    comparison = pn.pane.Plotly(
+        comparison_figure,
+        config={
+            "responsive": True,
+            "toImageButtonOptions": {
+                "format": "png",
+                "width": 1200,
+                "height": 780,
+                "scale": png_resolution.value,
+            },
+        },
+        sizing_mode="stretch_width",
+    )
+    comparison.jscallback(
+        config="""
+        const view = Bokeh.index.find_one_by_id(cb_obj.id)
+        if (view == null || view.container == null || view.container._context == null) return
+        view.container._context.toImageButtonOptions = cb_obj.config.toImageButtonOptions
+        """
+    )
+
+    def update_png_resolution(event: Any) -> None:
+        comparison.config = {
+            **comparison.config,
+            "toImageButtonOptions": {
+                **comparison.config["toImageButtonOptions"],
+                "scale": event.new,
+            },
+        }
+
+    png_resolution.param.watch(update_png_resolution, "value")
     chart_start = pn.widgets.DatetimeInput.from_param(
         controller.param.start_time,
         name="Chart start time",
@@ -245,7 +297,7 @@ def _monitoring_view(
             sizing_mode="stretch_width",
         )
     comparison_card = pn.Card(
-            chart_start,
+            pn.Row(chart_start, png_resolution, sizing_mode="stretch_width"),
             comparison,
             title=translate(controller.language, "monitor.comparison"),
             sizing_mode="stretch_width",
@@ -261,6 +313,7 @@ def _monitoring_view(
             (previous_hours, "monitor.previous_rain_hours"),
             (forecast_hours, "monitor.forecast_rain_hours"),
             (chart_start, "monitor.chart_start"),
+            (png_resolution, "monitor.png_resolution"),
             (legacy_controls[0], "monitor.rainfall_source"),
             (legacy_controls[1], "monitor.hours_before"),
             (legacy_controls[2], "monitor.hours_after"),

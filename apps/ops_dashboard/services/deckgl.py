@@ -22,6 +22,7 @@ from mgb_ops.assets.spatial_grid import PrecipitationGrid
 
 NO_DATA_COLOR = [230, 73, 128, 180]
 DATA_ISSUE_COLOR = [240, 140, 0, 210]
+STATION_RAINFALL_LABEL_MIN_ZOOM = 8
 KIND_COLORS = {
     "level": [11, 114, 133, 230],
     "rain": [54, 79, 199, 230],
@@ -487,6 +488,7 @@ def build_ops_map(
                     "@@type": "TextLayer",
                     "id": "station-rainfall-labels",
                     "data": label_data,
+                    "visible": False,
                     "pickable": False,
                     "getPosition": "@@=position",
                     "getText": "@@=text",
