@@ -1,0 +1,5 @@
+0
+
+Opções:
+0 - Telemetria da ANA
+1 - Diretório do computador

@@ -1,0 +1,6 @@
+Região	Total_mini	Mini01	Mini02	Mini03	Mini04	Mini05	Mini06	Mini07	Mini08	Mini09	Mini10	Mini11	Mini12	Mini13	Mini14	Mini15	Mini16	Mini17	Mini18	Mini19	Mini20	Mini21	Mini22	Mini23	Mini24	Mini25	Mini26	Mini27	Mini28	Mini29	Mini30	Mini31	Mini32	Mini33	Mini34	Mini35	Mini36	Mini37	Mini38	Mini39	Mini40	Mini41	Mini42	Mini43	Mini44	Mini45	Mini46	Mini47	Mini48	Mini49	Mini50	Mini51	Mini52	Mini53	Mini54	Mini55	Mini56	Mini57	Mini58	Mini59	Mini60	Mini61	Mini62	Mini63	Mini64	Mini65	Mini66	Mini67	Mini68	Mini69	Mini70	Mini71	Mini72	Mini73	Mini74	Mini75	Mini76	Mini77	Mini78	Mini79	Mini80	Mini81	Mini82	Mini83	Mini84	Mini85	Mini86	Mini87	Mini88	Mini89	Mini90	Mini91	Mini92	Mini93	Mini94	Mini95	Mini96
+Região_A 09 55 54 15 16 53 52 17 51 18
+Região_B 14 50 49 19 20 48 47 29 22 29 46 13 14 45 30
+Região_C 11 23 44 43 31 32 21 24 42 41 25 26
+Região_D 16 01 02 03 05 27 33 06 35 37 39 40 41 10 38 09 10
+Região_E 08 04 07 36 11 34 28 08 12

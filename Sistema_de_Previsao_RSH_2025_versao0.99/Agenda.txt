@@ -1,0 +1,6 @@
+Chuva_Observada:07:01
+Chuva_Prevista:07:20
+Vazão_Observada:07:22
+Vazão_UHES:07:30
+Rodar_Previsão:99:32
+Gravar_Resultados:99:38

@@ -1,0 +1,14 @@
+.\Arquivos do sistema\11_03_01 Dados
+.\Arquivos do sistema\11_03_01 Dados
+.\Arquivos do sistema\11_03_01 Dados
+.\Arquivos do sistema\11_03_02 Temporários
+.\Arquivos do sistema\11_03_03 Defluencias
+.\Arquivos do sistema\11_03_04 Modelos Meteo Auto\ETA
+.\Arquivos do sistema\11_03_02 Temporários
+.\Arquivos do sistema\11_03_02 Temporários
+.\Arquivos do sistema\11_03_01 Dados
+.\Arquivos do sistema\11_03_01 Dados
+.\Arquivos do sistema\11_03_04 Modelos Meteo Auto\ETA
+.\Arquivos do sistema\11_03_04 Modelos Meteo Auto\GEFS
+.\Arquivos do sistema\11_03_04 Modelos Meteo Auto\ECMWF
+.\Arquivos do sistema\11_03_05 Export

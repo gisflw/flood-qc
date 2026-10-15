@@ -1,0 +1,6 @@
+RAIZ
+
+Este arquivo é lido pelo formulário "Rodar Previsão" do sistema de previsão, logo que ele é aberto.
+Apenas a primeira linha deste arquivo é lida.
+Se estiver escrito C então o sistema de previsão entende que deve rodar um MGB cujos arquivos de entrada e saída estão na pastas c:/mgb-hora/input e c:/mgb-hora/output
+Se estiver escrito outra coisa, como RAIZ, então ele vai rodar o MGB com dados de entrada e saída das pastas INPUT e OUTPUT diretamente de dentro do sistema de previsão em MGB/INPUT e MGB/OUTPUT

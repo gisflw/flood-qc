@@ -1,0 +1,39 @@
+ID;CODIGO;LAT;LON;ALT;NOME;A;B;C (Variáveis das curvas chave tipo Q(h)=a*h^2 + b*h + c);Tipo;Endereço;Usuário;Senha;Arquivo;Coluna no arquivo;Ncaracteres;UHE
+1;UHE_GARIBALDI_deflu;-28.268555;-50.692835;0;Garibaldi;0;0;0;Deflu;ftp://200.218.161.16/ons/dadoshidrogar/dados_hidro.txt ;ftp_hidrogar;<REDACTED>;dados_hidro.txt ;51;7;UHE Garibaldi
+2;UHE_GARIBALDI_aflu;-28.268555;-50.692835;0;Garibaldi;0;0;0;Aflu;ftp://200.218.161.16/ons/dadoshidrogar/dados_hidro.txt ;ftp_hidrogar;<REDACTED>;dados_hidro.txt ;30;7;UHE Garibaldi
+3;UHE_MACHADINHO_deflu;-27.52361111;-51.78472222;0;Machadinho;0;0;0;Deflu;ftp://ftp.tractebelenergia.com.br/opma2/uhma.txt;hidroger;<REDACTED>;uhma.txt;51;7;UHE Machadinho
+4;UHE_MACHADINHO_aflu;-27.52361111;-51.78472222;0;Machadinho;0;0;0;Aflu;ftp://ftp.tractebelenergia.com.br/opma2/uhma.txt;hidroger;<REDACTED>;uhma.txt;30;7;UHE Machadinho
+5;UHE_ITA_deflu;-27.26666667;-52.38333333;0;Itá;0;0;0;Deflu;ftp://ftp.tractebelenergia.com.br/opit2/uhit.txt;hidroger;<REDACTED>;uhit.txt;51;7;UHE Itá
+6;UHE_ITA_aflu;-27.26666667;-52.38333333;0;Itá;0;0;0;Aflu;ftp://ftp.tractebelenergia.com.br/opit2/uhit.txt;hidroger;<REDACTED>;uhit.txt;30;7;UHE Itá
+7;UHE_PASSOFUNDO_deflu;-27.55;-52.73333333;0;Passo Fundo;0;0;0;Deflu;ftp://ftp.tractebelenergia.com.br/oppf2/uhpf.txt;hidroger;<REDACTED>;uhpf.txt;51;7;UHE Passo Fundo
+8;UHE_PASSOFUNDO_aflu;-27.55;-52.73333333;0;Passo Fundo;0;0;0;Aflu;ftp://ftp.tractebelenergia.com.br/oppf2/uhpf.txt;hidroger;<REDACTED>;uhpf.txt;30;7;UHE Passo Fundo
+9;UHE_FOZCHAPECO_deflu;-28.84777778;-53;0;FOZ CHAPECO;0;0;0;Deflu;ftp://177.75.151.203/uhfc.txt;ons;<REDACTED>;uhfc.txt;51;7;UHE Foz do Chapecó
+10;UHE_FOZCHAPECO_aflu;-28.84777778;-53;0;FOZ CHAPECO;0;0;0;Aflu;ftp://177.75.151.203/uhfc.txt;ons;<REDACTED>;uhfc.txt;30;7;UHE Foz do Chapecó
+11;UHE_CAMPOSNOVOS_deflu;-27.6;-51.31666667;0;Campos Novos;0;0;0;Deflu;ftp://201.67.199.194/uhcn.txt;ftpenercan;<REDACTED>;uhcn.txt;51;7;UHE Campos Novos
+12;UHE_CAMPOSNOVOS_aflu;-27.6;-51.31666667;0;Campos Novos;0;0;0;Aflu;ftp://201.67.199.194/uhcn.txt;ftpenercan;<REDACTED>;uhcn.txt;30;7;UHE Campos Novos
+13;UHE_BARRAGRANDE_deflu;-27.76666667;-51.21666667;0;Barra Grande;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Barra Grande
+14;UHE_BARRAGRANDE_aflu;-27.76666667;-51.21666667;0;Barra Grande;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Barra Grande
+15;UHE_MONJOLINHO_deflu;-27.3286111111;-52.7347222222;0;Monjolinho;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Monjolinho
+16;UHE_MONJOLINHO_aflu;-27.3286111111;-52.7347222222;0;Monjolinho;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Monjolinho
+17;UHE_SAOJOSE_deflu;-28.1769444444;-54.7502777778;0;SAO JOSE;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE São José
+18;UHE_SAOJOSE_aflu;-28.1769444444;-54.7502777778;0;SAO JOSE;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE São José
+19;UHE_PASSOSAOJOAO_deflu;-27.1230555556;-53.6836111111;0;PASSO SAO JOAO;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Passo de São João
+20;UHE_PASSOSAOJOAO_aflu;-27.1230555556;-53.6836111111;0;PASSO SAO JOAO;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Passo de São João
+21;UHE_PASSOREAL_deflu;-29.0166666667;-53.1833333333;0;Passo Real;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Passo Real
+22;UHE_PASSOREAL_aflu;-29.0166666667;-53.1833333333;0;Passo Real;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Passo Real
+23;UHE_ITAUBA_deflu;-29.260;-53.238;0;ITAUBA;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Itaúba
+24;UHE_ITAUBA_aflu;-29.260;-53.238;0;ITAUBA;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Itaúba
+25;UHE_DFRANCISCA_deflu;-29.4472222222;-53.2805555556;0;D. FRANCISCA;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Dona Francisca
+26;UHE_DFRANCISCA_aflu;-29.4472222222;-53.2805555556;0;D. FRANCISCA;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Dona Francisca
+27;UHE_14DEJULHO_deflu;-29.05;-51.6666666667;0;14 de Julho;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE 14 de Julho
+28;UHE_14DEJULHO_aflu;-29.05;-51.6666666667;0;14 de Julho;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE 14 de Julho
+29;UHE_CASTROALVES_deflu;-29.0083333333;-51.3791666667;0;Castro Alves;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Castro Alves
+30;UHE_CASTROALVES_aflu;-29.0083333333;-51.3791666667;0;Castro Alves;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Castro Alves
+31;UHE_MONTECLARO_deflu;-29.0166666667;-51.5;0;Monte Claro;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Monte Claro
+32;UHE_MONTECLARO_aflu;-29.0166666667;-51.5;0;Monte Claro;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Monte Claro
+33;UHE_JACUI_deflu;-29.0166666667;-51.5;0;JACUI;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Jacuí
+34;UHE_JACUI_aflu;-29.0166666667;-51.5;0;JACUI;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Jacuí
+35;UHE_ERNESTINA_deflu;-28.555;-52.544;0;Ernestina;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Ernestina
+36;UHE_ERNESTINA_aflu;-28.555;-52.544;0;Ernestina;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Ernestina
+37;UHE_QUEBRAQUEIXO_deflu;-26.668;-52.567;0;Quebra Queixo;0;0;0;Deflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;51;7;UHE Quebra Queixo
+38;UHE_QUEBRAQUEIXO_aflu;-26.668;-52.567;0;Quebra Queixo;0;0;0;Aflu;ftp://187.52.189.10/Dados/UHEBarraGrande.txt;uhbg;<REDACTED>;UHEBarraGrande.txt;30;7;UHE Quebra Queixo

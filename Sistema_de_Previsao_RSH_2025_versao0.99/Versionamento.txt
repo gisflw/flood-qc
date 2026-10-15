@@ -1,0 +1,63 @@
+Versão 0.7:
+- Versão entregue em abril de 2026 para o SGB com todas as funcionalidades de previsão funcionando em modo de testes.
+
+Versão 0.8:
+- Ativada a substituição dos dados das UHEs
+- Corrigida a atualização dos dados das UHEs que não estavam funcionando
+- Adicionado botão que copia também as datas das previsões, como solicitado durante o curso
+- Inclusão de botão de visualização de resultados mais acessíveis em novo menu na direita, agilizando o acesso do usuário
+- Inclusão de um botão de "Rodar modelo sem UHEs"
+- Inclusão do plugin de download dos dados de vento do INMET
+- Inclusão de funcionalidades de atualização dos dados de vento a partir dos dados baixados do INMET
+- Agora é permitido ajustar previamente a distribuição da chuva diária prevista em cada hora, por blocos alternados. Isso pode ser feito diretamente na interface ou no arquivo "desagregacao.csv"
+- Foi ajustada a leitura dos dados do ECMWF provenientes do SINTEGRE, agora tem um radiobutton que permite usar o formato antigo ou o novo
+- Colocadas ferramentas de acesso rápido ao Zoom no menu da direita
+- Criada ferramenta para rodadas em batelada: a ferramenta tem disparo automatizado de todos os processos, incluindo várias previsões com diferentes fontes de dados meteorológicos
+
+Versão 0.9:
+- Incluído gráfico de chuva acumulada na bacia na visualização dos resultados
+- Incluídos cálculos de chuva acumulada na bacia e no tempo na visualização dos resultados
+- Inclusão de 17 novas estações, em espacial no Rio Taquari (novas estações podem ser incluídas por qualquer pessoa)
+- Ajustamos a calibração de forma geral, mas em especial no Taquari e Caí
+
+Versão 0.95:
+- Incluída e testada a nova ferramenta de ler várias previsões em batelada, para gerar os gráficos de ensemble
+- Aprimorada a ferramenta de rodadas em batelada
+- Aprimorada a ferramenta de visualização de chuva nas últimas horas
+- Atualizadas ferramentas de download do GSMAP e do IMERG
+- Adicionada ferramenta de início rápido no menu inicial
+- Os gráficos de resultados tem como padrão intervalos diários no eixo X
+- ECMWF novo formato é o padrão em detrimento do formato antigo na ferramenta de previsões
+- Na ferramenta de vazões, incluído gráfico de últimos dados de nível, não só vazão
+- Na ferramenta de visualização de resultados foi incluída a opção de salvar figura na área de transferência (para facilitar envio por whatsapp ou colar em relatório)
+- A rodada do ECMWF foi otimizada para a leitura
+- Incluídas funções de facilitação de download e acesso aos dados baixados de vento
+- Incluída opção de leitura do arquivo zip de previsão do ONS
+- Ajustes realizados no CELL.HIG para melhorar representação níveis na região de POA4
+- Ajustes nos códigos e minibacias nas estações da Usina do Gasometro e Triunfo
+- Quando o usuário clica em Porto Alegre, abre duas janelas (Usina do Gasometro e Cais Maua C6)
+
+
+Versão 0.97 e 0.98:
+- Atualizada ferramenta de gráficos de ensemble para permitir ajustes de viés individual
+- Correção dos downloads dos dados, agora todos estão baixando do hidrotelemetria automaticamente nas interfaces das ferramentas
+- Melhoria na propagação hidrodinâmica no trecho final do Guaíba (ajuste na largura e profundidade)
+- Adição de novas estações telemétricas solicitadas do SGB, convencionais e telemétricas
+- Atualização dos shapefiles da interface, com inclusão dos shapefiles das estações convencionais do SGB, telemétricas e externas. Uso de outras cores que não vermelho, como solicitado.
+- Adição de shapefile de dados de chuva (pontinhos azuis)
+- Agora é possível organizar os dados dos código, por data ou por nome nas tabelas de chuva e fluviometria
+- Inclusão dos limiares nos gráficos de níveis gerados pela interface com click na tela
+- Atualmente o usuário pode escolher se quer usar um MGB que roda do C/MGB ou da raiz da pasta do software. O padrão é a raiz da pasta do software.
+- Atualizada ferramenta de visualização dos ensembles para cálculo do viés baseado nas últimas observações, caixas móveis, cores selecionáveis, figura adicionável, entre outras melhorias.
+- Acelerada a exportação de dados de vazões postos FLU e UHEs
+- Adicionada a ferramenta de edição de chuva prevista, que permite mudar a localização da chuva prevista
+- Adicionadas as ferramentas de geração de mapas de chuva observada e prevista
+
+Versão 0.99:
+- Nova ferramenta de visualizar resultados de Ensemble
+
+
+
+Para próximas versões:
+1. Correções na ferramenta visualização de previsões por ensemble
+2. Atualizar o manual

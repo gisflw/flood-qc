@@ -1,0 +1,5 @@
+1
+
+Options:
+0 - .dat
+1 - zipados

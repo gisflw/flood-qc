@@ -1,0 +1,35 @@
+HydrographViewer1.1:
+Permite o controle do viés individualmente a cada série de dados, bem como de todas em conjunto
+
+HydrographViewer1.2:
+Apenas mostra uma caixinha de legenda de pico por gráfico, enaltecendo somente o maior deles (reverter)
+Além disso, permite que o usuário manualmente mova e arraste a caixinha como desejar (todas elas)
+Padronizar cada campo de arquivos de previsão com os modelos e suas cores (reverter)
+	Permitir seleção manual de cores
+	
+HydrographViewer1.2.5: 
+Mostrar todas as caixas de legenda, permitindo arrastá-las
+Cada campo de previsão deve ser Previsão 1, Previsão 2...
+Cada campo de previsão permite a escolha de cores manualmente
+	
+HydrographViewer1.3: 
+Reforma estrutural do código garantindo maior otimização.
+		EstacoesNivel será único a partir de agora.
+Reforma visual da interface
+		Adicionar logos IPH, UFRGS, SGB e SAH em local fixo
+		Adicionar background para legenda, e fixá-los em um lugar
+		Alterar o tracejado de cada linha de previsão para que seja particular
+		Inserir data da rodada nos gráficos gerados no visualizador de ensembles
+		Inserir minbacia e informações no gráfico (log.txt)
+		
+HydrographViewer1.3.5: (EM PROCESSO
+Melhorar a lógica de salvar png das imagens
+Analisar a origem certa das informações de input
+fazer o logotipo ser móvel
+Adicionar tique diário no eixo x
+
+HydrographViewer1.4:
+	Apreensão de dados:
+		Adicionar botão de salvar imagens em batelada usando mesma lógica de csv em batelada
+		Mapa de chuvas observadas e previstas (ver com Alexandre)
+		Adicionar pós processamento (?)

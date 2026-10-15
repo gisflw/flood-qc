@@ -1,0 +1,6 @@
+ 0 
+ 1 
+
+Legenda
+Primeira linha, roda Fortran MC: 1-sim ou 0-não
+Segunda linha, roda Fortran IN: 1-sim ou 0-não

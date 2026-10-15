@@ -1,0 +1,2 @@
+D:/Sistemas de Previsão/Sistema_de_Previsao_RSH_2025_versao0.9/Plugins/Download_API_ANA/Input
+D:/Sistemas de Previsão/Sistema_de_Previsao_RSH_2025_versao0.9/Plugins/Download_API_ANA/Output

@@ -1,0 +1,61 @@
+{
+  "method": "Literal password/API-key assignments, NetworkCredential password arguments, credential comments, authenticated URLs, and identified long secret values; source encodings preserved. Dynamic credential expressions remain unchanged. Password columns in retained tabular configuration and prefilled password controls traced from FTP callers are also redacted.",
+  "files": [
+    {
+      "path": "EstacoesUHEs.txt",
+      "replacements": 38
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Backup/Telemetria/Form1.Designer.vb",
+      "replacements": 6
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Backup/Telemetria/Form16.vb",
+      "replacements": 5
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Backup/Telemetria/Form17.vb",
+      "replacements": 5
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Backup/Telemetria/Form3.vb",
+      "replacements": 1
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Backup/Telemetria/Form7.vb",
+      "replacements": 1
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Telemetria/Form16.vb",
+      "replacements": 5
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Telemetria/Form17.vb",
+      "replacements": 5
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Telemetria/Form3.vb",
+      "replacements": 1
+    },
+    {
+      "path": "FONTE_SISTEMA_PREV_RSH_2026_09_02/Telemetria/Form7.vb",
+      "replacements": 1
+    },
+    {
+      "path": "Form3.vb",
+      "replacements": 1
+    },
+    {
+      "path": "Plugins/DownloadTelemetriaANA/DownloadTelemetriaANA/DownloadTelemetriaANA/Module1.vb",
+      "replacements": 1
+    },
+    {
+      "path": "Plugins/Executavel_baixadordadosINMET/main_v3.py",
+      "replacements": 2
+    },
+    {
+      "path": "Plugins/Vento/plugin/downloader.py",
+      "replacements": 1
+    }
+  ]
+}
