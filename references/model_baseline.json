@@ -1,0 +1,270 @@
+{
+  "executable": {
+    "path": "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH",
+    "size_bytes": 478720,
+    "sha256": "263381e450484e5bc345e269f21c54e84d89afdff97ca2d9752eb951907f88eb",
+    "format": "ELF 64-bit LSB PIE executable, x86-64, dynamically linked",
+    "build_id_sha1": "d9c60ddc398ce935b742f2bc88f2318b3fc6690a",
+    "source_checkout_commit": "a30b72cae0207e5b2fcfd48a1b70ca00052f97a1"
+  },
+  "calibration_geometry_source": "/workspace/Sistema_de_Previsao_RSH_2025_versao0.99/MGB/Input",
+  "input_metadata": [
+    {
+      "path": "MGB/Input/Azimute_Mini.txt",
+      "size_bytes": 144061,
+      "sha256": "5d5b943e50b427b83cf9fa7606cd3a117541244994483e07590fa670d8f0b0cd"
+    },
+    {
+      "path": "MGB/Input/CCJUS.txt",
+      "size_bytes": 176792,
+      "sha256": "a3965f7d96e49c4b2971e1b8141efea77b093e8957683e8973ff7cd3c741c09d"
+    },
+    {
+      "path": "MGB/Input/CHUVABIN-DESKTOP-1I5A14H.hig",
+      "size_bytes": 390242880,
+      "sha256": "9ca97ed753d3b9e272a609f957df3c728a7bc08c48a330fe2e1d0d2b2a963a82"
+    },
+    {
+      "path": "MGB/Input/CHUVABIN.hig",
+      "size_bytes": 392699196,
+      "sha256": "bb670fd2c31531a835e88110e3b2a1d23e62d9b91882b10ff6d554fb24477667"
+    },
+    {
+      "path": "MGB/Input/CI.meta",
+      "size_bytes": 26,
+      "sha256": "ead4e41166d1a7630aed8664fb3ef57445ac95ab88469ad9552de12c34f1053e"
+    },
+    {
+      "path": "MGB/Input/CI_HFL.HOT",
+      "size_bytes": 276768,
+      "sha256": "3cb841467b6a6be24eddc5d3105638ddc5c2ca86886794c56ea407bc40b3298d"
+    },
+    {
+      "path": "MGB/Input/CI_Q2FL.HOT",
+      "size_bytes": 1401138,
+      "sha256": "b2fd1e713d5306df3532ba7b30ddfe93b6a9114c421c766f9ba2cfa969c825ed"
+    },
+    {
+      "path": "MGB/Input/CI_VOL.HOT",
+      "size_bytes": 2871468,
+      "sha256": "ed524eec0e49e59ab7885c405d8353fc669b4605b12fbee8bfc088df9c5498f7"
+    },
+    {
+      "path": "MGB/Input/CI_VOL1_FL.HOT",
+      "size_bytes": 795708,
+      "sha256": "e69c928ed5155c36c75fca1599e9926f7ee49f703d362dae9935b9a5734687b9"
+    },
+    {
+      "path": "MGB/Input/CI_W.HOT",
+      "size_bytes": 14668704,
+      "sha256": "7c4ecbd3bba973a205c8975a049d9d315c850244256cd1c769395a07ae6b33f5"
+    },
+    {
+      "path": "MGB/Input/COTA_AREA.FLP",
+      "size_bytes": 36325866,
+      "sha256": "32469e195c354512d828a96ba049ff7bf96ff0bb7e3ea26af31af52aa14e3153"
+    },
+    {
+      "path": "MGB/Input/Cell.hig",
+      "size_bytes": 2482550,
+      "sha256": "01db043559f6593160085cc243f6e1b1627f6b8ec291dd02845fac8132d43282"
+    },
+    {
+      "path": "MGB/Input/ChuvaHora.meta",
+      "size_bytes": 41,
+      "sha256": "d8c03f31444b3d511201cbab4958d90aae5683685bee420aa29ba4bc168bd5a0"
+    },
+    {
+      "path": "MGB/Input/DATA.hot",
+      "size_bytes": 26,
+      "sha256": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+    },
+    {
+      "path": "MGB/Input/EstacoesNivel.txt",
+      "size_bytes": 7426,
+      "sha256": "7adfc5f5fdf7d3b09a88934f47cda353b64dcb0ba060c8ae0f5207412f02544f"
+    },
+    {
+      "path": "MGB/Input/EstacoesPluv.txt",
+      "size_bytes": 33782,
+      "sha256": "bb0630a495904c45ccc04317a1f4a92308aa071bb4050c83afd8a725d684eb6e"
+    },
+    {
+      "path": "MGB/Input/FCORPLU.txt",
+      "size_bytes": 1819,
+      "sha256": "bd7240b7c43d8608f4c55d06e1b985c7d0551e40e2927018fe32fdc2701f97a2"
+    },
+    {
+      "path": "MGB/Input/HAND_Flood.asc",
+      "size_bytes": 325932216,
+      "sha256": "5efd6f540af3f93066495d3cda99fa9eb76514065ff9ef666ab0d91b7bc1857e"
+    },
+    {
+      "path": "MGB/Input/HOT.HOT",
+      "size_bytes": 5,
+      "sha256": "773ac3bfde8adb749433b89f1e62d185687558b2ee1383c8e7dfba930c22467d"
+    },
+    {
+      "path": "MGB/Input/HRC_description.hrc",
+      "size_bytes": 307,
+      "sha256": "57c7f50f88e863554e0401d3ddb969bb6c3e75d92913582bc5cb5df9dc65c321"
+    },
+    {
+      "path": "MGB/Input/Interplu_hora.MGB",
+      "size_bytes": 24116,
+      "sha256": "f81ce33800421f1845a473b75c149b4e8a84429c67fec1e5536a18d7308440b9"
+    },
+    {
+      "path": "MGB/Input/MAPEAMENTO_TRECHOS.csv",
+      "size_bytes": 3370328,
+      "sha256": "2febab23afe3c3b3271011e0ee8a1925b2df0528a816145996e946985c51cc45"
+    },
+    {
+      "path": "MGB/Input/MINI.csv",
+      "size_bytes": 1326809,
+      "sha256": "b639d8f75746b580563e5cff894b5b476919b588883e01222ba0c193d9109bae"
+    },
+    {
+      "path": "MGB/Input/MINI.gtp",
+      "size_bytes": 2482550,
+      "sha256": "01db043559f6593160085cc243f6e1b1627f6b8ec291dd02845fac8132d43282"
+    },
+    {
+      "path": "MGB/Input/MINI.mgb",
+      "size_bytes": 2482550,
+      "sha256": "01db043559f6593160085cc243f6e1b1627f6b8ec291dd02845fac8132d43282"
+    },
+    {
+      "path": "MGB/Input/NivOBS_hora.PRN",
+      "size_bytes": 25483857,
+      "sha256": "81b76ce60250fa7094fe3396f8d94c557d80cafebf049b0373324191509244b5"
+    },
+    {
+      "path": "MGB/Input/PARAM_ASSIMILA - Descri\u00e7\u00e3o.txt",
+      "size_bytes": 1442,
+      "sha256": "c2e8ac27eada967964cf4b368db4fa7fa47d5929e81d70b797d670d2d337e7f3"
+    },
+    {
+      "path": "MGB/Input/PARAM_ASSIMILA - UHEs FTP.txt",
+      "size_bytes": 12962,
+      "sha256": "4e6502ecc24a5bea769f4b3130389d513a034847ef4bbd1dc1ceafa3ef98d09a"
+    },
+    {
+      "path": "MGB/Input/PARAM_ASSIMILA - tudo zero.txt",
+      "size_bytes": 12839,
+      "sha256": "3cbfb8c093b5cccb0c0fc080f10a71b80b75249696cdb4f6d88fdec528d6f52e"
+    },
+    {
+      "path": "MGB/Input/PARAM_ASSIMILA.txt",
+      "size_bytes": 12988,
+      "sha256": "ac1525c15c913ba6504304afedf59dc9f2be4276f54c5fa129bff88b6ca0ed2e"
+    },
+    {
+      "path": "MGB/Input/PARHIG.hig",
+      "size_bytes": 3007,
+      "sha256": "b1e83bb4fcc8d9b20e641792911e184d52f56cfd15d059db95badd324d9c332c"
+    },
+    {
+      "path": "MGB/Input/PAUSE.MGB",
+      "size_bytes": 1,
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "path": "MGB/Input/Postos Flu.txt",
+      "size_bytes": 1416,
+      "sha256": "0df5e761e83d72480f3a9413248943c1e0c57e89bb62cfd985a684b0b5105db7"
+    },
+    {
+      "path": "MGB/Input/Previsao.meta",
+      "size_bytes": 251135,
+      "sha256": "1aa74055530a3b359bb0792201dbdd75a47798f00f8fb0dc0446c74adfac7dfb"
+    },
+    {
+      "path": "MGB/Input/QOBS_hora.PRN",
+      "size_bytes": 25497333,
+      "sha256": "c374e031cef40e5ab57852c154104e43179169fe9247307fc6d985dcd239330f"
+    },
+    {
+      "path": "MGB/Input/QSUBST_hora.PRN",
+      "size_bytes": 2883712,
+      "sha256": "0abb8eff56f2db8266951a301f5376dfcb7723ff178af496c2727f97302ed6a0"
+    },
+    {
+      "path": "MGB/Input/VOL.HOT",
+      "size_bytes": 536238,
+      "sha256": "c51a126eaf31754362d08cc0a40328bab48a36939a3f733e7378fa415dd05efc"
+    },
+    {
+      "path": "MGB/Input/W.HOT",
+      "size_bytes": 795708,
+      "sha256": "f33c9560dd49d4e2f21cdb8d6573cd3de60c0f57572450bf3c620796f37cd864"
+    },
+    {
+      "path": "MGB/Input/albiaf.hig",
+      "size_bytes": 2998,
+      "sha256": "d3e82f7c1563ad38c83b95e75710d41d452f85bc4199332f2b19feb0499bf0a6"
+    },
+    {
+      "path": "MGB/Input/curvas_chave_parametros-original.txt",
+      "size_bytes": 390255,
+      "sha256": "a63767c5a08e6479a5f03b547d9f3bea205633ec3681ec94eeec190c162dd827"
+    },
+    {
+      "path": "MGB/Input/curvas_chave_parametros.txt",
+      "size_bytes": 390262,
+      "sha256": "2f52e6e8b6304ac845e0df1fdcae99d209a14942e7b9ca066fa805891af2ff86"
+    },
+    {
+      "path": "MGB/Input/face.con",
+      "size_bytes": 72556,
+      "sha256": "7593945349553d4050b983934a04d9e2bf89b25381e76b840a9af28de1203b0b"
+    },
+    {
+      "path": "MGB/Input/medias.cli",
+      "size_bytes": 34379,
+      "sha256": "d6014e47c18693f0ec3eb4fa268a45e14de1639863c33faa318d01f4ed685e5e"
+    },
+    {
+      "path": "MGB/Input/paruso - Copia.hig",
+      "size_bytes": 104787,
+      "sha256": "24497d829a369adabc7df02dd443600767e07eeda7040425c18bab1b68a1e8e8"
+    },
+    {
+      "path": "MGB/Input/paruso.CAL",
+      "size_bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "MGB/Input/paruso.hig",
+      "size_bytes": 104787,
+      "sha256": "489de0f650c4a1d3c1f226ff7665c6daafb1e47124f6273c73220b25d1827d65"
+    },
+    {
+      "path": "MGB/Input/paruso_backup.hig",
+      "size_bytes": 104787,
+      "sha256": "838edabf48c6d42b5c6368d12bd6a7eeb99eb21cb524e1596f02ce2e158ae8d4"
+    },
+    {
+      "path": "MGB/Input/paruso_old.hig",
+      "size_bytes": 104787,
+      "sha256": "852c7a719ec93d6c99d4b73651e971ecb532bd38e2d91255b09b8b9467ca33fd"
+    },
+    {
+      "path": "MGB/Input/uhe_tocantins.mgb",
+      "size_bytes": 102,
+      "sha256": "560e6b69b89091796bd83bb81cc9461a639d4ca493399f7e4ce961e694f64caf"
+    },
+    {
+      "path": "MGB/Input/vento.txt",
+      "size_bytes": 145881,
+      "sha256": "e27220177d61a47b0841cedb6fb0a17c62c617c4b2aece3df40d441b590cd342"
+    }
+  ],
+  "notes": [
+    "This manifest identifies the existing input folder; it does not assert that every input is calibration or must be versioned.",
+    "The curated legacy/vbnet inventory records retention and omission decisions.",
+    "Executable/input compatibility and hot-start behavior have not been tested.",
+    "The two operational input folders and their hot-start files must not be treated as interchangeable.",
+    "Executable binaries and extensive datasets remain outside Git."
+  ]
+}

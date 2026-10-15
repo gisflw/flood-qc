@@ -1,0 +1,37 @@
+# Analysis, post-processing, and reports
+
+## Owns
+
+- Basin and station analysis, rainfall accumulations, peaks, thresholds, and maps.
+- Rating-curve conversion, flow/level error correction, manual bias, and
+  percentage bands supported by the reference system.
+- Scenario comparison and comparison with archived forecasts.
+- Complementary content from both existing bulletin families.
+- PDF, Markdown, HTML, and relevant CSV data exports.
+
+## Starting references
+
+Python: `src/mgb_ops/analysis/`, `src/mgb_ops/workflows/reporting.py`,
+`src/mgb_ops/assets/report.py`, dashboard charts/maps, and the Taquari report.
+
+VB.NET: `Form3`, `Form11`, `Form12`, `Form12b`, `Form23`, rainfall-bulletin tools,
+and `Plugins/HydrographViewer/`. The shapefile/exceedance tool is mapped in
+`Form18`/`Class1`; confirm its active integration when implementing GIS exports.
+
+## Implementation direction
+
+Use shared numerical results and report content across interfaces and formats.
+Study both bulletin examples before deciding their combined content and layout.
+Retain the useful manual chart adjustments and data exports from the references.
+Treat percentage bands according to their implemented definition; do not imply
+they are statistical confidence intervals without evidence.
+
+Decide conflicting post-processing behavior during development with a concrete
+example. Keep computation separate from chart rendering and document units and
+time conventions at their boundaries.
+
+## Evidence of completion
+
+One completed operation produces the required bulletin content in all three
+document formats and selected CSV datasets. Check key values against reference
+calculations and inspect rendered reports. Archived forecasts can be compared.
