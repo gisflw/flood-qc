@@ -78,7 +78,11 @@ def test_current_artifact_create_and_load(tmp_path: Path) -> None:
 @pytest.mark.parametrize("observed_variables,error", [("", "required"), ("wind", "unsupported"), ("rain,rain", "duplicates")])
 def test_history_station_inventory_rejects_invalid_observed_variables(tmp_path: Path, observed_variables: str, error: str) -> None:
     inventory = tmp_path / "inventory.csv"
-    inventory.write_text("provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables\nana,1,ONE,1,-29,-51,1,\"%s\"\n" % observed_variables, encoding="utf-8")
+    inventory.write_text(
+        "provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables,river_name,drainage_area_km2,municipality,state,responsible_agency,operator\n"
+        f'ana,1,ONE,1,-29,-51,1,"{observed_variables}",,,,,,\n',
+        encoding="utf-8",
+    )
     with pytest.raises(ValueError, match=error):
         initialize_history_db(tmp_path / "history.sqlite", inventory, SQL_DIR / "history_schema.sql")
 
@@ -89,7 +93,11 @@ def test_inventory_refresh_deletes_removed_station_and_observations(tmp_path: Pa
         connection.execute("INSERT INTO observed_series VALUES ('ana:74100000.level.raw', 'ana:74100000', 'level', 'raw', CURRENT_TIMESTAMP)")
         connection.execute("INSERT INTO observed_value VALUES ('ana:74100000.level.raw', '2026-03-10 00:00', 10)")
     inventory = tmp_path / "without_station.csv"
-    inventory.write_text("provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables\nana,2650035,UHE ITA CACADOR PLU,,-26.8192,-50.9856,960,rain\n", encoding="utf-8")
+    inventory.write_text(
+        "provider_code,station_code,station_name,mini_id,latitude,longitude,altitude_m,observed_variables,river_name,drainage_area_km2,municipality,state,responsible_agency,operator\n"
+        "ana,2650035,UHE ITA CACADOR PLU,,-26.8192,-50.9856,960,rain,,,,,,\n",
+        encoding="utf-8",
+    )
     initialize_history_db(path, inventory, SQL_DIR / "history_schema.sql")
     with sqlite3.connect(path) as connection:
         assert connection.execute("SELECT COUNT(*) FROM observed_value").fetchone()[0] == 0

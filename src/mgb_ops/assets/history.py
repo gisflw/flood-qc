@@ -29,8 +29,6 @@ class HistoryRepository:
     def validate_database(
         cls,
         database_path: Path,
-        *,
-        allow_missing_station_observed_variable: bool = False,
     ) -> None:
         path = Path(database_path)
         connection = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
@@ -39,9 +37,7 @@ class HistoryRepository:
         repository.connection = connection
         try:
             connection.row_factory = sqlite3.Row
-            repository._validate_expected_schema(
-                allow_missing_station_observed_variable=allow_missing_station_observed_variable,
-            )
+            repository._validate_expected_schema()
         finally:
             connection.close()
 
@@ -53,13 +49,6 @@ class HistoryRepository:
 
     def close(self) -> None:
         self.connection.close()
-
-    def _table_exists(self, table_name: str) -> bool:
-        row = self.connection.execute(
-            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-            (table_name,),
-        ).fetchone()
-        return row is not None
 
     def _require_exact_columns(self, table_name: str, expected_columns: set[str]) -> None:
         found_columns = {
@@ -74,7 +63,7 @@ class HistoryRepository:
                 "`mgb_ops.assets.databases`."
             )
 
-    def _validate_expected_schema(self, *, allow_missing_station_observed_variable: bool = False) -> None:
+    def _validate_expected_schema(self) -> None:
         self._require_exact_columns(
             "asset",
             {
@@ -91,6 +80,26 @@ class HistoryRepository:
             },
         )
         self._require_exact_columns(
+            "station",
+            {
+                "station_id",
+                "station_code",
+                "station_name",
+                "provider_code",
+                "mini_id",
+                "latitude",
+                "longitude",
+                "altitude_m",
+                "river_name",
+                "drainage_area_km2",
+                "municipality",
+                "state",
+                "responsible_agency",
+                "operator",
+                "created_at",
+            },
+        )
+        self._require_exact_columns(
             "observed_series",
             {
                 "series_id",
@@ -100,14 +109,13 @@ class HistoryRepository:
                 "created_at",
             },
         )
-        if self._table_exists("station_observed_variable") or not allow_missing_station_observed_variable:
-            self._require_exact_columns(
-                "station_observed_variable",
-                {
-                    "station_id",
-                    "variable_code",
-                },
-            )
+        self._require_exact_columns(
+            "station_observed_variable",
+            {
+                "station_id",
+                "variable_code",
+            },
+        )
 
         variable_codes = {
             row["variable_code"]

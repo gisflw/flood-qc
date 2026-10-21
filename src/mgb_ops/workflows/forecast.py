@@ -394,10 +394,8 @@ def ingest_forecast_asset(context: RuntimeContext, path: Path) -> dict[str, obje
         buffered_bbox = json.loads(str(grid.metadata["buffered_bbox"]))
     except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError("Forecast asset is missing valid bbox buffer metadata.") from exc
-    _, expected_buffer_fraction = _forecast_settings(context.settings)
     if (
-        buffer_fraction != expected_buffer_fraction
-        or buffered_bbox != list(build_bbox_with_buffer(tuple(model_bbox), buffer_fraction=expected_buffer_fraction))
+        buffered_bbox != list(build_bbox_with_buffer(tuple(model_bbox), buffer_fraction=buffer_fraction))
     ):
         raise ValueError("Forecast asset bbox buffer metadata is inconsistent.")
     cycle_text = _metadata_value(grid, "source_cycle_time")

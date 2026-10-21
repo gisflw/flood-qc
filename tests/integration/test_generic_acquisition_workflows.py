@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 
 from db_helpers import initialize_history_db
+from mgb_ops.adapters.forecast_ecmwf import build_bbox_with_buffer
 from mgb_ops.assets.history import HistoryRepository
 from mgb_ops.assets.observations import CANONICAL_OBSERVED_COLUMNS
 from mgb_ops.assets.spatial_grid import write_spatial_grid
@@ -85,13 +86,16 @@ def test_ingest_from_csv_rolls_back_when_a_late_row_is_invalid(tmp_path) -> None
         assert repository.connection.execute("SELECT COUNT(*) FROM observed_value").fetchone()[0] == 0
 
 
-def test_ingest_forecast_asset_refreshes_registered_metadata(tmp_path) -> None:
+@pytest.mark.parametrize("buffer_fraction", [0.5, 2.0])
+def test_ingest_forecast_asset_refreshes_registered_metadata(tmp_path, buffer_fraction: float) -> None:
     context = _context(tmp_path)
     asset_path = context.paths.assets_dir / "ecmwf" / "forecast.nc"
     times = [
         datetime(2026, 3, 12, hour, tzinfo=timezone.utc)
         for hour in (1, 2)
     ]
+    model_bbox = [-51.75, -29.75, -51.25, -29.25]
+    buffered_bbox = build_bbox_with_buffer(tuple(model_bbox), buffer_fraction=buffer_fraction)
     write_spatial_grid(
         asset_path,
         variable="precipitation",
@@ -113,11 +117,11 @@ def test_ingest_forecast_asset_refreshes_registered_metadata(tmp_path) -> None:
             "source_cycle_time": "2026-03-12T00:00:00Z",
             "source_resolution": "0p25",
             "source_parameter": "tp",
-            "model_bbox": [-51.75, -29.75, -51.25, -29.25],
-            "buffered_bbox": [-52.75, -30.75, -50.25, -28.25],
-            "requested_bbox": [-52.75, -30.75, -50.25, -28.25],
+            "model_bbox": model_bbox,
+            "buffered_bbox": buffered_bbox,
+            "requested_bbox": buffered_bbox,
             "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
-            "buffer_fraction": 2.0,
+            "buffer_fraction": buffer_fraction,
         },
     )
 
@@ -149,11 +153,11 @@ def test_ingest_forecast_asset_refreshes_registered_metadata(tmp_path) -> None:
             "source_cycle_time": "2026-03-12T00:00:00Z",
             "source_resolution": "0p25",
             "source_parameter": "tp",
-            "model_bbox": [-51.75, -29.75, -51.25, -29.25],
-            "buffered_bbox": [-52.75, -30.75, -50.25, -28.25],
-            "requested_bbox": [-52.75, -30.75, -50.25, -28.25],
+            "model_bbox": model_bbox,
+            "buffered_bbox": buffered_bbox,
+            "requested_bbox": buffered_bbox,
             "effective_bbox": [-52.0, -30.0, -51.0, -29.0],
-            "buffer_fraction": 2.0,
+            "buffer_fraction": buffer_fraction,
         },
     )
     updated = ingest_forecast_asset(context, asset_path)

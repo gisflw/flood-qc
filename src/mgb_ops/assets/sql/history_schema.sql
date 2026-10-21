@@ -25,7 +25,13 @@ CREATE TABLE IF NOT EXISTS station (
     mini_id INTEGER,
     latitude REAL,
     longitude REAL,
-    altitude_m INTEGER,
+    altitude_m REAL,
+    river_name TEXT,
+    drainage_area_km2 REAL,
+    municipality TEXT,
+    state TEXT,
+    responsible_agency TEXT,
+    operator TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (provider_code, station_code)
 );

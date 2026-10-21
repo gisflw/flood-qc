@@ -17,7 +17,7 @@ from mgb_ops.utils.logging import (
 )
 from mgb_ops.utils.time import TIMEZONE, resolve_reference_time
 
-DEFAULT_ANA_BASE_URL = "http://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
+DEFAULT_ANA_BASE_URL = "https://telemetriaws1.ana.gov.br/serviceana.asmx/DadosHidrometeorologicos"
 OBSERVED_VARIABLES = ("rain", "level", "flow")
 
 
@@ -199,14 +199,16 @@ def write_normalized_csv(
     provider_code: str,
     station_code: str,
     state: str = "raw",
+    variable_columns: Iterable[str] = OBSERVED_VARIABLES,
 ) -> Path:
+    variable_columns = set(variable_columns)
     return write_normalized_observed_csv(
         frame,
         output_path=output_path,
         station_id=station_id,
         provider_code=provider_code,
         station_code=station_code,
-        variable_columns=OBSERVED_VARIABLES,
+        variable_columns=tuple(code for code in OBSERVED_VARIABLES if code in variable_columns),
         state=state,
     )
 
@@ -238,6 +240,7 @@ def fetch_observed_ana(
     for station in stations:
         station_id = str(station["station_id"])
         station_code = str(station["station_code"])
+        station_variables = tuple(station.get("observed_variable_codes", OBSERVED_VARIABLES))
         request_dates = list(request_dates_by_station.get(station_id, []))
         csv_path = build_normalized_csv_path(ana_root_dir, station_code=station_code)
 
@@ -248,6 +251,7 @@ def fetch_observed_ana(
                 station_id=station_id,
                 provider_code="ana",
                 station_code=station_code,
+                variable_columns=station_variables,
             )
             station_summaries.append(
                 ObservedFetchStationSummary(
@@ -355,6 +359,7 @@ def fetch_observed_ana(
                 station_id=station_id,
                 provider_code="ana",
                 station_code=station_code,
+                variable_columns=station_variables,
             )
             station_summaries.append(
                 ObservedFetchStationSummary(

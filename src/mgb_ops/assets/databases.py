@@ -7,8 +7,6 @@ import os
 import re
 import sqlite3
 import tempfile
-import unicodedata
-from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
 
@@ -22,8 +20,6 @@ def apply_schema(database_path: Path, schema_path: Path) -> None:
         if Path(schema_path).name == "history_schema.sql":
             _remove_history_legacy_entities(connection)
         connection.executescript(schema_sql)
-        _migrate_station_mini_id(connection)
-        _migrate_station_level_reference(connection)
         connection.commit()
 
 
@@ -37,33 +33,6 @@ def _remove_history_legacy_entities(connection: sqlite3.Connection) -> None:
         connection.execute(f"DROP TABLE IF EXISTS {table}")
 
 
-def _migrate_station_mini_id(connection: sqlite3.Connection) -> None:
-    station_columns = {
-        row[1]
-        for row in connection.execute("PRAGMA table_info(station)").fetchall()
-    }
-    if station_columns and "mini_id" not in station_columns:
-        connection.execute("ALTER TABLE station ADD COLUMN mini_id INTEGER")
-
-def _migrate_station_level_reference(connection: sqlite3.Connection) -> None:
-    """Move the renamed station-level reference table to its current schema."""
-    legacy_table = connection.execute(
-        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'station_level_boundary'"
-    ).fetchone()
-    if legacy_table is None:
-        return
-    connection.execute(
-        "INSERT OR REPLACE INTO station_level_reference (station_id, reference_code, level_cm) "
-        "SELECT station_id, boundary_code, level_cm FROM station_level_boundary"
-    )
-    connection.execute("DROP TABLE station_level_boundary")
-
-
-def _normalize_station_name(name: str) -> str:
-    normalized = unicodedata.normalize("NFKD", name.strip())
-    return normalized.encode("ascii", "ignore").decode("ascii").upper()
-
-
 def _normalize_station_code(provider_code: str, station_code: str) -> str:
     normalized = str(station_code).strip().upper()
     if not normalized:
@@ -72,18 +41,24 @@ def _normalize_station_code(provider_code: str, station_code: str) -> str:
 
 
 def _parse_nullable_int(value: str) -> int | None:
-    normalized = value.strip()
+    normalized = str(value or "").strip()
     if not normalized:
         return None
     normalized = normalized.replace(",", "")
     return int(normalized)
 
 
-def _parse_nullable_coordinate(value: str) -> float | None:
-    normalized = value.strip()
+def _parse_nullable_real(value: str, *, row_label: str, column: str) -> float | None:
+    normalized = str(value or "").strip()
     if not normalized:
         return None
-    return float(Decimal(normalized).quantize(Decimal("0.0001"), rounding=ROUND_DOWN))
+    try:
+        parsed = float(normalized)
+    except ValueError as exc:
+        raise ValueError(f"{row_label}: {column} must be numeric.") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{row_label}: {column} must be finite.")
+    return parsed
 
 
 
@@ -144,13 +119,18 @@ def load_history_station_inventory(
         "longitude",
         "altitude_m",
         "observed_variables",
+        "river_name",
+        "drainage_area_km2",
+        "municipality",
+        "state",
+        "responsible_agency",
+        "operator",
     }
     station_rows: list[tuple[object, ...]] = []
     capability_rows: list[tuple[str, str]] = []
     inventory_station_ids: list[tuple[str]] = []
     seen_keys: set[tuple[str, str]] = set()
     seen_station_ids: set[str] = set()
-    station_id_by_mini_id: dict[int, str] = {}
 
     with inventory_path.open("r", encoding="utf-8", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -166,13 +146,26 @@ def load_history_station_inventory(
                 raise ValueError(
                     f"{row_label}: too many columns; quote observed_variables values containing commas."
                 )
-            provider_code = raw_row["provider_code"].strip().lower()
-            station_code = _normalize_station_code(provider_code, raw_row["station_code"])
-            station_name = _normalize_station_name(raw_row["station_name"])
+            provider_code = str(raw_row["provider_code"] or "").strip().lower()
+            if provider_code not in {"ana", "inmet"}:
+                raise ValueError(f"{row_label}: unsupported observed provider_code {provider_code!r}.")
+            station_code = _normalize_station_code(provider_code, str(raw_row["station_code"] or ""))
+            station_name = str(raw_row["station_name"] or "").strip()
+            if not station_name:
+                raise ValueError(f"{row_label}: station_name is required.")
             mini_id = _parse_nullable_int(raw_row["mini_id"])
-            latitude = _parse_nullable_coordinate(raw_row["latitude"])
-            longitude = _parse_nullable_coordinate(raw_row["longitude"])
-            altitude_m = _parse_nullable_int(raw_row["altitude_m"])
+            latitude = _parse_nullable_real(raw_row["latitude"], row_label=row_label, column="latitude")
+            longitude = _parse_nullable_real(raw_row["longitude"], row_label=row_label, column="longitude")
+            altitude_m = _parse_nullable_real(raw_row["altitude_m"], row_label=row_label, column="altitude_m")
+            drainage_area_km2 = _parse_nullable_real(
+                raw_row["drainage_area_km2"], row_label=row_label, column="drainage_area_km2"
+            )
+            if latitude is not None and not -90 <= latitude <= 90:
+                raise ValueError(f"{row_label}: latitude must be between -90 and 90.")
+            if longitude is not None and not -180 <= longitude <= 180:
+                raise ValueError(f"{row_label}: longitude must be between -180 and 180.")
+            if drainage_area_km2 is not None and drainage_area_km2 < 0:
+                raise ValueError(f"{row_label}: drainage_area_km2 must be >= 0.")
             observed_variables = parse_observed_variables(
                 raw_row["observed_variables"],
                 row_label=row_label,
@@ -187,14 +180,6 @@ def load_history_station_inventory(
             if station_id in seen_station_ids:
                 raise ValueError(f"Duplicate station_id in inventory CSV for {row_key}: {station_id}")
             seen_station_ids.add(station_id)
-            if mini_id is not None:
-                existing_station_id = station_id_by_mini_id.get(mini_id)
-                if existing_station_id is not None:
-                    raise ValueError(
-                        f"Duplicate mini_id in inventory CSV: {mini_id} is assigned to "
-                        f"{existing_station_id} and {station_id}"
-                    )
-                station_id_by_mini_id[mini_id] = station_id
             inventory_station_ids.append((station_id,))
 
             station_rows.append(
@@ -207,6 +192,12 @@ def load_history_station_inventory(
                     latitude,
                     longitude,
                     altitude_m,
+                    raw_row["river_name"] or None,
+                    drainage_area_km2,
+                    raw_row["municipality"] or None,
+                    raw_row["state"] or None,
+                    raw_row["responsible_agency"] or None,
+                    raw_row["operator"] or None,
                 )
             )
             capability_rows.extend((station_id, variable_code) for variable_code in observed_variables)
@@ -232,14 +223,26 @@ def load_history_station_inventory(
                 mini_id,
                 latitude,
                 longitude,
-                altitude_m
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                altitude_m,
+                river_name,
+                drainage_area_km2,
+                municipality,
+                state,
+                responsible_agency,
+                operator
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(provider_code, station_code) DO UPDATE SET
                 station_name = excluded.station_name,
                 mini_id = excluded.mini_id,
                 latitude = excluded.latitude,
                 longitude = excluded.longitude,
-                altitude_m = excluded.altitude_m
+                altitude_m = excluded.altitude_m,
+                river_name = excluded.river_name,
+                drainage_area_km2 = excluded.drainage_area_km2,
+                municipality = excluded.municipality,
+                state = excluded.state,
+                responsible_agency = excluded.responsible_agency,
+                operator = excluded.operator
             """,
             station_rows,
         )
@@ -381,7 +384,7 @@ def initialize_history_db(
             raise RuntimeError(f"History database is not a valid SQLite database: {target}") from exc
     if user_tables:
         from mgb_ops.assets.history import HistoryRepository
-        HistoryRepository.validate_database(target, allow_missing_station_observed_variable=True)
+        HistoryRepository.validate_database(target)
         apply_schema(target, Path(schema_path))
         load_history_station_inventory(target, inventory_csv_path)
         if boundaries_csv_path is not None or historical_floods_csv_path is not None:
