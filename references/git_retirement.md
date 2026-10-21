@@ -1,7 +1,8 @@
-# Git retirement and reference preservation
+# Historical Git retirement specification
 
-This is the original retirement specification. See the
-[retirement record](retirement_record.md) for the completed local setup.
+This records the October 15, 2026 preparation plan. It is historical: the
+current worktree folders, branch tips, upstreams, and VB.NET snapshot inventory
+are recorded in the [current worktree record](retirement_record.md).
 
 ## Result
 
@@ -13,8 +14,9 @@ Use the existing `mgb_ops` repository for all three lines of history:
 | `legacy/vbnet` | A disconnected reference snapshot of VB.NET and its bundled plugins, with source maps and ignore rules. |
 | `main` | Rust successor starting with a clean tree and a new parentless root commit, disconnected from both legacy histories. |
 
-These are proposed branch names. The reference branches remain frozen after
-their initial preparation; they do not receive Rust changes.
+The branch names were proposed in this specification and are now established.
+The reference branches have since received commits; see the current record for
+their present tips.
 
 ## 1. Freeze Python
 

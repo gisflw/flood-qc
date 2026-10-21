@@ -1,7 +1,9 @@
 # VB.NET and bundled Python reference map
 
-Current source root: `Sistema_de_Previsao_RSH_2025_versao0.99/`.
-Frozen reference: `legacy/vbnet` once prepared.
+Current VB.NET reference worktree: `/workspace/legacy_vbnet/`, branch
+`legacy/vbnet` at `10b61520d43512e8a5923989f38c0745398b01c5`.
+Source paths below are relative to the retained
+`Sistema_de_Previsao_RSH_2025_versao0.99/` directory in that worktree.
 
 The main VB.NET project is under
 `FONTE_SISTEMA_PREV_RSH_2026_09_02/Telemetria/`; the form paths below are relative

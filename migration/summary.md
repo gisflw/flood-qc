@@ -4,10 +4,11 @@
 
 Build a Rust successor to `mgb_ops` using its existing data flow and the additional
 operational capabilities found in the parallel VB.NET/Python system. Preserve
-both implementations as frozen references in the same Git repository first.
-The Python legacy branch retains the complete existing commit history. Rust
-development starts on a clean `main` with a new parentless root commit and no
-inherited Python source or commit ancestry.
+both implementations as references in the same Git repository.
+The Python reference is checked out at `/workspace/legacy_python/` on
+`legacy/python`; the curated VB.NET reference is at `/workspace/legacy_vbnet/`
+on `legacy/vbnet`. Rust development starts on the independent, clean `main`
+worktree at `/workspace/mgb_ops`.
 
 The application is CLI-first. A Windows/Linux desktop application uses the same
 Rust capabilities. The external MGB executable remains the numerical engine.

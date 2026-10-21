@@ -1,12 +1,12 @@
 # MGB Ops Rust successor
 
 This independent `main` history starts the Rust successor with migration
-documentation only. Rust implementation has not started. The frozen Python
-history and curated VB.NET snapshot remain on `legacy/python` and
-`legacy/vbnet` in this same repository.
+documentation only. Rust implementation has not started. The Python and curated
+VB.NET references are available on `legacy/python` and `legacy/vbnet` in this
+repository, checked out in sibling worktrees.
 
-See the [retirement record](references/retirement_record.md) for workspace
-locations, preserved commits, snapshot inventories, and verification results.
+See the [worktree record](references/retirement_record.md) for current folders,
+branch tips, upstreams, and historical retirement details.
 
 ## Read and execute in this order
 
@@ -19,8 +19,8 @@ locations, preserved commits, snapshot inventories, and verification results.
 
 ## Agreed direction
 
-- Preserve the complete Python commit history on its legacy branch. Restart
-  `main` with a clean tree and independent root commit for the Rust successor.
+- Keep the Python and VB.NET references on their independent legacy branches;
+  `main` is the independent Rust successor history.
 - Keep the data flow from `mgb_ops`, adding capabilities from the VB.NET system
   and its Python plugins. These systems were developed in parallel.
 - Implement the application entirely in Rust, except for the external MGB

@@ -1,7 +1,8 @@
 # Python reference map
 
-Current source: `mgb_ops/`. Frozen reference: `legacy/python` once created.
-Paths below are relative to that repository root.
+Current Python reference worktree: `/workspace/legacy_python/`, branch
+`legacy/python` at `7ecc86a21416b7601384715062ec4c41557d9313`.
+Paths below are relative to that worktree root.
 
 The operational data flow is the migration's starting point. Existing code and
 tests are stronger evidence than status paragraphs in older documentation.

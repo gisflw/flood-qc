@@ -1,67 +1,112 @@
 {
-  "date": "2026-10-15",
-  "publication": "local_only",
-  "python": {
-    "branch": "legacy/python",
-    "commit": "476602e1b7a0f3d70ffc9ce8400761020ebe37e9",
-    "preserved_commits": 144,
-    "upstream": null
-  },
-  "vbnet": {
-    "branch": "legacy/vbnet",
-    "commit": "349eee89ca5db4cf7befb7fb2b5f30ea6c1da2e5",
-    "tracked_files": 828,
-    "retained_original_files": 822,
-    "excluded_original_files": 22598,
-    "redacted_original_files": 14,
-    "parentless": true
-  },
-  "main": {
-    "branch": "main",
-    "worktree": "/workspace/mgb_ops_rust",
-    "contents": "migration documentation, baseline metadata, retirement records, ignore rules",
-    "parentless": true,
-    "upstream": null,
-    "commit_lookup": "git rev-parse main"
-  },
-  "original_folder_manifests": [
-    {
-      "folder": "/workspace/mgb_ops",
-      "file_count": 13484,
-      "bytes": 832709119,
-      "manifest_sha256": "ca3bfcaf4b2006c9b9448f13279fd096f157b995c7fde9b9ad2ed9468f5e2586"
+  "current_state": {
+    "checked_on": "2026-10-21",
+    "shared_git_directory": "/workspace/legacy_python/.git",
+    "worktrees": [
+      {
+        "folder": "/workspace/mgb_ops",
+        "branch": "main",
+        "commit": "1494090e1208a018271f61d28ad0df4d240e4ad7",
+        "upstream": "origin/main",
+        "worktree_status": "modified by this documentation refresh"
+      },
+      {
+        "folder": "/workspace/legacy_python",
+        "branch": "legacy/python",
+        "commit": "7ecc86a21416b7601384715062ec4c41557d9313",
+        "upstream": "origin/legacy/python",
+        "reachable_commits": 145,
+        "clean": true
+      },
+      {
+        "folder": "/workspace/legacy_vbnet",
+        "branch": "legacy/vbnet",
+        "commit": "10b61520d43512e8a5923989f38c0745398b01c5",
+        "upstream": "origin/legacy/vbnet",
+        "tracked_files": 264,
+        "retained_inventory": "references/inventory.csv",
+        "local_only_full_inventory": "references/inventory.full.csv",
+        "clean": true
+      }
+    ],
+    "independent_roots": {
+      "main": "1494090e1208a018271f61d28ad0df4d240e4ad7",
+      "legacy/python": "10f1d3b95d0d4197af0f3d75fa0f399357b3d0c3",
+      "legacy/vbnet": "10b61520d43512e8a5923989f38c0745398b01c5"
     },
-    {
-      "folder": "/workspace/Sistema_de_Previsao_RSH_2025_versao0.99",
-      "file_count": 23420,
-      "bytes": 10590725782,
-      "manifest_sha256": "65207e3a396a22017853937ca7e93ff8ecabae380e930f3ef18656c6726685b4"
+    "notes": [
+      "Rust implementation has not started.",
+      "Current worktree and ref state was read from Git on the checked date; historical manifests were not regenerated."
+    ]
+  },
+  "historical_retirement": {
+    "prepared_on": "2026-10-15",
+    "original_python": {
+      "branch": "legacy/python",
+      "commit": "476602e1b7a0f3d70ffc9ce8400761020ebe37e9",
+      "preserved_commits": 144,
+      "upstream": null
     },
-    {
-      "folder": "/workspace/rs_hydro_forecast",
-      "file_count": 25334,
-      "bytes": 4699383502,
-      "manifest_sha256": "4c50b9bad319c047da515eb154b0f79afac6401ce722dd5cac61b0bc88460d53"
+    "original_vbnet": {
+      "branch": "legacy/vbnet",
+      "commit": "349eee89ca5db4cf7befb7fb2b5f30ea6c1da2e5",
+      "tracked_files": 828,
+      "retained_original_files": 822,
+      "excluded_original_files": 22598,
+      "redacted_original_files": 14,
+      "parentless": true
     },
-    {
-      "folder": "/workspace/mgb_ops_rust_plan",
-      "file_count": 13,
-      "bytes": 28490,
-      "manifest_sha256": "5a7a58555d9731d62d279b16f29e036b1bc962cf9030d1655a83968cfc20b2bd"
-    }
-  ],
-  "checks": [
-    "All 144 original Python commits retain their original IDs and remain reachable.",
-    "New main and VB.NET histories are parentless and unrelated to each other or Python.",
-    "Original file contents, modes, paths, and symlink targets are preserved (Git metadata excluded).",
-    "The rs_hydro_forecast local configuration edit is preserved.",
-    "No remote refs were updated.",
-    "Unredacted VB.NET files match their original SHA-256 values.",
-    "VB.NET source/configuration credential redactions and complete original-file inventory were reviewed."
-  ],
-  "limitations": [
-    "Archived applications were not built.",
-    "The selected runner/input compatibility and hot-start behavior are unverified.",
-    "No Rust application has been implemented."
-  ]
+    "original_main": {
+      "branch": "main",
+      "worktree": "/workspace/mgb_ops_rust",
+      "contents": "migration documentation, baseline metadata, retirement records, ignore rules",
+      "parentless": true,
+      "upstream": null,
+      "commit_lookup": "git rev-parse main"
+    },
+    "original_folder_manifests": [
+      {
+        "folder": "/workspace/mgb_ops",
+        "file_count": 13484,
+        "bytes": 832709119,
+        "manifest_sha256": "ca3bfcaf4b2006c9b9448f13279fd096f157b995c7fde9b9ad2ed9468f5e2586"
+      },
+      {
+        "folder": "/workspace/Sistema_de_Previsao_RSH_2025_versao0.99",
+        "file_count": 23420,
+        "bytes": 10590725782,
+        "manifest_sha256": "65207e3a396a22017853937ca7e93ff8ecabae380e930f3ef18656c6726685b4"
+      },
+      {
+        "folder": "/workspace/rs_hydro_forecast",
+        "file_count": 25334,
+        "bytes": 4699383502,
+        "manifest_sha256": "4c50b9bad319c047da515eb154b0f79afac6401ce722dd5cac61b0bc88460d53"
+      },
+      {
+        "folder": "/workspace/mgb_ops_rust_plan",
+        "file_count": 13,
+        "bytes": 28490,
+        "manifest_sha256": "5a7a58555d9731d62d279b16f29e036b1bc962cf9030d1655a83968cfc20b2bd"
+      }
+    ],
+    "preparation_checks": [
+      "All 144 original Python commits retain their original IDs and remain reachable.",
+      "New main and VB.NET histories are parentless and unrelated to each other or Python.",
+      "Original file contents, modes, paths, and symlink targets are preserved (Git metadata excluded).",
+      "The rs_hydro_forecast local configuration edit is preserved.",
+      "No remote refs were updated.",
+      "Unredacted VB.NET files match their original SHA-256 values.",
+      "VB.NET source/configuration credential redactions and complete original-file inventory were reviewed."
+    ],
+    "limitations_recorded_then": [
+      "Archived applications were not built.",
+      "The selected runner/input compatibility and hot-start behavior are unverified.",
+      "No Rust application has been implemented."
+    ],
+    "notes": [
+      "The original folder paths, hashes, counts, and checks describe the October 15 preparation, not the current worktrees.",
+      "At preparation time no remote refs were updated; current upstreams are listed under current_state."
+    ]
+  }
 }
