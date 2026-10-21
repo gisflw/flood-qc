@@ -67,6 +67,10 @@ Use them to find the responsible area and its references as development proceeds
 
 ## Suggested increments
 
+Establish the [initial regression tests](initial_regression_tests.md) before
+replacing Python behavior. Start with the frozen regional case described there;
+hot-start generation and chaining follow in a later implementation increment.
+
 1. Preserve both references and finish their source/omission maps.
 2. Establish Rust workspace/configuration/persistence support and CLI entry points.
 3. Reproduce one saved case through input preparation, MGB execution, and output
