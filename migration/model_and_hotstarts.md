@@ -10,7 +10,9 @@
 ## Starting references
 
 Executable: `rs_hydro_forecast/mgb_runner`.
-Calibration/geometry: `Sistema_de_Previsao_RSH_2025_versao0.99/MGB/Input`.
+Initial calibration, geometry, and state: the compatible input set in
+`rs_hydro_forecast/mgb_runner/Input`. The VB.NET input contracts are references
+for added functionality, not a requirement to replace the RS baseline.
 
 Python: `src/mgb_ops/model/` and
 `src/mgb_ops/workflows/scenario_orchestrator.py`.
@@ -22,6 +24,10 @@ VB.NET: `Form3` (QOBS), `Form5` (QSUBST and reservoirs), `FormWind` (wind), and
 First trace which inputs the chosen executable consumes. Classify them as
 calibration/geometry, time-dependent forcing, or model state. Incorporate the
 needed behavior; do not copy every file in the other system indiscriminately.
+
+First reproduce the saved RS preparation/execution/decoding path against the
+minimal regression target, carrying its required initial state unchanged. Add
+remaining forcing generation and hot-start lifecycle behavior incrementally.
 
 Reverse engineer the existing hot-start procedure, including `CI.meta`,
 `CI_*.HOT`, `HOT.HOT` where used, and state copied from output to input. Establish

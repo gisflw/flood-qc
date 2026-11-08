@@ -14,6 +14,9 @@
 Python: `src/mgb_ops/analysis/`, `src/mgb_ops/workflows/reporting.py`,
 `src/mgb_ops/assets/report.py`, dashboard charts/maps, and the Taquari report.
 
+Runtime: `rs_hydro_forecast/generate_taquari_report.py`; port required behavior
+into Rust and keep regional selections/configuration in the workspace.
+
 VB.NET: `Form3`, `Form11`, `Form12`, `Form12b`, `Form23`, rainfall-bulletin tools,
 and `Plugins/HydrographViewer/`. The shapefile/exceedance tool is mapped in
 `Form18`/`Class1`; confirm its active integration when implementing GIS exports.

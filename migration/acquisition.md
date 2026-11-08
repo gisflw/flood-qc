@@ -10,6 +10,7 @@ except ONS meteorological forecast products:
 - IMERG/GSMAP rainfall and virtual stations.
 - Wind observations, hydraulic/reservoir observations, and reservoir schedules.
 - SOMAR and other supported non-ONS rainfall/file imports.
+- Station-inventory creation and updates needed by the runtime workspace.
 
 ONS hydraulic observations and reservoir schedules remain included.
 
@@ -17,6 +18,9 @@ ONS hydraulic observations and reservoir schedules remain included.
 
 Python: `src/mgb_ops/adapters/`, `src/mgb_ops/workflows/observed.py`, and
 `src/mgb_ops/workflows/forecast.py`.
+
+Runtime: `rs_hydro_forecast/update_station_inventory.py` and the inventory
+adapters it calls.
 
 VB.NET/plugin acquisition locations are listed in the
 [source map](../references/vbnet_map.md), including `Form3`, `Form5`, `Form7`,
