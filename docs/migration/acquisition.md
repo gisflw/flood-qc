@@ -23,7 +23,7 @@ Runtime: `rs_hydro_forecast/update_station_inventory.py` and the inventory
 adapters it calls.
 
 VB.NET/plugin acquisition locations are listed in the
-[source map](../references/vbnet_map.md), including `Form3`, `Form5`, `Form7`,
+[source map](../../references/vbnet_map.md), including `Form3`, `Form5`, `Form7`,
 `FormWind`, and the ANA, INMET, IMERG/GSMAP, and wind plugins.
 
 ## Implementation direction

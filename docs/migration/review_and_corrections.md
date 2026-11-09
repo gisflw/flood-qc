@@ -16,7 +16,7 @@ Python: `src/mgb_ops/qc/`, `src/mgb_ops/edit/forcing.py`,
 and the dashboard's observed-QC and forecast-correction views.
 
 VB.NET: `Form6`, `Form7`, `Form9`, `Form13`, and spatial-consistency/rainfall-editor
-plugins. See the [reference map](../references/vbnet_map.md).
+plugins. See the [reference map](../../references/vbnet_map.md).
 
 ## Implementation direction
 

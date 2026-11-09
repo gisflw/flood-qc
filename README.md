@@ -20,9 +20,21 @@ the documented adaptations to the legacy capture path.
 1. **Use the frozen references.** Review the [retirement record](references/retirement_record.md),
    then use the [Python map](references/python_map.md) and
    [VB.NET and plugin map](references/vbnet_map.md) to locate behavior.
-2. **Understand the migration.** Read the [migration summary](migration/summary.md).
+2. **Understand the migration.** Read the [migration summary](docs/migration/summary.md).
 3. **Implement incrementally.** Follow the responsibility files in
-   [implementation plans](migration/summary.md).
+   [implementation plans](docs/migration/summary.md).
+
+## Repository structure
+
+- `docs/migration/`: broad migration roadmap and responsibility areas.
+- `docs/reports/`: completed work, reviews, and validation evidence.
+- `references/`: legacy source maps, provenance, and compact regression evidence.
+- `.dev/`: temporary implementation documentation; `plans/` holds general plans
+  for agreed behavior awaiting implementation, and `changes/` holds detailed
+  specifications ready for implementation.
+
+Keep durable results in `docs/reports/` or `references/` when retiring temporary
+implementation documentation. See [AGENTS.md](AGENTS.md) for agent guidance.
 
 ## Agreed direction
 

@@ -8,12 +8,12 @@ compatible executable, calibration, geometry, and required initial state.
 Capture reference evidence first; implement Rust checks against it as the shared
 core becomes available.
 
-The current [capture specification](../docs/changes/regression-reference-capture.md)
-narrows the first milestone to saved normalized inputs through decoded results.
-The November 9, 2026 [established case](../references/regression/rs-hourly/README.md)
-includes all four scenarios and an exact fresh repeat, with a
-[review report](../docs/reports/regression-reference-capture.md). Broader stages
-in this migration outline remain incremental work.
+The November 9, 2026
+[established case](../../references/regression/rs-hourly/README.md) covers saved
+normalized inputs through decoded results, including all four scenarios and an
+exact fresh repeat. The [review report](../reports/regression-reference-capture.md)
+records validation and known limits. Broader stages in this migration outline
+remain incremental work.
 
 Cover the main operational steps with a small representative case:
 
@@ -57,7 +57,7 @@ require replacing the calibration or geometry used by the operational target.
 Use the frozen Python and VB.NET references and the runtime scripts to locate
 behavior. Leave tools that cannot be mapped to source behavior aside; they do
 not block establishing this target. Historical executable metadata is available
-in [model_baseline.json](../references/model_baseline.json); verify the actual
+in [model_baseline.json](../../references/model_baseline.json); verify the actual
 case rather than assuming that record proves compatibility.
 
 ## Use and improve the target
