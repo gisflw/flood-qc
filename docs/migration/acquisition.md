@@ -38,7 +38,7 @@ and format conversion. It defines normalized output types that assets accepts
 directly and does not depend on assets or its storage. Assets may call acquisition
 and owns data coordination, registration, and persistence; no separate operation
 module is required just to connect the two. See the
-[foundation plan](../../.dev/plans/0001-rust-foundation.md).
+[foundation plan](../../.dev/plans/rust-foundation.md).
 
 Inventory exact products and supported file variants while implementing each
 source. Keep credentials local and outside completed-run exports.

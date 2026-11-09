@@ -5,8 +5,10 @@
 This is the documentation-only Rust successor to MGB Ops; Rust implementation
 has not started. Read [README.md](README.md) for the agreed direction and
 [docs/migration/summary.md](docs/migration/summary.md) for the broad roadmap.
-The agreed first increment is [the Rust foundation](.dev/plans/0001-rust-foundation.md);
-its implementation specification is the next task.
+The agreed first increment is [the Rust foundation](.dev/plans/rust-foundation.md),
+with a [detailed implementation specification](.dev/changes/rust-foundation.md).
+Specification is complete; implementation is pending and requires a subsequent
+implementation task.
 Build shared Rust capabilities with a CLI first and a desktop introduced early;
 the external MGB executable remains the numerical engine.
 
@@ -18,7 +20,9 @@ the external MGB executable remains the numerical engine.
 - `docs/migration/`: broad migration roadmap and responsibility areas.
 - `docs/reports/`: completed work, reviews, and validation evidence.
 - `references/`: legacy source maps, provenance, and compact regression evidence.
-- `.dev/`: temporary implementation documentation.
+- `.dev/`: disposable working documentation, not long-lived project records.
+  Use descriptive filenames without numbering; preserve durable results in
+  `docs/` or `references/` when work is complete.
 - `.dev/plans/`: general plans for agreed behavior awaiting implementation.
 - `.dev/changes/`: detailed specifications ready for implementation.
 

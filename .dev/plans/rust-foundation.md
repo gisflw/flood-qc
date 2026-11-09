@@ -2,6 +2,13 @@
 
 Status: agreed; implementation not started. Decisions agreed November 9, 2026.
 
+Detailed behavior is now specified in the
+[foundation implementation specification](../changes/rust-foundation.md).
+Use it for command syntax, TOML configuration, dedicated overrides, the required
+inspection file list, structured findings, development checks, and acceptance.
+This plan retains the agreed scope and architectural rationale; specification
+completion does not complete the foundation.
+
 ## Outcome
 
 Establish the Rust application's documentation, module boundaries, development
@@ -15,7 +22,7 @@ in the next operational increment.
 
 This plan records agreed behavior and boundaries. Detailed command syntax,
 schemas, dependencies, and the architecture-check mechanism belong in an
-implementation specification under [`.dev/changes/`](../changes/).
+implementation specification under [`.dev/changes/`](../changes/), now linked above.
 
 ## Starting state
 

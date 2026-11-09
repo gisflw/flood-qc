@@ -21,8 +21,9 @@ the documented adaptations to the legacy capture path.
    then use the [Python map](references/python_map.md) and
    [VB.NET and plugin map](references/vbnet_map.md) to locate behavior.
 2. **Understand the migration.** Read the [migration summary](docs/migration/summary.md).
-3. **Implement incrementally.** Start with the agreed
-   [Rust foundation plan](.dev/plans/0001-rust-foundation.md). Track delivered
+3. **Implement incrementally.** Start with the detailed
+   [Rust foundation specification](.dev/changes/rust-foundation.md), which
+   refines the agreed [plan](.dev/plans/rust-foundation.md). Track delivered
    capabilities, evidence, gaps, and the next increment in the
    [migration summary](docs/migration/summary.md).
 
@@ -33,9 +34,10 @@ the documented adaptations to the legacy capture path.
   to establish with the Rust foundation.
 - `docs/reports/`: completed work, reviews, and validation evidence.
 - `references/`: legacy source maps, provenance, and compact regression evidence.
-- `.dev/`: temporary implementation documentation; `plans/` holds general plans
-  for agreed behavior awaiting implementation, and `changes/` holds detailed
-  specifications ready for implementation.
+- `.dev/`: disposable working documentation, not long-lived project records.
+  Use descriptive filenames without numbering; `plans/` holds agreed behavior
+  awaiting implementation, and `changes/` holds detailed implementation
+  specifications.
 
 Keep durable results in `docs/reports/` or `references/` when retiring temporary
 implementation documentation. See [AGENTS.md](AGENTS.md) for agent guidance.
@@ -65,7 +67,7 @@ implementation documentation. See [AGENTS.md](AGENTS.md) for agent guidance.
 - Decide behavioral disagreements and detailed technology choices during development.
 
 The initial regression reference is established, and the first Rust foundation
-plan is agreed; implementation has not started. Reach the complete operation
+specification is complete; implementation has not started. Reach the complete operation
 through small, working increments, updating the capability checklist and its
 evidence as development proceeds. Validate on Linux first and defer Windows
 checks until later development. Leave legacy tools that cannot be mapped to

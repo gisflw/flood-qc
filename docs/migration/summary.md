@@ -18,10 +18,11 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 ## Current migration state
 
 Updated November 9, 2026. The RS hourly reference is established, and the
-[first Rust foundation plan](../../.dev/plans/0001-rust-foundation.md) is agreed.
-No Rust capabilities have been implemented. Next: write the foundation
-implementation specification under `.dev/changes/`, then implement its read-only
-workspace inspection CLI and development checks.
+[first Rust foundation plan](../../.dev/plans/rust-foundation.md) has a complete
+[implementation specification](../../.dev/changes/rust-foundation.md).
+No Rust capabilities have been implemented. Next: implement the specified
+read-only workspace inspection CLI and development checks in a subsequent task,
+then record Linux acceptance evidence.
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
@@ -31,7 +32,7 @@ record unverified platforms and remaining gaps explicitly.
 | Capability and reference behavior | Delivery step | State, evidence, and gaps |
 | --- | --- | --- |
 | [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Evidence](../reports/regression-reference-capture.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
-| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: [foundation plan](../../.dev/plans/0001-rust-foundation.md) | Planned. Architecture, quality rules, and first CLI behavior agreed; specification and implementation pending. |
+| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: [foundation specification](../../.dev/changes/rust-foundation.md) | Planned. Detailed specification complete: TOML/example generation, dedicated overrides, bounded read-only checks, text/JSON findings, and architecture/quality gates. Implementation and Linux acceptance evidence pending; Windows unverified. |
 | [History, assets, and persisted operation data](core_and_cli.md) | 2/5: grow assets with each operational capability | Not started in Rust. Legacy stores are references; storage/import decisions follow the capabilities that need them. |
 | [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. Compare with the frozen reference; carry saved initial state unchanged. |
 | [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
@@ -102,7 +103,7 @@ optional; no cache-packaging design is required at this stage.
 ## Delivery approach
 
 The responsibility files below are broad feature roadmaps, not required Rust
-modules or detailed specifications. The [foundation plan](../../.dev/plans/0001-rust-foundation.md)
+modules or detailed specifications. The [foundation plan](../../.dev/plans/rust-foundation.md)
 establishes one Cargo package with deep `workspace`, `acquisition`, `assets`, and
 `model` modules. Dependency direction is `model -> assets -> acquisition`;
 review and numerical analysis belong in assets. Use the roadmaps to find feature
@@ -138,7 +139,7 @@ requirement.
    from `rs_hydro_forecast`, covering the main operational steps, and the
    functionality checklist. This captures reference evidence before Rust
    replacement; it does not require implementing the Rust application first.
-2. Establish the [Rust foundation](../../.dev/plans/0001-rust-foundation.md): a
+2. Establish the [Rust foundation](../../.dev/plans/rust-foundation.md): a
    shared library, read-only workspace inspection CLI, documented contracts, and
    enforced architecture/quality rules. Validate on a disposable RS workspace on
    Linux; defer Windows checks. Add persistence as operational capabilities need

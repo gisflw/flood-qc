@@ -18,11 +18,17 @@ and operational scripts. Port required script behavior into the Rust package.
 
 ## Implementation direction
 
-Start with the agreed [foundation plan](../../.dev/plans/0001-rust-foundation.md):
+Start with the [foundation specification](../../.dev/changes/rust-foundation.md),
+which refines the agreed [plan](../../.dev/plans/rust-foundation.md):
 one Cargo package, a shared library and thin CLI, explicit deep-module boundaries,
 and read-only inspection of a disposable RS workspace. This roadmap covers a
 broader responsibility area than that first increment; persistence grows with
 the operations that need it.
+
+The specification uses TOML at `config/workspace.toml`, explicit command-specific
+CLI overrides, and a generated example printed to stdout. Rust inspection does
+not silently read or convert the legacy YAML configuration. Implementation and
+Linux acceptance evidence remain pending.
 
 Keep the existing history/assets/review/scenario flow. Separate provider access,
 artifact formats, persistence, calculations, model execution, and interface code.
