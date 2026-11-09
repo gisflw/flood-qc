@@ -18,8 +18,18 @@ and operational scripts. Port required script behavior into the Rust package.
 
 ## Implementation direction
 
+Start with the agreed [foundation plan](../../.dev/plans/0001-rust-foundation.md):
+one Cargo package, a shared library and thin CLI, explicit deep-module boundaries,
+and read-only inspection of a disposable RS workspace. This roadmap covers a
+broader responsibility area than that first increment; persistence grows with
+the operations that need it.
+
 Keep the existing history/assets/review/scenario flow. Separate provider access,
 artifact formats, persistence, calculations, model execution, and interface code.
+Use the owning modules' private internals for these distinctions rather than
+creating a top-level module for each procedure. Assets owns review, numerical
+analysis, persistence, and saved operation data; acquisition owns source access
+and conversion, and model owns engine mechanics.
 Pass workspace, settings, and times explicitly into core operations. Keep raw
 source data immutable and corrections explicit. The desktop must not become the
 only way to perform a core operation.
@@ -27,14 +37,16 @@ only way to perform a core operation.
 Use the existing SQLite and external-file contracts as starting references;
 settle necessary schema changes as their features are implemented.
 
-Check Windows/Linux feasibility, including external-engine availability, during
-this foundation step. Introduce the GUI once the first shared operational path
-works, then extend CLI and GUI coverage with subsequent capabilities.
+Target Windows and Linux, validating on Linux first. Defer Windows checks until
+later development; they are not a foundation gate. Checking engine prerequisites
+does not establish successful engine execution. Introduce the GUI once the first
+shared operational path works, then extend both interfaces with subsequent
+capabilities.
 
 ## Evidence of completion
 
 The CLI can resolve a disposable copy of `rs_hydro_forecast` and execute the
 implemented stages with useful results and failure reporting while preserving
 source data. Check the working path against the minimal regression target as
-stages become available. Record platform feasibility findings early and verify
-supported capabilities on Windows and Linux as implementation proceeds.
+stages become available. Record actual platform evidence and pending checks;
+verify Windows support later as implementation proceeds.

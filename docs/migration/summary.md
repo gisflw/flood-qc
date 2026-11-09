@@ -15,6 +15,47 @@ Rust capabilities and is introduced early, then extended with the core. All
 intended functionality belongs in the Rust package. The external MGB executable
 remains the numerical engine; `rs_hydro_forecast` is the target runtime workspace.
 
+## Current migration state
+
+Updated November 9, 2026. The RS hourly reference is established, and the
+[first Rust foundation plan](../../.dev/plans/0001-rust-foundation.md) is agreed.
+No Rust capabilities have been implemented. Next: write the foundation
+implementation specification under `.dev/changes/`, then implement its read-only
+workspace inspection CLI and development checks.
+
+Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
+scope stated in each row. `Planned` means an agreed delivery plan exists, not
+that code works. Completion requires acceptance evidence for that stated scope;
+record unverified platforms and remaining gaps explicitly.
+
+| Capability and reference behavior | Delivery step | State, evidence, and gaps |
+| --- | --- | --- |
+| [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Evidence](../reports/regression-reference-capture.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
+| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: [foundation plan](../../.dev/plans/0001-rust-foundation.md) | Planned. Architecture, quality rules, and first CLI behavior agreed; specification and implementation pending. |
+| [History, assets, and persisted operation data](core_and_cli.md) | 2/5: grow assets with each operational capability | Not started in Rust. Legacy stores are references; storage/import decisions follow the capabilities that need them. |
+| [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. Compare with the frozen reference; carry saved initial state unchanged. |
+| [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
+| [QC, review, corrections, and availability](review_and_corrections.md) | 5: extend assets | Not started in Rust. Preserve sources and make effective-data changes explicit. |
+| [Additional forcing inputs and hot-start lifecycle](model_and_hotstarts.md) | 5: extend model support | Not started in Rust. State generation, consumption, and chaining still require qualification. |
+| [Geometry and calibration editors](calibration_editors.md) | 6: functional acceptance | Not started in Rust. No editor regression or baseline replacement required. |
+| [Numerical analysis and post-processing](analysis_and_reports.md) | Grow assets with operational increments; complete in 7 | Not started in Rust. Includes comparisons, accumulations, peaks, and reference post-processing. |
+| [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
+| [Completed-run regeneration and sharing](completed_runs.md) | 7: complete archival workflow | Not started in Rust. Regeneration must work without provider access or caches. |
+| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Not started. Uses shared Rust capabilities; framework remains undecided. |
+| [Scheduling and email](desktop_and_automation.md) | 7: automate established operations | Not started in Rust. Follow the capabilities they automate. |
+
+Split these broad rows as individual capabilities are implemented, preserving
+their reference links, delivery responsibility, actual state, evidence, and next
+work or gaps. Include runtime scripts and bundled plugins. Update the checklist
+when implementation, verification, blockers, or the next increment changes, as
+required by [AGENTS.md](../../AGENTS.md).
+
+Linux is the first validation platform. Windows remains a build target, with
+checks deferred until later development; no Windows validation infrastructure is
+a foundation gate. Engine prerequisite inspection is not proof of successful
+execution. Reference repeatability is not Rust equivalence or hydrological
+validation.
+
 ## Operational flow
 
 ```text
@@ -60,8 +101,12 @@ optional; no cache-packaging design is required at this stage.
 
 ## Delivery approach
 
-These are work plans, not fixed crate boundaries or detailed specifications.
-Use them to find the responsible area and its references as development proceeds.
+The responsibility files below are broad feature roadmaps, not required Rust
+modules or detailed specifications. The [foundation plan](../../.dev/plans/0001-rust-foundation.md)
+establishes one Cargo package with deep `workspace`, `acquisition`, `assets`, and
+`model` modules. Dependency direction is `model -> assets -> acquisition`;
+review and numerical analysis belong in assets. Use the roadmaps to find feature
+coverage and references as development proceeds.
 
 Maintain a short functionality checklist linking each intended capability to its
 reference behavior, responsible implementation step, status, and completion
@@ -79,7 +124,7 @@ requirement.
 | File | Responsibility |
 | --- | --- |
 | [Core and CLI](core_and_cli.md) | Workspaces, configuration, persistence foundations, and operation commands. |
-| [Acquisition](acquisition.md) | Provider access, file imports, normalization, and registration. |
+| [Acquisition](acquisition.md) | Provider access, file imports, and normalization for assets to accept and register. |
 | [Review and corrections](review_and_corrections.md) | QC, manual observation changes, and rainfall transformations. |
 | [Model and hot starts](model_and_hotstarts.md) | Input generation, state lifecycle, scenario execution, and output decoding. |
 | [Calibration editors](calibration_editors.md) | Geometry, channel/Manning, and soil-parameter editing. |
@@ -93,9 +138,11 @@ requirement.
    from `rs_hydro_forecast`, covering the main operational steps, and the
    functionality checklist. This captures reference evidence before Rust
    replacement; it does not require implementing the Rust application first.
-2. Establish Rust workspace/configuration/persistence support and basic CLI entry
-   points. Check Windows/Linux feasibility, including the external engine, early.
-   Verify operation on a disposable RS workspace without damaging source data.
+2. Establish the [Rust foundation](../../.dev/plans/0001-rust-foundation.md): a
+   shared library, read-only workspace inspection CLI, documented contracts, and
+   enforced architecture/quality rules. Validate on a disposable RS workspace on
+   Linux; defer Windows checks. Add persistence as operational capabilities need
+   it rather than creating the entire storage design upfront.
 3. Reproduce the saved preparation, real MGB execution, and decoded-results path
    in Rust. Compare with the regression target, carrying the required initial
    state unchanged; hot-start generation and chaining follow later.

@@ -77,8 +77,9 @@ case rather than assuming that record proves compatibility.
 - Keep the established operational path working as capabilities are added.
   Extend relevant checks and review their evidence in each increment; choose
   additional cases when implementation reveals a need for them.
-- Check Windows/Linux feasibility early. Identify compatible engines separately;
-  success with the available Linux runner does not establish Windows support.
+- Validate on Linux first and defer Windows checks until later development.
+  Identify compatible engines separately; success with the available Linux
+  runner does not establish Windows support.
 
 The initial target is established when the saved operation can be reproduced,
 the main-step checkpoints and known gaps are recorded, and another developer can

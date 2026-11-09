@@ -21,12 +21,16 @@ the documented adaptations to the legacy capture path.
    then use the [Python map](references/python_map.md) and
    [VB.NET and plugin map](references/vbnet_map.md) to locate behavior.
 2. **Understand the migration.** Read the [migration summary](docs/migration/summary.md).
-3. **Implement incrementally.** Follow the responsibility files in
-   [implementation plans](docs/migration/summary.md).
+3. **Implement incrementally.** Start with the agreed
+   [Rust foundation plan](.dev/plans/0001-rust-foundation.md). Track delivered
+   capabilities, evidence, gaps, and the next increment in the
+   [migration summary](docs/migration/summary.md).
 
 ## Repository structure
 
 - `docs/migration/`: broad migration roadmap and responsibility areas.
+- `docs/architecture.md` and `docs/contracts/`: durable architecture and contracts
+  to establish with the Rust foundation.
 - `docs/reports/`: completed work, reviews, and validation evidence.
 - `references/`: legacy source maps, provenance, and compact regression evidence.
 - `.dev/`: temporary implementation documentation; `plans/` holds general plans
@@ -60,8 +64,9 @@ implementation documentation. See [AGENTS.md](AGENTS.md) for agent guidance.
   All caches are optional; cache packaging is not a planning concern here.
 - Decide behavioral disagreements and detailed technology choices during development.
 
-First establish a minimal reproducible regression target covering the main
-operational steps and a checklist of functionality to port. Reach the complete
-operation through small, working increments, refining checks during implementation.
-Check platform feasibility early. Leave legacy tools that cannot be mapped to
+The initial regression reference is established, and the first Rust foundation
+plan is agreed; implementation has not started. Reach the complete operation
+through small, working increments, updating the capability checklist and its
+evidence as development proceeds. Validate on Linux first and defer Windows
+checks until later development. Leave legacy tools that cannot be mapped to
 source behavior aside; they do not block this process.
