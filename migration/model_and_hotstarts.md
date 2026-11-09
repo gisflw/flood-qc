@@ -33,6 +33,15 @@ Reverse engineer the existing hot-start procedure, including `CI.meta`,
 `CI_*.HOT`, `HOT.HOT` where used, and state copied from output to input. Establish
 the exact behavior against the selected executable during implementation.
 
+This is a later increment, outside the initial regression target. Reproduce
+VB.NET `Telemetria/Form8.vb` behavior: `ESCREVE_HOTHOT` writes the use-hot-start
+flag; `ESCREVE_DATA_HOT` writes the requested state-save date/hour; and
+`SalvaCiInput`, when enabled, promotes output `CI.meta`, `CI_W.HOT`,
+`CI_VOL.HOT`, `CI_HFL.HOT`, `CI_VOL1_FL.HOT`, and `CI_Q2FL.HOT` into Input.
+Verify engine-side state generation separately and recompile the engine if
+needed to enable it. None of these writes, promotion steps, or recompilation
+is required to establish the initial regression target.
+
 Prepare scenarios in isolated directories. Preserve prior successful results
 when a new execution fails. Keep input preparation and process execution usable
 from the CLI without the desktop. Investigate routing-selection behavior against
