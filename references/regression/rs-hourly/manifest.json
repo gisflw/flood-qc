@@ -1,0 +1,1343 @@
+{
+  "schema_version": 1,
+  "case_id": "rs-hourly",
+  "revision": 1,
+  "status": "verified",
+  "provenance": {
+    "main_commit": "f09f9621f9880febacb8d7b16a8cfd989d9d972f",
+    "legacy_python_commit": "15981642a7476fb583f63aeb89cdb1472cfd6b30",
+    "legacy_python_behavior_dirty_files": [],
+    "legacy_vbnet_consulted_commit": "10b61520d43512e8a5923989f38c0745398b01c5",
+    "environment": "environment.json",
+    "capture_adaptations": "capture.py, recover-level.py, snapshot.c and evidence.py",
+    "runtime_commit": "a30b72cae0207e5b2fcfd48a1b70ca00052f97a1",
+    "runtime_initial_dirty_files": [
+      {
+        "path": "config/custom.yaml",
+        "status": "modified",
+        "effective_copy": "frozen/custom.yaml",
+        "committed_copy": "provenance/custom-committed.yaml",
+        "patch": "provenance/custom-config.patch",
+        "behavior_scope": "Frozen copy records effective configuration; the capture scripts pass case settings explicitly."
+      },
+      {
+        "path": "update_station_inventory.py",
+        "status": "untracked",
+        "behavior_scope": "not imported or executed by capture"
+      }
+    ]
+  },
+  "bundle": {
+    "local_source": "/workspace/regression-rs-hourly-r1",
+    "paths": "relative to bundle root; execution records and operation SQLite paths describe the original execution",
+    "layout": "frozen inputs stored once; capture retains changed inputs and four raw flow/level streams per scenario; rebased history copies, duplicate repeat files, repeat grids, unused flood map, ancillary outputs and decoding staging omitted"
+  },
+  "operation": {
+    "reference_local_naive": "2026-07-20T00:00:00",
+    "reference_offset": "2026-07-20T00:00:00-03:00",
+    "cycle_utc": "2026-07-20T00:00:00Z",
+    "timezone": "America/Sao_Paulo",
+    "step_hours": 1,
+    "observed_days": 10,
+    "forecast_days": 5,
+    "review_interval": "(2026-07-09T23:00:00-03:00, 2026-07-20T00:00:00-03:00]",
+    "simulation_first": "2026-07-10T00:00:00-03:00",
+    "simulation_last": "2026-07-25T01:00:00-03:00",
+    "observed_count": 241,
+    "forecast_count": 121,
+    "nominal_export_end_exclusive": "2026-07-26T00:00:00-03:00; clipped to available records",
+    "providers": [
+      "ana"
+    ],
+    "bbox": [
+      -58.95016,
+      -34.40217,
+      -48.85759,
+      -26.29721
+    ],
+    "grid_resolution_degrees": 0.1,
+    "interpolation": {
+      "nearest_stations": 5,
+      "power": 2
+    }
+  },
+  "registry": {
+    "original": "frozen/history-original.sqlite",
+    "rebased": [],
+    "rebase_changes": "capture/rebases.json",
+    "schema_tables": [
+      "asset",
+      "historical_flood_level",
+      "observed_series",
+      "observed_value",
+      "provider",
+      "station",
+      "station_level_reference",
+      "station_observed_variable",
+      "variable"
+    ],
+    "sqlite_user_version": 0,
+    "assets": [
+      {
+        "asset_id": "ecmwf.ifs.fc.20260720T000000Z.precipitation_grid",
+        "asset_kind": "spatial_grid",
+        "format": "NetCDF",
+        "relative_path": "data/assets/ecmwf/ecmwf.ifs.fc.20260720T000000Z.precipitation_grid.nc",
+        "provider_code": "ecmwf",
+        "checksum": "119cb859e0a5840474eb028571c5cccc1fbc288b1b72a326f0e58e11c4f99a1b",
+        "valid_from": "2026-07-20T00:00:00+00:00",
+        "valid_to": "2026-08-04T00:00:00+00:00",
+        "metadata_json": "{\"Conventions\": \"CF-1.8, ACDD-1.3\", \"accumulation_semantics\": \"interval_total\", \"bbox\": \"[-79.375, -50.625, -28.625, -9.875]\", \"buffer_fraction\": 2.0, \"buffered_bbox\": \"[-79.13529999999999, -50.612089999999995, -28.672450000000012, -10.087290000000003]\", \"created_at\": \"2026-07-22T08:48:19Z\", \"crop_method\": \"cell_intersection_all_touched\", \"crs\": \"EPSG:4326\", \"cycle_time\": \"2026-07-20T00:00:00Z\", \"effective_bbox\": \"[-79.375, -50.625, -28.625, -9.875]\", \"model\": \"ifs\", \"model_bbox\": \"[-58.95016, -34.40217, -48.85759, -26.29721]\", \"product_type\": \"fc\", \"provider\": \"ecmwf\", \"providers\": \"[\\\"ecmwf\\\"]\", \"requested_bbox\": \"[-79.13529999999999, -50.612089999999995, -28.672450000000012, -10.087290000000003]\", \"resolution_degrees\": 0.25, \"source\": \"cropped_from_native_grid\", \"source_accumulation_semantics\": \"cumulative\", \"source_cycle_time\": \"2026-07-20T00:00:00Z\", \"source_format\": \"GRIB2\", \"source_parameter\": \"tp\", \"source_resolution\": \"0p25\", \"spatial_grid_schema_version\": \"2.0\", \"temporal_resolution\": \"irregular\", \"time_zone\": \"UTC\", \"title\": \"ECMWF IFS precipitation forecast grid\", \"type\": \"forecast\", \"valid_from\": \"2026-07-20T00:00:00Z\", \"valid_to\": \"2026-08-04T00:00:00Z\", \"variable\": \"precipitation\"}",
+        "created_at": "2026-10-17 13:15:16"
+      },
+      {
+        "asset_id": "noaa.gfs.fc.20260720T000000Z.precipitation_grid",
+        "asset_kind": "spatial_grid",
+        "format": "NetCDF",
+        "relative_path": "data/assets/noaa/noaa.gfs.fc.20260720T000000Z.precipitation_grid.nc",
+        "provider_code": "noaa",
+        "checksum": "964c5a0470b6aa5916d8b55db546dc8700603a0f46f8bf89facfc75b115750e0",
+        "valid_from": "2026-07-20T00:00:00+00:00",
+        "valid_to": "2026-07-30T12:00:00+00:00",
+        "metadata_json": "{\"Conventions\": \"CF-1.8, ACDD-1.3\", \"accumulation_semantics\": \"interval_total\", \"bbox\": \"[-79.125, -50.625, -28.625, -10.125]\", \"buffer_fraction\": 2.0, \"buffered_bbox\": \"[-79.13529999999999, -50.612089999999995, -28.672450000000012, -10.087290000000003]\", \"created_at\": \"2026-07-22T08:49:04Z\", \"crop_method\": \"cell_intersection_all_touched\", \"crs\": \"EPSG:4326\", \"cycle_time\": \"2026-07-20T00:00:00Z\", \"effective_bbox\": \"[-79.125, -50.625, -28.625, -10.125]\", \"model\": \"gfs\", \"model_bbox\": \"[-58.95016, -34.40217, -48.85759, -26.29721]\", \"product_type\": \"fc\", \"provider\": \"noaa\", \"providers\": \"[\\\"noaa\\\"]\", \"requested_bbox\": \"[-79.13529999999999, -50.612089999999995, -28.672450000000012, -10.087290000000003]\", \"resolution_degrees\": 0.25, \"source\": \"cropped_from_native_grid\", \"source_accumulation_semantics\": \"cumulative\", \"source_cycle_time\": \"2026-07-20T00:00:00Z\", \"source_format\": \"GRIB2\", \"source_parameter\": \"APCP\", \"source_resolution\": \"0p25\", \"spatial_grid_schema_version\": \"2.0\", \"temporal_resolution\": \"irregular\", \"time_zone\": \"UTC\", \"title\": \"ECMWF IFS precipitation forecast grid\", \"type\": \"forecast\", \"valid_from\": \"2026-07-20T00:00:00Z\", \"valid_to\": \"2026-07-30T12:00:00Z\", \"variable\": \"precipitation\"}",
+        "created_at": "2026-10-17 13:15:18"
+      }
+    ],
+    "preferred_series": "per-station ANA preference as represented in capture/review-input.csv; unselected records retained",
+    "rebased_history_sha256": "66a8cf4f74fa5746b7334bc3e6d38ec8332113e727fb8641d153fe70ff0f58ca",
+    "rebased_note": "The original capture and repeat rebased histories were byte-identical. Fresh working copies are made from frozen/history-original.sqlite and rebased during reproduction; the original path changes are recorded in capture/rebases.json."
+  },
+  "scenarios": [
+    {
+      "id": "zero",
+      "position": 0,
+      "kind": "zero",
+      "asset_id": null,
+      "correction": null,
+      "capture": "capture/zero/decoded.nc",
+      "repeat": "repeat/zero/decoded.nc"
+    },
+    {
+      "id": "ecmwf-raw",
+      "position": 1,
+      "kind": "raw",
+      "asset_id": "ecmwf.ifs.fc.20260720T000000Z.precipitation_grid",
+      "correction": null,
+      "capture": "capture/ecmwf-raw/decoded.nc",
+      "repeat": "repeat/ecmwf-raw/decoded.nc"
+    },
+    {
+      "id": "noaa-raw",
+      "position": 2,
+      "kind": "raw",
+      "asset_id": "noaa.gfs.fc.20260720T000000Z.precipitation_grid",
+      "correction": null,
+      "capture": "capture/noaa-raw/decoded.nc",
+      "repeat": "repeat/noaa-raw/decoded.nc"
+    },
+    {
+      "id": "ecmwf-corrected",
+      "position": 3,
+      "kind": "corrected",
+      "asset_id": "ecmwf.ifs.fc.20260720T000000Z.precipitation_grid",
+      "correction": {
+        "t0_step": 0,
+        "t1_step": 126,
+        "shift_lat_cells": 8,
+        "shift_lon_cells": -12,
+        "rotation_degrees_ccw": 45,
+        "multiplication_factor": 1.5,
+        "order": "translation then rotation around original center",
+        "native_transformed": "transformed-native.npz",
+        "coverage": "capture/correction-coverage.json"
+      },
+      "capture": "capture/ecmwf-corrected/decoded.nc",
+      "repeat": "repeat/ecmwf-corrected/decoded.nc"
+    }
+  ],
+  "observation_review": {
+    "sequence_rule": "at least five consecutive hourly values strictly between 0 and 1 mm",
+    "station_id": "ana:71200000",
+    "times": [
+      "2026-07-15T05:00:00",
+      "2026-07-15T06:00:00",
+      "2026-07-15T07:00:00",
+      "2026-07-15T08:00:00",
+      "2026-07-15T09:00:00",
+      "2026-07-15T10:00:00"
+    ],
+    "original_values": [
+      0.2,
+      0.2,
+      0.2,
+      0.2,
+      0.4,
+      0.4
+    ],
+    "replacements": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ],
+    "surrounding": {
+      "2026-07-15T04:00:00": 0.0,
+      "2026-07-15T11:00:00": 0.0
+    },
+    "raw": "capture/review-input.csv",
+    "effective": "capture/effective-observations.csv",
+    "instruction_database": "capture/operation.sqlite"
+  },
+  "initial_state": {
+    "frozen_input": "frozen/runner/Input",
+    "recorded_DATA_hot": "2026-08-28 00",
+    "recorded_CI_meta": "2026-08-28 0",
+    "before_each": "capture/{scenario}/DATA.before.hot",
+    "after_each": "frozen/runner/Input/DATA.hot",
+    "observed_open_trace": "provenance/engine-open-trace.log",
+    "limitation": "Saved CI files and HOT.HOT were not observed opened in prior file-open tracing; DATA.hot was opened read/write but post-execution bytes matched the frozen input. Saved state date differs from simulation; no initial-state compatibility claimed.",
+    "trace_provenance": "Historical diagnostic of aligned metadata using zero forcing before final capture; open calls indicate files accessed in that diagnostic only. rewind-trace.txt separately shows YTUDO rewind.",
+    "saved_state_sha256": {
+      "CI.meta": "ead4e41166d1a7630aed8664fb3ef57445ac95ab88469ad9552de12c34f1053e",
+      "CI_HFL.HOT": "3cb841467b6a6be24eddc5d3105638ddc5c2ca86886794c56ea407bc40b3298d",
+      "CI_Q2FL.HOT": "b2fd1e713d5306df3532ba7b30ddfe93b6a9114c421c766f9ba2cfa969c825ed",
+      "CI_VOL.HOT": "ed524eec0e49e59ab7885c405d8353fc669b4605b12fbee8bfc088df9c5498f7",
+      "CI_VOL1_FL.HOT": "e69c928ed5155c36c75fca1599e9926f7ee49f703d362dae9935b9a5734687b9",
+      "CI_W.HOT": "7c4ecbd3bba973a205c8975a049d9d315c850244256cd1c769395a07ae6b33f5",
+      "DATA.hot": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+      "HOT.HOT": "773ac3bfde8adb749433b89f1e62d185687558b2ee1383c8e7dfba930c22467d",
+      "VOL.HOT": "c51a126eaf31754362d08cc0a40328bab48a36939a3f733e7378fa415dd05efc",
+      "W.HOT": "f33c9560dd49d4e2f21cdb8d6573cd3de60c0f57572450bf3c620796f37cd864"
+    },
+    "before_data_hot_sha256": {
+      "capture": {
+        "zero": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "ecmwf-raw": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "noaa-raw": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "ecmwf-corrected": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "level-recovery": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+      },
+      "repeat": {
+        "zero": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "ecmwf-raw": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "noaa-raw": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "ecmwf-corrected": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8",
+        "level-recovery": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+      }
+    },
+    "companion_before_evidence": "recover-level.py restores zero/DATA.before.hot in the private recovery Input before execution; its post-execution bytes matched the frozen input.",
+    "after_each_note": "Post-execution DATA.hot bytes matched the frozen original in all scenario and recovery runs; only one copy is retained."
+  },
+  "files": [
+    {
+      "path": "capture.log",
+      "role": "log",
+      "size": 2128,
+      "sha256": "c68a216922fd67c93cc7d90ca928884c10e966a0407b409f815e6e388d81d5e2"
+    },
+    {
+      "path": "capture.py",
+      "role": "instruction or evidence",
+      "size": 6586,
+      "sha256": "b1a6448e100206f8d894554ee7eca64c8fd342d0205341308a71b71f585978d0"
+    },
+    {
+      "path": "capture/correction-coverage.json",
+      "role": "instruction or evidence",
+      "size": 394,
+      "sha256": "da3653c74a780ef0941d335e065b57b4924014b12bdfc1e0e6f0193a37153b69"
+    },
+    {
+      "path": "capture/ecmwf-corrected/DATA.before.hot",
+      "role": "state before execution",
+      "size": 26,
+      "sha256": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Input/CHUVABIN.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 12523752,
+      "sha256": "100425dbe12acb717fb8e586364d9851e127b7cde6a9fbf663b7ddf75477f82b"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Input/PARHIG.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 3555,
+      "sha256": "cb3452aea114114c5e4d56f2adb9f54d6f89cb4536f1734a2feed07bf81fceba"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Input/Previsao.meta",
+      "role": "prepared input or engine-mutated state",
+      "size": 251135,
+      "sha256": "3f1035352bb92e0d82da4fbaa1cc5d6f8b2ea5cddc9c769dd6bc1dff6c331344"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Output/LOG_MGB.txt",
+      "role": "raw output",
+      "size": 33,
+      "sha256": "34f816fb8e8ae6c7e0973745b421fb68eb7dfec175d887108fc57997874fab3c"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Output/QTUDO_Inercial_Atual.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "4c9454110fd59d1350b7aba80da9be0553bc846c23e0b751484e3ab9aabef808"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Output/QTUDO_Inercial_Prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "d3d7e383b9a95096bde631b60e3809f534350a716abe6e264bead4268f1f0af1"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Output/YTUDO.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "f95bd80e860a8b68782e6096eef29a18e1536e130ea949d9ad5d1837f6f85b0c"
+    },
+    {
+      "path": "capture/ecmwf-corrected/Output/YTUDO_prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "58afe7ab880b455da792e8e1b239dd91d1c18ccbc051d80901d4644d18e9a38b"
+    },
+    {
+      "path": "capture/ecmwf-corrected/cache/precipitations_mgb_forecast.nc",
+      "role": "working grid",
+      "size": 1995792,
+      "sha256": "b8687cca05f80fb11d2272ce4fc1d6c73661ee7cafa71376a3552261c28154f3"
+    },
+    {
+      "path": "capture/ecmwf-corrected/decoded.nc",
+      "role": "decoded output",
+      "size": 11763781,
+      "sha256": "9b3f45fdd9be56f1cc943aa1bffd0367a542b5a8da1193e9968128ba6145d685"
+    },
+    {
+      "path": "capture/ecmwf-corrected/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 547,
+      "sha256": "dd0ad8f1c26236ab3d4993779f0cfb67f34bf1e74fa600deab47c2fe525fac4d"
+    },
+    {
+      "path": "capture/ecmwf-corrected/fort.6",
+      "role": "instruction or evidence",
+      "size": 10777,
+      "sha256": "f9c0475867efe8377eede036266efc740187f580b8fbfc2deb9c990d1d515c78"
+    },
+    {
+      "path": "capture/ecmwf-corrected/logs/mgb_execution/20261109T181430.log",
+      "role": "log",
+      "size": 517,
+      "sha256": "cd1012e2eb8b0b58eb27f7d61062b3ea75daa10cd8b5767d8551c441cb48830d"
+    },
+    {
+      "path": "capture/ecmwf-raw/DATA.before.hot",
+      "role": "state before execution",
+      "size": 26,
+      "sha256": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+    },
+    {
+      "path": "capture/ecmwf-raw/Input/CHUVABIN.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 12523752,
+      "sha256": "33c3920b4fc26f039f31e370909a77b29b8795116090837c8b1222844b46b3dd"
+    },
+    {
+      "path": "capture/ecmwf-raw/Input/PARHIG.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 3555,
+      "sha256": "cb3452aea114114c5e4d56f2adb9f54d6f89cb4536f1734a2feed07bf81fceba"
+    },
+    {
+      "path": "capture/ecmwf-raw/Input/Previsao.meta",
+      "role": "prepared input or engine-mutated state",
+      "size": 251135,
+      "sha256": "3f1035352bb92e0d82da4fbaa1cc5d6f8b2ea5cddc9c769dd6bc1dff6c331344"
+    },
+    {
+      "path": "capture/ecmwf-raw/Output/LOG_MGB.txt",
+      "role": "raw output",
+      "size": 33,
+      "sha256": "34f816fb8e8ae6c7e0973745b421fb68eb7dfec175d887108fc57997874fab3c"
+    },
+    {
+      "path": "capture/ecmwf-raw/Output/QTUDO_Inercial_Atual.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "4c9454110fd59d1350b7aba80da9be0553bc846c23e0b751484e3ab9aabef808"
+    },
+    {
+      "path": "capture/ecmwf-raw/Output/QTUDO_Inercial_Prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "a6f5c7ab99ca60d99d4c6b465b2812341e2d9a763a880699d88e44b7f074896e"
+    },
+    {
+      "path": "capture/ecmwf-raw/Output/YTUDO.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "8218abde0cd228fd35d7ac59f81d35428cf941e67a19d10445a95698a05f8bf7"
+    },
+    {
+      "path": "capture/ecmwf-raw/Output/YTUDO_prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "62bc1592ae41e1274c2856f9df5932a8ab33cdc459b86f2ef0644625e84f7eef"
+    },
+    {
+      "path": "capture/ecmwf-raw/cache/precipitations_mgb_forecast.nc",
+      "role": "working grid",
+      "size": 1942715,
+      "sha256": "b89ad5b3879794b08c9b822cbc9dae16c72244981ba643a119ca721ff5f8998d"
+    },
+    {
+      "path": "capture/ecmwf-raw/decoded.nc",
+      "role": "decoded output",
+      "size": 11650553,
+      "sha256": "4a2433073b6fee53d8035c4a2331883a25285d97a53e845fcc64b2288e7c1396"
+    },
+    {
+      "path": "capture/ecmwf-raw/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 528,
+      "sha256": "b7251d2413d0ff438a176684691adb235d005cf602e3301fac035c2ed4b8f9eb"
+    },
+    {
+      "path": "capture/ecmwf-raw/fort.6",
+      "role": "instruction or evidence",
+      "size": 10777,
+      "sha256": "f9c0475867efe8377eede036266efc740187f580b8fbfc2deb9c990d1d515c78"
+    },
+    {
+      "path": "capture/ecmwf-raw/logs/mgb_execution/20261109T181358.log",
+      "role": "log",
+      "size": 499,
+      "sha256": "579400e28a185a415d654794173940b219c87e4f489b1464670236d0698e0d99"
+    },
+    {
+      "path": "capture/effective-observations.csv",
+      "role": "instruction or evidence",
+      "size": 229165,
+      "sha256": "eeee2d868e51ebeb18314f4bff8b52e6aecb104fe1a369d123b2e8f5383c9a3c"
+    },
+    {
+      "path": "capture/level-recovery/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 718,
+      "sha256": "46fa7cd523fc36a1fe924c3683ee90379e251aaa538b273ae8ad1891f56ed0de"
+    },
+    {
+      "path": "capture/level-recovery/fort.6",
+      "role": "instruction or evidence",
+      "size": 10777,
+      "sha256": "f9c0475867efe8377eede036266efc740187f580b8fbfc2deb9c990d1d515c78"
+    },
+    {
+      "path": "capture/level-recovery/logs/mgb_execution/20261109T181739.log",
+      "role": "log",
+      "size": 514,
+      "sha256": "c20315b03dd6f6e43585c487321d935feb80b866f28fd2d8b29c5a15a8e1a5ea"
+    },
+    {
+      "path": "capture/level-recovery/observed-level.bin",
+      "role": "recovered observed level",
+      "size": 8337636,
+      "sha256": "c94f734678e176f87371b8e0fb2a84b4081d0b1be8c960e7310a80ed6df3549f"
+    },
+    {
+      "path": "capture/noaa-raw/DATA.before.hot",
+      "role": "state before execution",
+      "size": 26,
+      "sha256": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+    },
+    {
+      "path": "capture/noaa-raw/Input/CHUVABIN.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 12523752,
+      "sha256": "dc2da78c9cb74207bdd5d947d09c9531f9d36e2d9a665da43f75e071f0b2a0ae"
+    },
+    {
+      "path": "capture/noaa-raw/Input/PARHIG.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 3555,
+      "sha256": "cb3452aea114114c5e4d56f2adb9f54d6f89cb4536f1734a2feed07bf81fceba"
+    },
+    {
+      "path": "capture/noaa-raw/Input/Previsao.meta",
+      "role": "prepared input or engine-mutated state",
+      "size": 251135,
+      "sha256": "3f1035352bb92e0d82da4fbaa1cc5d6f8b2ea5cddc9c769dd6bc1dff6c331344"
+    },
+    {
+      "path": "capture/noaa-raw/Output/LOG_MGB.txt",
+      "role": "raw output",
+      "size": 33,
+      "sha256": "34f816fb8e8ae6c7e0973745b421fb68eb7dfec175d887108fc57997874fab3c"
+    },
+    {
+      "path": "capture/noaa-raw/Output/QTUDO_Inercial_Atual.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "4c9454110fd59d1350b7aba80da9be0553bc846c23e0b751484e3ab9aabef808"
+    },
+    {
+      "path": "capture/noaa-raw/Output/QTUDO_Inercial_Prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "752f589393d614e64648d944941d56e530c31a48d054ab806c631bdf773b188a"
+    },
+    {
+      "path": "capture/noaa-raw/Output/YTUDO.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "903f980e225acddcd113a78fcc42b496291643f16650a80b144bd2a1dc1e5653"
+    },
+    {
+      "path": "capture/noaa-raw/Output/YTUDO_prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "bc4dca04b4671401bb675e86440e77f1c6329b1beaf167fc27d441519611318d"
+    },
+    {
+      "path": "capture/noaa-raw/cache/precipitations_mgb_forecast.nc",
+      "role": "working grid",
+      "size": 1622249,
+      "sha256": "6c6a87df5892fdc53bbf5d045396da83e9bb725bbfdbd45e69df010dcc12d3ed"
+    },
+    {
+      "path": "capture/noaa-raw/decoded.nc",
+      "role": "decoded output",
+      "size": 11466557,
+      "sha256": "4c7b6dc6de945dda46416ca159cd6fc592fc81480c5cf017426622f889e77372"
+    },
+    {
+      "path": "capture/noaa-raw/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 526,
+      "sha256": "4f41f73b270783198d4ca21bb3823933c8036c5b872f0db50d9c41063fd7b5db"
+    },
+    {
+      "path": "capture/noaa-raw/fort.6",
+      "role": "instruction or evidence",
+      "size": 10777,
+      "sha256": "f9c0475867efe8377eede036266efc740187f580b8fbfc2deb9c990d1d515c78"
+    },
+    {
+      "path": "capture/noaa-raw/logs/mgb_execution/20261109T181414.log",
+      "role": "log",
+      "size": 496,
+      "sha256": "818acf0a17d7a3a706f617c3585fc26a5b3c3dd6a8b89d8f68cd15cf680ba3b4"
+    },
+    {
+      "path": "capture/operation.sqlite",
+      "role": "registry or operation",
+      "size": 69632,
+      "sha256": "a62e2807caf5a5c3e4d72da5ea5d1c5e2d512719df3a59ac38f3e6e3dc81b488"
+    },
+    {
+      "path": "capture/rebases.json",
+      "role": "instruction or evidence",
+      "size": 507,
+      "sha256": "d079f99dbd8052761293cffe73759d228f5db5078817a77e387fc2361d6089f2"
+    },
+    {
+      "path": "capture/review-input.csv",
+      "role": "instruction or evidence",
+      "size": 195262,
+      "sha256": "292c473a72e358368c0bae2aaf26bbf933e4cbf7d13e4838481f6323750e32f5"
+    },
+    {
+      "path": "capture/shared/precipitations_observed.nc",
+      "role": "working grid",
+      "size": 2264068,
+      "sha256": "322ab3770a36de82c475267add081216bf758652e72189c7bea2245eb29a0b94"
+    },
+    {
+      "path": "capture/zero/DATA.before.hot",
+      "role": "state before execution",
+      "size": 26,
+      "sha256": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+    },
+    {
+      "path": "capture/zero/Input/CHUVABIN.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 12523752,
+      "sha256": "bbeb652aad82ec9c05f450516d54165449e0399d79cdec3ea161043cfdad829d"
+    },
+    {
+      "path": "capture/zero/Input/PARHIG.hig",
+      "role": "prepared input or engine-mutated state",
+      "size": 3555,
+      "sha256": "cb3452aea114114c5e4d56f2adb9f54d6f89cb4536f1734a2feed07bf81fceba"
+    },
+    {
+      "path": "capture/zero/Input/Previsao.meta",
+      "role": "prepared input or engine-mutated state",
+      "size": 251135,
+      "sha256": "3f1035352bb92e0d82da4fbaa1cc5d6f8b2ea5cddc9c769dd6bc1dff6c331344"
+    },
+    {
+      "path": "capture/zero/Output/LOG_MGB.txt",
+      "role": "raw output",
+      "size": 33,
+      "sha256": "34f816fb8e8ae6c7e0973745b421fb68eb7dfec175d887108fc57997874fab3c"
+    },
+    {
+      "path": "capture/zero/Output/QTUDO_Inercial_Atual.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "4c9454110fd59d1350b7aba80da9be0553bc846c23e0b751484e3ab9aabef808"
+    },
+    {
+      "path": "capture/zero/Output/QTUDO_Inercial_Prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "ff25f2a4fa4da5c901996b21230cc1ed1cf444ef8ead4268e2559a496f5f5ada"
+    },
+    {
+      "path": "capture/zero/Output/YTUDO.MGB",
+      "role": "raw output",
+      "size": 8337636,
+      "sha256": "f7a12f5a5864e2a4f1bbdccab2989ff6a67ade6f8e7ea1d132bb0e0d7397d069"
+    },
+    {
+      "path": "capture/zero/Output/YTUDO_prev.MGB",
+      "role": "raw output",
+      "size": 4186116,
+      "sha256": "8aa5191f5b77b2833004dc89c39327ac50ebaba097c96d93d3d0aa33fd462ce9"
+    },
+    {
+      "path": "capture/zero/decoded.nc",
+      "role": "decoded output",
+      "size": 10365135,
+      "sha256": "acc0c7f36b828535400f369082bdb6c3f4d72c1f4f054f3449faf10e7e1eb4dd"
+    },
+    {
+      "path": "capture/zero/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 514,
+      "sha256": "8e7cc45cf24c1cb8b39cfaf843dd180b8dca9a1b6dcd9514e84d1f1392d877a5"
+    },
+    {
+      "path": "capture/zero/fort.6",
+      "role": "instruction or evidence",
+      "size": 10777,
+      "sha256": "f9c0475867efe8377eede036266efc740187f580b8fbfc2deb9c990d1d515c78"
+    },
+    {
+      "path": "capture/zero/logs/mgb_execution/20261109T181342.log",
+      "role": "log",
+      "size": 484,
+      "sha256": "f85570bdbb0cf4f9324a5fb91f7b3140bcef3da819e2c529a51a272e41e23729"
+    },
+    {
+      "path": "compare.py",
+      "role": "instruction or evidence",
+      "size": 3871,
+      "sha256": "6789de39c6f56b588f5c5862dc6b7b6d0de4654e2f903c44468e0c986ad7a303"
+    },
+    {
+      "path": "comparison.json",
+      "role": "instruction or evidence",
+      "size": 9165,
+      "sha256": "06c49b8bca3550bac38b79c371dc988b0b409f5aaac0799467a8cacbe68c795a"
+    },
+    {
+      "path": "environment.json",
+      "role": "instruction or evidence",
+      "size": 4851,
+      "sha256": "a92e6b774f36d4f6c6f3891a252e58bf17018d8054e046582b3d5040169c497f"
+    },
+    {
+      "path": "evidence.py",
+      "role": "instruction or evidence",
+      "size": 1500,
+      "sha256": "79ee73f51ba1468aaf695b2bb99c5f36cdf808b9534df4437689804bb188eadb"
+    },
+    {
+      "path": "frozen/assets/ecmwf/ecmwf.ifs.fc.20260720T000000Z.precipitation_grid.nc",
+      "role": "source forecast",
+      "size": 2983476,
+      "sha256": "119cb859e0a5840474eb028571c5cccc1fbc288b1b72a326f0e58e11c4f99a1b"
+    },
+    {
+      "path": "frozen/assets/noaa/noaa.gfs.fc.20260720T000000Z.precipitation_grid.nc",
+      "role": "source forecast",
+      "size": 1125383,
+      "sha256": "964c5a0470b6aa5916d8b55db546dc8700603a0f46f8bf89facfc75b115750e0"
+    },
+    {
+      "path": "frozen/custom.yaml",
+      "role": "source or executable",
+      "size": 649,
+      "sha256": "2c779326c7e0de48a9170cfe18e4cad296e9714454813bb65877ab1059096598"
+    },
+    {
+      "path": "frozen/history-original.sqlite",
+      "role": "registry or operation",
+      "size": 159862784,
+      "sha256": "12b3379054ddd625e974484bfae10fc592d0a34396db1fb7f25a69bbc0e9f7f9"
+    },
+    {
+      "path": "frozen/runner/Input/Azimute_Mini.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 144061,
+      "sha256": "5d5b943e50b427b83cf9fa7606cd3a117541244994483e07590fa670d8f0b0cd"
+    },
+    {
+      "path": "frozen/runner/Input/CCJUS.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 176792,
+      "sha256": "a3965f7d96e49c4b2971e1b8141efea77b093e8957683e8973ff7cd3c741c09d"
+    },
+    {
+      "path": "frozen/runner/Input/CI.meta",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 26,
+      "sha256": "ead4e41166d1a7630aed8664fb3ef57445ac95ab88469ad9552de12c34f1053e"
+    },
+    {
+      "path": "frozen/runner/Input/CI_HFL.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 276768,
+      "sha256": "3cb841467b6a6be24eddc5d3105638ddc5c2ca86886794c56ea407bc40b3298d"
+    },
+    {
+      "path": "frozen/runner/Input/CI_Q2FL.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 1401138,
+      "sha256": "b2fd1e713d5306df3532ba7b30ddfe93b6a9114c421c766f9ba2cfa969c825ed"
+    },
+    {
+      "path": "frozen/runner/Input/CI_VOL.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2871468,
+      "sha256": "ed524eec0e49e59ab7885c405d8353fc669b4605b12fbee8bfc088df9c5498f7"
+    },
+    {
+      "path": "frozen/runner/Input/CI_VOL1_FL.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 795708,
+      "sha256": "e69c928ed5155c36c75fca1599e9926f7ee49f703d362dae9935b9a5734687b9"
+    },
+    {
+      "path": "frozen/runner/Input/CI_W.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 14668704,
+      "sha256": "7c4ecbd3bba973a205c8975a049d9d315c850244256cd1c769395a07ae6b33f5"
+    },
+    {
+      "path": "frozen/runner/Input/COTA_AREA.FLP",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 36325866,
+      "sha256": "32469e195c354512d828a96ba049ff7bf96ff0bb7e3ea26af31af52aa14e3153"
+    },
+    {
+      "path": "frozen/runner/Input/Cell - Copia.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2482550,
+      "sha256": "5abce9113bf2245edebeaa7c48697183219f360d1d0e729474b54aa7d1ada36d"
+    },
+    {
+      "path": "frozen/runner/Input/Cell.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2482550,
+      "sha256": "01db043559f6593160085cc243f6e1b1627f6b8ec291dd02845fac8132d43282"
+    },
+    {
+      "path": "frozen/runner/Input/ChuvaHora.meta",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 41,
+      "sha256": "d8c03f31444b3d511201cbab4958d90aae5683685bee420aa29ba4bc168bd5a0"
+    },
+    {
+      "path": "frozen/runner/Input/DATA.hot",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 26,
+      "sha256": "fbbf43343e2c5768695a5e3c660a1b4bcc5e83a5ec16831b7002f1d0862a5da8"
+    },
+    {
+      "path": "frozen/runner/Input/EstacoesNivel.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 7426,
+      "sha256": "7adfc5f5fdf7d3b09a88934f47cda353b64dcb0ba060c8ae0f5207412f02544f"
+    },
+    {
+      "path": "frozen/runner/Input/EstacoesPluv.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 33782,
+      "sha256": "bb0630a495904c45ccc04317a1f4a92308aa071bb4050c83afd8a725d684eb6e"
+    },
+    {
+      "path": "frozen/runner/Input/FCORPLU.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 1819,
+      "sha256": "bd7240b7c43d8608f4c55d06e1b985c7d0551e40e2927018fe32fdc2701f97a2"
+    },
+    {
+      "path": "frozen/runner/Input/HOT.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 5,
+      "sha256": "773ac3bfde8adb749433b89f1e62d185687558b2ee1383c8e7dfba930c22467d"
+    },
+    {
+      "path": "frozen/runner/Input/HRC_description.hrc",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 307,
+      "sha256": "57c7f50f88e863554e0401d3ddb969bb6c3e75d92913582bc5cb5df9dc65c321"
+    },
+    {
+      "path": "frozen/runner/Input/Interplu_hora.MGB",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 24116,
+      "sha256": "f81ce33800421f1845a473b75c149b4e8a84429c67fec1e5536a18d7308440b9"
+    },
+    {
+      "path": "frozen/runner/Input/MAPEAMENTO_TRECHOS.csv",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 3370328,
+      "sha256": "2febab23afe3c3b3271011e0ee8a1925b2df0528a816145996e946985c51cc45"
+    },
+    {
+      "path": "frozen/runner/Input/MINI - Copia.gtp",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2482550,
+      "sha256": "5abce9113bf2245edebeaa7c48697183219f360d1d0e729474b54aa7d1ada36d"
+    },
+    {
+      "path": "frozen/runner/Input/MINI - Copia.mgb",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2482550,
+      "sha256": "5abce9113bf2245edebeaa7c48697183219f360d1d0e729474b54aa7d1ada36d"
+    },
+    {
+      "path": "frozen/runner/Input/MINI.csv",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 1326809,
+      "sha256": "b639d8f75746b580563e5cff894b5b476919b588883e01222ba0c193d9109bae"
+    },
+    {
+      "path": "frozen/runner/Input/MINI.gtp",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2482550,
+      "sha256": "01db043559f6593160085cc243f6e1b1627f6b8ec291dd02845fac8132d43282"
+    },
+    {
+      "path": "frozen/runner/Input/MINI.mgb",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2482550,
+      "sha256": "01db043559f6593160085cc243f6e1b1627f6b8ec291dd02845fac8132d43282"
+    },
+    {
+      "path": "frozen/runner/Input/NivOBS_hora.PRN",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 25483857,
+      "sha256": "81b76ce60250fa7094fe3396f8d94c557d80cafebf049b0373324191509244b5"
+    },
+    {
+      "path": "frozen/runner/Input/PARAM_ASSIMILA - Descri\u00e7\u00e3o.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 1442,
+      "sha256": "c2e8ac27eada967964cf4b368db4fa7fa47d5929e81d70b797d670d2d337e7f3"
+    },
+    {
+      "path": "frozen/runner/Input/PARAM_ASSIMILA - UHEs FTP.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 12962,
+      "sha256": "4e6502ecc24a5bea769f4b3130389d513a034847ef4bbd1dc1ceafa3ef98d09a"
+    },
+    {
+      "path": "frozen/runner/Input/PARAM_ASSIMILA - tudo zero.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 12839,
+      "sha256": "3cbfb8c093b5cccb0c0fc080f10a71b80b75249696cdb4f6d88fdec528d6f52e"
+    },
+    {
+      "path": "frozen/runner/Input/PARAM_ASSIMILA.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 12988,
+      "sha256": "ac1525c15c913ba6504304afedf59dc9f2be4276f54c5fa129bff88b6ca0ed2e"
+    },
+    {
+      "path": "frozen/runner/Input/PARHIG.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 3669,
+      "sha256": "15b3d6dc96294a06b634e9b17c2675c7fa9bdbd8f032a44ce55af73ff7f2b670"
+    },
+    {
+      "path": "frozen/runner/Input/PAUSE.MGB",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 1,
+      "sha256": "5feceb66ffc86f38d952786c6d696c79c2dbc239dd4e91b46729d73a27fb57e9"
+    },
+    {
+      "path": "frozen/runner/Input/Postos Flu.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 1416,
+      "sha256": "0df5e761e83d72480f3a9413248943c1e0c57e89bb62cfd985a684b0b5105db7"
+    },
+    {
+      "path": "frozen/runner/Input/Previsao.meta",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 251135,
+      "sha256": "1aa74055530a3b359bb0792201dbdd75a47798f00f8fb0dc0446c74adfac7dfb"
+    },
+    {
+      "path": "frozen/runner/Input/QOBS_hora.PRN",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 25497333,
+      "sha256": "c374e031cef40e5ab57852c154104e43179169fe9247307fc6d985dcd239330f"
+    },
+    {
+      "path": "frozen/runner/Input/QSUBST_hora.PRN",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2883712,
+      "sha256": "0abb8eff56f2db8266951a301f5376dfcb7723ff178af496c2727f97302ed6a0"
+    },
+    {
+      "path": "frozen/runner/Input/VOL.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 536238,
+      "sha256": "c51a126eaf31754362d08cc0a40328bab48a36939a3f733e7378fa415dd05efc"
+    },
+    {
+      "path": "frozen/runner/Input/W.HOT",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 795708,
+      "sha256": "f33c9560dd49d4e2f21cdb8d6573cd3de60c0f57572450bf3c620796f37cd864"
+    },
+    {
+      "path": "frozen/runner/Input/albiaf.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 2998,
+      "sha256": "d3e82f7c1563ad38c83b95e75710d41d452f85bc4199332f2b19feb0499bf0a6"
+    },
+    {
+      "path": "frozen/runner/Input/curvas_chave_parametros-original.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 390255,
+      "sha256": "a63767c5a08e6479a5f03b547d9f3bea205633ec3681ec94eeec190c162dd827"
+    },
+    {
+      "path": "frozen/runner/Input/curvas_chave_parametros.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 390262,
+      "sha256": "2f52e6e8b6304ac845e0df1fdcae99d209a14942e7b9ca066fa805891af2ff86"
+    },
+    {
+      "path": "frozen/runner/Input/face.con",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 72556,
+      "sha256": "7593945349553d4050b983934a04d9e2bf89b25381e76b840a9af28de1203b0b"
+    },
+    {
+      "path": "frozen/runner/Input/medias.cli",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 34379,
+      "sha256": "d6014e47c18693f0ec3eb4fa268a45e14de1639863c33faa318d01f4ed685e5e"
+    },
+    {
+      "path": "frozen/runner/Input/paruso - Copia.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 104787,
+      "sha256": "24497d829a369adabc7df02dd443600767e07eeda7040425c18bab1b68a1e8e8"
+    },
+    {
+      "path": "frozen/runner/Input/paruso.CAL",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "frozen/runner/Input/paruso.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 104787,
+      "sha256": "489de0f650c4a1d3c1f226ff7665c6daafb1e47124f6273c73220b25d1827d65"
+    },
+    {
+      "path": "frozen/runner/Input/paruso_backup.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 104787,
+      "sha256": "838edabf48c6d42b5c6368d12bd6a7eeb99eb21cb524e1596f02ce2e158ae8d4"
+    },
+    {
+      "path": "frozen/runner/Input/paruso_old.hig",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 104787,
+      "sha256": "852c7a719ec93d6c99d4b73651e971ecb532bd38e2d91255b09b8b9467ca33fd"
+    },
+    {
+      "path": "frozen/runner/Input/uhe_tocantins.mgb",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 102,
+      "sha256": "560e6b69b89091796bd83bb81cc9461a639d4ca493399f7e4ce961e694f64caf"
+    },
+    {
+      "path": "frozen/runner/Input/vento.txt",
+      "role": "configuration, calibration, auxiliary forcing or saved state",
+      "size": 145881,
+      "sha256": "e27220177d61a47b0841cedb6fb0a17c62c617c4b2aece3df40d441b590cd342"
+    },
+    {
+      "path": "frozen/runner/MGB_Inercial_Prev_RSH",
+      "role": "source or executable",
+      "size": 478720,
+      "sha256": "263381e450484e5bc345e269f21c54e84d89afdff97ca2d9752eb951907f88eb"
+    },
+    {
+      "path": "provenance/custom-committed.yaml",
+      "role": "historical provenance or execution evidence",
+      "size": 652,
+      "sha256": "bf906775f7a9812ea3c0ea7f63ba70332d3fbde74ab40e0ce867d4f1ca7c4d7c"
+    },
+    {
+      "path": "provenance/custom-config.patch",
+      "role": "historical provenance or execution evidence",
+      "size": 281,
+      "sha256": "4c5f28e2619562e4ae2350c1c857d0884e7c19def86b4cb41e9b3ebf203eab44"
+    },
+    {
+      "path": "provenance/engine-open-trace.log",
+      "role": "historical provenance or execution evidence",
+      "size": 45560,
+      "sha256": "fe1e6051c618f45e40229f5cf02828d850f8f55c66e6d3e0e9aa5a580fd013ab"
+    },
+    {
+      "path": "qc.csv",
+      "role": "instruction or evidence",
+      "size": 538,
+      "sha256": "852e1298ab50dd61b34bd147eabfdc2fb0a607e01a1a343e73a6781b2e173657"
+    },
+    {
+      "path": "recover-level-capture.log",
+      "role": "log",
+      "size": 594,
+      "sha256": "a4594f6718abf49c157d0a6cc8e47c7108c5ee4904b61e0032d0d72ff77ac711"
+    },
+    {
+      "path": "recover-level-repeat.log",
+      "role": "log",
+      "size": 592,
+      "sha256": "68e4ead2c552438f22c9a8dcfc9c70a0b6686f8a983cc70f0a40ce1aabd005df"
+    },
+    {
+      "path": "recover-level.py",
+      "role": "instruction or evidence",
+      "size": 2186,
+      "sha256": "35675ef8910df742bd883de94509cf73bdadfc0f1399af466658ca09abeb3b8b"
+    },
+    {
+      "path": "repeat.log",
+      "role": "log",
+      "size": 2120,
+      "sha256": "0d7cf47d515b267c72139b876cea9c7844cdd4b201b4d1cb8cc7d7e338d7d183"
+    },
+    {
+      "path": "repeat/ecmwf-corrected/decoded.nc",
+      "role": "decoded output",
+      "size": 11763781,
+      "sha256": "239d3a55ddcaee36a1beda24032200d995597375a5f9ee3a7aeb4a793b685105"
+    },
+    {
+      "path": "repeat/ecmwf-corrected/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 544,
+      "sha256": "65ba904cdc3806e7adc094f9cf6956bd4e7f797a512b1c4146ea9e55dd3a967c"
+    },
+    {
+      "path": "repeat/ecmwf-corrected/logs/mgb_execution/20261109T181453.log",
+      "role": "log",
+      "size": 515,
+      "sha256": "c72c94d259ec67d06641cbaa194dc947c722af596d85cccb17ab08874333ef13"
+    },
+    {
+      "path": "repeat/ecmwf-raw/decoded.nc",
+      "role": "decoded output",
+      "size": 11650553,
+      "sha256": "361bc2a56c649c98f92a2b2e6587142815a9278e6ac11c8eebcf076f0d73baa9"
+    },
+    {
+      "path": "repeat/ecmwf-raw/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 525,
+      "sha256": "23db39ae0c68398d086f50ddb83bb527e748f667e1866592da41f9f96df47a10"
+    },
+    {
+      "path": "repeat/ecmwf-raw/logs/mgb_execution/20261109T181421.log",
+      "role": "log",
+      "size": 497,
+      "sha256": "300d67490935bf1f9654ba6a134d878ee9836d9ff3c9479c4285fb9ba49a5416"
+    },
+    {
+      "path": "repeat/level-recovery/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 713,
+      "sha256": "4fa7e7410f03dbea18d0734d49ca4037013b660f12785215ddc9ccb56e5eac34"
+    },
+    {
+      "path": "repeat/level-recovery/logs/mgb_execution/20261109T181743.log",
+      "role": "log",
+      "size": 512,
+      "sha256": "8fdff8bce3cd741241d9ea5b6f18900def58692b30b063bd006fb819936ca359"
+    },
+    {
+      "path": "repeat/noaa-raw/decoded.nc",
+      "role": "decoded output",
+      "size": 11466557,
+      "sha256": "8cc3fd06aafc5a18521f46e6140024086e5e1ebe748e23ee8737115e5e13d846"
+    },
+    {
+      "path": "repeat/noaa-raw/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 523,
+      "sha256": "a1d13455f3040ceece7a1217db77bfcbe1da25d0ab0a2aedfa9796a4bd5c6291"
+    },
+    {
+      "path": "repeat/noaa-raw/logs/mgb_execution/20261109T181437.log",
+      "role": "log",
+      "size": 494,
+      "sha256": "a6f4bfe7c12f0591a336e1f6e0883e8f1791d7b5ec2131775dfc8be86144b6fe"
+    },
+    {
+      "path": "repeat/operation.sqlite",
+      "role": "registry or operation",
+      "size": 69632,
+      "sha256": "e37a75da9a53c23796ecb4125af4c0e62a2fa96303cab9713524695979624300"
+    },
+    {
+      "path": "repeat/zero/decoded.nc",
+      "role": "decoded output",
+      "size": 10365135,
+      "sha256": "3f8792f8a65ff96a2304ead913c0a7cb656eff09e8ffe98deb4da0b8c5a09d0f"
+    },
+    {
+      "path": "repeat/zero/execution.json",
+      "role": "historical provenance or execution evidence",
+      "size": 511,
+      "sha256": "210ea0d5ac1919df377ff4adc8753bae64b6c865a8b62a1eec66f17b7683c30a"
+    },
+    {
+      "path": "repeat/zero/logs/mgb_execution/20261109T181405.log",
+      "role": "log",
+      "size": 482,
+      "sha256": "799c3262653a4d4d79c27ea9f63b838ea5ec94e0bdba72c216bb7deca345d822"
+    },
+    {
+      "path": "rewind-trace.txt",
+      "role": "log",
+      "size": 1299,
+      "sha256": "4c4301b6948314dcc3c0fb4330c516c80388e801325af2000748613fe4459909"
+    },
+    {
+      "path": "snapshot.c",
+      "role": "instruction or evidence",
+      "size": 1110,
+      "sha256": "bbe628f1eba1d5c6dc6a0127b7228a0d01a10f534d429cdb115797a9031b9772"
+    },
+    {
+      "path": "transformed-native.npz",
+      "role": "instruction or evidence",
+      "size": 1424992,
+      "sha256": "59d3db1d4757a3e383d161a649d55ddd9a56bcbcd0f379c1d07d72a1ae07c417"
+    }
+  ],
+  "comparisons": {
+    "full": "comparison.json",
+    "array_variables": [
+      "precipitation",
+      "flow",
+      "level"
+    ],
+    "dimensions": [
+      "time",
+      "mini"
+    ],
+    "coordinates": [
+      "time",
+      "mini",
+      "mini_id",
+      "time_segment"
+    ],
+    "units": [
+      "mm",
+      "m3 s-1",
+      "cm"
+    ],
+    "repeat_rule": "exact array values and missingness; exact coordinate alignment; bytes equal for named raw streams and prepared input checkpoints",
+    "netcdf_packing": "int32 scale factor 0.001; level converted from raw metres to cm",
+    "ignored_metadata_fields": [
+      "history",
+      "date_created"
+    ],
+    "differences_between_scenarios": "comparison.json vs_zero"
+  },
+  "executions": {
+    "capture": {
+      "zero": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/capture/zero",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/zero/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/zero/Output"
+        },
+        "start": "2026-11-09T18:13:42.809232+00:00",
+        "end": "2026-11-09T18:13:54.520734+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.711502
+      },
+      "ecmwf-raw": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/capture/ecmwf-raw",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/ecmwf-raw/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/ecmwf-raw/Output"
+        },
+        "start": "2026-11-09T18:13:58.336417+00:00",
+        "end": "2026-11-09T18:14:10.067957+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.73154
+      },
+      "noaa-raw": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/capture/noaa-raw",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/noaa-raw/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/noaa-raw/Output"
+        },
+        "start": "2026-11-09T18:14:14.297876+00:00",
+        "end": "2026-11-09T18:14:26.239570+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.941694
+      },
+      "ecmwf-corrected": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/capture/ecmwf-corrected",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/ecmwf-corrected/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/ecmwf-corrected/Output"
+        },
+        "start": "2026-11-09T18:14:30.539382+00:00",
+        "end": "2026-11-09T18:14:42.406588+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.867206
+      },
+      "level-recovery": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/capture/level-recovery",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "LD_PRELOAD": "/workspace/regression-rs-hourly-r1/snapshot.so",
+          "MGB_LEVEL_SNAPSHOT": "/workspace/regression-rs-hourly-r1/capture/level-recovery/observed-level.bin",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/level-recovery/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/capture/level-recovery/Output"
+        },
+        "start": "2026-11-09T18:17:39.784393+00:00",
+        "end": "2026-11-09T18:17:52.012025+00:00",
+        "exit_status": 0,
+        "duration_seconds": 12.227632
+      }
+    },
+    "repeat": {
+      "zero": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/repeat/zero",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/zero/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/zero/Output"
+        },
+        "start": "2026-11-09T18:14:05.541338+00:00",
+        "end": "2026-11-09T18:14:17.629503+00:00",
+        "exit_status": 0,
+        "duration_seconds": 12.088165
+      },
+      "ecmwf-raw": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/repeat/ecmwf-raw",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/ecmwf-raw/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/ecmwf-raw/Output"
+        },
+        "start": "2026-11-09T18:14:21.739831+00:00",
+        "end": "2026-11-09T18:14:33.512401+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.77257
+      },
+      "noaa-raw": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/repeat/noaa-raw",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/noaa-raw/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/noaa-raw/Output"
+        },
+        "start": "2026-11-09T18:14:37.670162+00:00",
+        "end": "2026-11-09T18:14:49.233504+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.563342
+      },
+      "ecmwf-corrected": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/repeat/ecmwf-corrected",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/ecmwf-corrected/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/ecmwf-corrected/Output"
+        },
+        "start": "2026-11-09T18:14:53.344765+00:00",
+        "end": "2026-11-09T18:15:05.022527+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.677762
+      },
+      "level-recovery": {
+        "command": [
+          "/workspace/regression-rs-hourly-r1/frozen/runner/MGB_Inercial_Prev_RSH"
+        ],
+        "cwd": "/workspace/regression-rs-hourly-r1/repeat/level-recovery",
+        "environment": {
+          "OMP_NUM_THREADS": "1",
+          "LD_PRELOAD": "/workspace/regression-rs-hourly-r1/snapshot.so",
+          "MGB_LEVEL_SNAPSHOT": "/workspace/regression-rs-hourly-r1/repeat/level-recovery/observed-level.bin",
+          "MGB_INPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/level-recovery/Input",
+          "MGB_OUTPUT_DIR": "/workspace/regression-rs-hourly-r1/repeat/level-recovery/Output"
+        },
+        "start": "2026-11-09T18:17:43.728969+00:00",
+        "end": "2026-11-09T18:17:55.406139+00:00",
+        "exit_status": 0,
+        "duration_seconds": 11.67717
+      }
+    }
+  },
+  "limitations": [
+    "Linux x86_64 only; no Windows or Rust comparison.",
+    "Unmodified engine overwrites first 121 observed level records on forecast rewind; independent same-forcing companion snapshot recovers them before overwrite and checks observed flow and unaffected level suffix exactly.",
+    "Saved initial-state files are included unchanged but use and temporal compatibility are unverified.",
+    "History SQLite backup touched source shared-memory sidecar modification time during original capture; pre-backup bytes were not hashed."
+  ]
+}

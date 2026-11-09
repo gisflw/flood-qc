@@ -8,6 +8,13 @@ repository, checked out in sibling worktrees.
 See the [worktree record](references/retirement_record.md) for current folders,
 branch tips, upstreams, and historical retirement details.
 
+The first [regression reference](references/regression/rs-hourly/README.md)
+captures four RS scenarios and a fresh repeat through decoded results. All
+repeated arrays match exactly. Large artifacts are preserved outside Git at
+`/workspace/regression-rs-hourly-r1`; see the
+[review report](docs/reports/regression-reference-capture.md) for validation and
+the documented adaptations to the legacy capture path.
+
 ## Read and execute in this order
 
 1. **Use the frozen references.** Review the [retirement record](references/retirement_record.md),

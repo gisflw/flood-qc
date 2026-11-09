@@ -8,6 +8,13 @@ compatible executable, calibration, geometry, and required initial state.
 Capture reference evidence first; implement Rust checks against it as the shared
 core becomes available.
 
+The current [capture specification](../docs/changes/regression-reference-capture.md)
+narrows the first milestone to saved normalized inputs through decoded results.
+The November 9, 2026 [established case](../references/regression/rs-hourly/README.md)
+includes all four scenarios and an exact fresh repeat, with a
+[review report](../docs/reports/regression-reference-capture.md). Broader stages
+in this migration outline remain incremental work.
+
 Cover the main operational steps with a small representative case:
 
 ```text

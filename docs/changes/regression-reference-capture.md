@@ -1,13 +1,45 @@
 # Regression reference capture specification
 
-Status: interview in progress. This specifies reference capture, not the Rust port.
+Status: reference captured and repeated November 9, 2026; revision 1 verified.
+This specifies reference capture, not the Rust port. See the
+[review report](../reports/regression-reference-capture.md) and
+[established case](../../references/regression/rs-hourly/README.md).
 
 ## Goal and scope
 
 Freeze
 one qualified RS operation, correct observations, prepare and execute four
 scenarios with the available external engine, and preserve decoded results and
-stage comparisons. The plan governs scenario definitions and exclusions.
+stage comparisons. The agreed requirements below govern scenario definitions
+and exclusions.
+
+### Agreed case and scenarios
+
+Prefer the saved `2026-07-20T00:00:00Z` forecast cycle with operation reference
+`2026-07-20T00:00:00-03:00` in `America/Sao_Paulo`. Use the full RS model domain,
+hourly timesteps, and nominal 10-day observation / five-day forecast settings.
+Qualify actual endpoints and coverage rather than assuming 240/120 samples.
+If this candidate lacks valid inputs, compatible state, or representative sequence
+corrections, investigate another saved date with both providers and record why;
+do not invent data or fetch replacements.
+
+| Scenario | Forecast forcing |
+| --- | --- |
+| `zero` | Zero forecast rainfall, retaining corrected observations. |
+| `ecmwf-raw` | Pinned normalized ECMWF asset without edits. |
+| `noaa-raw` | Pinned normalized NOAA asset without edits. |
+| `ecmwf-corrected` | The same ECMWF asset, multiplied by 1.5, translated +2° latitude / −3° longitude, then rotated +45° counterclockwise about the original grid center, across the full selected forecast window. |
+
+Verify source resolution before encoding displacement: on a 0.25° grid the
+legacy instruction uses +8 latitude cells and −12 longitude cells. Preserve
+nearest-neighbor sampling, the expanded footprint, and nodata handling. Include
+an actual repeated-0.2 sequence in observation-review evidence; the matching rule
+still includes every consecutive value strictly between 0 and 1 mm.
+
+Start at saved normalized inputs and stop at decoded results. Acquisition,
+normalization/registration regression, analysis, bulletins, other exports, GUI,
+Windows validation, new hot-start generation/chaining, and completed-run sharing
+are deferred. Rust comparisons follow in a later increment.
 
 Use existing `legacy_python` APIs interactively or through documented invocation
 snippets. Do not add maintained capture/replay tooling, a new CLI, dependencies,
@@ -89,11 +121,15 @@ Outside Git, preserve a bundle with `frozen/`, `capture/`, and `repeat/`:
   forecasts, spatial files, effective configuration, consumed engine inputs,
   unchanged saved state, executable, and reproducibility environment
   evidence. Preserve original and path-rebased records separately.
-- `capture/` and `repeat/` each hold their operation SQLite, observation-review
-  evidence, shared regenerated observed grid, scenario preparation evidence,
-  complete Input/Output directories, forecast working grids, decoded NetCDFs,
-  commands, logs, and comparisons. Preserve prepared input/state hashes before
-  execution and post-execution files separately where the engine mutates them.
+- `capture/` preserves observation-review and path-rebase evidence, the
+  operation SQLite, working grids, changed prepared inputs, the raw flow/level
+  streams needed for decoding, decoded NetCDFs, commands, and logs. Unchanged
+  inputs are stored once in `frozen/`.
+- `repeat/` preserves its operation, decoded NetCDFs, commands, logs, and
+  comparison evidence. Byte-identical files are stored once under `capture/`;
+  repeat grids, ancillary outputs, and temporary decoding files are reconstructed
+  when needed. Preserve input/state hashes before execution and post-execution
+  files separately where their bytes change.
 - Start repeat from `frozen/`, never from capture's mutated Input or caches.
   All file paths in portable evidence resolve under the supplied bundle root;
   record execution-specific absolute paths as provenance only.
@@ -101,6 +137,22 @@ Outside Git, preserve a bundle with `frozen/`, `capture/`, and `repeat/`:
 The full history snapshot is preserved even though only the selected normalized
 assets need to be copied. Capture must not resolve an unselected asset or fall
 back to any file in the operational source directory.
+
+### Capture adaptations
+
+In disposable scenario inputs, align `Previsao.meta` to July 20 01:00 local and
+121 forecast steps. The saved October/361-step control is retained in `frozen/`.
+Join the engine's separate observed and forecast flow streams in decoding
+staging; preserve original engine files unchanged.
+
+The engine overwrites the first 121 observed-level records when forecasting.
+For each capture/repeat, an independent same-forcing zero-scenario run snapshots
+the 241 observed-level records immediately before the rewind, using the external
+bundle's small Linux interception shim. Check its complete observed flow and
+unaffected 120 level records against all four scenarios, then join the recovered
+observed levels with each scenario's raw forecast levels for decoding. Preserve
+the shim source, invocation, snapshot, and raw recovery outputs with the bundle.
+These are capture adaptations; they do not change the legacy package or engine.
 
 ## Existing contracts to use
 
@@ -156,4 +208,9 @@ missingness exactly; establish numerical rules from repeated execution and
 storage precision. Failure, missing prerequisites, and stale output reuse do
 not establish a baseline.
 
-No capture or model execution has been performed for this specification yet.
+All four scenarios now have raw outputs and decoded precipitation, flow, and
+level arrays with 362 hourly timestamps and 8,649 mini-basins. Capture and fresh
+repeat match exactly in values, masks, coordinates, and segment labels. The
+versioned case records the saved-state limitations and the original SQLite
+backup's shared-memory-sidecar modification-time exception. Later capture and
+repeat use only the frozen snapshot and do not reopen the operational database.

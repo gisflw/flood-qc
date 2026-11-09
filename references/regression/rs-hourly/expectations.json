@@ -1,0 +1,642 @@
+{
+  "dimensions": {
+    "time": 362,
+    "mini": 8649,
+    "observed": 241,
+    "forecast": 121
+  },
+  "observed_review": {
+    "rows": 2415,
+    "stations": 11,
+    "sequence_matches": 6
+  },
+  "scenarios": {
+    "zero": {
+      "precipitation": {
+        "unit": "mm",
+        "missing": 0,
+        "min": 0.0,
+        "max": 12.318,
+        "first_cell_first_time": 0.0,
+        "first_cell_forecast_start": 0.0
+      },
+      "flow": {
+        "unit": "m3 s-1",
+        "missing": 0,
+        "min": -13432.633,
+        "max": 28413.738,
+        "first_cell_first_time": 1.219,
+        "first_cell_forecast_start": 0.6980000000000001
+      },
+      "level": {
+        "unit": "cm",
+        "missing": 0,
+        "min": 1987.759,
+        "max": 142195.984,
+        "first_cell_first_time": 111841.187,
+        "first_cell_forecast_start": 111837.134
+      }
+    },
+    "ecmwf-raw": {
+      "precipitation": {
+        "unit": "mm",
+        "missing": 0,
+        "min": 0.0,
+        "max": 12.399000000000001,
+        "first_cell_first_time": 0.0,
+        "first_cell_forecast_start": 0.07100000000000001
+      },
+      "flow": {
+        "unit": "m3 s-1",
+        "missing": 0,
+        "min": -13432.633,
+        "max": 28413.738,
+        "first_cell_first_time": 1.219,
+        "first_cell_forecast_start": 0.6980000000000001
+      },
+      "level": {
+        "unit": "cm",
+        "missing": 0,
+        "min": 1987.759,
+        "max": 142195.984,
+        "first_cell_first_time": 111841.187,
+        "first_cell_forecast_start": 111837.134
+      }
+    },
+    "noaa-raw": {
+      "precipitation": {
+        "unit": "mm",
+        "missing": 0,
+        "min": 0.0,
+        "max": 13.191,
+        "first_cell_first_time": 0.0,
+        "first_cell_forecast_start": 0.034
+      },
+      "flow": {
+        "unit": "m3 s-1",
+        "missing": 0,
+        "min": -13432.633,
+        "max": 28413.738,
+        "first_cell_first_time": 1.219,
+        "first_cell_forecast_start": 0.6980000000000001
+      },
+      "level": {
+        "unit": "cm",
+        "missing": 0,
+        "min": 1987.759,
+        "max": 142195.984,
+        "first_cell_first_time": 111841.187,
+        "first_cell_forecast_start": 111837.134
+      }
+    },
+    "ecmwf-corrected": {
+      "precipitation": {
+        "unit": "mm",
+        "missing": 0,
+        "min": 0.0,
+        "max": 13.587,
+        "first_cell_first_time": 0.0,
+        "first_cell_forecast_start": 0.041
+      },
+      "flow": {
+        "unit": "m3 s-1",
+        "missing": 0,
+        "min": -13432.633,
+        "max": 28413.738,
+        "first_cell_first_time": 1.219,
+        "first_cell_forecast_start": 0.6980000000000001
+      },
+      "level": {
+        "unit": "cm",
+        "missing": 0,
+        "min": 1987.759,
+        "max": 142245.44700000001,
+        "first_cell_first_time": 111841.187,
+        "first_cell_forecast_start": 111837.134
+      }
+    }
+  },
+  "repeat_comparisons": {
+    "zero": {
+      "time": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "mini": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "mini_id": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "time_segment": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "precipitation": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "flow": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "level": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      }
+    },
+    "ecmwf-raw": {
+      "time": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "mini": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "mini_id": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "time_segment": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "precipitation": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "flow": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "level": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "forecast_grid": {
+        "precipitation": {
+          "shape": [
+            121,
+            83,
+            102
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "time_bounds": {
+          "shape": [
+            121,
+            2
+          ],
+          "exact": true
+        },
+        "latitude_bounds": {
+          "shape": [
+            83,
+            2
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "longitude_bounds": {
+          "shape": [
+            102,
+            2
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "crs": {
+          "shape": [],
+          "exact": true
+        },
+        "time": {
+          "shape": [
+            121
+          ],
+          "exact": true
+        },
+        "latitude": {
+          "shape": [
+            83
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "longitude": {
+          "shape": [
+            102
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        }
+      },
+      "vs_zero": {
+        "precipitation": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 805429,
+          "forecast_max_abs_difference": 12.399000000000001
+        },
+        "flow": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 999214,
+          "forecast_max_abs_difference": 8683.586000000001
+        },
+        "level": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 1003908,
+          "forecast_max_abs_difference": 1102.700999999999
+        }
+      }
+    },
+    "noaa-raw": {
+      "time": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "mini": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "mini_id": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "time_segment": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "precipitation": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "flow": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "level": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "forecast_grid": {
+        "precipitation": {
+          "shape": [
+            121,
+            83,
+            102
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "time_bounds": {
+          "shape": [
+            121,
+            2
+          ],
+          "exact": true
+        },
+        "latitude_bounds": {
+          "shape": [
+            83,
+            2
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "longitude_bounds": {
+          "shape": [
+            102,
+            2
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "crs": {
+          "shape": [],
+          "exact": true
+        },
+        "time": {
+          "shape": [
+            121
+          ],
+          "exact": true
+        },
+        "latitude": {
+          "shape": [
+            83
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "longitude": {
+          "shape": [
+            102
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        }
+      },
+      "vs_zero": {
+        "precipitation": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 740759,
+          "forecast_max_abs_difference": 13.191
+        },
+        "flow": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 960355,
+          "forecast_max_abs_difference": 3292.5119999999997
+        },
+        "level": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 983394,
+          "forecast_max_abs_difference": 607.6090000000004
+        }
+      }
+    },
+    "ecmwf-corrected": {
+      "time": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "mini": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "mini_id": {
+        "shape": [
+          8649
+        ],
+        "exact": true
+      },
+      "time_segment": {
+        "shape": [
+          362
+        ],
+        "exact": true
+      },
+      "precipitation": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "flow": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "level": {
+        "shape": [
+          362,
+          8649
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "forecast_grid": {
+        "precipitation": {
+          "shape": [
+            121,
+            83,
+            102
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "time_bounds": {
+          "shape": [
+            121,
+            2
+          ],
+          "exact": true
+        },
+        "latitude_bounds": {
+          "shape": [
+            83,
+            2
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "longitude_bounds": {
+          "shape": [
+            102,
+            2
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "crs": {
+          "shape": [],
+          "exact": true
+        },
+        "time": {
+          "shape": [
+            121
+          ],
+          "exact": true
+        },
+        "latitude": {
+          "shape": [
+            83
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        },
+        "longitude": {
+          "shape": [
+            102
+          ],
+          "missing": 0,
+          "exact": true,
+          "max_abs_difference": 0.0
+        }
+      },
+      "vs_zero": {
+        "precipitation": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 853602,
+          "forecast_max_abs_difference": 13.587
+        },
+        "flow": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 1007445,
+          "forecast_max_abs_difference": 10885.537
+        },
+        "level": {
+          "observed_prefix_exact": true,
+          "forecast_differing_values": 1011696,
+          "forecast_max_abs_difference": 1122.8630000000003
+        }
+      }
+    },
+    "observed_grid": {
+      "precipitation": {
+        "shape": [
+          241,
+          83,
+          102
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "time_bounds": {
+        "shape": [
+          241,
+          2
+        ],
+        "exact": true
+      },
+      "latitude_bounds": {
+        "shape": [
+          83,
+          2
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "longitude_bounds": {
+        "shape": [
+          102,
+          2
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "crs": {
+        "shape": [],
+        "exact": true
+      },
+      "time": {
+        "shape": [
+          241
+        ],
+        "exact": true
+      },
+      "latitude": {
+        "shape": [
+          83
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      },
+      "longitude": {
+        "shape": [
+          102
+        ],
+        "missing": 0,
+        "exact": true,
+        "max_abs_difference": 0.0
+      }
+    }
+  },
+  "measured_max_raw_to_decoded_error": {
+    "precipitation_mm": 0.0005005874633781104,
+    "flow_m3_s": 0.002234374998806743,
+    "level_cm": 0.0005000000091968104,
+    "note": "Measured across raw float32 outputs and packed decoded arrays; float32 scaling can exceed half the 0.001 packing step. Repeat arrays compare exactly."
+  }
+}
