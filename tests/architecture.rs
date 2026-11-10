@@ -1,0 +1,513 @@
+//! Bounded syntax gate. Supported attributes: cfg, derive(standard/Serde/Clap),
+//! serde, command, arg, and standard lint/doc attributes. Paths encoded in
+//! attribute strings are checked; unknown attributes and generated source fail.
+use std::fs;
+use std::path::{Path, PathBuf};
+use syn::visit::{self, Visit};
+use syn::{Attribute, Item, ItemUse, Path as SynPath, UseTree};
+
+const OWNERS: &[&str] = &["store", "adapters", "analysis", "model", "app"];
+
+struct Gate {
+    owner: String,
+    depth: usize,
+    errors: Vec<String>,
+    modules: Vec<Vec<String>>,
+}
+impl Gate {
+    fn error(&mut self, text: impl Into<String>) {
+        self.errors.push(text.into());
+    }
+    fn path(&mut self, segments: &[String], glob: bool) {
+        if segments.is_empty() {
+            return;
+        }
+        if segments[0] == "self" && segments.len() > 1 {
+            self.path(&segments[1..], glob);
+            return;
+        }
+        let first = segments[0].as_str();
+        if first == "crate" || first == "mgb_ops" {
+            if (first == "crate") == (self.owner == "interface") {
+                self.error("wrong library path prefix");
+                return;
+            }
+            if segments.len() < 2 || !OWNERS.contains(&segments[1].as_str()) {
+                // The facade exposes only app APIs to interfaces.
+                if self.owner == "interface"
+                    && segments.len() == 2
+                    && [
+                        "inspect",
+                        "example_config",
+                        "InspectionRequest",
+                        "InspectionReport",
+                    ]
+                    .contains(&segments[1].as_str())
+                {
+                    return;
+                }
+                self.error("library root bypass or unknown owner");
+                return;
+            }
+            let target = segments[1].as_str();
+            let allowed = target == self.owner
+                || self.owner == "interface"
+                || self.owner == "app"
+                || (target == "store"
+                    && ["model", "analysis", "adapters"].contains(&self.owner.as_str()));
+            if !allowed || (glob && target != self.owner) {
+                self.error(format!("forbidden edge {} -> {target}", self.owner));
+            }
+        } else if first == "super" {
+            let count = segments.iter().take_while(|s| *s == "super").count();
+            if count > self.depth {
+                self.error("relative path escapes owner");
+            }
+        } else if OWNERS.contains(&first) && first != self.owner {
+            self.error("cross-owner paths must be explicit");
+        }
+    }
+    fn use_tree(&mut self, tree: &UseTree, prefix: &mut Vec<String>, public: bool) {
+        match tree {
+            UseTree::Path(p) => {
+                prefix.push(p.ident.to_string());
+                self.use_tree(&p.tree, prefix, public);
+                prefix.pop();
+            }
+            UseTree::Name(n) => {
+                prefix.push(n.ident.to_string());
+                self.check_use(prefix, false, public);
+                prefix.pop();
+            }
+            UseTree::Rename(n) => {
+                prefix.push(n.ident.to_string());
+                self.check_use(prefix, false, public);
+                prefix.pop();
+            }
+            UseTree::Glob(_) => self.check_use(prefix, true, public),
+            UseTree::Group(g) => {
+                for t in &g.items {
+                    self.use_tree(t, prefix, public);
+                }
+            }
+        }
+    }
+    fn check_use(&mut self, prefix: &[String], glob: bool, public: bool) {
+        self.path(prefix, glob);
+        if public
+            && !(prefix.first().is_some_and(|p| p == "self")
+                && prefix.len() >= 3
+                && self
+                    .modules
+                    .last()
+                    .is_some_and(|modules| modules.contains(&prefix[1])))
+        {
+            self.error("re-exports must use self::private_module::item");
+        }
+    }
+    fn token_paths(&mut self, text: &str) {
+        // Token display separates punctuation; strings are parsed separately below.
+        let mut words = Vec::new();
+        for part in text.split_whitespace() {
+            if part == ":" {
+                continue;
+            }
+            let clean = part.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+            if !clean.is_empty() {
+                words.push(clean.to_string());
+            }
+        }
+        for i in 0..words.len() {
+            if ["crate", "mgb_ops", "super"].contains(&words[i].as_str()) {
+                self.path(&words[i..words.len().min(i + 3)], false);
+            }
+        }
+    }
+}
+impl<'ast> Visit<'ast> for Gate {
+    fn visit_visibility(&mut self, _: &'ast syn::Visibility) {}
+    fn visit_path(&mut self, path: &'ast SynPath) {
+        self.path(
+            &path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>(),
+            false,
+        );
+        visit::visit_path(self, path);
+    }
+    fn visit_item_use(&mut self, item: &'ast ItemUse) {
+        for attr in &item.attrs {
+            self.visit_attribute(attr);
+        }
+        self.use_tree(
+            &item.tree,
+            &mut Vec::new(),
+            !matches!(item.vis, syn::Visibility::Inherited),
+        );
+    }
+    fn visit_item_mod(&mut self, item: &'ast syn::ItemMod) {
+        for attr in &item.attrs {
+            self.visit_attribute(attr);
+        }
+        if let Some((_, items)) = &item.content {
+            self.depth += 1;
+            self.modules.push(private_modules(items));
+            for item in items {
+                self.visit_item(item);
+            }
+            self.modules.pop();
+            self.depth -= 1;
+        }
+    }
+    fn visit_item_extern_crate(&mut self, _: &'ast syn::ItemExternCrate) {
+        self.error("extern crate is unsupported");
+    }
+    fn visit_macro(&mut self, mac: &'ast syn::Macro) {
+        self.visit_path(&mac.path);
+        let name = mac.path.segments.last().unwrap().ident.to_string();
+        if ![
+            "format",
+            "format_args",
+            "write",
+            "writeln",
+            "eprintln",
+            "println",
+            "vec",
+            "matches",
+            "assert",
+            "assert_eq",
+            "assert_ne",
+            "unreachable",
+            "panic",
+            "cfg",
+        ]
+        .contains(&name.as_str())
+        {
+            self.error(format!("unsupported macro {name}"));
+        }
+        let tokens = mac.tokens.to_string();
+        if tokens.contains('!') {
+            self.error("nested macros are unsupported");
+        }
+        self.token_paths(&tokens);
+    }
+    fn visit_attribute(&mut self, attr: &'ast Attribute) {
+        self.visit_path(attr.path());
+        if attr.path().get_ident().is_none() {
+            self.error("qualified attribute is unsupported");
+            return;
+        }
+        let name = attr.path().segments.last().unwrap().ident.to_string();
+        if let syn::Meta::NameValue(value) = &attr.meta
+            && !matches!(
+                &value.value,
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(_),
+                    ..
+                })
+            )
+        {
+            self.error("generated attribute value is unsupported");
+            return;
+        }
+        if ![
+            "derive", "serde", "command", "arg", "cfg", "cfg_attr", "doc", "allow", "warn", "deny",
+            "forbid", "test",
+        ]
+        .contains(&name.as_str())
+        {
+            self.error(format!("unsupported attribute {name}"));
+            return;
+        }
+        if name == "cfg_attr" {
+            self.error("cfg_attr is unsupported");
+            return;
+        }
+        if let syn::Meta::List(list) = &attr.meta {
+            let text = list.tokens.to_string();
+            if text.contains('!') {
+                self.error("generated attribute is unsupported");
+                return;
+            }
+            self.token_paths(&text);
+            if name == "derive" {
+                for derive in text.split(',').map(str::trim) {
+                    if ![
+                        "Debug",
+                        "Clone",
+                        "Copy",
+                        "Default",
+                        "PartialEq",
+                        "Eq",
+                        "Serialize",
+                        "Deserialize",
+                        "Parser",
+                        "Subcommand",
+                    ]
+                    .contains(&derive)
+                    {
+                        self.error(format!("unsupported derive {derive}"));
+                    }
+                }
+            }
+            if ["serde", "command", "arg"].contains(&name.as_str()) {
+                let result = attr.parse_nested_meta(|meta| {
+                    let key = meta
+                        .path
+                        .get_ident()
+                        .map(ToString::to_string)
+                        .unwrap_or_default();
+                    let path_keys = [
+                        "default",
+                        "with",
+                        "serialize_with",
+                        "deserialize_with",
+                        "from",
+                        "try_from",
+                        "into",
+                        "value_parser",
+                        "value_enum",
+                    ];
+                    let plain_keys = [
+                        "deny_unknown_fields",
+                        "rename",
+                        "rename_all",
+                        "skip",
+                        "skip_serializing",
+                        "skip_deserializing",
+                        "flatten",
+                        "transparent",
+                        "tag",
+                        "content",
+                        "untagged",
+                        "long",
+                        "short",
+                        "version",
+                        "subcommand",
+                        "help",
+                        "about",
+                    ];
+                    if !path_keys.contains(&key.as_str()) && !plain_keys.contains(&key.as_str()) {
+                        return Err(meta.error("unsupported helper attribute"));
+                    }
+                    if meta.input.peek(syn::Token![=]) {
+                        let literal: syn::LitStr = meta.value()?.parse()?;
+                        if path_keys.contains(&key.as_str()) {
+                            let path: SynPath = literal.parse()?;
+                            self.visit_path(&path);
+                        }
+                    } else if !meta.input.is_empty() && !meta.input.peek(syn::Token![,]) {
+                        return Err(meta.error("unsupported helper syntax"));
+                    }
+                    Ok(())
+                });
+                if result.is_err() {
+                    self.error("unsupported helper attribute");
+                }
+            }
+        }
+    }
+}
+fn private_modules(items: &[Item]) -> Vec<String> {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            Item::Mod(m) if matches!(m.vis, syn::Visibility::Inherited) => {
+                Some(m.ident.to_string())
+            }
+            _ => None,
+        })
+        .collect()
+}
+fn check_at(owner: &str, source: &str, depth: usize) -> Vec<String> {
+    let file = syn::parse_file(source).expect("source parses");
+    let mut gate = Gate {
+        owner: owner.into(),
+        depth,
+        errors: Vec::new(),
+        modules: vec![private_modules(&file.items)],
+    };
+    gate.visit_file(&file);
+    gate.errors
+}
+fn check(owner: &str, source: &str) -> Vec<String> {
+    check_at(owner, source, 0)
+}
+fn root(source: &str) -> Vec<String> {
+    let file = syn::parse_file(source).expect("root parses");
+    let mut errors = Vec::new();
+    let valid_attrs = |attrs: &[Attribute]| {
+        attrs.iter().all(|a| {
+            ["doc", "allow", "warn", "deny", "forbid"]
+                .iter()
+                .any(|n| a.path().is_ident(n))
+                && match &a.meta {
+                    syn::Meta::NameValue(v) => matches!(
+                        &v.value,
+                        syn::Expr::Lit(syn::ExprLit {
+                            lit: syn::Lit::Str(_),
+                            ..
+                        })
+                    ),
+                    syn::Meta::List(v) => !v.tokens.to_string().contains('!'),
+                    _ => true,
+                }
+        })
+    };
+    if !valid_attrs(&file.attrs) {
+        errors.push("unsupported root attribute".into());
+    }
+    for item in file.items {
+        match item {
+            Item::Mod(m)
+                if OWNERS.contains(&m.ident.to_string().as_str())
+                    && m.content.is_none()
+                    && valid_attrs(&m.attrs) => {}
+            Item::Use(u) => {
+                fn no_glob(t: &UseTree) -> bool {
+                    match t {
+                        UseTree::Glob(_) => false,
+                        UseTree::Path(p) => no_glob(&p.tree),
+                        UseTree::Group(g) => g.items.iter().all(no_glob),
+                        _ => true,
+                    }
+                }
+                fn origin(t: &UseTree) -> bool {
+                    match t {
+                        UseTree::Path(p) => {
+                            OWNERS.contains(&p.ident.to_string().as_str()) && no_glob(&p.tree)
+                        }
+                        _ => false,
+                    }
+                }
+                if !valid_attrs(&u.attrs)
+                    || !matches!(u.vis, syn::Visibility::Public(_))
+                    || !origin(&u.tree)
+                {
+                    errors.push("invalid root re-export".into());
+                }
+            }
+            _ => errors.push("root permits only owner modules and re-exports".into()),
+        }
+    }
+    errors
+}
+fn sources(dir: &Path, out: &mut Vec<PathBuf>) {
+    for entry in fs::read_dir(dir).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            sources(&path, out);
+        } else if path.extension().is_some_and(|e| e == "rs") {
+            out.push(path);
+        }
+    }
+}
+#[test]
+fn owned_sources_obey_graph() {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    sources(&dir, &mut files);
+    assert!(files.contains(&dir.join("lib.rs")) && files.contains(&dir.join("main.rs")));
+    for file in files {
+        let relative = file.strip_prefix(&dir).unwrap();
+        let first = relative
+            .components()
+            .next()
+            .unwrap()
+            .as_os_str()
+            .to_str()
+            .unwrap();
+        let source = fs::read_to_string(&file).unwrap();
+        let errors = if first == "lib.rs" {
+            root(&source)
+        } else {
+            let owner = if first == "main.rs" || first == "bin" {
+                "interface"
+            } else {
+                first.trim_end_matches(".rs")
+            };
+            assert!(
+                owner == "interface" || OWNERS.contains(&owner),
+                "unchecked source: {}",
+                file.display()
+            );
+            let depth = if owner == "interface" || first.ends_with(".rs") {
+                0
+            } else {
+                relative.components().count()
+                    - 1
+                    - usize::from(relative.file_name().is_some_and(|n| n == "mod.rs"))
+            };
+            check_at(owner, &source, depth)
+        };
+        assert!(errors.is_empty(), "{}: {errors:?}", file.display());
+    }
+}
+#[test]
+fn graph_fixtures() {
+    for (owner, target) in [
+        ("adapters", "store"),
+        ("analysis", "store"),
+        ("model", "store"),
+        ("app", "store"),
+        ("app", "adapters"),
+        ("app", "analysis"),
+        ("app", "model"),
+    ] {
+        assert!(check(owner, &format!("use crate::{target}::Thing;")).is_empty());
+    }
+    for (owner, target) in [
+        ("store", "model"),
+        ("model", "analysis"),
+        ("analysis", "adapters"),
+        ("adapters", "model"),
+        ("model", "app"),
+        ("app", "interface"),
+    ] {
+        assert!(!check(owner, &format!("use crate::{target}::Thing;")).is_empty());
+    }
+    for source in [
+        "#[crate::model::serde(default)] struct S;",
+        "use crate::store::Thing; pub use self::Thing as Alias;",
+        "use crate::store::Thing; pub use crate::adapters::Thing as Alias;",
+        "#[doc = include_str!(\"outside.rs\")] struct S;",
+        "use crate::store as inner; pub use self::inner::Thing;",
+        "use crate::{model::Thing as Alias};",
+        "mod x { use super::super::model::Thing; }",
+        "#[cfg(test)] mod x { use crate::app::Thing; }",
+        "use crate::model::*;",
+        "extern crate self as alias;",
+        "include!(\"file.rs\");",
+        "custom_macro!(crate::model::x);",
+        "format!(\"{}\", include_str!(\"outside\"));",
+        "mod x { use self::super::super::model::Thing; }",
+        "#[serde(default = \"crate::model::default_value\")] struct S;",
+        "pub use crate::store::Thing;",
+        "crate::model::println!(\"x\");",
+        "#[serde(with = \"model\")] struct S;",
+        "#[path = \"outside.rs\"] use crate::store::Thing;",
+    ] {
+        assert!(!check("adapters", source).is_empty(), "accepted {source}");
+    }
+    for source in [
+        "mod inner { pub struct Thing; } pub use self::inner::Thing;",
+        "use crate::store::{Thing as Alias, Other};",
+        "mod x { use super::helper; }",
+        "#[serde(default = \"crate::store::default_value\")] struct S;",
+        "#[serde(default = \"crate::adapters::default_value\")] struct S;",
+    ] {
+        assert!(check("adapters", source).is_empty(), "rejected {source}");
+    }
+    assert!(!root("#![doc(include = include_str!(\"outside.rs\"))] mod app;").is_empty());
+    assert!(!root("#![doc = include_str!(\"outside.rs\")] mod app;").is_empty());
+    assert!(!root("#[doc = include_str!(\"outside.rs\")] mod app;").is_empty());
+    assert!(!root("#[path = \"outside.rs\"] mod app;").is_empty());
+    assert!(check_at("app", "use super::helper;", 1).is_empty());
+    assert!(!root("fn helper() {} ").is_empty());
+    assert!(!root("pub use model::*;").is_empty());
+    assert!(!root("pub use model::{x::*};").is_empty());
+    assert!(root("pub mod app; pub use app::{inspect, InspectionRequest};").is_empty());
+    assert!(check("interface", "use mgb_ops::app::inspect;").is_empty());
+}

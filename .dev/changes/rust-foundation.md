@@ -1,11 +1,11 @@
 # Rust foundation specification
 
-Status: specified, implementation pending. Architecture revised November 10,
-2026. Rust implementation requires a subsequent implementation task. This refines
-the [agreed foundation plan](../plans/rust-foundation.md). Product decisions were
-settled in discussion; the concrete contracts and development mechanism below
-make them implementable. Neither the specification nor its acceptance criteria
-are evidence of an implemented Rust capability.
+Status: implementation under review, November 10, 2026. Retained as the active
+acceptance specification until review findings are resolved; the redundant plan
+has been retired. See [implementation results](../reports/rust-foundation.md) and
+[the migration summary](../../docs/migration/summary.md) for evidence and open gaps.
+Durable behavior lives in [the workspace contract](../../docs/contracts/workspace.md)
+and ownership decisions in [the architecture](../../docs/architecture.md).
 
 ## Outcome and boundaries
 
@@ -418,22 +418,23 @@ unchanged. MGB is never launched during this increment.
 
 Record exact commands, Rust/Cargo and Linux environment, report examples,
 preservation evidence, and known limits in a foundation report under
-`docs/reports/`. Windows, dynamic linking, real execution, numerical equivalence,
+`.dev/reports/`. Windows, dynamic linking, real execution, numerical equivalence,
 and hydrological validity remain explicitly unverified.
 
 ## Documentation and completion
 
 During implementation establish `docs/architecture.md` with the module ownership,
 privacy/dependency rules, canonical store contracts, and app lifecycle requirements
-for the next operational increment. Establish durable `docs/contracts/workspace.md`
-for config, path, and source-ownership semantics and
-`docs/contracts/inspection.md` for checks, findings, CLI, and limits. The README
-must include development setup, actual check commands, and short example/inspection
+for the next operational increment. Keep config, path, source ownership, checks,
+findings, CLI, and limits in the single durable `docs/contracts/workspace.md`
+contract. The README must include development setup, actual check commands, and short example/inspection
 usage. Keep implementation instructions consistent with these contracts.
 
 After implementation and verification, update the migration checklist with actual
 Linux evidence, intentional YAML/TOML departures, and remaining gaps. Retain
 durable behavior in contracts and validation evidence in the report when retiring
-temporary planning/specification documents. Next comes the saved RS preparation,
+temporary planning/specification documents. Keep implementation results under
+`.dev/reports/`; retain only unique durable behavior/provenance in `docs/` or
+`references/`. Next comes the saved RS preparation,
 real execution, and decoded-results increment. Documentation alone does not
 complete the foundation.

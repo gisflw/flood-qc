@@ -27,3 +27,27 @@ gcc -shared -fPIC -O2 -o /path/to/rs-hourly-reproduction/snapshot.so /path/to/rs
 ```
 
 The scripts assert the six persisted null replacements, finite observed grid, source interval coverage, independent recovery alignment, equality of repeated model arrays and selected raw and input checkpoints, and equality with the archived reference. Inventory hashes identify preserved bytes; exact array comparison provides the numerical contract. The original backup changed the operational SQLite shared-memory sidecar's modification time; its pre-backup bytes were not hashed. Acquisition, Windows validation, state generation and Rust comparisons remain outside this case.
+
+## Validation and provenance
+
+The case covers zero rain, raw ECMWF, raw NOAA, and corrected ECMWF. Each decoded
+artifact has 362 hourly timestamps and 8,649 mini-basins, with precipitation,
+flow, and level: 241 observed and 121 forecast steps, from July 10 00:00 to
+July 25 01:00 in `America/Sao_Paulo`. Frozen preparation includes six NULL
+observation replacements. The existing legacy package and numerical engine were
+not changed for capture.
+
+Full-array review checked time/cell alignment, finite arrays, identical observed
+prefixes, and exact capture/repeat equality against raw streams and independently
+recovered observed levels. After compaction, a fresh capture/repeat reproduced the
+archived arrays and selected raw checkpoints; comparison also rejected a deliberately
+modified flow value. The compact bundle has 152 files (about 533 MiB). All 3,749
+original artifact sizes/checksums were verified before compaction; completion left
+29,834 operational source files' recorded sizes, modification times, and modes unchanged.
+
+NetCDF packing resolution is 0.001 in each exported unit. Raw-to-decoded packing
+error is distinct from repeat equality: float32 flow packing reaches about
+0.00224 m³/s. Full-precision raw outputs remain available. Saved initial-state
+files are carried unchanged; consumption and temporal compatibility remain
+unverified. This establishes Linux reference behavior, not Rust equivalence,
+Windows operation, or hydrological calibration validity.

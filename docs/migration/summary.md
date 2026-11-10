@@ -7,8 +7,8 @@ operational capabilities found in the parallel VB.NET/Python system. Preserve
 both implementations as references in the same Git repository.
 The Python reference is checked out at `/workspace/legacy_python/` on
 `legacy/python`; the curated VB.NET reference is at `/workspace/legacy_vbnet/`
-on `legacy/vbnet`. Rust development starts on the independent, clean `main`
-worktree at `/workspace/mgb_ops`.
+on `legacy/vbnet`. Rust development uses the independent `main` worktree at
+`/workspace/mgb_ops`.
 
 The application is CLI-first. A Windows/Linux desktop application uses the same
 Rust capabilities and is introduced early, then extended with the core. All
@@ -17,16 +17,19 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 10, 2026. The RS hourly reference is established, and the
-[first Rust foundation plan](../../.dev/plans/rust-foundation.md) has a complete
-[implementation specification](../../.dev/changes/rust-foundation.md).
-The architecture now uses independent core modules over store's canonical
-contracts, with shared application workflows and a mandatory foundation
-dependency gate. Execution snapshots and complete-set publication are agreed
-requirements for the next operational increment, with implementation pending.
-No Rust capabilities have been implemented. Next: implement the specified
-read-only workspace inspection CLI and development checks in a subsequent task,
-then record Linux acceptance evidence.
+Updated November 10, 2026. The RS hourly reference is established. The Rust
+read-only inspection library/CLI is implemented with strict TOML, dedicated path
+overrides, bounded text/JSON findings, and source-preservation checks. Linux
+formatting, Clippy, eight integration tests, and disposable RS acceptance passed;
+Windows remains unverified. Subsequent review found architecture-checker false
+positives for same-owner re-exports and ordinary text containing `!`. Foundation
+acceptance remains in progress until those findings are resolved.
+
+Next: settle that review, then specify and implement saved RS preparation, real
+execution, and decoding against the frozen reference. Carry the saved state
+unchanged and implement the [execution lifecycle](../architecture.md#execution-lifecycle).
+Temporary [implementation results](../../.dev/reports/rust-foundation.md) record
+past checks; supported behavior lives in the [workspace contract](../contracts/workspace.md).
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
@@ -35,8 +38,8 @@ record unverified platforms and remaining gaps explicitly.
 
 | Capability and reference behavior | Delivery step | State, evidence, and gaps |
 | --- | --- | --- |
-| [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Evidence](../reports/regression-reference-capture.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
-| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: [foundation specification](../../.dev/changes/rust-foundation.md) | Planned. Detailed specification complete: TOML/example generation, dedicated overrides, bounded read-only checks, text/JSON findings, and architecture/quality gates. Implementation and Linux acceptance evidence pending; Windows unverified. |
+| [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Case and evidence](../../references/regression/rs-hourly/README.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
+| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | In progress: bounded inspection and Linux checks pass; architecture review has unresolved checker false positives (see current state above). Rust uses TOML without YAML fallback/conversion. Windows, runtime compatibility, execution, and content/numerical validity unverified. |
 | [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Not started in Rust. Store owns canonical contracts and private persistence. SQLite/NetCDF are starting choices; schemas, layouts, and import decisions follow their capabilities. |
 | [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. App freezes inputs at execution startup, coordinates analysis/model, and publishes complete sets through store. Compare with the frozen reference; carry saved initial state unchanged. |
 | [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
@@ -76,14 +79,10 @@ Acquire observations and forecasts
     -> archive and share the completed run
 ```
 
-Calibration editors support geometry, channel/Manning parameters, and soil
-parameters. Scheduling and email automate the same operational capabilities.
-App owns this workflow and its status/failure policy. Freeze actual input values
-or immutable versions at execution startup and record executable identity.
-Refreshing inputs creates a new snapshot; later history changes cannot alter an
-existing one. Failed attempts retain staged outputs/diagnostics and leave the
-previous published set official. These contracts are implemented with the first
-operational increment, not the foundation inspector.
+App owns the operation and its status/failure policy; the
+[architecture](../architecture.md) defines snapshots and complete-set publication.
+Calibration editors support geometry, channel/Manning parameters, and soil parameters.
+Scheduling and email automate the same operational capabilities.
 
 ## Scope
 
@@ -114,36 +113,15 @@ optional; no cache-packaging design is required at this stage.
 
 ## Delivery approach
 
-The responsibility files below are broad feature roadmaps, not required Rust
-modules or detailed specifications. The [foundation plan](../../.dev/plans/rust-foundation.md)
-establishes one Cargo package with four core modules: store owns canonical data
-contracts and private persistence; adapters, analysis, and model independently
-depend on store and never import each other. Shared workflows in app own
-configuration/path resolution, selection, scenario coordination, scheduling, and
-publication policy. Configuration helpers remain private inside app; there is no
-top-level workspace module. CLI and desktop use the shared library's intentional
-public APIs and workflows.
+The responsibility files below describe feature coverage, not Rust modules or
+implementation details. Follow the [architecture](../architecture.md) and extend
+the frozen regression case as capabilities arrive. Keep the working operational
+path intact. Calibration/geometry editors use functional acceptance rather than
+requiring replacement of the regression baseline.
 
-Canonical representations and scientific processing remain usable without
-database connections or filesystem state. App calls analysis to prepare forcing
-and render reports, and model to serialize engine inputs, execute, and stage
-canonical results. Report rendering stays private within analysis; interactive
-widgets stay in interfaces. Keep dependency enforcement mandatory in the
-foundation, including app, root/re-export bypasses, and derive-attribute paths.
-Use the roadmaps to find feature coverage and references as development proceeds.
-
-Maintain a short functionality checklist linking each intended capability to its
-reference behavior, responsible implementation step, status, and completion
-evidence. Include runtime scripts and bundled plugins. Leave legacy tools that
-cannot be mapped to source behavior aside; they do not block implementation.
-
-Each increment establishes its design target, specification, implementation,
-checks, and review, then records completion evidence and remaining gaps. Settle
-detailed behavior and technology choices within that increment. Extend the
-minimal regression target where relevant and keep the established operational
-path working; exhaustive edge-case coverage is not an initial planning gate.
-Calibration/geometry editors use functional acceptance, with no regression
-requirement.
+Plan and specify active work under `.dev/`; implementation results may live under
+`.dev/reports/`. Retire accepted plans/specifications, keep current evidence/gaps in
+this checklist, and preserve unique scientific provenance with its reference.
 
 | File | Responsibility |
 | --- | --- |
@@ -162,7 +140,7 @@ requirement.
    from `rs_hydro_forecast`, covering the main operational steps, and the
    functionality checklist. This captures reference evidence before Rust
    replacement; it does not require implementing the Rust application first.
-2. Establish the [Rust foundation](../../.dev/plans/rust-foundation.md): a
+2. Establish the [Rust foundation](../contracts/workspace.md): a
    shared library, read-only workspace inspection CLI, documented contracts, and
    enforced architecture/quality rules. Validate on a disposable RS workspace on
    Linux; defer Windows checks. Add persistence as operational capabilities need

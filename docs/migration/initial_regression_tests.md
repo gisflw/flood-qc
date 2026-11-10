@@ -11,8 +11,7 @@ core becomes available.
 The November 9, 2026
 [established case](../../references/regression/rs-hourly/README.md) covers saved
 normalized inputs through decoded results, including all four scenarios and an
-exact fresh repeat. The [review report](../reports/regression-reference-capture.md)
-records validation and known limits. Broader stages in this migration outline
+exact fresh repeat. The case record also preserves validation evidence, numerical caveats, and provenance. Broader stages in this migration outline
 remain incremental work.
 
 Cover the main operational steps with a small representative case:
