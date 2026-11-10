@@ -24,6 +24,13 @@ the desktop editor and useful CLI commands. Preserve required file ordering and
 formatting. Save edited calibration explicitly and associate the selected version
 with a run; protect the supplied reference baseline from accidental overwrite.
 
+Keep engine-specific parsing/serialization in model and reusable editing
+calculations in analysis, exchanging store's canonical data through app workflows.
+Store owns version registration and durable file lifecycle; app coordinates
+selection and saving. Analysis and model do not import each other. Execution
+snapshots retain the selected calibration/geometry version, so later edits cannot
+change an existing execution's inputs.
+
 ## Evidence of completion
 
 Demonstrate loading, editing, and saving representative geometry and soil files

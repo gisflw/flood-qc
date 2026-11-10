@@ -17,9 +17,13 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 9, 2026. The RS hourly reference is established, and the
+Updated November 10, 2026. The RS hourly reference is established, and the
 [first Rust foundation plan](../../.dev/plans/rust-foundation.md) has a complete
 [implementation specification](../../.dev/changes/rust-foundation.md).
+The architecture now uses independent core modules over store's canonical
+contracts, with shared application workflows and a mandatory foundation
+dependency gate. Execution snapshots and complete-set publication are agreed
+requirements for the next operational increment, with implementation pending.
 No Rust capabilities have been implemented. Next: implement the specified
 read-only workspace inspection CLI and development checks in a subsequent task,
 then record Linux acceptance evidence.
@@ -33,13 +37,13 @@ record unverified platforms and remaining gaps explicitly.
 | --- | --- | --- |
 | [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Evidence](../reports/regression-reference-capture.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
 | [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: [foundation specification](../../.dev/changes/rust-foundation.md) | Planned. Detailed specification complete: TOML/example generation, dedicated overrides, bounded read-only checks, text/JSON findings, and architecture/quality gates. Implementation and Linux acceptance evidence pending; Windows unverified. |
-| [History, assets, and persisted operation data](core_and_cli.md) | 2/5: grow assets with each operational capability | Not started in Rust. Legacy stores are references; storage/import decisions follow the capabilities that need them. |
-| [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. Compare with the frozen reference; carry saved initial state unchanged. |
+| [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Not started in Rust. Store owns canonical contracts and private persistence. SQLite/NetCDF are starting choices; schemas, layouts, and import decisions follow their capabilities. |
+| [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. App freezes inputs at execution startup, coordinates analysis/model, and publishes complete sets through store. Compare with the frozen reference; carry saved initial state unchanged. |
 | [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
-| [QC, review, corrections, and availability](review_and_corrections.md) | 5: extend assets | Not started in Rust. Preserve sources and make effective-data changes explicit. |
+| [QC, review, corrections, and availability](review_and_corrections.md) | 5: extend analysis | Not started in Rust. Analysis operates on canonical data; store persists explicit review instructions and preserved sources. |
 | [Additional forcing inputs and hot-start lifecycle](model_and_hotstarts.md) | 5: extend model support | Not started in Rust. State generation, consumption, and chaining still require qualification. |
 | [Geometry and calibration editors](calibration_editors.md) | 6: functional acceptance | Not started in Rust. No editor regression or baseline replacement required. |
-| [Numerical analysis and post-processing](analysis_and_reports.md) | Grow assets with operational increments; complete in 7 | Not started in Rust. Includes comparisons, accumulations, peaks, and reference post-processing. |
+| [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Not started in Rust. Includes forcing calculations, comparisons, accumulations, peaks, and reference post-processing. No model-internal dependencies. |
 | [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
 | [Completed-run regeneration and sharing](completed_runs.md) | 7: complete archival workflow | Not started in Rust. Regeneration must work without provider access or caches. |
 | [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Not started. Uses shared Rust capabilities; framework remains undecided. |
@@ -61,10 +65,12 @@ validation.
 
 ```text
 Acquire observations and forecasts
-    -> normalize and register history/assets
+    -> normalize canonical data and register selected artifacts through store
     -> inspect, validate, and correct data
-    -> prepare rainfall, observed flows, reservoir releases, wind, and model state
-    -> execute forecast scenarios
+    -> freeze selected data, corrections, settings, calibration, geometry, and state
+    -> analysis prepares canonical forcing; model serializes engine inputs
+    -> execute forecast scenarios and stage decoded canonical outputs
+    -> publish the complete scenario set through store
     -> inspect and post-process results
     -> produce bulletins and data exports
     -> archive and share the completed run
@@ -72,6 +78,12 @@ Acquire observations and forecasts
 
 Calibration editors support geometry, channel/Manning parameters, and soil
 parameters. Scheduling and email automate the same operational capabilities.
+App owns this workflow and its status/failure policy. Freeze actual input values
+or immutable versions at execution startup and record executable identity.
+Refreshing inputs creates a new snapshot; later history changes cannot alter an
+existing one. Failed attempts retain staged outputs/diagnostics and leave the
+previous published set official. These contracts are implemented with the first
+operational increment, not the foundation inspector.
 
 ## Scope
 
@@ -104,10 +116,21 @@ optional; no cache-packaging design is required at this stage.
 
 The responsibility files below are broad feature roadmaps, not required Rust
 modules or detailed specifications. The [foundation plan](../../.dev/plans/rust-foundation.md)
-establishes one Cargo package with deep `workspace`, `acquisition`, `assets`, and
-`model` modules. Dependency direction is `model -> assets -> acquisition`;
-review and numerical analysis belong in assets. Use the roadmaps to find feature
-coverage and references as development proceeds.
+establishes one Cargo package with four core modules: store owns canonical data
+contracts and private persistence; adapters, analysis, and model independently
+depend on store and never import each other. Shared workflows in app own
+configuration/path resolution, selection, scenario coordination, scheduling, and
+publication policy. Configuration helpers remain private inside app; there is no
+top-level workspace module. CLI and desktop use the shared library's intentional
+public APIs and workflows.
+
+Canonical representations and scientific processing remain usable without
+database connections or filesystem state. App calls analysis to prepare forcing
+and render reports, and model to serialize engine inputs, execute, and stage
+canonical results. Report rendering stays private within analysis; interactive
+widgets stay in interfaces. Keep dependency enforcement mandatory in the
+foundation, including app, root/re-export bypasses, and derive-attribute paths.
+Use the roadmaps to find feature coverage and references as development proceeds.
 
 Maintain a short functionality checklist linking each intended capability to its
 reference behavior, responsible implementation step, status, and completion
@@ -125,7 +148,7 @@ requirement.
 | File | Responsibility |
 | --- | --- |
 | [Core and CLI](core_and_cli.md) | Workspaces, configuration, persistence foundations, and operation commands. |
-| [Acquisition](acquisition.md) | Provider access, file imports, and normalization for assets to accept and register. |
+| [Acquisition](acquisition.md) | Adapters acquire/normalize canonical data; app decides persistence through store. |
 | [Review and corrections](review_and_corrections.md) | QC, manual observation changes, and rainfall transformations. |
 | [Model and hot starts](model_and_hotstarts.md) | Input generation, state lifecycle, scenario execution, and output decoding. |
 | [Calibration editors](calibration_editors.md) | Geometry, channel/Manning, and soil-parameter editing. |
@@ -146,7 +169,9 @@ requirement.
    it rather than creating the entire storage design upfront.
 3. Reproduce the saved preparation, real MGB execution, and decoded-results path
    in Rust. Compare with the regression target, carrying the required initial
-   state unchanged; hot-start generation and chaining follow later.
+   state unchanged. Implement execution-start input snapshots and complete-set
+   publication through shared app workflows/store; keep failed-attempt evidence
+   and previous published results. Hot-start generation and chaining follow later.
 4. Introduce a working GUI over that shared core. Perform the available operation
    through CLI and GUI with consistent results. Extend the GUI alongside every
    subsequent capability rather than waiting for the complete core.

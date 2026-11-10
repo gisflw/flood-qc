@@ -1,6 +1,7 @@
 # Rust foundation
 
-Status: agreed; implementation not started. Decisions agreed November 9, 2026.
+Status: agreed; implementation not started. Architecture and lifecycle decisions
+revised November 10, 2026.
 
 Detailed behavior is now specified in the
 [foundation implementation specification](../changes/rust-foundation.md).
@@ -39,56 +40,92 @@ implementation specification under [`.dev/changes/`](../changes/), now linked ab
 
 ## Agreed architecture
 
-Use one Cargo package with a shared library and thin CLI. Do not split this
-application into crates. Introduce the desktop over the same library after the
-first preparation/execution/decoding path works, as already agreed.
+Use one Cargo package with a shared library and thin CLI/desktop interfaces.
+Introduce the desktop over the same library after the first
+preparation/execution/decoding path works, as already agreed.
 
 Prefer a few deep modules organized around responsibilities and information
 hiding. Internal submodules may separate calculations and I/O without exposing
 those implementation details to callers.
 
-| Module | Responsibility and hidden details |
-| --- | --- |
-| `workspace` | Open an explicitly selected regional workspace, load configuration, resolve paths, and translate workspace conventions into explicit inputs. |
-| `acquisition` | Call providers and import source files; hide protocols, source restructuring, and format conversion behind recognized normalized input data. |
-| `assets` | Coordinate operational data: selection, validation, review, corrections, numerical analysis, derivation, persistence, registration, and caches. Own saved operation data and published-result references. |
-| `model` | Prepare and execute an operation snapshot and produce canonical results. Hide MGB serialization, private execution directories, process handling, raw-output decoding, and hot-start mechanics. |
+| Module | Responsibility and hidden details | Exclusions |
+| --- | --- | --- |
+| `store` | Canonical data contracts, schemas, metadata, persistence, queries, artifact registries, provenance, and file lifecycle. Database operations and storage implementations remain private behind intentional APIs. | Acquisition and scientific processing. |
+| `adapters` | Provider acquisition, source parsing, and normalization into store's canonical representations. Return data; the caller decides durable persistence. | Operational persistence, QC, and analysis. |
+| `analysis` | QC, reproducible corrections, transformations, interpolation, diagnostics, metrics, report content, and document/chart rendering through private submodules. | Acquisition, engine execution, and interactive GUI state. |
+| `model` | Engine-specific input serialization, isolated execution, state mechanics, and decoding into staged canonical outputs. Accept explicit prepared data, paths, and parameters. | General-purpose QC/forcing calculations, registry discovery, reporting, and official publication. |
+| `app` | Shared application workflows: configuration/path resolution, data selection, execution snapshots, preparation/scenario coordination, failure handling, scheduling, export, and publication policy. | Scientific algorithms, persistence implementations, and interface widgets. |
 
 Allowed dependencies:
 
 ```text
-CLI / desktop -> workspace, assets, model
-model -> assets -> acquisition
+app -> store, adapters, analysis, model
+adapters -> store
+analysis -> store
+model -> store
+store -> external libraries only
 ```
 
-Workspace resolution supplies explicit inputs; domain modules do not discover
-the active workspace or read global configuration themselves. Interfaces may
-compose these capabilities through small library entry points. They do not own
-operational rules.
+These arrows permit dependencies; they do not require storage access. There are
+no direct imports between adapters, analysis, and model. Store never calls them
+or app. Its canonical representations are usable without a SQLite connection or
+filesystem state. Analysis and model can consume supplied data without registry
+lookups; engine execution and staged file output still use explicit paths.
 
-Acquisition defines its normalized output types; assets accepts those types
-directly. Acquisition does not depend on assets or know its storage. Keep
-provider response parsing and conversion out of assets. Assets may request data
-from acquisition, avoiding a separate coordination layer for that sequence.
+CLI and desktop call intentional public library APIs. Reusable operational
+sequencing and failure policy belong in app, so CLI, desktop, and scheduled
+execution use the same workflows. Keep those workflows focused on concrete
+operations, with private helpers as needed. Configuration loading and workspace
+path resolution are private app responsibilities; no separate top-level
+workspace module is needed. Core modules receive resolved inputs and do not
+discover the active workspace or global configuration.
 
-Assets owns selected sources, correction instructions, scenario definitions,
-and published-result references. Model executes that saved snapshot and uses
-asset APIs for canonical data and result persistence. Assets must not call back
-into model. Do not introduce a separate operations module unless it acquires
-substantial responsibilities beyond forwarding and coordination.
+For preparation, app supplies selected data and target geometry to analysis for
+QC, corrections, temporal resampling, and spatial interpolation. It then passes
+prepared canonical forcing to model for engine-specific serialization and
+execution. Model decodes outputs into store's canonical representations. The
+workflow calls analysis for downstream diagnostics and rendering, without
+requiring analysis to know model internals. Interactive controls stay in the GUI;
+app coordinates saving and publication through store.
 
-Review and numerical analysis are asset capabilities, not mandatory top-level
-modules. Report rendering may warrant its own boundary later; its placement is
-not settled here. Add actual modules and types when their behavior is implemented,
-without empty placeholders for the whole migration.
+SQLite and NetCDF are starting choices. Settle concrete schemas, encodings, and
+file layouts with the operational capabilities that use them. A canonical value
+does not have to be persisted before processing. Add actual modules and types
+when implemented, without empty placeholders for the migration.
+
+### Execution snapshots and publication
+
+These requirements govern the next operational increment; the foundation
+documents them without implementing execution or persistence:
+
+- At execution startup, app freezes the selected observations, forecasts,
+  corrections, settings, calibration, geometry, and initial state, and records
+  executable identity. Store preserves actual values or immutable versions;
+  saved selectors, mutable paths, or a hash without retained data are insufficient.
+- Later acquisitions and edits cannot change that execution's inputs. Refreshing
+  inputs creates a new execution snapshot. Reruns using a snapshot must not depend
+  on live providers, mutable history, or disposable caches.
+- Model produces staged canonical outputs. App owns execution status, scenario-set
+  coordination, overlap policy, and failure handling. Store owns the persistence
+  and file-lifecycle mechanisms used by those workflows.
+- Publication requires the complete requested scenario set. App asks store to
+  commit that set and its execution status/references consistently, exposing only
+  complete, durable results. A failed attempt leaves the previous published set
+  official and retains staged successful outputs and failure diagnostics for
+  inspection. Model never publishes individual scenarios as official results.
+
+Specify the concrete snapshot and publication mechanisms with the first
+operational path. Completed-run archive formats and hot-start generation remain
+later work.
 
 ### Enforcement and quality
 
 - Use private implementation submodules and narrow intentional exports. Sibling
   modules use the owning module's interface rather than its internals.
-- Add an automated check of the allowed dependency direction. Rust privacy alone
-  does not enforce it inside one package. Choose the smallest adequate mechanism
-  in the implementation specification.
+- Enforce the allowed dependency direction automatically in the foundation.
+  Check app and library-root bypasses as well as core modules; Rust privacy alone
+  does not enforce the graph inside one package. The specification defines a
+  bounded source checker and required positive/negative fixtures.
 - Forbid unsafe code in owned library and binary targets; retain the rule for
   new owned targets. Dependencies may use unsafe internally.
 - Require formatting, Clippy with warnings treated as errors for owned code,
@@ -111,8 +148,10 @@ specifying the complete future application:
   inputs, starting from the existing RS inspection target.
 - Source ownership and read-only inspection, including database access that
   does not create databases or mutate sidecars.
-- Acquisition's normalized-data boundary and assets' ownership of operational
-  meaning and storage. Concrete acquisition payload schemas follow when used.
+- Store's canonical contracts and private storage implementations; adapters'
+  normalization boundary; independent analysis/model APIs; and app's ownership of
+  configuration, snapshots, and complete-set publication. Concrete data schemas
+  and operational mechanisms follow when used.
 - Explicit time conventions, units, interval bounds, and missing-value semantics
   wherever introduced. Do not silently strip timezones or equate missing data
   with zero. Regression conventions remain documented in its manifest.
@@ -206,6 +245,6 @@ Older status prose is not evidence of current behavior.
 - `src/mgb_ops/adapters/` and `src/mgb_ops/workflows/{observed,forecast}.py`:
   provider acquisition and normalization.
 - `src/mgb_ops/analysis/{observations,forecast,timeseries,precipitation}.py`:
-  data selection and numerical products informing the assets boundary.
+  data selection and numerical products informing the analysis boundary.
 - `src/mgb_ops/workflows/{scenarios,scenario_orchestrator,reporting}.py` and
   `src/mgb_ops/model/`: operation coordination and engine integration.

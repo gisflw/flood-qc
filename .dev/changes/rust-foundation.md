@@ -1,8 +1,8 @@
 # Rust foundation specification
 
-Status: specified, implementation pending. November 9, 2026. No implementation
-authorized in this specification-writing session. This refines the
-[agreed foundation plan](../plans/rust-foundation.md). Product decisions were
+Status: specified, implementation pending. Architecture revised November 10,
+2026. Rust implementation requires a subsequent implementation task. This refines
+the [agreed foundation plan](../plans/rust-foundation.md). Product decisions were
 settled in discussion; the concrete contracts and development mechanism below
 make them implementable. Neither the specification nor its acceptance criteria
 are evidence of an implemented Rust capability.
@@ -14,11 +14,14 @@ operational capability inspects an explicitly selected regional workspace
 without changing it. Validate on Linux using a disposable RS workspace; Windows
 remains a product target with validation deferred.
 
-Preserve the plan's deep-module architecture and dependency direction:
-`model -> assets -> acquisition`. Workspace resolution supplies explicit inputs;
-domain modules do not discover global configuration. Materialize only modules
-with implemented responsibilities. Provider access, execution, decoding, storage
-migration, desktop, and numerical equivalence remain outside this increment.
+Preserve the plan's four core modules: store owns canonical contracts and private
+storage implementations; adapters, analysis, and model independently depend on
+store and never import each other. Shared application workflows live in the
+library's `app` module, which owns configuration/path resolution and composes the
+core modules. Core modules receive explicit inputs and do not discover global
+configuration. Materialize only modules with implemented responsibilities.
+Provider access, execution, decoding, storage migration, desktop, and numerical
+equivalence remain outside this increment.
 
 ## Agreed configuration behavior
 
@@ -251,20 +254,35 @@ resource overrides. The library resolves and validates all of them; CLI parsing
 does not implement defaults, config merging, or resource checks. Example TOML
 is available through the library without embedding CLI concepts in the schema.
 
-`workspace` owns TOML loading, merging, paths, workspace/config/geometry findings,
-and optional-store presence. `model` owns the engine/input prerequisite checks
-and required-file list, accepting explicit paths rather than workspace settings.
-The library entry point composes results and determines `ok`. Shared inspection
-request/report types may live at the library root; do not add a general framework.
-The binary only captures arguments/invocation directory, calls the library,
-renders text or JSON, and maps outcomes to exit statuses.
+`app` owns TOML loading, merging, paths, workspace/config/geometry findings,
+optional-store presence, and the inspection request/report API. Configuration and
+path helpers stay private within app; do not add a top-level workspace module.
+`model` owns engine/input prerequisite checks and the required-file list,
+accepting explicit paths rather than application settings. Model returns its own
+prerequisite findings; app assembles them into the inspection report and
+determines `ok`. Model must not import application report/configuration types.
+The library root may re-export intended APIs but contains no composition logic
+or shared implementation types. The binary only captures arguments/invocation
+directory, calls the library, renders text or JSON, and maps outcomes to statuses.
 
-Only `workspace` and `model` need foundation behavior. Do not create placeholder
-`assets` or `acquisition` modules. Keep their agreed future interfaces in the
-architecture document: acquisition owns normalized source types, assets accepts
-them and owns operational meaning/storage, and model consumes asset APIs. No
-new time, unit, rainfall interval, or missing-value data schema is introduced
-here; define those explicitly when the first operational data type is added.
+Only app and model need foundation behavior. Do not create placeholder store,
+adapters, or analysis modules, or a general reporting/configuration framework.
+Record their future ownership in the architecture document: store's canonical
+representations work independently of databases/files; adapters normalize into
+them without deciding persistence; analysis prepares forcing and renders reports;
+model serializes supplied forcing and decodes staged canonical outputs. App
+coordinates these capabilities and calls store to persist or publish them.
+SQLite and NetCDF remain starting choices; concrete schemas and file layouts
+follow their operational increments. No new time, unit, rainfall interval, or
+missing-value schema is introduced here; define those when first used.
+
+Document the plan's execution-start snapshot and complete-set publication
+requirements as constraints for the next operational increment. At that stage,
+app freezes actual inputs or immutable versions, coordinates execution status and
+failures, and asks store to publish only a complete scenario set. Failed attempts
+retain staged outputs/diagnostics and leave previous published results official.
+Do not implement snapshots, operational persistence, scenario execution, or
+publication in the foundation.
 
 ## Development setup and enforcement
 
@@ -289,41 +307,64 @@ and the architecture check. Do not enable blanket pedantic lints.
 ### Architecture check mechanism
 
 Implement one Rust integration test, `tests/architecture.rs`, using `syn` to
-inspect all owned library source files, including inline modules and imports.
-This runs under `cargo test`; it needs no installed external checker or Python.
-Validate these direct cross-owner edges, including references in test/cfg code:
+inspect all owned library sources, including app, the root facade, inline
+modules, and test/cfg code. Also inspect owned binary/interface source files
+(initially the CLI) for references to the library's intended APIs. The check runs
+under `cargo test` and needs no installed external checker or Python. Enforce it
+now, with syntax fixtures for future owners even before those modules exist.
 
-| Owning module | Allowed other domain modules |
+| Source owner | Allowed other library owners |
 | --- | --- |
-| `workspace` | None |
-| `acquisition` | None |
-| `assets` | `acquisition` |
-| `model` | `assets` |
+| `store` | None |
+| `adapters` | `store` |
+| `analysis` | `store` |
+| `model` | `store` |
+| `app` | `store`, `adapters`, `analysis`, `model` |
+| CLI/desktop interfaces | Intended public APIs of `app`, `store`, `adapters`, `analysis`, `model` |
 
-Library-root composition and interfaces may access owners through their intended
-APIs. Domain modules may refer to shared root inspection types, but not use root
-re-exports to bypass ownership. Neither domain modules nor workspace may import
-interface code; domain modules may not import workspace configuration/resolution.
+External libraries do not add internal edges. No core module may import app or
+interface code, and app may not import interface code. Configuration discovery
+belongs inside app. Interface argument handling, rendering, and invocation
+directory capture remain allowed; operational sequencing and publication policy
+stay in app. The graph check enforces imports; tests/review enforce those
+behavioral responsibilities and the requirement to accept supplied data without
+registry I/O.
 
-Make cross-owner references explicit `crate::<owner>::...` paths. Check paths in
-imports, grouped imports, type references, and expressions; an alias is checked
-at its import. Relative `self`/`super` paths must stay inside the same owner or
-name an explicitly permitted shared root type. Do not permit cross-owner glob
-imports, `extern crate self` aliases, domain re-exports through unrelated owners,
-or macro-generated/`include!`-generated cross-owner dependencies. Those source
-conventions keep the syntax check bounded without building a name resolver.
+Keep the library root to module declarations, intentional API re-exports,
+documentation, and lint attributes. Function/type definitions, type aliases, and
+helper logic must live in their owning module. Code inside library owners must
+name the owner directly, including when a root API facade exists. Root re-exports
+serve external callers and cannot bypass internal ownership. Check re-export
+origins; do not allow owners to re-export another owner's API as their own.
 
-Fail if an unexpected top-level owner or unsupported source inclusion could
-escape the check. Scan macros for owner-qualified paths as well; derive macros
-for configuration/CLI/serialization are permitted but do not generate domain
-dependencies. This is a source architecture gate with stated conventions, not
-general compiler-level dependency analysis. If future code needs domain
-dependencies generated by macros, extend enforcement before introducing them.
+Make cross-owner references explicit `crate::<owner>::...` paths; interface
+references use `mgb_ops` public paths. Check imports, grouped imports, type
+references, and expressions; check aliases at their import. Relative self/super
+paths must stay inside the same owner. Reject cross-owner glob imports,
+`extern crate self` aliases, unsupported source inclusions such as `include!`,
+and macro-generated dependencies that the checker cannot inspect. Reject
+unexpected top-level library owners rather than leaving them unchecked. Keep
+these source conventions explicit instead of building a general name resolver.
 
-Give the checker tiny syntax fixtures proving allowed edges pass and reverse
-edges, workspace discovery, grouped/aliased references, inline-module references,
-and unsupported bypass forms fail. Rust privacy independently protects private
-implementation submodules; narrow exports remain an explicit review requirement.
+Inspect macro token paths and derive/helper attributes as well as ordinary Rust
+paths. For the supported Serde/Clap derives, parse path-bearing attributes or
+reject unsupported forms; never assume derives cannot create internal edges.
+For example, `#[serde(default = "crate::model::default_value")]` inside adapters
+creates a forbidden edge even though the path is encoded as a string. Supported
+same-owner attributes and allowed cross-owner attributes must pass. Uncheckable
+attribute/generated-source forms must fail rather than silently escape the gate.
+Document the supported forms with the checker. This remains a bounded source
+architecture gate, not general compiler-level dependency analysis. Extend its
+coverage and fixtures before introducing unsupported forms.
+
+Give the checker tiny syntax fixtures covering every allowed edge, forbidden
+core-to-core edges, core-to-app and app-to-interface edges, grouped/aliased and
+relative references, inline/cfg/test modules, root/helper/re-export bypasses,
+allowed and forbidden derive-attribute paths, and unsupported inclusion/macro
+forms. Verify actual owned source coverage, not just fixture parsing. Rust
+privacy independently protects private implementation submodules; narrow exports
+and thin interfaces remain explicit review requirements. Keep the architecture
+contract, checker, and fixtures consistent when dependency rules change.
 
 Required commands from the package root:
 
@@ -358,7 +399,7 @@ Do not copy large operational data into unit tests or execute a fixture engine.
 | Operational stores | Absent history/cache/runs are informational; present SQLite and sidecars remain unopened and unchanged. Forcing/state absent does not fail. |
 | Output and exits | Text/JSON represent the same report; JSON parses; failures and unchecked scope have defined codes; invalid invocation exits `2`, inspection failure `1`, successful inspection `0`. |
 | Source preservation | Before/after inventory checks relative names, file kinds, symlink targets, file bytes, modification times, and directory entries on success and failure. Include existing SQLite sidecars and external symlink targets. Exclude access times. |
-| Architecture | Checker scans owned library sources and passes its positive/negative syntax fixtures; reverse edges and bypass forms fail. |
+| Architecture | Checker covers app, core owners, the root facade, and owned interfaces; fixtures cover all allowed edges and reject forbidden edges, aliases/re-exports/root helpers, derive-attribute paths, and unsupported source generation. |
 
 Run unreadable-file checks as an unprivileged user where permission restrictions
 are effective; do not claim a chmod-based test proves unreadability under root.
@@ -383,8 +424,9 @@ and hydrological validity remain explicitly unverified.
 ## Documentation and completion
 
 During implementation establish `docs/architecture.md` with the module ownership,
-privacy/dependency rules, and normalized acquisition boundary. Establish durable
-`docs/contracts/workspace.md` for config, path, and source-ownership semantics and
+privacy/dependency rules, canonical store contracts, and app lifecycle requirements
+for the next operational increment. Establish durable `docs/contracts/workspace.md`
+for config, path, and source-ownership semantics and
 `docs/contracts/inspection.md` for checks, findings, CLI, and limits. The README
 must include development setup, actual check commands, and short example/inspection
 usage. Keep implementation instructions consistent with these contracts.

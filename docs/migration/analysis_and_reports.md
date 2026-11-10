@@ -24,6 +24,15 @@ and `Plugins/HydrographViewer/`. The shapefile/exceedance tool is mapped in
 ## Implementation direction
 
 Use shared numerical results and report content across interfaces and formats.
+Analysis owns QC, corrections, forcing calculations, diagnostics, comparisons,
+report construction, and reusable document/chart rendering through private
+submodules. It depends on store's canonical contracts, never adapters or model
+internals. Calculations accept supplied data without requiring database or
+filesystem access. App obtains selected data, calls analysis, passes prepared
+forcing to model, and coordinates durable saving/export/publication through store.
+Interactive widgets and GUI state stay in the interface; PDF/HTML/Markdown/chart
+rendering must also work without the GUI.
+
 Study both bulletin examples before deciding their combined content and layout.
 Retain the useful manual chart adjustments and data exports from the references.
 Treat percentage bands according to their implemented definition; do not imply

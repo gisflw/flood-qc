@@ -2,8 +2,9 @@
 
 ## Owns
 
-- Selected model baseline, input serialization, run metadata, and time alignment.
-- Rainfall, observed-flow, reservoir-release, and wind input generation.
+- Engine-specific serialization and time layout from prepared canonical forcing
+  and explicitly selected baseline, settings, and run metadata.
+- Rainfall, observed-flow, reservoir-release, and wind engine-input generation.
 - Hot-start loading and the initial-state lifecycle found in VB.NET.
 - Isolated scenario execution and decoding model outputs for downstream use.
 
@@ -29,6 +30,21 @@ First reproduce the saved RS preparation/execution/decoding path against the
 minimal regression target, carrying its required initial state unchanged. Add
 remaining forcing generation and hot-start lifecycle behavior incrementally.
 
+Model accepts explicit prepared datasets, paths, and parameters using store's
+canonical contracts. Shared app workflows select inputs and freeze actual values
+or immutable versions at execution startup, including calibration, geometry,
+initial state, and executable identification. App supplies data/target geometry
+to analysis for general QC, corrections, resampling, and interpolation, then
+passes prepared canonical forcing to model. Model must not import analysis or
+adapters, discover registry data, or load global configuration.
+
+Model owns engine serialization, private execution directories, process handling,
+and decoding into staged canonical results. Numerical data and output contracts
+belong to store. Model may use explicit staged files for large outputs; canonical
+data does not have to be registered in a database before processing. App
+coordinates the scenario set and calls store for official publication; model
+does not publish individual scenarios.
+
 Reverse engineer the existing hot-start procedure, including `CI.meta`,
 `CI_*.HOT`, `HOT.HOT` where used, and state copied from output to input. Establish
 the exact behavior against the selected executable during implementation.
@@ -42,9 +58,13 @@ Verify engine-side state generation separately and recompile the engine if
 needed to enable it. None of these writes, promotion steps, or recompilation
 is required to establish the initial regression target.
 
-Prepare scenarios in isolated directories. Preserve prior successful results
-when a new execution fails. Keep input preparation and process execution usable
-from the CLI without the desktop. Investigate routing-selection behavior against
+Prepare scenarios in isolated directories. App publishes only the complete
+requested scenario set, with store committing consistent result/status references.
+If any scenario fails, retain diagnostics and staged successful outputs for
+inspection and leave the previous published set official. App owns execution
+status, overlap policy, and failure handling; store owns persistence/file lifecycle.
+Keep input preparation and process execution usable from the CLI without the
+desktop. Investigate routing-selection behavior against
 the selected engine before promising multiple routing modes.
 
 ## Evidence of completion
@@ -53,3 +73,6 @@ Regenerate a representative reference case if necessary. Compare generated
 formats and numerical outputs against that case using appropriate tolerances.
 Verify a subsequent operation uses the expected initial state. Record executable
 identity and required input compatibility; do not assume existing folders match.
+Check that later history/review changes do not alter an execution snapshot, and
+that a failed scenario leaves the previous complete published set intact while
+preserving failed-attempt evidence.

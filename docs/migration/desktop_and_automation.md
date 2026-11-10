@@ -15,10 +15,21 @@ for scheduling and email behavior.
 
 ## Implementation direction
 
-The CLI is the first interface and the basis for automation. Desktop controls
-call the same Rust capabilities; they do not own hydrological rules or become
-prerequisites for unattended execution. Choose the desktop framework during
-implementation, keeping the application in Rust.
+The CLI is the first interface and the basis for automation. CLI, desktop, and
+scheduler use shared app workflows in the library for configuration/path
+resolution, selection, execution snapshots, scenario coordination, failure
+handling, export, and publication policy. Interface controls may call intended
+public core APIs but do not duplicate operational lifecycle rules. Hydrological
+algorithms stay in analysis/model; database and file-lifecycle implementations
+stay in store. Choose the desktop framework during implementation, keeping the
+application in Rust.
+
+At execution startup, freeze input values or immutable versions. Model stages
+canonical outputs; app publishes only a complete requested scenario set through
+store. A failed attempt retains diagnostics/staged outputs and leaves the previous
+published set official. These rules apply equally to interactive and scheduled
+operations. Reusable report/chart rendering belongs in analysis's private
+submodules; interactive widgets and GUI state belong in the interface.
 
 Introduce a working desktop interface after the first shared preparation,
 execution, and decoded-results path is available, before implementing all core

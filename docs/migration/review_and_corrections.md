@@ -21,8 +21,16 @@ plugins. See the [reference map](../../references/vbnet_map.md).
 ## Implementation direction
 
 Keep original observations and forecasts intact. Apply documented review
-instructions to create effective inputs. Implement the underlying operations in
-the Rust core so the CLI and desktop produce the same corrected data.
+instructions to create effective inputs. Analysis owns QC, correction evaluation,
+transformations, diagnostics, and preview data, using store's canonical contracts
+without adapters or model internals. Store owns persisted instructions and data;
+app coordinates loading, saving, and preparation. GUI controls keep their own
+interactive state and call the same library operations as the CLI.
+
+At execution startup, app freezes the selected sources and applied correction
+instructions as part of the execution snapshot. Analysis prepares canonical
+forcing from that snapshot before model-specific serialization. Later review
+edits affect a new snapshot, never the inputs of an existing execution.
 
 ## Evidence of completion
 

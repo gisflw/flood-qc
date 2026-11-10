@@ -29,15 +29,17 @@ VB.NET/plugin acquisition locations are listed in the
 ## Implementation direction
 
 Retain the Python flow: acquire source artifacts, normalize them, then register
-or load them into the history/assets layer. Add sources to that flow rather than
+or load selected data through store. Add sources to that flow rather than
 copying the form-driven orchestration. Preserve units, timestamps, aggregation,
 station identity, forecast intervals, and missing-data semantics explicitly.
 
-Acquisition is a separate deep module owning provider APIs, source restructuring,
-and format conversion. It defines normalized output types that assets accepts
-directly and does not depend on assets or its storage. Assets may call acquisition
-and owns data coordination, registration, and persistence; no separate operation
-module is required just to connect the two. See the
+The adapters module owns provider APIs, source restructuring, and format
+conversion into canonical representations defined by store. It depends on those
+contracts, not on analysis, model, or app. Adapters return normalized data; app
+decides whether and when to persist it through store. Store never calls adapters.
+Keep scientific QC/corrections in analysis and operational selection, retry, and
+failure policy in shared app workflows. Canonical values remain usable without
+database connections or filesystem state. See the
 [foundation plan](../../.dev/plans/rust-foundation.md).
 
 Inventory exact products and supported file variants while implementing each
