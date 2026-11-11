@@ -42,6 +42,10 @@ Decide conflicting post-processing behavior during development with a concrete
 example. Keep computation separate from chart rendering and document units and
 time conventions at their boundaries.
 
+[Observation-based AR(1)](../../docs/architecture.md#level-reference-and-analysis-corrections)
+is an analysis capability for dataviz; implementation is deferred beyond the saved
+operational path. Model applies fixed station-reference offsets in that path.
+
 ## Evidence of completion
 
 One completed operation produces the required bulletin content in all three

@@ -26,10 +26,13 @@ tests. The architecture checker now accepts same-owner re-exports and ordinary
 text containing `!`, with regression fixtures. Hosted CI and Windows remain
 unverified. Foundation acceptance remains in progress.
 
-Next: complete foundation acceptance, then specify and implement saved RS
-preparation, real execution, and decoding against the frozen reference. Carry the
-saved state unchanged and implement the [execution lifecycle](../../docs/architecture.md#execution-lifecycle).
+Next: complete foundation acceptance, then qualify the corrected RS reference and
+implement the four operational specifications linked below. Carry the saved
+state unchanged and implement the [execution lifecycle](../../docs/architecture.md#execution-lifecycle).
 Supported behavior lives in the [workspace contract](../../docs/contracts/workspace.md).
+The operational specifications replace the saved RS operational plan; their
+capabilities remain unimplemented. Canonical storage, operation timezones, and
+level-reference ownership are agreed [design decisions](../../docs/architecture.md#operational-data-decisions).
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
@@ -40,13 +43,16 @@ record unverified platforms and remaining gaps explicitly.
 | --- | --- | --- |
 | [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Case and evidence](../../references/regression/rs-hourly/README.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
 | [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | In progress: bounded inspection and Linux checks pass; architecture checker regressions pass locally; hosted CI remains unverified. Rust uses TOML without YAML fallback/conversion. Windows, runtime compatibility, execution, and content/numerical validity unverified. |
-| [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Not started in Rust. Store owns canonical contracts and private persistence. SQLite/NetCDF are starting choices; schemas, layouts, and import decisions follow their capabilities. |
-| [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. App freezes inputs at execution startup, coordinates analysis/model, and publishes complete sets through store. Compare with the frozen reference; carry saved initial state unchanged. |
+| [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Planned for the saved path; not implemented. Rust-owned SQLite/NetCDF contracts, a separate forecast/correction SQLite, and station-offset records follow the operational specifications. Regression-only conversion scripts may supply fixtures. |
+| [Corrected RS reference and canonical acceptance inputs](../changes/rs-reference-alignment.md) | 3, step 1: qualify reference/contracts | Planned; no revised reference accepted yet. Resolve alignment/output interpretation using existing legacy evidence, preserve revision 1, and qualify all four scenarios with fresh repetition. |
+| [Canonical observations, QC, and observed forcing](../changes/rs-observed-forcing.md) | 3, step 2a: observed forcing | Planned; not implemented. Canonical saved history, six curated NULL replacements, independent detection/interpolation acceptance, and station-offset persistence. |
+| [Saved forecast normalization and forecast forcing](../changes/rs-forecast-forcing.md) | 3, step 2b: forecast forcing | Planned; not implemented. Adapters normalize saved ECMWF/NOAA files; store persists native data/catalog/corrections; analysis prepares forcing. Qualify native Terrio I/O independently of scientific processing. |
+| [Saved RS integration, execution, and decoded results](../changes/rs-model-execution.md) | 3, integration and step 3: first operational Rust path | Planned; not implemented. App freezes inputs, coordinates isolated scenarios, and publishes complete sets through store. Model retains raw basin levels and produces station-referenced levels. Carry saved state unchanged; combined run-all commands deferred. |
 | [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
-| [QC, review, corrections, and availability](review_and_corrections.md) | 5: extend analysis | Not started in Rust. Analysis operates on canonical data; store persists explicit review instructions and preserved sources. |
+| [Broader QC, review, corrections, and availability](review_and_corrections.md) | 5: extend analysis beyond the saved path | Not started beyond the saved-case capabilities planned above. Analysis operates on canonical data; store persists explicit review instructions and preserved sources. |
 | [Additional forcing inputs and hot-start lifecycle](model_and_hotstarts.md) | 5: extend model support | Not started in Rust. State generation, consumption, and chaining still require qualification. |
 | [Geometry and calibration editors](calibration_editors.md) | 6: functional acceptance | Not started in Rust. No editor regression or baseline replacement required. |
-| [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Not started in Rust. Includes forcing calculations, comparisons, accumulations, peaks, and reference post-processing. No model-internal dependencies. |
+| [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Saved-path forcing is planned above; broader analysis remains not started. Observation-based AR(1) belongs to analysis for dataviz and is deferred. No model-internal dependencies. |
 | [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
 | [Completed-run regeneration and sharing](completed_runs.md) | 7: complete archival workflow | Not started in Rust. Regeneration must work without provider access or caches. |
 | [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Not started. Uses shared Rust capabilities; framework remains undecided. |

@@ -29,7 +29,7 @@ the currently implemented inspection capability.
 | `store` | Canonical data, schemas, metadata, persistence, queries, artifact registration, provenance, file lifecycle | None |
 | `adapters` | Provider acquisition, source parsing, normalization; return data without deciding persistence | `store` |
 | `analysis` | QC, corrections, transformations, forcing, diagnostics, metrics, report content/rendering | `store` |
-| `model` | Engine prerequisites, input serialization, execution, state mechanics, staged decoding | `store` |
+| `model` | Engine prerequisites, input serialization, execution, state mechanics, staged decoding, fixed station-reference conversion | `store` |
 | `app` | Workflows, private configuration/path resolution, selection, preparation/scenario coordination, failures, publication policy | All four core owners |
 | CLI/desktop | Arguments, invocation-directory capture, presentation, interactive state | Intended public library APIs |
 
@@ -47,9 +47,44 @@ configuration/report types. App assembles inspection findings from model's expli
 prerequisite checks. The root facade declares modules and re-exports intended APIs;
 composition lives in app. Prefer deep modules with narrow APIs and private internals.
 
-SQLite and NetCDF are starting choices. Define concrete schemas, time conventions,
-units, interval bounds, and missing-value semantics when first used. Do not equate
-missing values with zero or silently discard timezones.
+Define concrete schemas, units, interval bounds, and missing-value semantics when
+first used. Do not equate missing values with zero or silently discard timezones.
+
+## Operational data decisions
+
+The next operational increment uses Rust-owned canonical formats. SQLite holds
+observations, station metadata, and observation review instructions. A separate
+SQLite holds the forecast catalog and its correction instructions. SQLite also
+holds operation/scenario records and artifact references. NetCDF holds native
+forecast grids, working grids, basin forcing/results, and station-level results.
+Store owns these schemas and persistence; adapters return normalized canonical
+data without choosing persistence. Concrete layouts grow with the capabilities.
+
+Canonical timestamps use the operation's timezone, recorded in artifact metadata.
+Forecast normalization converts source UTC timestamps into that convention while
+preserving source cycle and interval provenance. This keeps canonical observation,
+forcing, and result times aligned with the operation.
+
+### Level reference and analysis corrections
+
+Store persists fixed station-offset records alongside station metadata. Records
+are keyed by station and identify the supplying model mini-basin, signed offset
+in metres, and provenance. Different stations may share a mini-basin and have
+different offsets. Missing offsets remain unknown; explicit zero is valid.
+
+Model applies supplied fixed offsets as station level = engine level minus
+offset. Canonical level observations and results use signed integer centimetres;
+offsets retain their supplied precision in metres. Subtract from the unquantized
+engine level before converting once to centimetres, using nearest rounding with
+ties to even and checked integer range. Preserve original engine streams, raw
+canonical levels by basin, and referenced levels by station. App supplies and
+snapshots the offset records; model does not query catalogs or estimate offsets
+from recent observations.
+
+Observation-based AR(1) correction of flow/level belongs to analysis for dataviz.
+Its implementation is deferred to that later capability. Fixed reference
+conversion belongs to the initial model pipeline; the two operations remain
+distinct, with raw and referenced model results available to later analysis.
 
 ## Enforcement
 
@@ -85,7 +120,8 @@ weakening the ownership rules to accommodate a bypass.
 These requirements govern the next operational increment, not read-only inspection:
 
 - At startup, app freezes actual selected observations, forecasts, corrections,
-  settings, calibration, geometry, and initial state, and records executable identity.
+  settings, calibration, geometry, initial state, and station offsets, and records
+  executable identity.
   Store retains values or immutable versions, not merely selectors, mutable paths,
   or hashes without retained data.
 - Later acquisition/editing cannot alter an execution. Refreshing inputs creates a

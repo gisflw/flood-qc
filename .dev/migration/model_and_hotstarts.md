@@ -39,8 +39,11 @@ passes prepared canonical forcing to model. Model must not import analysis or
 adapters, discover registry data, or load global configuration.
 
 Model owns engine serialization, private execution directories, process handling,
-and decoding into staged canonical results. Numerical data and output contracts
-belong to store. Model may use explicit staged files for large outputs; canonical
+decoding into staged canonical results, and fixed station-reference level
+conversion. Preserve raw basin levels and produce referenced station levels using
+the [agreed offset contract](../../docs/architecture.md#level-reference-and-analysis-corrections).
+Numerical data and output contracts belong to store. Model may use explicit staged
+files for large outputs; canonical
 data does not have to be registered in a database before processing. App
 coordinates the scenario set and calls store for official publication; model
 does not publish individual scenarios.
