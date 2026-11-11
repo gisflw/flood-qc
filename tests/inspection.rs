@@ -63,7 +63,7 @@ fn request(w: &Path) -> InspectionRequest {
         engine_input_dir: None,
     }
 }
-fn code<'a>(report: &'a InspectionReport, check: &str) -> &'a str {
+fn code(report: &InspectionReport, check: &str) -> mgb_ops::FindingCode {
     report
         .findings
         .iter()
@@ -95,7 +95,11 @@ fn example_and_configuration_contract() {
         if !invalid.contains("'   '") {
             r.gpkg_path = Some("geometry.gpkg".into());
         }
-        assert_eq!(code(&inspect(r), "config"), "invalid_config", "{invalid}");
+        assert_eq!(
+            code(&inspect(r), "config"),
+            mgb_ops::FindingCode::InvalidConfig,
+            "{invalid}"
+        );
     }
     put(
         &w.join("config/workspace.toml"),
@@ -109,7 +113,7 @@ fn example_and_configuration_contract() {
     fs::remove_file(w.join("config/workspace.toml")).unwrap();
     let mut r = request(w);
     r.gpkg_path = Some("geometry.gpkg".into());
-    assert_eq!(code(&inspect(r), "config"), "missing");
+    assert_eq!(code(&inspect(r), "config"), mgb_ops::FindingCode::Missing);
 }
 #[test]
 fn aggregates_failures_and_suppresses_children() {
@@ -121,15 +125,27 @@ fn aggregates_failures_and_suppresses_children() {
     fs::create_dir(w.join("mgb_runner/Input/Cell.hig")).unwrap();
     let r = inspect(request(w));
     assert!(!r.ok);
-    assert_eq!(code(&r, "geometry"), "missing");
-    assert_eq!(code(&r, "engine.input.MINI.gtp"), "empty");
-    assert_eq!(code(&r, "engine.input.Cell.hig"), "wrong_kind");
-    assert_eq!(code(&r, "optional.history"), "absent");
-    assert_eq!(code(&r, "scope.execution"), "outside_scope");
+    assert_eq!(code(&r, "geometry"), mgb_ops::FindingCode::Missing);
+    assert_eq!(
+        code(&r, "engine.input.MINI.gtp"),
+        mgb_ops::FindingCode::Empty
+    );
+    assert_eq!(
+        code(&r, "engine.input.Cell.hig"),
+        mgb_ops::FindingCode::WrongKind
+    );
+    assert_eq!(code(&r, "optional.history"), mgb_ops::FindingCode::Absent);
+    assert_eq!(
+        code(&r, "scope.execution"),
+        mgb_ops::FindingCode::OutsideScope
+    );
     let mut req = request(w);
     req.engine_input_dir = Some("missing".into());
     let r = inspect(req);
-    assert_eq!(code(&r, "engine.inputs"), "prerequisite_failed");
+    assert_eq!(
+        code(&r, "engine.inputs"),
+        mgb_ops::FindingCode::PrerequisiteFailed
+    );
     assert!(
         !r.findings
             .iter()
@@ -146,7 +162,7 @@ fn permissions_and_symlinks() {
     fs::set_permissions(&engine, fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(
         code(&inspect(request(w)), "engine.executable"),
-        "not_executable"
+        mgb_ops::FindingCode::NotExecutable
     );
     fs::set_permissions(&engine, fs::Permissions::from_mode(0o755)).unwrap();
     let geom = w.join("geometry.gpkg");
@@ -155,13 +171,16 @@ fn permissions_and_symlinks() {
     symlink(&target, &geom).unwrap();
     assert!(inspect(request(w)).ok);
     fs::remove_file(target).unwrap();
-    assert_eq!(code(&inspect(request(w)), "geometry"), "missing");
+    assert_eq!(
+        code(&inspect(request(w)), "geometry"),
+        mgb_ops::FindingCode::Missing
+    );
     let input = w.join("mgb_runner/Input/MINI.gtp");
     fs::set_permissions(&input, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::File::open(&input).is_err() {
         assert_eq!(
             code(&inspect(request(w)), "engine.input.MINI.gtp"),
-            "unreadable"
+            mgb_ops::FindingCode::Unreadable
         );
     }
     fs::set_permissions(&input, fs::Permissions::from_mode(0o644)).unwrap();
@@ -272,15 +291,24 @@ fn config_precedence_and_invalid_values() {
     let cfg = w.join("config/workspace.toml");
     put(&cfg, b"[spatial]\ngpkg_path='geometry.gpkg'\n[engine]\nexecutable='no-engine'\ninput_dir='no-input'\n");
     let report = inspect(request(w));
-    assert_eq!(code(&report, "engine.executable"), "missing");
-    assert_eq!(code(&report, "engine.input_dir"), "missing");
+    assert_eq!(
+        code(&report, "engine.executable"),
+        mgb_ops::FindingCode::Missing
+    );
+    assert_eq!(
+        code(&report, "engine.input_dir"),
+        mgb_ops::FindingCode::Missing
+    );
     let mut req = request(w);
     req.engine_executable = Some("mgb_runner/MGB_Inercial_Prev_RSH".into());
     req.engine_input_dir = Some("mgb_runner/Input".into());
     assert!(inspect(req).ok);
     for source in ["", "[spatial]\n", "[engine]\n"] {
         put(&cfg, source.as_bytes());
-        assert_eq!(code(&inspect(request(w)), "config"), "invalid_config");
+        assert_eq!(
+            code(&inspect(request(w)), "config"),
+            mgb_ops::FindingCode::InvalidConfig
+        );
         let mut req = request(w);
         req.gpkg_path = Some("geometry.gpkg".into());
         assert!(inspect(req).ok);
@@ -297,7 +325,11 @@ fn config_precedence_and_invalid_values() {
         req.engine_executable = Some("mgb_runner/MGB_Inercial_Prev_RSH".into());
         req.engine_input_dir = Some("mgb_runner/Input".into());
         let report = inspect(req);
-        assert_eq!(code(&report, "config"), "invalid_config", "{source}");
+        assert_eq!(
+            code(&report, "config"),
+            mgb_ops::FindingCode::InvalidConfig,
+            "{source}"
+        );
         if source.contains("unknown") {
             assert!(
                 report
@@ -311,10 +343,16 @@ fn config_precedence_and_invalid_values() {
         }
     }
     put(&cfg, &[0xff]);
-    assert_eq!(code(&inspect(request(w)), "config"), "invalid_config");
+    assert_eq!(
+        code(&inspect(request(w)), "config"),
+        mgb_ops::FindingCode::InvalidConfig
+    );
     fs::remove_file(&cfg).unwrap();
     fs::create_dir(&cfg).unwrap();
-    assert_eq!(code(&inspect(request(w)), "config"), "wrong_kind");
+    assert_eq!(
+        code(&inspect(request(w)), "config"),
+        mgb_ops::FindingCode::WrongKind
+    );
 }
 
 #[cfg(unix)]
@@ -345,7 +383,10 @@ fn native_paths_and_output_errors() {
     fs::remove_file(outside.path().join("geometry.gpkg")).unwrap();
     let mut req = request(w);
     req.gpkg_path = Some("link/../geometry.gpkg".into());
-    assert_eq!(code(&inspect(req), "geometry"), "missing");
+    assert_eq!(
+        code(&inspect(req), "geometry"),
+        mgb_ops::FindingCode::Missing
+    );
     let native = std::ffi::OsString::from_vec(b"nonunicode-\xff".to_vec());
     let mut req = request(w);
     req.gpkg_path = Some(native.into());
@@ -364,7 +405,10 @@ fn native_paths_and_output_errors() {
     let cfg = w.join("config/workspace.toml");
     fs::set_permissions(&cfg, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::File::open(&cfg).is_err() {
-        assert_eq!(code(&inspect(request(w)), "config"), "unreadable");
+        assert_eq!(
+            code(&inspect(request(w)), "config"),
+            mgb_ops::FindingCode::Unreadable
+        );
     }
     fs::set_permissions(&cfg, fs::Permissions::from_mode(0o644)).unwrap();
     let full = fs::OpenOptions::new()
@@ -378,4 +422,40 @@ fn native_paths_and_output_errors() {
         .unwrap();
     assert_eq!(output.status.code(), Some(1));
     assert!(!output.stderr.is_empty());
+}
+
+#[test]
+fn finding_values_keep_their_wire_strings() {
+    for (value, expected) in [
+        (mgb_ops::FindingStatus::Pass, "pass"),
+        (mgb_ops::FindingStatus::Fail, "fail"),
+        (mgb_ops::FindingStatus::Info, "info"),
+        (mgb_ops::FindingStatus::NotChecked, "not_checked"),
+    ] {
+        assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        assert_eq!(value.to_string(), expected);
+    }
+    for (value, expected) in [
+        (mgb_ops::FindingCode::Ok, "ok"),
+        (mgb_ops::FindingCode::Missing, "missing"),
+        (mgb_ops::FindingCode::WrongKind, "wrong_kind"),
+        (mgb_ops::FindingCode::Unreadable, "unreadable"),
+        (mgb_ops::FindingCode::Empty, "empty"),
+        (mgb_ops::FindingCode::InvalidConfig, "invalid_config"),
+        (mgb_ops::FindingCode::NotExecutable, "not_executable"),
+        (mgb_ops::FindingCode::Present, "present"),
+        (mgb_ops::FindingCode::Absent, "absent"),
+        (
+            mgb_ops::FindingCode::MetadataUnavailable,
+            "metadata_unavailable",
+        ),
+        (
+            mgb_ops::FindingCode::PrerequisiteFailed,
+            "prerequisite_failed",
+        ),
+        (mgb_ops::FindingCode::OutsideScope, "outside_scope"),
+    ] {
+        assert_eq!(serde_json::to_value(value).unwrap(), expected);
+        assert_eq!(value.to_string(), expected);
+    }
 }

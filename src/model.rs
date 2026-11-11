@@ -1,3 +1,14 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrerequisiteCode {
+    Ok,
+    Missing,
+    WrongKind,
+    Unreadable,
+    Empty,
+    NotExecutable,
+    PrerequisiteFailed,
+}
+
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -20,7 +31,7 @@ pub(crate) const REQUIRED_INPUTS: &[&str] = &[
 #[derive(Debug)]
 pub(crate) struct Prerequisite {
     pub check: String,
-    pub code: &'static str,
+    pub code: PrerequisiteCode,
     pub path: PathBuf,
     pub message: String,
 }
@@ -28,13 +39,19 @@ pub(crate) struct Prerequisite {
 fn directory(check: &str, path: &Path) -> Prerequisite {
     let result = match fs::metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            ("missing", "Create or select the directory")
+            (PrerequisiteCode::Missing, "Create or select the directory")
         }
-        Err(_) => ("unreadable", "Make the directory accessible"),
-        Ok(m) if !m.is_dir() => ("wrong_kind", "Select a directory"),
+        Err(_) => (
+            PrerequisiteCode::Unreadable,
+            "Make the directory accessible",
+        ),
+        Ok(m) if !m.is_dir() => (PrerequisiteCode::WrongKind, "Select a directory"),
         Ok(_) => match fs::read_dir(path) {
-            Ok(_) => ("ok", "Directory is accessible"),
-            Err(_) => ("unreadable", "Make the directory accessible"),
+            Ok(_) => (PrerequisiteCode::Ok, "Directory is accessible"),
+            Err(_) => (
+                PrerequisiteCode::Unreadable,
+                "Make the directory accessible",
+            ),
         },
     };
     Prerequisite {
@@ -47,18 +64,20 @@ fn directory(check: &str, path: &Path) -> Prerequisite {
 
 fn file(check: &str, path: &Path, executable: bool) -> Prerequisite {
     let result = match fs::metadata(path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            ("missing", "Create or select the required file")
-        }
-        Err(_) => ("unreadable", "Make the file accessible"),
-        Ok(m) if !m.is_file() => ("wrong_kind", "Select a regular file"),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => (
+            PrerequisiteCode::Missing,
+            "Create or select the required file",
+        ),
+        Err(_) => (PrerequisiteCode::Unreadable, "Make the file accessible"),
+        Ok(m) if !m.is_file() => (PrerequisiteCode::WrongKind, "Select a regular file"),
         Ok(m) => match File::open(path).and_then(|mut f| f.read(&mut [0u8; 1])) {
-            Err(_) => ("unreadable", "Make the file readable"),
-            Ok(0) => ("empty", "Provide a nonempty file"),
-            Ok(_) if executable && !executable_bits(&m) => {
-                ("not_executable", "Set an executable permission bit")
-            }
-            Ok(_) => ("ok", "File is readable and nonempty"),
+            Err(_) => (PrerequisiteCode::Unreadable, "Make the file readable"),
+            Ok(0) => (PrerequisiteCode::Empty, "Provide a nonempty file"),
+            Ok(_) if executable && !executable_bits(&m) => (
+                PrerequisiteCode::NotExecutable,
+                "Set an executable permission bit",
+            ),
+            Ok(_) => (PrerequisiteCode::Ok, "File is readable and nonempty"),
         },
     };
     Prerequisite {
@@ -84,7 +103,7 @@ pub(crate) fn inspect(executable: &Path, input_dir: &Path) -> Vec<Prerequisite> 
         file("engine.executable", executable, true),
         directory("engine.input_dir", input_dir),
     ];
-    if findings[1].code == "ok" {
+    if findings[1].code == PrerequisiteCode::Ok {
         findings.extend(REQUIRED_INPUTS.iter().map(|name| {
             file(
                 &format!("engine.input.{name}"),
@@ -95,7 +114,7 @@ pub(crate) fn inspect(executable: &Path, input_dir: &Path) -> Vec<Prerequisite> 
     } else {
         findings.push(Prerequisite {
             check: "engine.inputs".into(),
-            code: "prerequisite_failed",
+            code: PrerequisiteCode::PrerequisiteFailed,
             path: input_dir.into(),
             message: "Fix the input directory before checking its files".into(),
         });

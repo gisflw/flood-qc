@@ -70,7 +70,10 @@ The [architecture test](../tests/architecture.rs) enforces these source boundari
 - Paths in supported macros and attributes are checked. Unsupported constructs
   and generated source are rejected rather than silently left unchecked.
 
-Run `cargo test --test architecture` independently or as part of `cargo test`.
+Run `cargo test --locked --test architecture` independently or as part of
+`cargo test --locked`.
+GitHub Actions runs the formatting, lint, and test gates on Linux for pushes and
+pull requests. The toolchain is pinned and qualified deliberately.
 The gate checks bounded source syntax, not behavioral ownership or execution
 lifecycle correctness; review and behavior tests must cover those responsibilities.
 Checker allowlists, parser mechanics, supported syntax, and known limitations stay

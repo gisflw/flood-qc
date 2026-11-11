@@ -20,11 +20,14 @@ arguments and repeated single-value options are usage errors. `--help` and
 ## Library API
 
 The `mgb_ops` crate re-exports `inspect`, `InspectionRequest`, `InspectionReport`,
-and `example_config`. `example_config()` returns the editable TOML as a `String`.
+`FindingStatus`, `FindingCode`, and `example_config`. `example_config()` returns
+the editable TOML as a `String`.
 `inspect(request)` returns an `InspectionReport`, including expected failures;
 it does not print output or choose an exit code. Findings are available through
-`report.findings`, with their type exposed as `mgb_ops::app::Finding`. Reports
-implement Serde serialization for the JSON representation described below.
+`report.findings`, with their type exposed as `mgb_ops::app::Finding`. Finding
+status and code fields use the public enums; their serialized strings are
+specified below. Reports implement Serde serialization for the JSON
+representation described below.
 
 Construct `InspectionRequest` with a `workspace` path, an absolute `invocation_dir`,
 and `config`, `gpkg_path`, `engine_executable`, and `engine_input_dir` overrides

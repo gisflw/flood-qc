@@ -17,17 +17,18 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 10, 2026. The RS hourly reference is established. The Rust
+Updated November 11, 2026. The RS hourly reference is established. The Rust
 read-only inspection library/CLI is implemented with strict TOML, dedicated path
-overrides, bounded text/JSON findings, and source-preservation checks. Linux
-formatting, Clippy, eight integration tests, and disposable RS acceptance passed;
-Windows remains unverified. Subsequent review found architecture-checker false
-positives for same-owner re-exports and ordinary text containing `!`. Foundation
-acceptance remains in progress until those findings are resolved.
+overrides, bounded text/JSON findings, and source-preservation checks. Disposable
+RS acceptance passed previously on Linux. Current local qualification with Rust
+1.99.1 passed formatting, Clippy, seven inspection tests, and two architecture
+tests. The architecture checker now accepts same-owner re-exports and ordinary
+text containing `!`, with regression fixtures. Hosted CI and Windows remain
+unverified. Foundation acceptance remains in progress.
 
-Next: settle that review, then specify and implement saved RS preparation, real
-execution, and decoding against the frozen reference. Carry the saved state
-unchanged and implement the [execution lifecycle](../../docs/architecture.md#execution-lifecycle).
+Next: complete foundation acceptance, then specify and implement saved RS
+preparation, real execution, and decoding against the frozen reference. Carry the
+saved state unchanged and implement the [execution lifecycle](../../docs/architecture.md#execution-lifecycle).
 Supported behavior lives in the [workspace contract](../../docs/contracts/workspace.md).
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
@@ -38,7 +39,7 @@ record unverified platforms and remaining gaps explicitly.
 | Capability and reference behavior | Delivery step | State, evidence, and gaps |
 | --- | --- | --- |
 | [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Case and evidence](../../references/regression/rs-hourly/README.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
-| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | In progress: bounded inspection and Linux checks pass; architecture review has unresolved checker false positives (see current state above). Rust uses TOML without YAML fallback/conversion. Windows, runtime compatibility, execution, and content/numerical validity unverified. |
+| [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | In progress: bounded inspection and Linux checks pass; architecture checker regressions pass locally; hosted CI remains unverified. Rust uses TOML without YAML fallback/conversion. Windows, runtime compatibility, execution, and content/numerical validity unverified. |
 | [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Not started in Rust. Store owns canonical contracts and private persistence. SQLite/NetCDF are starting choices; schemas, layouts, and import decisions follow their capabilities. |
 | [Saved RS preparation, real execution, and decoded results](model_and_hotstarts.md) | 3: first operational Rust path | Not started in Rust. App freezes inputs at execution startup, coordinates analysis/model, and publishes complete sets through store. Compare with the frozen reference; carry saved initial state unchanged. |
 | [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |

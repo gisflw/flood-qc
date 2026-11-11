@@ -6,20 +6,24 @@ executable remains the numerical engine; inspection never launches it.
 
 ## Development
 
-Install stable Rust with Cargo, rustfmt, and Clippy (edition 2024). Dependency
-versions are recorded in `Cargo.lock`; no minimum Rust version is qualified.
+Install Rust with rustup; `rust-toolchain.toml` selects Rust 1.99.1 with rustfmt
+and Clippy. Dependency versions are recorded in `Cargo.lock`; no minimum Rust
+version is qualified. Toolchain updates are qualified separately.
 Linux inspection has been validated; Windows remains unverified.
 
 ```sh
 cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo test --test architecture
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+cargo test --locked --test architecture
 cargo build
 ```
 
 Routine checks use synthetic fixtures and require neither Python, regional data,
-providers, nor MGB. The architecture gate also runs under `cargo test`.
+providers, nor MGB. The architecture gate also runs under `cargo test`. GitHub
+Actions runs formatting, Clippy, the full test suite, and the independent
+architecture test on Linux for pushes and pull requests. Branch protection is
+deferred.
 
 ## Usage
 

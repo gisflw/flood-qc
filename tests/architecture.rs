@@ -23,6 +23,13 @@ impl Gate {
             return;
         }
         if segments[0] == "self" && segments.len() > 1 {
+            if self
+                .modules
+                .last()
+                .is_some_and(|modules| modules.contains(&segments[1]))
+            {
+                return;
+            }
             self.path(&segments[1..], glob);
             return;
         }
@@ -41,6 +48,8 @@ impl Gate {
                         "example_config",
                         "InspectionRequest",
                         "InspectionReport",
+                        "FindingStatus",
+                        "FindingCode",
                     ]
                     .contains(&segments[1].as_str())
                 {
@@ -188,7 +197,7 @@ impl<'ast> Visit<'ast> for Gate {
             self.error(format!("unsupported macro {name}"));
         }
         let tokens = mac.tokens.to_string();
-        if tokens.contains('!') {
+        if contains_bang(mac.tokens.clone()) {
             self.error("nested macros are unsupported");
         }
         self.token_paths(&tokens);
@@ -227,7 +236,7 @@ impl<'ast> Visit<'ast> for Gate {
         }
         if let syn::Meta::List(list) = &attr.meta {
             let text = list.tokens.to_string();
-            if text.contains('!') {
+            if contains_bang(list.tokens.clone()) {
                 self.error("generated attribute is unsupported");
                 return;
             }
@@ -310,6 +319,13 @@ impl<'ast> Visit<'ast> for Gate {
         }
     }
 }
+fn contains_bang(tokens: proc_macro2::TokenStream) -> bool {
+    tokens.into_iter().any(|token| match token {
+        proc_macro2::TokenTree::Punct(p) => p.as_char() == '!',
+        proc_macro2::TokenTree::Group(g) => contains_bang(g.stream()),
+        _ => false,
+    })
+}
 fn private_modules(items: &[Item]) -> Vec<String> {
     items
         .iter()
@@ -351,7 +367,7 @@ fn root(source: &str) -> Vec<String> {
                             ..
                         })
                     ),
-                    syn::Meta::List(v) => !v.tokens.to_string().contains('!'),
+                    syn::Meta::List(v) => !contains_bang(v.tokens.clone()),
                     _ => true,
                 }
         })
@@ -474,6 +490,8 @@ fn graph_fixtures() {
         "use crate::store::Thing; pub use crate::adapters::Thing as Alias;",
         "#[doc = include_str!(\"outside.rs\")] struct S;",
         "use crate::store as inner; pub use self::inner::Thing;",
+        "mod model { use crate::model::Thing; } pub use self::model::Thing;",
+        "fn x() { println!(\"!\", include_str!(\"outside\")); }",
         "use crate::{model::Thing as Alias};",
         "mod x { use super::super::model::Thing; }",
         "#[cfg(test)] mod x { use crate::app::Thing; }",
@@ -493,6 +511,9 @@ fn graph_fixtures() {
     }
     for source in [
         "mod inner { pub struct Thing; } pub use self::inner::Thing;",
+        "mod model { pub struct Thing; } pub use self::model::Thing;",
+        "fn x() { println!(\"hello!\"); }",
+        "#[allow(clippy::todo, reason = \"justified!\")] fn x() {}",
         "use crate::store::{Thing as Alias, Other};",
         "mod x { use super::helper; }",
         "#[serde(default = \"crate::store::default_value\")] struct S;",

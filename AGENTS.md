@@ -46,9 +46,12 @@ delegated work too. Resolve links relative to the containing document.
 Follow the [architecture and its enforcement rules](docs/architecture.md#enforcement);
 add modules only for implemented behavior. Keep checker mechanics beside the
 checker; test and review behavioral responsibilities as well as import direction.
-Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
-and the independently runnable `cargo test --test architecture` for Rust changes.
-Documentation-only changes need link/content checks, not a Rust test rerun.
+Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
+`cargo test --locked`, and the independently runnable
+`cargo test --locked --test architecture` for Rust changes.
+Clippy uses its default group plus `dbg_macro`, `todo`, and `unimplemented`;
+exceptions must be narrowly scoped and include a concrete reason. Documentation-only
+changes need link/content checks, not a Rust test rerun.
 
 While migration is active, update its checklist when capabilities, evidence,
 blockers, or next work change. Distinguish planned work from implemented behavior.

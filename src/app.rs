@@ -1,3 +1,59 @@
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingCode {
+    Ok,
+    Missing,
+    WrongKind,
+    Unreadable,
+    Empty,
+    InvalidConfig,
+    NotExecutable,
+    Present,
+    Absent,
+    MetadataUnavailable,
+    PrerequisiteFailed,
+    OutsideScope,
+}
+
+impl std::fmt::Display for FindingCode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Ok => "ok",
+            Self::Missing => "missing",
+            Self::WrongKind => "wrong_kind",
+            Self::Unreadable => "unreadable",
+            Self::Empty => "empty",
+            Self::InvalidConfig => "invalid_config",
+            Self::NotExecutable => "not_executable",
+            Self::Present => "present",
+            Self::Absent => "absent",
+            Self::MetadataUnavailable => "metadata_unavailable",
+            Self::PrerequisiteFailed => "prerequisite_failed",
+            Self::OutsideScope => "outside_scope",
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingStatus {
+    Pass,
+    Fail,
+    Info,
+    NotChecked,
+}
+
+impl std::fmt::Display for FindingStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pass => "pass",
+            Self::Fail => "fail",
+            Self::Info => "info",
+            Self::NotChecked => "not_checked",
+        })
+    }
+}
+
 use serde::{Deserialize, Serialize, Serializer};
 use std::fs::{self, File};
 use std::io::Read;
@@ -26,8 +82,8 @@ pub struct InspectionReport {
 #[derive(Debug, Serialize)]
 pub struct Finding {
     pub check: String,
-    pub status: &'static str,
-    pub code: &'static str,
+    pub status: FindingStatus,
+    pub code: FindingCode,
     #[serde(serialize_with = "serialize_optional_path")]
     pub path: Option<PathBuf>,
     pub message: String,
@@ -89,8 +145,8 @@ fn absolute(base: &Path, path: &Path) -> PathBuf {
 }
 fn finding(
     check: &str,
-    status: &'static str,
-    code: &'static str,
+    status: FindingStatus,
+    code: FindingCode,
     path: Option<PathBuf>,
     message: impl Into<String>,
 ) -> Finding {
@@ -121,8 +177,8 @@ fn scope(findings: &mut Vec<Finding>) {
     ] {
         findings.push(finding(
             check,
-            "not_checked",
-            "outside_scope",
+            FindingStatus::NotChecked,
+            FindingCode::OutsideScope,
             None,
             message,
         ));
@@ -131,20 +187,20 @@ fn scope(findings: &mut Vec<Finding>) {
 fn finish(workspace: PathBuf, config: PathBuf, mut findings: Vec<Finding>) -> InspectionReport {
     scope(&mut findings);
     InspectionReport {
-        ok: !findings.iter().any(|f| f.status == "fail"),
+        ok: !findings.iter().any(|f| f.status == FindingStatus::Fail),
         workspace,
         config,
         findings,
     }
 }
-fn failure(check: &str, code: &'static str, path: PathBuf, message: &str) -> Finding {
-    finding(check, "fail", code, Some(path), message)
+fn failure(check: &str, code: FindingCode, path: PathBuf, message: &str) -> Finding {
+    finding(check, FindingStatus::Fail, code, Some(path), message)
 }
 fn dependent(findings: &mut Vec<Finding>) {
     findings.push(finding(
         "dependent_checks",
-        "not_checked",
-        "prerequisite_failed",
+        FindingStatus::NotChecked,
+        FindingCode::PrerequisiteFailed,
         None,
         "Fix the workspace and configuration before inspecting dependent resources",
     ));
@@ -152,19 +208,23 @@ fn dependent(findings: &mut Vec<Finding>) {
 fn geometry(path: &Path) -> Finding {
     let result = match fs::metadata(path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            ("missing", "Create or select the geometry file")
+            (FindingCode::Missing, "Create or select the geometry file")
         }
-        Err(_) => ("unreadable", "Make the geometry file accessible"),
-        Ok(m) if !m.is_file() => ("wrong_kind", "Select a regular geometry file"),
+        Err(_) => (FindingCode::Unreadable, "Make the geometry file accessible"),
+        Ok(m) if !m.is_file() => (FindingCode::WrongKind, "Select a regular geometry file"),
         Ok(_) => match File::open(path).and_then(|mut f| f.read(&mut [0u8; 1])) {
-            Err(_) => ("unreadable", "Make the geometry file readable"),
-            Ok(0) => ("empty", "Provide a nonempty geometry file"),
-            Ok(_) => ("ok", "Geometry file is readable and nonempty"),
+            Err(_) => (FindingCode::Unreadable, "Make the geometry file readable"),
+            Ok(0) => (FindingCode::Empty, "Provide a nonempty geometry file"),
+            Ok(_) => (FindingCode::Ok, "Geometry file is readable and nonempty"),
         },
     };
     finding(
         "geometry",
-        if result.0 == "ok" { "pass" } else { "fail" },
+        if result.0 == FindingCode::Ok {
+            FindingStatus::Pass
+        } else {
+            FindingStatus::Fail
+        },
         result.0,
         Some(path.into()),
         result.1,
@@ -192,14 +252,19 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     );
     let mut findings = Vec::new();
     let workspace_check = match fs::metadata(&workspace) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Some(("missing", "Create or select the workspace directory"))
-        }
-        Err(_) => Some(("unreadable", "Make the workspace directory accessible")),
-        Ok(m) if !m.is_dir() => Some(("wrong_kind", "Select a workspace directory")),
-        Ok(_) if fs::read_dir(&workspace).is_err() => {
-            Some(("unreadable", "Make the workspace directory accessible"))
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some((
+            FindingCode::Missing,
+            "Create or select the workspace directory",
+        )),
+        Err(_) => Some((
+            FindingCode::Unreadable,
+            "Make the workspace directory accessible",
+        )),
+        Ok(m) if !m.is_dir() => Some((FindingCode::WrongKind, "Select a workspace directory")),
+        Ok(_) if fs::read_dir(&workspace).is_err() => Some((
+            FindingCode::Unreadable,
+            "Make the workspace directory accessible",
+        )),
         Ok(_) => None,
     };
     if let Some((code, message)) = workspace_check {
@@ -209,22 +274,35 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     }
     findings.push(finding(
         "workspace",
-        "pass",
-        "ok",
+        FindingStatus::Pass,
+        FindingCode::Ok,
         Some(workspace.clone()),
         "Workspace directory is accessible",
     ));
     let config_contents = match fs::metadata(&config_path) {
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            Err(("missing", "Create or select a TOML configuration file"))
-        }
-        Err(_) => Err(("unreadable", "Make the configuration file accessible")),
-        Ok(m) if !m.is_file() => Err(("wrong_kind", "Select a regular configuration file")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err((
+            FindingCode::Missing,
+            "Create or select a TOML configuration file",
+        )),
+        Err(_) => Err((
+            FindingCode::Unreadable,
+            "Make the configuration file accessible",
+        )),
+        Ok(m) if !m.is_file() => Err((
+            FindingCode::WrongKind,
+            "Select a regular configuration file",
+        )),
         Ok(_) => fs::read_to_string(&config_path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::InvalidData {
-                ("invalid_config", "Save the configuration as UTF-8 TOML")
+                (
+                    FindingCode::InvalidConfig,
+                    "Save the configuration as UTF-8 TOML",
+                )
             } else {
-                ("unreadable", "Make the configuration file readable")
+                (
+                    FindingCode::Unreadable,
+                    "Make the configuration file readable",
+                )
             }
         }),
     };
@@ -260,7 +338,7 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
                 })
                 .map(|key| format!(" unknown key `{key}`;"))
                 .unwrap_or_default();
-            findings.push(failure("config", "invalid_config", config_path.clone(), &format!("Invalid TOML configuration{location};{detail} correct its syntax, keys, or value types")));
+            findings.push(failure("config", FindingCode::InvalidConfig, config_path.clone(), &format!("Invalid TOML configuration{location};{detail} correct its syntax, keys, or value types")));
             dependent(&mut findings);
             return finish(workspace, config_path, findings);
         }
@@ -288,7 +366,7 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     {
         findings.push(failure(
             "config",
-            "invalid_config",
+            FindingCode::InvalidConfig,
             config_path.clone(),
             &format!("Set {key} to a nonempty path"),
         ));
@@ -297,8 +375,8 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     }
     findings.push(finding(
         "config",
-        "pass",
-        "ok",
+        FindingStatus::Pass,
+        FindingCode::Ok,
         Some(config_path.clone()),
         "Configuration is valid",
     ));
@@ -312,14 +390,24 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
             .map(|p| {
                 finding(
                     &p.check,
-                    if p.code == "ok" {
-                        "pass"
-                    } else if p.code == "prerequisite_failed" {
-                        "not_checked"
+                    if p.code == crate::model::PrerequisiteCode::Ok {
+                        FindingStatus::Pass
+                    } else if p.code == crate::model::PrerequisiteCode::PrerequisiteFailed {
+                        FindingStatus::NotChecked
                     } else {
-                        "fail"
+                        FindingStatus::Fail
                     },
-                    p.code,
+                    match p.code {
+                        crate::model::PrerequisiteCode::Ok => FindingCode::Ok,
+                        crate::model::PrerequisiteCode::Missing => FindingCode::Missing,
+                        crate::model::PrerequisiteCode::WrongKind => FindingCode::WrongKind,
+                        crate::model::PrerequisiteCode::Unreadable => FindingCode::Unreadable,
+                        crate::model::PrerequisiteCode::Empty => FindingCode::Empty,
+                        crate::model::PrerequisiteCode::NotExecutable => FindingCode::NotExecutable,
+                        crate::model::PrerequisiteCode::PrerequisiteFailed => {
+                            FindingCode::PrerequisiteFailed
+                        }
+                    },
                     Some(p.path),
                     p.message,
                 )
@@ -332,18 +420,18 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     ] {
         let path = workspace.join(relative);
         let (code, message) = match fs::metadata(&path) {
-            Ok(_) => ("present", "Optional resource is present"),
+            Ok(_) => (FindingCode::Present, "Optional resource is present"),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                ("absent", "Optional resource is absent")
+                (FindingCode::Absent, "Optional resource is absent")
             }
             Err(_) => (
-                "metadata_unavailable",
+                FindingCode::MetadataUnavailable,
                 "Optional resource metadata is unavailable",
             ),
         };
         findings.push(finding(
             &format!("optional.{name}"),
-            "info",
+            FindingStatus::Info,
             code,
             Some(path),
             message,
