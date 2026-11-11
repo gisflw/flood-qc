@@ -27,9 +27,8 @@ acceptance remains in progress until those findings are resolved.
 
 Next: settle that review, then specify and implement saved RS preparation, real
 execution, and decoding against the frozen reference. Carry the saved state
-unchanged and implement the [execution lifecycle](../architecture.md#execution-lifecycle).
-Temporary [implementation results](../../.dev/reports/rust-foundation.md) record
-past checks; supported behavior lives in the [workspace contract](../contracts/workspace.md).
+unchanged and implement the [execution lifecycle](../../docs/architecture.md#execution-lifecycle).
+Supported behavior lives in the [workspace contract](../../docs/contracts/workspace.md).
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
@@ -80,11 +79,15 @@ Acquire observations and forecasts
 ```
 
 App owns the operation and its status/failure policy; the
-[architecture](../architecture.md) defines snapshots and complete-set publication.
+[architecture](../../docs/architecture.md) defines snapshots and complete-set publication.
 Calibration editors support geometry, channel/Manning parameters, and soil parameters.
 Scheduling and email automate the same operational capabilities.
 
 ## Scope
+
+Lasting product commitments live in the
+[architecture](../../docs/architecture.md#product-direction). The coverage below
+tracks their migration from the reference systems.
 
 Retain the implemented `mgb_ops` acquisition, QC, corrections, analysis, scenarios,
 reporting, and regional-workspace behavior. Add the other system's acquisition
@@ -114,7 +117,7 @@ optional; no cache-packaging design is required at this stage.
 ## Delivery approach
 
 The responsibility files below describe feature coverage, not Rust modules or
-implementation details. Follow the [architecture](../architecture.md) and extend
+implementation details. Follow the [architecture](../../docs/architecture.md) and extend
 the frozen regression case as capabilities arrive. Keep the working operational
 path intact. Calibration/geometry editors use functional acceptance rather than
 requiring replacement of the regression baseline.
@@ -140,7 +143,7 @@ this checklist, and preserve unique scientific provenance with its reference.
    from `rs_hydro_forecast`, covering the main operational steps, and the
    functionality checklist. This captures reference evidence before Rust
    replacement; it does not require implementing the Rust application first.
-2. Establish the [Rust foundation](../contracts/workspace.md): a
+2. Establish the [Rust foundation](../../docs/contracts/workspace.md): a
    shared library, read-only workspace inspection CLI, documented contracts, and
    enforced architecture/quality rules. Validate on a disposable RS workspace on
    Linux; defer Windows checks. Add persistence as operational capabilities need

@@ -14,13 +14,13 @@ including its operational scripts. Port required script behavior into Rust.
 
 ## Direction
 
-Follow the [architecture](../architecture.md) for module boundaries and execution
+Follow the [architecture](../../docs/architecture.md) for module boundaries and execution
 lifecycle. Pass resolved data, paths, settings, and times into core operations.
 Preserve source data and record corrections explicitly. The desktop must not be
 the only way to perform a core operation. SQLite/NetCDF schemas and layouts are
 settled with their operational capabilities.
 
-The [workspace contract](../contracts/workspace.md) describes current read-only
+The [workspace contract](../../docs/contracts/workspace.md) describes current read-only
 inspection, TOML configuration, dedicated overrides, paths, findings, and limits.
 Rust does not silently read or convert legacy YAML. Current validation and review
 gaps belong in the [migration summary](summary.md#current-migration-state).

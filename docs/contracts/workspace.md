@@ -17,6 +17,24 @@ Inspection accepts `--config`, `--gpkg-path`, `--engine-executable`, and
 arguments and repeated single-value options are usage errors. `--help` and
 `--version` are supported.
 
+## Library API
+
+The `mgb_ops` crate re-exports `inspect`, `InspectionRequest`, `InspectionReport`,
+and `example_config`. `example_config()` returns the editable TOML as a `String`.
+`inspect(request)` returns an `InspectionReport`, including expected failures;
+it does not print output or choose an exit code. Findings are available through
+`report.findings`, with their type exposed as `mgb_ops::app::Finding`. Reports
+implement Serde serialization for the JSON representation described below.
+
+Construct `InspectionRequest` with a `workspace` path, an absolute `invocation_dir`,
+and `config`, `gpkg_path`, `engine_executable`, and `engine_input_dir` overrides
+as `Option<PathBuf>` (`None` uses the configuration/default rules below).
+Capture `invocation_dir` at the interface boundary, for example with
+`std::env::current_dir()`, and handle capture failure there. The library uses the
+supplied directory without capturing or validating it; a relative directory does
+not provide the absolute report-path guarantee. Resource overrides remain relative
+to the workspace, just like CLI overrides.
+
 ## Configuration
 
 Rust reads TOML, never Python's `config/custom.yaml`. Generate an editable example:
@@ -49,8 +67,9 @@ flags, implicit variable/tilde expansion, YAML fallback, or migration commands.
 ## Path resolution
 
 Resolve relative `--workspace` and explicit `--config` against the working
-directory from which the command is invoked. Inspection never changes it. Resolve resource values in TOML and overrides against
-the selected workspace, even when the configuration lives elsewhere.
+directory from which the command is invoked. Inspection never changes it. Resolve
+resource values in TOML and overrides against the selected workspace, even when
+the configuration lives elsewhere.
 
 Reports retain absolute lookup paths for missing as well as existing resources.
 Do not lexically collapse symlinks and `..`; preserve filesystem lookup semantics.
@@ -115,6 +134,18 @@ stable identifiers/status/codes rather than matching message text.
 | --- | --- |
 | `status` | `pass`, `fail`, `info`, `not_checked` |
 | `code` | `ok`, `missing`, `wrong_kind`, `unreadable`, `empty`, `invalid_config`, `not_executable`, `present`, `absent`, `metadata_unavailable`, `prerequisite_failed`, `outside_scope` |
+
+Stable `check` identifiers:
+
+| Identifier | Meaning |
+| --- | --- |
+| `workspace`, `config`, `geometry` | Selected workspace, effective configuration, and geometry file |
+| `dependent_checks` | Checks suppressed by workspace/configuration failure |
+| `engine.executable`, `engine.input_dir` | Engine executable and required input directory |
+| `engine.input.<filename>` | One required input, using the exact filename from the bounded-checks table |
+| `engine.inputs` | Individual input checks suppressed by input-directory failure |
+| `optional.history`, `optional.cache`, `optional.runs` | Metadata presence of the three optional resources |
+| `scope.contents`, `scope.forcing`, `scope.state`, `scope.runtime`, `scope.execution` | The five unchecked areas, always reported |
 
 Order is workspace, config, geometry, executable, input directory, required inputs
 in the table order, optional stores, then scope limits. Independent failures are

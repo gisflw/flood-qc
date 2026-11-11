@@ -2,20 +2,22 @@
 
 Read [README.md](README.md) for setup, [the architecture](docs/architecture.md)
 for ownership rules, [the workspace contract](docs/contracts/workspace.md) for
-supported behavior, and [the migration summary](docs/migration/summary.md) for
-current status and next work. The external MGB executable remains the numerical engine.
+supported behavior, and, while migration is active,
+[the migration summary](.dev/migration/summary.md) for current status and next work.
+The external MGB executable remains the numerical engine.
 
 ## Documentation rules
 
-Keep repository documentation focused on current usage, durable design decisions
-and their reasons, migration scope, and irreplaceable provenance. Give each fact
-one authoritative home and link to it elsewhere.
+Keep permanent documentation focused on current usage, lasting product scope,
+durable design decisions and their reasons, and irreplaceable provenance. Give
+each fact one authoritative home and link to it elsewhere.
 
 - `README.md`: setup, basic usage, and navigation.
-- `docs/architecture.md`: lasting ownership, dependency, and lifecycle decisions.
+- `docs/architecture.md`: lasting product scope, ownership, dependency, lifecycle,
+  and enforcement decisions.
 - `docs/contracts/`: externally supported behavior, configuration, and formats.
-- `docs/migration/`: capability status and migration scope; the checklist lives in
-  `summary.md`. Record brief validation evidence, gaps, and intentional departures there.
+- `.dev/migration/`: temporary migration scope, capability progress, evidence, gaps,
+  and next work; the checklist lives in `summary.md`. Retire it after migration.
 - `references/`: legacy source maps, frozen expectations, provenance, and reproduction.
 - `.dev/plans/` and `.dev/changes/`: temporary plans and specifications for active work.
 - `.dev/reports/`: disposable implementation/review results, retained for Git history
@@ -31,24 +33,26 @@ and numerical caveats with the reference they qualify.
 
 Remove plans/specifications after acceptance or abandonment, retaining only unique
 durable information in its proper home and repairing links. Keep a specification
-while its acceptance remains disputed. Reports may remain for a history commit and
-be removed later; do not relocate them into permanent documentation. Do not promote
+while its acceptance remains disputed. Before removing migration documents, retain
+unique lasting scope/design decisions in architecture, supported behavior in
+contracts, and scientific evidence/provenance in references; remove temporary
+navigation links. Reports may remain for a history commit and be removed later;
+do not relocate them into permanent documentation. Do not promote
 implementation workarounds into architectural requirements. Apply these rules to
 delegated work too. Resolve links relative to the containing document.
 
 ## Changes and validation
 
-Follow the architecture; add modules only for implemented behavior. Use Rust privacy
-and the architecture test to enforce ownership. Keep checker mechanics beside the
+Follow the [architecture and its enforcement rules](docs/architecture.md#enforcement);
+add modules only for implemented behavior. Keep checker mechanics beside the
 checker; test and review behavioral responsibilities as well as import direction.
-Owned Cargo targets forbid unsafe code; dependencies may use unsafe internally.
 Run `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
 and the independently runnable `cargo test --test architecture` for Rust changes.
 Documentation-only changes need link/content checks, not a Rust test rerun.
 
-Update the migration checklist when capabilities, evidence, blockers, or next work
-change. Distinguish planned work from implemented behavior. Keep platform evidence
-explicit: Linux first, Windows unverified until checked. Prerequisite inspection
+While migration is active, update its checklist when capabilities, evidence,
+blockers, or next work change. Distinguish planned work from implemented behavior.
+Keep platform evidence explicit: Linux first, Windows unverified until checked. Prerequisite inspection
 cannot establish engine execution, numerical equivalence, or hydrological validity.
 
 ## Sources and experiments

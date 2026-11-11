@@ -8,6 +8,7 @@ executable remains the numerical engine; inspection never launches it.
 
 Install stable Rust with Cargo, rustfmt, and Clippy (edition 2024). Dependency
 versions are recorded in `Cargo.lock`; no minimum Rust version is qualified.
+Linux inspection has been validated; Windows remains unverified.
 
 ```sh
 cargo fmt --check
@@ -33,16 +34,18 @@ cargo run -- workspace inspect --workspace /regional/workspace --json
 
 The built `target/debug/mgb-ops` can run from other directories. See the
 [workspace contract](docs/contracts/workspace.md) for configuration, overrides,
-path rules, findings, and inspection limits.
+path rules, findings, and inspection limits. Library callers use the same
+[inspection API](docs/contracts/workspace.md#library-api).
 
 ## Project guidance
 
-- [Architecture](docs/architecture.md): ownership and lasting design decisions.
-- [Migration summary](docs/migration/summary.md): capabilities, validation status, and next work.
+- [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.
+- [Migration summary](.dev/migration/summary.md): temporary capability tracking, validation status, and next work.
 - [Agent guidance](AGENTS.md): change and documentation rules.
 - [Legacy worktree record](references/retirement_record.md), [Python map](references/python_map.md),
   and [VB.NET/plugin map](references/vbnet_map.md): retained source references.
 - [RS regression case](references/regression/rs-hourly/README.md): frozen evidence and reproduction.
 
-Temporary plans, specifications, and implementation results live under `.dev/`;
-current behavior and decisions live in the documents above.
+Temporary migration tracking, plans, specifications, and implementation results
+live under `.dev/`. Current behavior lives in contracts, lasting decisions in
+architecture, and scientific evidence/provenance in references.

@@ -40,7 +40,7 @@ decides whether and when to persist it through store. Store never calls adapters
 Keep scientific QC/corrections in analysis and operational selection, retry, and
 failure policy in shared app workflows. Canonical values remain usable without
 database connections or filesystem state. See the
-[architecture](../architecture.md).
+[architecture](../../docs/architecture.md).
 
 Inventory exact products and supported file variants while implementing each
 source. Keep credentials local and outside completed-run exports.

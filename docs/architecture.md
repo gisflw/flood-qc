@@ -4,6 +4,26 @@ Use one Rust Cargo package with a shared library and thin CLI/desktop interfaces
 The external MGB executable remains the numerical engine. Add owners only when
 behavior exists; the foundation currently implements app and model.
 
+## Product direction
+
+The intended application targets Linux and Windows. Core operations remain
+available through the CLI; desktop and scheduling use the same library workflows.
+Operational capabilities belong in Rust, including station-inventory updates and
+bulletin generation currently supplied by regional Python scripts. Regional data
+and settings remain in independently selected workspaces.
+
+The intended scope includes acquisition, QC/corrections, forcing preparation,
+scenario execution and hot starts, geometry/calibration editors, analysis,
+bulletins, completed-run sharing, scheduling, and email. ONS meteorological
+forecast products are excluded; ONS hydraulic observations and reservoir schedules
+are included. Both existing bulletin families inform report content, with PDF,
+Markdown, HTML, and relevant CSV exports. Sharing concerns completed runs between
+independent workspaces; live multi-operator editing is outside scope. These are
+product commitments; the [workspace contract](contracts/workspace.md) describes
+the currently implemented inspection capability.
+
+## Ownership
+
 | Owner | Responsibility | Allowed internal dependencies |
 | --- | --- | --- |
 | `store` | Canonical data, schemas, metadata, persistence, queries, artifact registration, provenance, file lifecycle | None |
@@ -31,11 +51,31 @@ SQLite and NetCDF are starting choices. Define concrete schemas, time convention
 units, interval bounds, and missing-value semantics when first used. Do not equate
 missing values with zero or silently discard timezones.
 
-Rust privacy protects internals. Cross-owner references name `crate::<owner>`;
-interfaces use public `mgb_ops` paths. Root aliases and re-exports must not bypass
-ownership. The architecture test enforces the graph; checker mechanics and supported
-syntax belong beside that test, not in the architecture contract. Owned Cargo
-targets forbid unsafe code; dependencies may use unsafe internally.
+## Enforcement
+
+Rust privacy protects owner internals. Cargo's `unsafe_code = "forbid"` lint
+applies to owned targets; dependencies may use unsafe internally.
+The [architecture test](../tests/architecture.rs) enforces these source boundaries:
+
+- Every Rust source under `src/` belongs to a declared owner, the root facade, or
+  an interface (`main.rs` or `bin/`). Conditional code is checked too.
+- Cross-owner references use explicit `crate::<owner>` paths and obey the table
+  above. Relative paths stay within their owner; cross-owner glob imports are
+  forbidden. Interfaces use intended public `mgb_ops` APIs.
+- The root facade contains only owner module declarations and explicit public
+  re-exports. It contains no workflow code or wildcard re-exports.
+- Inside an owner, public re-exports expose items from its own private submodules
+  through `self::<private_module>::<item>`. Imported foreign items cannot be
+  republished to disguise a forbidden dependency.
+- Paths in supported macros and attributes are checked. Unsupported constructs
+  and generated source are rejected rather than silently left unchecked.
+
+Run `cargo test --test architecture` independently or as part of `cargo test`.
+The gate checks bounded source syntax, not behavioral ownership or execution
+lifecycle correctness; review and behavior tests must cover those responsibilities.
+Checker allowlists, parser mechanics, supported syntax, and known limitations stay
+beside the test. Extend its checks and fixtures when adding needed syntax, without
+weakening the ownership rules to accommodate a bypass.
 
 ## Execution lifecycle
 
