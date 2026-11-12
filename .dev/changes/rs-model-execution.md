@@ -1,9 +1,10 @@
-# Step 3 — Integrate canonical inputs, execute MGB, and publish results
+# Step 3 — Integrate canonical inputs, execute MGB, and record run results
 
 Status: implementation specification; capabilities and acceptance remain outstanding.
 
 Implement preparation from canonical saved sources, reusable prepared inputs, real
-MGB execution, full output decoding and complete-set publication. Dependencies are
+MGB execution, full output decoding and a per-run JSON manifest.
+Dependencies are
 [qualified reference/time/output mapping](rs-reference-alignment.md),
 [observed preparation](rs-observed-forcing.md), and
 [forecast normalization/preparation](rs-forecast-forcing.md). The independent forcing
@@ -37,9 +38,9 @@ retain station-specific offsets rather than its basin-indexed overwrite policy.
 
 | File | Implemented responsibility to add |
 | --- | --- |
-| `src/app.rs`, `src/app/prepare.rs`, `src/app/operation.rs` | Re-export workflow types/functions; prepare.rs owns strict preparation request parsing/resolution, selection and join; operation.rs owns execution coordination and statuses. No SQLite SQL or binary decoding here. |
-| `src/store/values.rs` | Shared types defined by forcing specs, plus PreparedManifest, ScenarioInputs, ResultSeries, StationResults and retained artifact descriptors. Pure values, no required connection/path lookup. |
-| `src/store/operation.rs` | Operation SQLite schema/queries, snapshot copies/manifests, durable artifact registration and official-set transaction. |
+| `src/app.rs`, `src/app/prepare.rs`, `src/app/operation.rs` | Re-export workflow types/functions; prepare.rs owns strict preparation request parsing/resolution, selection and join; operation.rs owns execution coordination and outcomes. No SQLite SQL or binary decoding here. |
+| `src/store/values.rs` | Shared types defined by forcing specs, plus RunRecipe, ScenarioInputs, ResultSeries, StationResults and input descriptors. Pure values, no required connection/path lookup. |
+| `src/store/operation.rs` | Per-run JSON manifests, validated working-input copies and result paths; no workspace-wide run registry. |
 | `src/store/netcdf.rs` | Extend qualified Terrio persistence for prepared forcing/results; reuse forcing schema/time codec. |
 | `src/model.rs`, `src/model/input.rs` | Keep inspection; explicit input writer and parsed metadata/geometry validation. |
 | `src/model/process.rs` | Child process cwd/env/logs/status mechanics; no publication or catalog queries. |
@@ -64,17 +65,19 @@ pub fn execute_prepared(request: ExecutionRequest) -> Result<ExecutionReport, Op
 // ExecutionRequest { workspace: PathBuf, invocation_dir: PathBuf, prepared: PathBuf }
 // PreparationReport { prepared: PathBuf, manifest_sha256: String,
 //   scenario_ids: Vec<String>, artifacts: Vec<PathBuf> }
-// ExecutionReport { operation_id: i64, attempt_id: i64, status: BatchStatus,
-//   official: bool, scenarios: Vec<ScenarioExecution>, artifact_root: PathBuf }
+// ExecutionReport { run_root: PathBuf, run_artifact: PathBuf, status: BatchStatus,
+//   scenarios: Vec<ScenarioExecution> }
 ```
 
 Reports/errors implement Serialize and Display as appropriate. BatchStatus is
 Completed/Failed; ScenarioExecution includes ID, status, optional exit
 code, signal description where available, logs, result paths and structured
-failure. A completed batch can still return publication failure with its attempt
-ID/artifact root retained. Error variants: InvalidRequest{field,message},
-InvalidPrepared{path,message}, Busy{workspace}, Source{path,message},
-Store{message}, Model{scenario,stage,message,log_paths}, Publication{attempt_id,message}.
+failure. A manifest write/finalization failure returns an error identifying the run
+root; existing results/logs remain available and the run must not report complete.
+Error variants: InvalidRequest{field,message}, InvalidPrepared{path,message},
+Busy{workspace}, Source{path,message}, Store{run_root,message},
+Model{scenario,stage,message,log_paths}. No operation/attempt registry IDs or
+publication error are exposed.
 CLI prints a single report JSON with `--json`; operational failure exits 1,
 Clap usage errors retain exit 2. `prepare` errors have no executable side effect.
 Do not place full observations or binary data in error messages.
@@ -100,8 +103,9 @@ explicit raw paths, basin IDs, qualified stream row mapping and rainfall values.
 ModelError distinguishes invalid timing/geometry/forcing, I/O, spawn, nonzero exit,
 missing output, malformed byte length and decode mask/value failure. These values
 do not import app config/report types. Store APIs include read/write_prepared,
-create_attempt, record_scenario, retain_snapshot, and publish_complete_set;
-publication receives the exact requested scenario list and verified artifacts.
+write_run_manifest, record_scenario,
+freeze_inputs and finish_run. They operate on explicit per-run paths; there is
+no artifact-registration or official-publication API.
 
 ## Separate preparation request and CLI
 
@@ -130,8 +134,8 @@ path = "fixtures/observations.sqlite"
 provider_codes = ["ana"]
 station_ids = []
 series_ids = []
-review_set_id = "rs-six-null"
-# To choose none explicitly: omit review_set_id and set no_review = true.
+replacement_ids = ["rs-null-1", "rs-null-2", "rs-null-3", "rs-null-4", "rs-null-5", "rs-null-6"]
+# Required ordered list; [] explicitly selects no replacements.
 
 [geometry]
 mini_gtp = "mgb_runner/Input/MINI.gtp"
@@ -167,52 +171,53 @@ kind = "zero"
 [[scenarios]]
 id = "ecmwf-raw"
 kind = "raw"
-native_artifact_id = "<ecmwf-native-artifact-id>"
+asset_id = "<ecmwf-asset-id>"
 [[scenarios]]
 id = "noaa-raw"
 kind = "raw"
-native_artifact_id = "<noaa-native-artifact-id>"
+asset_id = "<noaa-asset-id>"
 [[scenarios]]
 id = "ecmwf-corrected"
 kind = "corrected"
-native_artifact_id = "<ecmwf-native-artifact-id>"
-correction_set_id = "rs-ecmwf-corrected"
+asset_id = "<ecmwf-asset-id>"
+correction_ids = ["rs-ecmwf-correction"]
 ```
 
-This is a template: the one-off fixture converter writes actual native_artifact_id
+This is a template: the one-off fixture converter writes actual asset_id
 values returned by canonical normalization (or its frozen-grid fixture import),
-and actual correction-set IDs linked to those artifacts’ source identities.
+and actual correction IDs linked to those assets. Record the ordered selected
+replacement and correction values, not just their IDs.
 Legacy asset IDs are provenance, not new content/normalization source IDs.
 Replace the placeholder levels station list with explicit qualified selected
 station IDs in the actual fixture. An explicit empty list means no station
 outputs; never discover a changing default output station set during execution.
-The forecast catalog correction set contains +8 latitude pixels, −12 longitude
+The selected forecast correction contains +8 latitude pixels, −12 longitude
 pixels, 45° rotation, factor 1.5, hours 0–126, not degree translations.
 
 Validate version, IANA zone, second precision/hour alignment, positive integral
 step=3600 for this increment, increasing/contiguous intervals, reference equal to
 historical_last_end, forecast_first_end=historical_last_end+step, finite bbox,
-positive resolution/k/power, explicit review/no-review exclusivity and at least
-one observed provider/station selector. Retain optional explicit series selection.
+positive resolution/k/power, required ordered replacement_ids (possibly empty),
+and at least one observed provider/station selector. Retain optional explicit series selection.
 Reject ambiguous/nonexistent local endpoints and zone-offset transitions under
 the shared unqualified-DST limit. No implicit days-to-count conversion is needed
 when endpoints are supplied. Require nonempty unique scenario IDs matching
-`[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and at least one scenario. Zero rejects native_artifact_id/
-correction fields; raw requires native_artifact_id and rejects correction;
-corrected requires native_artifact_id plus correction_set_id. Require the selected
-artifact kind to be native and artifact.source_id == correction_set.source_id.
+`[A-Za-z0-9][A-Za-z0-9_-]{0,63}` and at least one scenario. Zero rejects asset_id/correction fields. Raw requires
+asset_id and may omit correction_ids or supply []; corrected requires asset_id
+plus a nonempty ordered correction_ids list. Reject
+unknown/duplicate instruction IDs and any correction.asset_id != selected asset_id.
 QC scalar fields are required, finite and retained: high_threshold_mm>=0,
 0<=sequence_lower_mm<sequence_upper_mm, sequence_min_length>=1; sequence spacing
 is the selected hourly step. Persist all four values, not only a policy name.
 Validate each selected level station exists,
 offset mini references geometry, and all source/baseline paths are regular files
-or directories as required. Reject nested/escaping manifest paths and symlinked
+or directories as required. Reject nested/escaping input-reference paths and symlinked
 entries in retained trees. Destination must be new; do not overwrite preparation.
 
 ## Preparation join and retained prepared contract
 
 1. Resolve request and validate source metadata. Call store read_selection once to load eligible candidate-series metadata,
-   their in-window canonical samples, sources/reviews/stations/selected offsets;
+   their in-window canonical samples, replacements/stations/selected offsets;
    analysis ranks candidates in memory without a database connection. Ask model to parse
    MINI.gtp into BasinGeometry (actual Mini IDs/order/centroids); app and analysis
    do not parse engine-specific geometry and GPKG decoding is not a prerequisite. Copy the selected
@@ -222,10 +227,10 @@ entries in retained trees. Destination must be new; do not overwrite preparation
 2. App calls `analysis::prepare_observed_forcing` once with ObservationInputs,
    IntervalAxis, RegularGridSpec, BasinGeometry, IdwSettings and QC policy from
    step 2a. Detection findings never authorize new reviews. Retain effective-row
-   and QC checkpoints alongside raw source/review subset.
-3. For each forecast scenario, resolve native_artifact_id to its native GridSeries
-   and source identity, validate correction-set/source equality and load correction
-   records from the selected catalog and call step 2b's `prepare_forecast`;
+   and QC checkpoints alongside raw source/replacement subset.
+3. For each forecast scenario, resolve asset_id to its native GridSeries
+   and source identity, load the explicitly ordered correction_ids and validate
+   correction/asset equality, then call step 2b's `prepare_forecast`;
    zero uses
    `prepare_zero_forecast(&IntervalAxis,&BasinGeometry)` returning
    `Result<BasinForcing,ForecastPreparationError>`. Retain selected native source
@@ -236,7 +241,9 @@ entries in retained trees. Destination must be new; do not overwrite preparation
    totals. All scenario historical prefixes must be identical. No implicit
    regridding, timezone shifting or source selection occurs at this join.
 5. Store writes canonical prepared artifacts, selected metadata/offsets, request
-   bytes and a complete manifest inventory with relative paths/size/SHA256/kind.
+   bytes and manifest.json containing the resolved recipe and input references with
+   relative paths/size/SHA256/kind. Generated output locations are recorded without
+   a separate SQL artifact registry.
    Preserve baseline Input/executable bytes as prepared dependencies so reuse can
    work after mutable sources disappear. Preparation does not invoke MGB.
    Flush/close and sync each file; finalize by same-filesystem staging rename to
@@ -246,99 +253,87 @@ entries in retained trees. Destination must be new; do not overwrite preparation
 Prepared directory schema v1:
 
 ```text
-manifest.json             schema/version, source identities, inventory, scenario order
+manifest.json             recipe/settings, ordered instruction values, input references
 request.toml              exact accepted request bytes
-resolved.json             local axes, settings, selected IDs, engine identity
-sources/observations.sqlite   selected raw/review/station/offset values
-sources/forecast.sqlite       selected catalog/correction rows
-sources/native/<source-id>.nc retained canonical native values
-baseline/Input/...        complete selected baseline, unchanged state/calibration
-baseline/engine           retained executable with executable mode preserved
+sources/observations.sqlite   selected raw/replacement/station/offset values
+sources/forecast.sqlite       selected asset/correction rows
+sources/native/<source-id>.nc frozen canonical native values
+baseline/Input/...        selected baseline, unchanged state/calibration
+baseline/engine           frozen executable with executable mode preserved
 forcing/observed.nc
 forcing/<scenario-id>.nc  complete historical+forecast BasinForcing
 checkpoints/...           effective rows/QC/working/transformed grids
 ```
 
-Inventory all files; manifest itself is hashed by its caller, avoiding recursive
-self-hashing. No hard links to mutable sources. Copies become authoritative input
-values; record their hashes after copying, not only pre-copy source hashes.
-A source changing while selected/copying must fail consistency validation rather
-than produce mismatched metadata and retained bytes. Reread/verify selected
-native artifact hashes against catalog identities. Execution verifies the entire
-prepared inventory and copies it at startup; no provider/history lookup remains.
+Record hashes after copying, not only pre-copy source hashes. No hard links to
+mutable sources. A source changing during selection/copying fails consistency
+validation rather than producing mismatched metadata and bytes. Verify native
+hashes against asset identities. Execution verifies the prepared input references
+and freezes their values before starting children; no provider/history lookup
+remains during that execution. The caller hashes prepared manifest.json separately
+as manifest_sha256; it is not included in its own input references.
 
-## Execution filesystem and operation SQLite
+## JSON manifests and execution files
 
-Use `<workspace>/data/operations.sqlite` for operation metadata, with foreign_keys
-ON, journal_mode=DELETE, synchronous=FULL; schema version via user_version=1.
-All SQL binds parameters. One connection on coordinator thread, short
-transactions only; model worker threads never write the catalog.
+Generate one manifest.json per preparation/execution directory for CLI/GUI
+consumption. It records a resolved recipe, input identities/references, scenario
+outcomes and output locations directly as JSON. No run SQLite, operation/attempt
+hierarchy, per-file output registry or latest/official pointer is required.
 
-```sql
-CREATE TABLE operation (
- operation_id INTEGER PRIMARY KEY,
- prepared_sha256 TEXT NOT NULL, operation_timezone TEXT NOT NULL,
- reference_time TEXT NOT NULL, created_at TEXT NOT NULL
-);
-CREATE TABLE attempt (
- attempt_id INTEGER PRIMARY KEY,
- operation_id INTEGER NOT NULL REFERENCES operation,
- state TEXT NOT NULL CHECK(state IN ('snapshotting','running','failed','completed')),
- root_path TEXT UNIQUE NOT NULL, started_at TEXT NOT NULL, finished_at TEXT,
- error_json TEXT
-);
-CREATE TABLE scenario (
- attempt_id INTEGER NOT NULL REFERENCES attempt,
- scenario_id TEXT NOT NULL, position INTEGER NOT NULL CHECK(position>=0),
- state TEXT NOT NULL CHECK(state IN ('pending','running','failed','completed')),
- exit_code INTEGER, started_at TEXT, finished_at TEXT, error_json TEXT,
- PRIMARY KEY(attempt_id,scenario_id), UNIQUE(attempt_id,position)
-);
-CREATE TABLE artifact (
- artifact_id INTEGER PRIMARY KEY,
- attempt_id INTEGER NOT NULL REFERENCES attempt,
- scenario_id TEXT, kind TEXT NOT NULL, relative_path TEXT NOT NULL,
- sha256 TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length>=0),
- durable INTEGER NOT NULL CHECK(durable IN (0,1)),
- UNIQUE(attempt_id,relative_path),
- FOREIGN KEY(attempt_id,scenario_id) REFERENCES scenario(attempt_id,scenario_id)
-);
-CREATE TABLE official_set (
- singleton INTEGER PRIMARY KEY CHECK(singleton=1),
- attempt_id INTEGER UNIQUE NOT NULL REFERENCES attempt,
- published_at TEXT NOT NULL
-);
-```
+The version-1 manifest has schema_version=1; state
+(prepared/running/failed/completed); recipe; inputs; scenarios; created_at;
+finished_at and error (nullable until available). request.toml retains the exact
+accepted request bytes and is included among the input references.
+recipe contains the resolved operation timezone/axes, numerical settings, selected
+station/series metadata and offsets, ordered full replacement/correction records,
+geometry/calibration/state identities, and engine/environment identity.
+inputs lists input paths, kind, size and SHA256; paths resolve relative to the
+manifest's directory and cannot escape it. These are integrity references, not
+a claim that hashes restore bytes. scenarios preserves request order and each
+scenario's ID, state (pending/running/failed/completed), start/end, exit/signal,
+structured error, log paths and validated result paths. Prepared scenarios are
+pending. Timestamps follow the operation-local convention; process durations
+remain monotonic elapsed times in execution.json.
 
-Operation timestamps use operation-local ISO labels with operation timezone on
-operation; process durations use monotonic elapsed time stored in execution.json.
-Paths are relative to workspace/attempt as appropriate and cannot escape roots.
-Schema/version mismatch fails before writing. Re-execution may create a new
-operation row; no content-deduplication subsystem is required.
+Validate JSON shapes, schema version, nonempty IDs, input hashes and paths before
+execution, and output membership/paths before reporting a completed run. Write
+manifest updates through a temporary sibling file, flush/sync it, atomically
+rename over that run's previous manifest and sync its parent on Linux. A failed
+write must not expose partial JSON or report completion. One coordinator writes
+the manifest; model workers return outcomes without writing it. Interrupted runs
+remain explicitly unfinished; automatic recovery remains outside scope.
 
 ```text
-data/runs/<attempt-id>/
-  snapshot/                 independent retained prepared tree
+data/runs/<run-id>/
+  manifest.json             independent copy of recipe + current outcomes/output paths
+  snapshot/                 frozen prepared inputs, including original prepared recipe
   scenarios/<id>/Input/     independent writable baseline copy + serialized inputs
   scenarios/<id>/Output/    original raw streams, never concatenated in place
   scenarios/<id>/logs/stdout.log, stderr.log, execution.json
   results/<id>/basin.nc
   results/<id>/station.nc
-  manifest.json             complete staged/final artifact inventory
 ```
 
-Attempt ID allocation and root reservation occur after workspace lock acquisition.
-Use create_dir with collision failure; never clear a pre-existing root. Retain
-snapshot before starting children, record selected engine and environment
-identity. Complete-set publication is the SQLite official_set pointer; readers
-query it then immutable artifact paths. No second authoritative symlink/current
-JSON pointer is introduced.
+Choose a unique run-id/root after workspace lock acquisition; create_dir must fail
+on collision and never clear an existing root. The root manifest.json is the GUI's
+recipe/outcome artifact; snapshot/manifest.json remains the unchanged prepared recipe.
+Rebase its input references into snapshot/, initialize new run timestamps/status,
+and update outcomes only in the root artifact. Copied source database subsets
+provide provenance; execution consumes the recipe and verified frozen arrays/files
+without reopening the source catalogs. Generating these files is normal execution,
+not an opt-in save feature.
+Operators may copy the artifact, inputs, results or cache outputs elsewhere for
+long-term storage; add no retention flags, cleanup policy or archive manager.
+Future regeneration requires the referenced data and compatible engine to remain
+available. Copying only manifest.json records the instructions; it is not a
+self-contained reproducible bundle. Existing working-input copies support reuse
+while present, without imposing long-term retention or provider availability.
 
 ## Lock, child processes and failures
 
 Open `<workspace>/.operation.lock` read/write/create without truncation; call
-`File::try_lock()` and retain that File until all children finish and publication
-commits/fails. Map `std::fs::TryLockError::WouldBlock` to Busy; other lock errors fail. Do not unlink the
+`File::try_lock()` and retain that File until all children finish and run outcome recording
+completes/fails. Map `std::fs::TryLockError::WouldBlock` to Busy; other lock errors fail. Do not unlink the
 lock file (unlink permits another inode/lock). This is a nonblocking OS lock,
 not lock-file-existence/PID logic; process exit releases it. The pinned standard
 library supports it ([File locking API](https://doc.rust-lang.org/std/fs/struct.File.html#method.try_lock)).
@@ -362,7 +357,7 @@ siblings. On coordinator error after children launch, join/reap all workers
 before releasing the lock. No automatic retry or user approval pause occurs.
 
 Whole-process termination may leave unfinished records and child processes.
-Automatic stale-attempt recovery, startup state rewriting and process-tree
+Automatic unfinished-run recovery, startup state rewriting and process-tree
 recovery are outside scope. Controlled failures still join/reap all launched
 children and preserve diagnostics before releasing the lock.
 
@@ -445,7 +440,7 @@ required by qualified Terrio; variables station_id, mini_id(station), mini_valid
 offset_m(station) f64 `m`, offset_valid(station), level(time,station) i32 `cm`,
 level_valid and
 time_segment. Retain exact selected station list/order and offset provenance in
-processing_json plus snapshot SQLite. With raw basin level L metres and offset O,
+processing_json plus the snapshot observations SQLite. With raw basin level L metres and offset O,
 station level=round_ties_even(100*(L−O)) centimetres. A missing raw level or
 absent offset gives unknown mini mapping and offset: mini_id=0/mini_valid=0,
 offset_m=0/offset_valid=0 and level=0/level_valid=0 at every time. Do not invent
@@ -456,39 +451,36 @@ negative finite referenced level is valid. Multiple station IDs may select the
 same mini and produce different results. Raw basin levels remain unchanged;
 apply fixed offset over both segments and every scenario. AR(1) is excluded.
 
-## Durable complete-set publication
+## Run outcomes and failure handling
 
-1. Under the workspace lock, insert operation/attempt/scenario records; retain
-   snapshot and inventory; transition to running only once snapshot is durable.
-2. Record each scenario's status and retained diagnostics. With any failure,
-   set attempt failed, finished_at/error_json and leave official_set untouched.
-3. On all successes, close/sync result/raw/log/manifest files and sync affected
-   directories on Linux. Store validates exact requested scenario membership,
-   completed states, all required artifact kinds, inventory paths/sizes/hashes,
-   and durable=1. Ancillary raw outputs/diagnostics remain retained as inventory.
-4. In one BEGIN IMMEDIATE transaction, recheck complete membership, register final
-   artifact references, set attempt completed and finished_at, and UPSERT the
-   singleton official_set pointer to this attempt. Commit with FULL sync. Do not
-   delete previous official artifacts; no filesystem rename is needed after commit.
-5. If transaction fails, rollback leaves previous official_set intact; retain new
-   files and record publication failure if the database remains writable. If a
-   process dies before commit, retained files are unreferenced/unfinished; after
-   commit, the new official set resolves entirely to already durable files.
+1. Under the workspace lock, reserve a new root, verify/freeze prepared inputs and
+   generate manifest.json. Start workers only from complete working inputs.
+2. Record each scenario's status, diagnostics and validated output locations.
+   A failure does not cancel healthy siblings; join every launched child.
+3. On all successes, validate exact requested scenario membership, required raw
+   streams/results, paths and decoded values. Close/sync generated files and
+   affected directories on Linux, then atomically update the run manifest with
+   completed and finished_at. A failed artifact write cannot report completion.
+4. With any failure, record failed and structured errors where writable; retain
+   diagnostics and successful siblings' outputs for inspection. Do not present
+   incomplete outputs as successful. There is no official-set pointer or promotion
+   transaction, and no other run's files/status are modified.
+5. A process death may leave running/unfinished records. Do not infer completion
+   from file presence. Automatic recovery remains outside scope. Linux durability
+   evidence is required; Windows behavior remains unverified.
 
-Readers accept only the complete set referenced by official_set; staged individual
-scenario success is never official. Test filesystem/database failure injection
-before durability, before pointer update, and before commit. Preserve all attempt
-evidence; cleanup/retention policy is deferred. Linux directory-sync acceptance is
-required; Windows durability remains unverified, not implied by successful build.
+The CLI report and GUI read this run's manifest/results. JSON is generated for
+consumption; copying files for long-term storage is the operator's choice, with
+no application retention/archive lifecycle added here.
 
 ## Implementation sequence and verification
 
-1. Shared store values/forcing persistence and operation schema; prepared manifest
-   validation and selected-value retention. Unit tests reject malformed version,
+1. Shared store values/forcing persistence and JSON manifest format; prepared recipe/input
+   validation and frozen working values. Unit tests reject malformed version,
    escaping paths, hash mismatch, absent artifacts and inconsistent masks.
 2. Strict request and pure preparation join. Exercise full library and CLI on
    synthetic canonical inputs without MGB/Python. Tests cover unknown keys,
-   selectors/reviews, source-correction mismatch, local timezone metadata,
+   selectors/replacements, correction-asset mismatch, local timezone metadata,
    noncontiguous interval join, mismatched basin order and missing rainfall.
 3. Input serialization and output/reference conversion unit tests live in
    `src/model/input.rs` and `src/model/output.rs` under `#[cfg(test)] mod tests`,
@@ -512,7 +504,7 @@ required; Windows durability remains unverified, not implied by successful build
    unknown selected station identities and invalid present mini mappings. Verify referenced values
    come from unquantized metres rather than rounded raw cm and original raw
    engine files remain byte-identical. No AR(1).
-4. Process/coordinator and store publication. Add the std-only standalone source
+4. Process/coordinator and per-run outcome recording. Add the std-only standalone source
    `tests/support/engine_helper.rs`; an integration-test helper compiles it once
    per integration target with the pinned `rustc` into a retained temporary
    directory. Select this binary through the existing engine executable request.
@@ -522,12 +514,16 @@ required; Windows durability remains unverified, not implied by successful build
    Python/shell or product flags solely for tests; test four concurrent isolated
    scenarios, no shared Input mutations, siblings finishing after failure,
    empty logs/large logs, spawn failure, lock contention from another process,
-   failed set retaining prior official pointer, and injected publication failures.
+   independent failed/completed runs, and injected manifest write/finalization
+   failures, including interruption before rename and malformed/truncated JSON. Verify the generated JSON manifest is readable by GUI consumers, contains
+   exact ordered instruction values after catalog edits, and references generated
+   outputs without a workspace registry. Exercise missing regeneration dependencies
+   as an explicit failure, not provider fallback. No save/retention flag is required.
    Pure decoder tests use exact fixture bytes, not an imitation full hydrological
    engine. Architecture tests reject model→app/adapters/analysis. Model→store is allowed,
-   so the import gate cannot prohibit a particular store publication function;
-   code/behavior review verifies that app alone requests publication and model
-   only stages outputs. Import direction alone does not establish ownership.
+   so the import gate cannot prohibit a particular store lifecycle function;
+   code/behavior review verifies that app coordinates outcomes and model only
+   stages outputs. Import direction alone does not establish ownership.
 5. Update `tests/architecture.rs` facade allowlist for prepare/execute_prepared,
    request/report/error names (plus normalization names from step 2b), root
    declarations and explicit same-owner exports. Add positive interface fixtures
@@ -560,7 +556,7 @@ checks and measured stage-specific tolerance decisions; no tolerance hides a
 shifted timestamp, packed export discrepancy or lost forecast segment.
 
 Implementation updates `docs/contracts/operations.md` for supported request,
-prepared/operation storage/API/output behavior, README usage/navigation,
+prepared/per-run storage/API/output behavior, README usage/navigation,
 architecture's durable decisions and [migration status](../migration/summary.md).
 Keep Linux evidence and Windows limits explicit. Retain this specification until
-all requested preparation/execution/publication acceptance is complete.
+all requested preparation/execution/run-artifact acceptance is complete.

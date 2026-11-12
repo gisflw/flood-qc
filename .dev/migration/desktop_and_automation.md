@@ -18,16 +18,18 @@ for scheduling and email behavior.
 The CLI is the first interface and the basis for automation. CLI, desktop, and
 scheduler use shared app workflows in the library for configuration/path
 resolution, selection, execution snapshots, scenario coordination, failure
-handling, export, and publication policy. Interface controls may call intended
+handling, export, and run outcomes. Interface controls may call intended
 public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. Choose the desktop framework during implementation, keeping the
 application in Rust.
 
 At execution startup, freeze input values or immutable versions. Model stages
-canonical outputs; app publishes only a complete requested scenario set through
-store. A failed attempt retains diagnostics/staged outputs and leaves the previous
-published set official. These rules apply equally to interactive and scheduled
+canonical outputs; app records independent run/scenario outcomes and output paths
+in the generated per-run JSON manifest for GUI consumption. A failed scenario retains
+diagnostics and successful siblings' outputs; other runs are unchanged. Operators
+may copy files elsewhere for long-term storage; add no save flags or retention
+manager. These rules apply equally to interactive and scheduled
 operations. Reusable report/chart rendering belongs in analysis's private
 submodules; interactive widgets and GUI state belong in the interface.
 

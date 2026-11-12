@@ -45,8 +45,8 @@ the [agreed offset contract](../../docs/architecture.md#level-reference-and-anal
 Numerical data and output contracts belong to store. Model may use explicit staged
 files for large outputs; canonical
 data does not have to be registered in a database before processing. App
-coordinates the scenario set and calls store for official publication; model
-does not publish individual scenarios.
+coordinates the scenario set and asks store to record per-run outcomes and output
+paths; model stages outputs without maintaining a run registry.
 
 Reverse engineer the existing hot-start procedure, including `CI.meta`,
 `CI_*.HOT`, `HOT.HOT` where used, and state copied from output to input. Establish
@@ -61,11 +61,12 @@ Verify engine-side state generation separately and recompile the engine if
 needed to enable it. None of these writes, promotion steps, or recompilation
 is required to establish the initial regression target.
 
-Prepare scenarios in isolated directories. App publishes only the complete
-requested scenario set, with store committing consistent result/status references.
-If any scenario fails, retain diagnostics and staged successful outputs for
-inspection and leave the previous published set official. App owns execution
-status, overlap policy, and failure handling; store owns persistence/file lifecycle.
+Prepare scenarios in isolated directories. App reports whole-run success only
+when every requested scenario and required output validates. A failed run retains
+diagnostics and successful siblings' outputs for inspection; other runs remain
+unchanged. Generate a per-run JSON manifest for application use.
+App owns execution status, overlap policy and failure handling; store owns
+persistence/file lifecycle. There is no official/latest-run pointer.
 Keep input preparation and process execution usable from the CLI without the
 desktop. Investigate routing-selection behavior against
 the selected engine before promising multiple routing modes.
@@ -77,5 +78,6 @@ formats and numerical outputs against that case using appropriate tolerances.
 Verify a subsequent operation uses the expected initial state. Record executable
 identity and required input compatibility; do not assume existing folders match.
 Check that later history/review changes do not alter an execution snapshot, and
-that a failed scenario leaves the previous complete published set intact while
-preserving failed-attempt evidence.
+that a failed scenario preserves diagnostics and successful sibling outputs
+without changing another run. Verify the recorded recipe contains selected
+instruction values and generated output paths.

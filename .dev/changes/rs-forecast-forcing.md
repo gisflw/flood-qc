@@ -48,11 +48,11 @@ existing facade with explicit re-exports and keep existing inspection APIs stabl
 | --- | --- |
 | `src/store.rs`, `src/store/values.rs` | Shared canonical `IntervalAxis`, `RegularGridSpec`, `GridFrame`, `GridSeries`, `BasinForcing`, `ForecastSource`, `ForecastCorrection`, `ForecastPreparation`; no duplicate observation/forecast representations |
 | `src/store/netcdf.rs` | `read_grid_series`, `write_grid_series`, `read_basin_forcing`, `write_basin_forcing`, transformed-frame checkpoint persistence; private Terrio mapping, schema/version/mask validation |
-| `src/store/forecast.rs` | `ForecastCatalog::open`, `register_native`, `load_native`, `save_correction_set`, `load_correction_set`; immutable retained-source/artifact lifecycle, transactions |
+| `src/store/forecast.rs` | `ForecastCatalog::open`, `register_native`, `load_native`, `save_correction`, `load_corrections`; immutable retained-source/artifact lifecycle, transactions |
 | `src/adapters.rs`, `src/adapters/forecast.rs` | `normalize_saved_forecast(path, &NormalizationRequest) -> Result<NormalizedForecast, NormalizationError>`; private GRIB metadata decoding plus ECMWF/GFS selection and cumulative-to-native normalization; return canonical values/provenance, no catalog writes |
 | `src/analysis.rs`, `src/analysis/spatial.rs` | Shared grid generation, `bilinear_resample`, `build_grid_idw_neighbors`, `interpolate_grid_to_basins`; also used by observation preparation |
 | `src/analysis/forecast.rs` | `prepare_forecast(&GridSeries, &[ForecastCorrection], &ForecastPreparationRequest) -> Result<ForecastPreparation, ForecastPreparationError>` and `prepare_zero_forecast(&IntervalAxis, &BasinGeometry) -> Result<BasinForcing, ForecastPreparationError>`; no catalog/file access |
-| `src/app/forecast.rs` | `normalize_forecast(request)` composes adapter/store; selects explicit native artifact/correction set and calls analysis for preparation; config/path resolution stays in app |
+| `src/app/forecast.rs` | `normalize_forecast(request)` composes adapter/store; selects explicit asset/ordered correction IDs and calls analysis for preparation; config/path resolution stays in app |
 | `src/main.rs` | Thin `forecast normalize --workspace PATH --request REQUEST.toml [--json]`; shared `operation prepare --workspace PATH --request REQUEST.toml --output DIR` is composed by integration |
 | `tests/forecast_normalization.rs`, `tests/forecast_preparation.rs`, `tests/canonical_netcdf.rs`, `tests/forecast_catalog.rs` | Behavioral integration tests with small retained fixtures |
 
@@ -60,7 +60,7 @@ App's normalization request contains provider (`ecmwf`/`noaa`), model (`ifs`/`gf
 product `fc`, expected RFC3339 UTC cycle, source path, timezone, crop bbox, and
 explicit destination/catalog selection. Unknown keys/products, mismatched cycles,
 non-finite settings, antimeridian crops and unsupported geometry fail explicitly.
-Response contains canonical native artifact ID/location, source identity, interval
+Response contains asset ID/native location and source identity, interval
 coverage, effective crop and source dimensions. The adapter's response contains
 values and normalization evidence without inventing paths. `ForecastPreparation`
 returns transformed frames, working GridSeries and BasinForcing; app chooses which
@@ -118,34 +118,39 @@ Use unpacked values, no 0.001 quantization, compression optional only after exac
 round-trip qualification. Invalid cells use NaN payload plus valid=0; valid=1
 requires finite values; read rejects disagreement. Set CF coordinate units and
 `time:bounds=time_bounds`; retain explicit requested/effective bbox and resolution.
-Transformed checkpoints are one frame NetCDF per native interval with indexed
-manifest recording original interval/source and correction IDs; no fake uniform
-footprint or missing-as-zero padding.
+Transformed checkpoints are one frame NetCDF per native interval; their provenance
+records original interval/source and correction IDs. No fake uniform footprint,
+missing-as-zero padding or additional artifact registry is introduced.
 
 ## Forecast catalog and corrections
 
-Use `data/forecasts.sqlite`, separate from `data/observations.sqlite` and operation
-metadata. `PRAGMA user_version=1`, foreign_keys=ON; use explicit schema migrations.
-Canonical timestamps below are operation-local ISO8601 labels (without a UTC
-suffix); operation_timezone is required. Explicitly UTC cycle fields retain Z.
+Use `data/forecasts.sqlite`, separate from `data/observations.sqlite`.
+`PRAGMA user_version=1`, foreign_keys=ON; use explicit schema migrations.
+There are exactly two tables: asset and correction. The asset combines original
+source provenance and retained native NetCDF metadata; no source/artifact split,
+correction-set entity or derived-output registry is needed.
 
 | Table | Fields and constraints |
 | --- | --- |
-| `forecast_source` | `source_id TEXT PRIMARY KEY`, provider/model/product TEXT NOT NULL, `cycle_utc TEXT NOT NULL`, `retained_path TEXT NOT NULL`, `sha256 TEXT NOT NULL`, `byte_length INTEGER NOT NULL CHECK(byte_length>=0)`, `normalization_json TEXT NOT NULL`, `operation_timezone TEXT NOT NULL`; identity includes content and normalization settings, not merely cycle |
-| `forecast_artifact` | `artifact_id TEXT PRIMARY KEY`, `source_id TEXT NOT NULL REFERENCES forecast_source`, kind (`native`,`working`,`basin`,`transformed`), `relative_path TEXT UNIQUE NOT NULL`, sha256, byte_length, schema_version, `valid_from`,`valid_to`, processing_json; source/correction lineage explicit |
-| `forecast_correction_set` | `set_id TEXT PRIMARY KEY`, source_id FK NOT NULL, editor, reason, created_at; immutable revisions, no in-place mutation of selected instructions |
-| `forecast_correction` | set_id FK, `position INTEGER CHECK(position>=0)`, `t0_hour INTEGER CHECK(t0_hour>=0)`, `t1_hour INTEGER CHECK(t1_hour>=t0_hour)`, shift_lat_pixels REAL, shift_lon_pixels REAL, rotation_deg REAL, multiplication_factor REAL CHECK(>0), `PRIMARY KEY(set_id,position)` |
+| `asset` | asset_id PK; content/settings-derived source_id; provider/model/product/cycle; retained source path/hash/length; native path/hash/length/version; normalization settings, operation timezone and canonical valid bounds |
+| `correction` | correction_id PK; asset_id FK; lead-hour bounds, shifts, rotation and multiplier; editor, reason and creation time |
 
-Validate all numeric values finite in Rust (SQLite alone does not establish this).
-Preserve empty/no-op windows for faithful explicit instruction replay, but report
-which native intervals each instruction affects. Reject applying a set to another
-source. Source paths are workspace-relative retained immutable copies, not pointers
-to mutable downloads. Write/flush/rename artifact before committing its catalog
-reference; on failure retain unregistered staging diagnostics, never commit a
-reference to a partial file. Reopening validates checksum/schema/source identity.
-Raw and corrected scenarios share native source; an empty set means raw. Zero
-forcing has no forecast source or catalog record; operation artifact registration
-belongs to integration. No production Python SQLite schema support is added.
+Canonical valid bounds use operation-local ISO8601 labels; cycle_utc retains Z.
+Validate finite numbers and metadata in Rust. Each scenario supplies an explicit
+ordered correction_ids list, with no implied ordering from SQL or timestamps.
+Load the asset and selected corrections in one read transaction, returning owned
+values before analysis so concurrent edits cannot mix instruction versions.
+Reject unknown/duplicate IDs and any correction referencing a different asset.
+The run artifact copies selected correction values in that order so later edits
+cannot change the recorded recipe. Raw selects no corrections; zero selects no
+asset. Raw and corrected scenarios can share the same native asset.
+Preserve empty/no-op windows and report affected native intervals. Retained source
+and native paths are workspace-relative immutable copies, not mutable downloads.
+Write/flush/rename both files before committing the asset row; failure leaves
+unregistered diagnostics rather than a reference to a partial file. Reopening
+validates hashes, schema and identity. Derivative grids/forcing are generated
+files referenced by preparation/run outputs, not catalog assets. No production
+Python SQLite schema support is added. Literal DDL is below.
 
 ## Exact normalization algorithm
 
@@ -199,7 +204,7 @@ per-stage maximum errors, not only final-field summaries.
 ## Corrections and forcing algorithm
 
 For every native interval used by a requested target, apply instructions in
-ascending `position` when the entire native interval lies inside
+the supplied correction_ids order when the entire native interval lies inside
 `[cycle+t0_hour,cycle+t1_hour]`. Partially overlapping native intervals remain
 uncorrected, matching Python; report affected IDs so a partial selection is visible.
 No overlapping instruction merging. Require square regular geographic cells.
@@ -287,7 +292,9 @@ Scientific interpolation/correction policy is independent of format adequacy.
    require neither Python nor ecCodes. Saved large files remain outside Git.
 3. Add catalog/correction schema and persistence tests, then standalone library/CLI
    normalization tests. Check rejection leaves no registered partial artifact and
-   changing external source cannot change retained native data.
+   changing external source cannot change retained native data. Check unknown/duplicate
+   correction IDs, cross-asset rejection, explicit order (translation/rotation in
+   opposite orders), raw/zero selection, and run recipe independence from later edits.
 4. Add correction + hourly + bilinear + shared IDW preparation. Tiny fixtures cover
    instruction ordering, whole/partial windows, ties-to-even shifts/nearest pixels,
    90° rotation and expanded canvas, fractional shifts, masks, duration splitting
@@ -345,8 +352,8 @@ struct BasinForcing {
 ```
 
 `Provenance` stores immutable source IDs/hashes and processing settings JSON;
-`ForecastCorrection` mirrors the correction table with source/set identity and
-position. `NormalizationRequest` has the following TOML contract (all keys required,
+`ForecastCorrection` mirrors the correction table with correction/asset identity;
+the supplied vector determines application order. `NormalizationRequest` has the following TOML contract (all keys required,
 no flatten/unknown-key fallback). Source/catalog/artifact paths resolve relative to the selected workspace using
 the existing workspace resource rules; request-file location does not change
 resource resolution. Explicit absolute paths follow the same resource rules.
@@ -368,7 +375,7 @@ The example crop is the capture bbox expanded by twice its width/height; source
 cell intersection determines effective bounds. Normalization never resamples to
 0.1°. The in-memory request omits catalog/artifact_root; app adds persistence
 selection in its workflow request. Corrected preparation selects an explicit
-`artifact_id` and `correction_set_id`; raw uses no set; zero uses neither.
+`asset_id` and ordered `correction_ids`; raw uses an empty list and zero uses neither.
 
 ## Executable schema and test examples
 
@@ -376,39 +383,33 @@ Implement this forecast SQLite DDL (add NOT NULL to required scalar fields as
 shown; bind parameters for all writes):
 
 ```sql
-CREATE TABLE forecast_source (
- source_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
- product TEXT NOT NULL, cycle_utc TEXT NOT NULL, retained_path TEXT NOT NULL,
- sha256 TEXT NOT NULL, byte_length INTEGER NOT NULL CHECK(byte_length>=0),
- normalization_json TEXT NOT NULL, operation_timezone TEXT NOT NULL
+CREATE TABLE asset (
+ asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,
+ provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,
+ cycle_utc TEXT NOT NULL,source_path TEXT UNIQUE NOT NULL,
+ source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),
+ native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,
+ native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),
+ schema_version INTEGER NOT NULL,normalization_json TEXT NOT NULL,
+ operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,
+ CHECK(valid_from<valid_to)
 );
-CREATE TABLE forecast_correction_set (
- set_id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES forecast_source,
- editor TEXT, reason TEXT NOT NULL, created_at TEXT NOT NULL
-);
-CREATE TABLE forecast_correction (
- set_id TEXT NOT NULL REFERENCES forecast_correction_set,
- position INTEGER NOT NULL CHECK(position>=0),
+CREATE TABLE correction (
+ correction_id TEXT PRIMARY KEY NOT NULL,
+ asset_id TEXT NOT NULL REFERENCES asset(asset_id),
  t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),
  t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),
- shift_lat_pixels REAL NOT NULL, shift_lon_pixels REAL NOT NULL,
+ shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,
  rotation_deg REAL NOT NULL,
  multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),
- PRIMARY KEY(set_id,position)
-);
-CREATE TABLE forecast_artifact (
- artifact_id TEXT PRIMARY KEY, source_id TEXT NOT NULL REFERENCES forecast_source,
- correction_set_id TEXT REFERENCES forecast_correction_set,
- kind TEXT NOT NULL CHECK(kind IN ('native','working','basin','transformed')),
- relative_path TEXT UNIQUE NOT NULL, sha256 TEXT NOT NULL,
- byte_length INTEGER NOT NULL CHECK(byte_length>=0), schema_version INTEGER NOT NULL,
- valid_from TEXT NOT NULL, valid_to TEXT NOT NULL, processing_json TEXT NOT NULL
+ editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL
 );
 ```
 
-Require correction-set/source consistency before insert/load; native has NULL
-correction_set_id. Reject absolute/escaping retained paths. Store retains the exact
-TOML/settings and source bytes; source identity includes normalization settings.
+Require selected correction/asset equality before preparation. Reject absolute or
+escaping retained paths. Store retains exact settings and source bytes; source_id
+includes content and normalization settings, while asset_id selects the catalog
+record. No derivative-file registration or correction-set lookup is added.
 
 Minimum numerical assertions, expressed on toy fields before regional acceptance:
 
@@ -430,7 +431,7 @@ Minimum numerical assertions, expressed on toy fields before regional acceptance
 - NetCDF round trip preserves `[0,1.234567890123,NaN]`, mask `[1,1,0]`, integer
   mini IDs and both bounds exactly; contradictory valid mask/value fails.
 - Zero forcing has all-zero `[requested_time_count,basin_count]`, all valid and
-  no forecast_source insertion; standalone normalization never opens observations.
+  no asset insertion; standalone normalization never opens observations.
 
 For `tests/architecture.rs`, add facade allowlist entries for app
 `normalize_forecast`, `NormalizeForecastRequest`, `NormalizeForecastReport` and
@@ -477,13 +478,13 @@ struct ForecastPreparation {
     transformed: Vec<GridFrame>, working: GridSeries, basin: BasinForcing,
     correction_coverage: Vec<CorrectionCoverage>,
 }
-struct CorrectionCoverage { position: usize, native_interval_indices: Vec<usize> }
+struct CorrectionCoverage { correction_id: String, position: usize, native_interval_indices: Vec<usize> }
 struct NormalizeForecastRequest {
     invocation_dir: std::path::PathBuf,
     workspace: std::path::PathBuf, request_file: std::path::PathBuf,
 }
 struct NormalizeForecastReport {
-    source_id: String, native_artifact_id: String,
+    source_id: String, asset_id: String,
     retained_source: std::path::PathBuf, native_artifact: std::path::PathBuf,
     timeline: IntervalAxis, native_shape: [usize; 3], effective_bbox: [f64; 4],
 }
@@ -522,10 +523,9 @@ paths inside the request resolve against the selected workspace. The integration
 commands are `operation prepare` and `operation execute`; normalization remains
 `forecast normalize`.
 
-Preparation selects `native_artifact_id` returned by normalization, then loads its
-source identity and validates any correction-set/source relation. A legacy asset
-label such as `ecmwf.ifs.fc.20260720T000000Z.precipitation_grid` is provenance only:
-it is neither the content/settings-derived `source_id` nor a canonical artifact
-ID. Raw and corrected scenarios select the same native artifact ID and different
-explicit correction-set choices. Keep these identifiers distinct in request
+Preparation selects asset_id returned by normalization and loads correction_ids
+in the exact requested order, checking every correction.asset_id. A legacy asset
+label is provenance only, not the new catalog asset_id or content/settings-derived
+source_id. Raw and corrected scenarios can select the same asset with different
+ordered correction choices. Keep these identifiers distinct in request
 examples, fixture converters, catalog queries and retained snapshots.

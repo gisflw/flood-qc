@@ -3,7 +3,9 @@
 ## Owns
 
 Closing, archiving, importing/exporting, and reopening a completed operation with
-enough information to regenerate its inputs and model outputs.
+a recorded recipe for regenerating its inputs and model outputs when referenced
+dependencies are available. Automated archive management is outside the current
+operational increment.
 
 ## Starting references
 
@@ -13,32 +15,29 @@ provide additional operational examples.
 
 ## Implementation direction
 
-Preserve the selected observations and forecast inputs, settings, corrections,
-calibration, initial model state, and executable identification needed to repeat
-the operation. A rerun must not depend on a provider still serving the same data
-or on another operator's mutable history database.
+The first operational increment generates a per-run JSON manifest and numerical
+outputs for CLI/desktop consumption. It records selected
+settings, ordered replacement/correction values, input identities/references,
+scenario outcomes and output locations. Actual working inputs are frozen before
+execution so later acquisitions/edits cannot change that execution.
 
-Build on the execution snapshot established by the first operational increment:
-app freezes actual selected values or immutable versions at execution startup,
-before later acquisitions or review edits can change them. Store owns those
-contracts, provenance, and retention. Saved selectors, mutable paths, or checksums
-without retained data are insufficient for regeneration. Exact archive and
-storage layouts follow this capability; SQLite and NetCDF remain starting choices.
+Operators may copy the artifact, input dependencies, results and cache outputs
+elsewhere for long-term storage. Add no retention flags, cleanup policy or archive
+manager to the saved-run increment. Copying only the recipe does not preserve the
+referenced bytes; regeneration requires those inputs and a compatible executable
+to remain available. Caches may avoid recomputation but do not recover missing
+source dependencies by implication.
 
-Shared app workflows coordinate closing, export, import, and reopening, using
-store's persistence and file-lifecycle APIs. Model only produces staged canonical
-outputs; app asks store to publish a complete scenario set. Failed attempts retain
-their diagnostics/staged outputs and leave previous published results official.
-
-Share completed operations between independent workspaces. Imported runs must
-not silently overwrite local operational state. The exact archive format and
-storage layout can be settled during implementation.
-
-All caches are optional. Do not make any cache part of the regeneration contract
-or spend this planning phase defining cache export options.
+Later completed-run sharing can build on these generated files. Imported runs
+must not silently overwrite local data. Each execution has independent outcomes;
+failed runs preserve diagnostics and successful siblings' outputs without an
+official-set pointer. Any future automated export/import capability must state
+which dependencies it packages rather than promise unconditional regeneration.
 
 ## Evidence of completion
 
-Export a completed case and import it into a clean workspace with the compatible
-MGB executable available. Regenerate its inputs and outputs without the original
-workspace, provider access, or caches.
+Verify the GUI can consume the generated run JSON manifest and outputs. For a copied
+case with all referenced dependencies and a compatible engine available,
+regenerate inputs/results and compare against the saved evidence. Missing
+references fail explicitly; a recipe alone does not guarantee regeneration.
+Sharing/import acceptance belongs to that later capability.

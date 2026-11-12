@@ -29,7 +29,7 @@ report construction, and reusable document/chart rendering through private
 submodules. It depends on store's canonical contracts, never adapters or model
 internals. Calculations accept supplied data without requiring database or
 filesystem access. App obtains selected data, calls analysis, passes prepared
-forcing to model, and coordinates durable saving/export/publication through store.
+forcing to model, and coordinates saving/export and per-run output recording through store.
 Interactive widgets and GUI state stay in the interface; PDF/HTML/Markdown/chart
 rendering must also work without the GUI.
 

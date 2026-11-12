@@ -42,7 +42,7 @@ uses ECMWF, hours 0–126, translation +8 latitude pixels/−12 longitude pixels
 (+2° north/−3° longitude on the 0.25° native grid), rotation 45°,
 and multiplier 1.5; preserve the legacy transformation order established in
 step 2b. The captured forecast uses 41 three-hour source intervals spanning
-UTC July 20 03:00 through July 25 06:00. The six NULL reviews must be extracted
+UTC July 20 03:00 through July 25 06:00. The six point NULL replacements and their ordered IDs must be extracted
 as exact station/time records rather than recomputed and automatically approved.
 
 ## Files to create and change
@@ -58,8 +58,8 @@ following are planned regression-only files, not implemented commands today:
 | `timeline.json` | Per segment: rainfall lower/upper bounds and labels, corresponding binary row ranges, raw result row labels, source of the mapping and expected stream lengths. Include PARHIG and Previsao.meta parsed values; do not infer result length solely from file size. |
 | `qualification.json` | Each discrepancy, source function/line or retained evidence path, selected correction and reason, remaining caveats; explicit disposition of the old interception/extra run. Separate established facts from unresolved output mapping. |
 | `checkpoints.py` | Extract all stages below from explicit files into comparison fixtures, with dimensions, masks, units and provenance. No numerical transformation hidden inside the comparator. |
-| `convert-observations.py` | Read frozen history read-only; write canonical observations/stations/review/offset SQLite using step 2a's versioned schema. Preserve six explicit NULL instructions and selected source identities. |
-| `convert-forecasts.py` | Convert frozen normalized native grids/catalog/corrections to step 2b canonical fixtures; preserve UTC cycle, interval bounds, coordinate orientation and missingness. This seeds downstream tests independently of GRIB normalization. |
+| `convert-observations.py` | Read frozen history read-only; write canonical observations/stations/replacements/offset SQLite using step 2a's versioned schema. Preserve six explicit point NULL replacements with ordered IDs and selected source identities. |
+| `convert-forecasts.py` | Convert frozen normalized native grids and provenance to step 2b asset/correction fixtures; emit ordered correction IDs; preserve UTC cycle, interval bounds, coordinate orientation and missingness. This seeds downstream tests independently of GRIB normalization. |
 | `normalization-checkpoints.py` | Read the preserved original downloads with ecCodes and retain decoded/cropped cumulative fields and native increments without GRIB re-encoding. Also reproduce the legacy ECMWF crop/write/read boundary and compare it with frozen normalized fields. Keep re-packing differences separate from later Terrio decoding precision. |
 | `compare.py` | Full-array capture/repeat, r2/r1 and Rust/r2 comparisons; emit JSON statistics and fail on structural/mask/numerical mismatch. Support stage selection to isolate the first divergence. |
 | `manifest.json`, `expectations.json`, `comparison.json` | Complete retained file inventory/hashes; explicit expected arrays/timeline/settings; comparisons with first mismatch coordinate, max absolute/relative error, differing counts, mask counts and decision for each changed expectation. |
@@ -119,7 +119,7 @@ claim this documentation work has produced r2 evidence.
 Store owns canonical `TimeInterval`, `IntervalAxis`, `GridSeries`, and `BasinForcing` values in
 `src/store/values.rs`; schemas/persistence are private to store. Exact observation
 DDL belongs to step 2a; forecast catalog/correction DDL belongs to step 2b;
-operation/snapshot DDL belongs to execution. Avoid a competing schema in this step.
+per-run JSON manifest format belongs to execution. Avoid a competing schema in this step.
 
 Canonical endpoints are operation-local `chrono::NaiveDateTime` values, with
 `IntervalAxis.time_zone` naming the IANA zone. SQLite stores local ISO8601 labels;
@@ -148,7 +148,7 @@ unpacked f64. Canonical level checkpoints use i32 centimetres and their masks;
 retain unquantized engine levels separately to explain quantization boundaries
 and distinguish them from legacy NetCDF packing. Persist original raw f32 streams.
 
-SQLite fixtures retain source observations, stations, explicit review instructions
+SQLite fixtures retain source observations, stations, ordered point/period replacement instructions
 and station offsets; a separate SQLite retains forecast catalog/corrections.
 Offsets are signed finite metres, one current record per station, with station FK,
 mini ID and provenance. Zero is valid; absent is unknown. Multiple stations can
@@ -159,8 +159,8 @@ and retains both arrays. Observation-residual AR(1) is deferred.
 
 | Checkpoint | Exact retained data | Consumer |
 | --- | --- | --- |
-| Selected/effective observations | `fixtures/observations.sqlite`; selected source/series identities, raw and effective values, interval labels, coordinates, NULL reviews; `checkpoints/qc.json` with ordered threshold/sequence findings | Step 2a validates selection, detection and review independently |
-| Native forecasts | `fixtures/forecast.sqlite` plus `fixtures/native/<source>.nc`; source cycle/product/message identity, original/canonical bounds, native coordinates and masks | Step 2b normalization acceptance |
+| Selected/effective observations | `fixtures/observations.sqlite`; selected source/series identities, raw and effective values, interval labels, coordinates, point NULL replacements and their ordered IDs; `checkpoints/qc.json` with ordered threshold/sequence findings | Step 2a validates selection, detection and review independently |
+| Native forecasts | `fixtures/forecast.sqlite` plus `fixtures/native/<source>.nc`; two-table asset/correction schema, ordered correction IDs, source cycle/product/message identity, original/canonical bounds, native coordinates and masks | Step 2b normalization acceptance |
 | Corrected native forecast | `checkpoints/ecmwf-corrected-native.nc`; all transformed coordinates, values, bounds, masks, ordered instructions, before resampling | Step 2b correction acceptance; replace opaque NPZ-only expectations |
 | Working grids | `checkpoints/observed-grid.nc` and per-scenario forecast grids; complete f64 values, coordinates, bounds, masks, interpolation/resampling settings | Both forcing tracks |
 | Basin forcing | `checkpoints/observed-basin.nc`, per-scenario forecast/combined basin files; rainfall mm, bounds, segments, MINI order | Integration and serializer |
@@ -172,6 +172,13 @@ the store schema; do not let fixture conversion become a production legacy reade
 Step 2a and 2b may proceed independently after the timeline and common values are
 qualified. Step 3 requires their complete canonical forcing plus qualified raw
 output mapping, not merely successful prerequisite inspection.
+
+Step 3 generates a per-run JSON manifest for CLI/GUI consumption.
+Fixture requests select ordered replacement IDs and ordered forecast correction
+IDs; copy full selected instruction values into that artifact. Frozen regression
+fixtures remain retained evidence; operators independently choose which working
+artifacts/cache files to copy for future use. A copied recipe alone cannot
+regenerate missing input bytes or an unavailable engine.
 
 ## Reproduction and comparison interface
 

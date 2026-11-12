@@ -106,25 +106,19 @@ step 1 verifies the saved operation has no such transition.
 | Table | Columns, keys and constraints |
 | --- | --- |
 | `metadata` | `key TEXT PRIMARY KEY`, `value TEXT NOT NULL`; required `format=mgb-ops-observations`, `time_zone`; schema version lives only in PRAGMA user_version |
-| `source` | `source_id TEXT PRIMARY KEY`, `kind TEXT NOT NULL`, `identity TEXT NOT NULL`, `sha256 TEXT`, `details_json TEXT NOT NULL`; hash required when identity denotes a retained file; JSON object preserves original IDs/units and converter identity |
-| `station` | `station_id TEXT PRIMARY KEY`, `provider_code TEXT NOT NULL`, `station_code TEXT NOT NULL`, `name TEXT NOT NULL`, `latitude REAL`, `longitude REAL`, `source_id TEXT NOT NULL REFERENCES source`; `UNIQUE(provider_code,station_code)`; coordinates both NULL or both present, within geographic ranges |
-| `observation_series` | `series_id TEXT PRIMARY KEY`, `station_id TEXT NOT NULL REFERENCES station`, `variable TEXT NOT NULL CHECK IN ('rain','level','flow')`, `state TEXT NOT NULL CHECK IN ('approved','curated','raw')`, `unit TEXT NOT NULL`, `interval_seconds INTEGER`, `created_at TEXT NOT NULL`, `source_id TEXT NOT NULL REFERENCES source`; rain requires mm and interval_seconds=3600 in this increment; level integer cm and flow m3/s are instantaneous and interval_seconds NULL |
+| `station` | `station_id TEXT PRIMARY KEY`, `provider_code TEXT NOT NULL`, `station_code TEXT NOT NULL`, `name TEXT NOT NULL`, `latitude REAL`, `longitude REAL`; `UNIQUE(provider_code,station_code)`; coordinates both NULL or both present, within geographic ranges |
+| `observation_series` | `series_id TEXT PRIMARY KEY`, `station_id TEXT NOT NULL REFERENCES station`, `variable TEXT NOT NULL CHECK IN ('rain','level','flow')`, `state TEXT NOT NULL CHECK IN ('approved','curated','raw')`, `unit TEXT NOT NULL`, `interval_seconds INTEGER`, `created_at TEXT NOT NULL`; rain requires mm and interval_seconds=3600 in this increment; level integer cm and flow m3/s are instantaneous and interval_seconds NULL |
 | `observation` | `series_id TEXT NOT NULL REFERENCES observation_series`, `observed_at TEXT NOT NULL`, `value NUMERIC`, `PRIMARY KEY(series_id,observed_at)`; NULL means recorded missing, absent row means no recorded sample |
-| `review_set` | `review_set_id TEXT PRIMARY KEY`, `created_at TEXT NOT NULL`, `source_id TEXT NOT NULL REFERENCES source`, `description TEXT NOT NULL`; retained sets immutable once used |
-| `observation_replacement` | `review_set_id TEXT NOT NULL REFERENCES review_set`, `station_id TEXT NOT NULL REFERENCES station`, `variable TEXT NOT NULL CHECK(variable='rain')`, `observed_at TEXT NOT NULL`, `value REAL`, `reason TEXT NOT NULL`, `PRIMARY KEY(review_set_id,station_id,variable,observed_at)`; row with NULL is explicit removal; numeric zero is valid |
-| `station_exclusion` | `review_set_id TEXT NOT NULL REFERENCES review_set`, `exclusion_id TEXT NOT NULL`, `station_id TEXT NOT NULL REFERENCES station`, `start_at TEXT NOT NULL`, `end_at TEXT NOT NULL`, `reason TEXT NOT NULL`, `PRIMARY KEY(review_set_id,exclusion_id)`, CHECK(start_at<end_at) |
-| `station_offset` | `station_id TEXT PRIMARY KEY REFERENCES station`, `mini_id INTEGER NOT NULL CHECK(mini_id>0)`, `offset_m REAL NOT NULL`, `source_id TEXT NOT NULL REFERENCES source`; one current record per station |
+| `observation_replacement` | `replacement_id TEXT PRIMARY KEY NOT NULL`, station FK, rain variable, point/period code, start/end labels, nullable value, reason; the request's ordered ID list determines application order; last matching instruction wins |
+| `station_offset` | `station_id TEXT PRIMARY KEY REFERENCES station`, `mini_id INTEGER NOT NULL CHECK(mini_id>0)`, `offset_m REAL NOT NULL`; one current record per station |
 
 Implement the following DDL (Rust validation additionally enforces nonempty IDs,
 finite floats, complete coordinate pairs and local timestamp syntax):
 
 ```sql
 CREATE TABLE metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-CREATE TABLE source(source_id TEXT PRIMARY KEY,kind TEXT NOT NULL,
- identity TEXT NOT NULL,sha256 TEXT,details_json TEXT NOT NULL);
 CREATE TABLE station(station_id TEXT PRIMARY KEY,provider_code TEXT NOT NULL,
  station_code TEXT NOT NULL,name TEXT NOT NULL,latitude REAL,longitude REAL,
- source_id TEXT NOT NULL REFERENCES source(source_id),
  UNIQUE(provider_code,station_code),
  CHECK((latitude IS NULL AND longitude IS NULL) OR
  (latitude IS NOT NULL AND longitude IS NOT NULL AND
@@ -134,7 +128,6 @@ CREATE TABLE observation_series(series_id TEXT PRIMARY KEY,
  variable TEXT NOT NULL CHECK(variable IN ('rain','level','flow')),
  state TEXT NOT NULL CHECK(state IN ('approved','curated','raw')),
  unit TEXT NOT NULL,interval_seconds INTEGER,created_at TEXT NOT NULL,
- source_id TEXT NOT NULL REFERENCES source(source_id),
  CHECK((variable='rain' AND unit='mm' AND interval_seconds=3600) OR
  (variable='level' AND unit='cm' AND interval_seconds IS NULL) OR
  (variable='flow' AND unit='m3/s' AND interval_seconds IS NULL)));
@@ -142,22 +135,16 @@ CREATE TABLE observation(series_id TEXT NOT NULL REFERENCES observation_series(s
  observed_at TEXT NOT NULL,value NUMERIC,
  PRIMARY KEY(series_id,observed_at),
  CHECK(value IS NULL OR typeof(value) IN ('integer','real')));
-CREATE TABLE review_set(review_set_id TEXT PRIMARY KEY,created_at TEXT NOT NULL,
- source_id TEXT NOT NULL REFERENCES source(source_id),description TEXT NOT NULL);
 CREATE TABLE observation_replacement(
- review_set_id TEXT NOT NULL REFERENCES review_set(review_set_id),
+ replacement_id TEXT PRIMARY KEY NOT NULL,
  station_id TEXT NOT NULL REFERENCES station(station_id),
- variable TEXT NOT NULL CHECK(variable='rain'),observed_at TEXT NOT NULL,
- value REAL,reason TEXT NOT NULL,
- PRIMARY KEY(review_set_id,station_id,variable,observed_at));
-CREATE TABLE station_exclusion(
- review_set_id TEXT NOT NULL REFERENCES review_set(review_set_id),
- exclusion_id TEXT NOT NULL,station_id TEXT NOT NULL REFERENCES station(station_id),
- start_at TEXT NOT NULL,end_at TEXT NOT NULL,reason TEXT NOT NULL,
- PRIMARY KEY(review_set_id,exclusion_id),CHECK(start_at<end_at));
+ variable TEXT NOT NULL CHECK(variable='rain'),
+ kind TEXT NOT NULL CHECK(kind IN ('point','period')),
+ start_at TEXT NOT NULL,end_at TEXT,value REAL,reason TEXT NOT NULL,
+ CHECK((kind='point' AND end_at IS NULL) OR
+       (kind='period' AND (end_at IS NULL OR start_at<end_at))));
 CREATE TABLE station_offset(station_id TEXT PRIMARY KEY REFERENCES station(station_id),
- mini_id INTEGER NOT NULL CHECK(mini_id>0),offset_m REAL NOT NULL,
- source_id TEXT NOT NULL REFERENCES source(source_id));
+ mini_id INTEGER NOT NULL CHECK(mini_id>0),offset_m REAL NOT NULL);
 CREATE INDEX observation_time ON observation(observed_at,series_id);
 CREATE INDEX observation_selection ON
  observation_series(station_id,variable,state,created_at);
@@ -204,33 +191,38 @@ unknown for level-only stations; selected rainfall stations require finite
 coordinates. Geometry validation checks each supplied offset mini_id against the
 selected basin IDs in app/model preparation, not an unenforceable cross-file FK.
 
-The nine tables above each serve a current boundary: station/series/sample retain
-selection and original values; review_set groups the explicitly selected saved
-instructions; replacement and exclusion represent distinct point/interval
-semantics; station_offset supplies model reference conversion; source deduplicates
-file/converter provenance shared by stations/series/reviews/offsets; metadata
-holds only format identity and timezone. No operation/artifact registry is added
-here: step 3 owns that separate SQLite. No second schema-version field exists.
+The six tables retain original station/series/sample values, one replacement
+instruction mechanism, fixed offsets and format/timezone metadata.
+A point matches exactly start_at; a period matches start_at <= timestamp < end_at,
+or every timestamp >= start_at when end_at is NULL. The kind code distinguishes
+a point from an open-ended period without inventing a next timestep. These are
+edit-selection bounds, not rainfall accumulation bounds, which remain (start,end].
+The ordered replacement_ids in the request provide explicit application order;
+there is no implicit database scan/creation order or separate review-set entity.
+An NA replacement over a period expresses a station exclusion. There is no source
+table or source foreign key in the observations schema. Step 3 records the selected
+instruction values and order in the run JSON manifest, without a separate
+operation/artifact registry.
 
 ## In-memory and callable contract
 
-Store owns `Station`, `ObservationSeries`, `ObservationSample`, `ReviewSet`,
-`ObservationReplacement`, `StationExclusion`, `StationOffset`, and
+Store owns `Station`, `ObservationSeries`, `ObservationSample`,
+`ObservationReplacement`, `StationOffset`, and
 `ObservationInputs`. Each contains the columns above in typed form, with
-`Option<ObservationValue>` missing observations and explicit source references;
+`Option<ObservationValue>` missing observations;
 rainfall review replacement/effective values remain `Option<f64>`. `ObservationInputs`
-contains station/series/sample vectors, selected review set and source records;
+contains station/series/sample vectors and ordered selected replacements;
 it is detached from SQLite connections and usable in ordinary unit tests.
 `EffectiveObservation` additionally retains `raw_value`, `raw_present`,
-`effective_value`, `replacement` (none/null/numeric), `excluded`, chosen
+`effective_value`, `replacement` (none/null/numeric), chosen
 `series_id`, and applied instruction IDs. Never overwrite the raw vector.
 
 Public store entry points: `ObservationStore::open_read_only(path)`,
-`read_selection(selection, interval, review_set_id)`,
+`read_selection(selection, interval, replacement_ids)`,
 `read_station_offsets(station_ids)`, `create(path,time_zone)` and
 `write_batch(batch)`. `read_selection` opens one read transaction and loads eligible station/series
-candidates plus all their samples within the interval, the selected review rows,
-source records and selected station offsets into detached owned vectors before
+candidates plus all their samples within the interval, selected replacements and
+selected station offsets into detached owned vectors before
 ending the transaction. Pure analysis ranks candidates and discards nonselected
 series samples in memory. This bounded extra read prevents a change between
 series ranking and sample loading; no SQLite connection/transaction crosses the
@@ -285,11 +277,13 @@ multiplication before indexing. Invalid-mask values serialize using the shared
 NetCDF fill convention; in-memory consumers consult validity, never assume zero.
 
 `ObservationInputs { stations: Vec<Station>, series: Vec<ObservationSeries>,
-samples: Vec<ObservationSample>, review: ReviewSet, sources: Vec<Source> }`;
+samples: Vec<ObservationSample>, replacements: Vec<ObservationReplacement> }`;
 `ObservationSample { series_id: String, observed_at: chrono::NaiveDateTime, value: Option<ObservationValue> }`;
-`StationOffset { station_id: String, mini_id: i64, offset_m: f64, source_id: String }`.
+`StationOffset { station_id: String, mini_id: i64, offset_m: f64 }`.
 `ObservationValue` is the enum `RainMm(f64) | FlowM3s(f64) | LevelCm(i32)`.
-Its variant must match the referenced series variable. ReviewSet includes its replacement/exclusion vectors; selected-observation rows
+Its variant must match the referenced series variable. ObservationReplacement mirrors
+the instruction DDL; its kind is Point/Period, end_at is optional, and vectors
+preserve request ID order. Selected-observation rows
 join sample, station/series IDs and coordinates before QC. `ObservedPreparation`
 contains `effective: Vec<EffectiveObservation>`, `qc: Vec<PrecipitationQcFinding>`,
 `working: GridSeries`, `basin: BasinForcing`, and `provenance: Provenance`.
@@ -330,16 +324,18 @@ step 1's comparison checkpoints before either track is accepted.
    threshold>=0, 0<=lower<upper and minimum length>=1. Request fields are `high_threshold_mm`, `sequence_lower_mm`,
    `sequence_upper_mm`, and `sequence_min_length`. Policy is explicit and
    persisted. No implicit review instructions are generated.
-4. Apply the one explicitly selected review set: replacements first, exclusions
-   second. A NULL replacement removes availability; zero remains usable. A
-   numeric replacement may insert a missing sample only for an explicitly
-   selected preferred station/series, using its known metadata; retain
-   raw_present=false. Instructions outside the selected time window remain
-   retained but are reported as out of selection. Unknown/unselected stations
-   in an in-window replacement fail. Exclusion means `(start,end]`; overlapping
-   exclusions compose by union and override replacements. Report counts and
-   instruction IDs actually applied, inactive, and inserted. No-review is an
-   explicit empty review set, never a mutable 'latest' review lookup.
+4. Apply the explicitly selected replacement IDs in request order; reject unknown
+   or duplicate IDs. An empty list means no edits. For each hourly endpoint, points
+   match exactly start_at and periods match [start_at,end_at); NULL end means no
+   upper bound. Last matching instruction wins, including numeric after NA or
+   NA after numeric. Match the complete requested timeline, not only existing
+   sample rows. Numeric replacements may insert a missing sample for an explicitly
+   selected preferred station/series; retain raw_present=false. NA removes
+   availability and zero is usable. Instructions outside the window remain
+   recorded but inactive; unknown/unselected stations in an applicable instruction
+   fail. Report applied, inactive, superseded and inserted instruction diagnostics.
+   Preserve raw values; QC findings do not create or authorize edits. Replacement
+   boundaries do not change the rainfall accumulation convention (start,end].
 5. Construct the shared working grid with closed cell footprints touching the
    requested bbox. For axis [a,b] and resolution r>0, n=floor((b-a)/r)+2 and
    center[i]=a-r/2+i*r for i=0..n-1. Effective edges are first center-r/2 and
@@ -380,13 +376,13 @@ raw/effective rows and QC findings with the preparation's retained canonical
 observation SQLite subset; effective rows/findings may be deterministic JSON
 checkpoints rather than extending the authoritative source schema.
 
-Provenance records chosen station/series IDs and metadata, source hashes and
-retained identity, explicit review-set rows, offset records, operation timezone,
+Provenance records chosen station/series IDs and metadata, input file identity and hashes, explicit replacement rows and application order, offset records, operation timezone,
 requested timeline, original units, grid requested/effective bounds, coordinate
 order, both IDW algorithm identifiers/k/power/tie policy, geometry ID/hash,
 implementation/schema version, applied/inactive instructions, and output hashes.
-Step 3 registers these files in the prepared manifest and retains them at
-execution startup. A mutable source path plus checksum is not the snapshot.
+Step 3 records input identities and selected instructions in manifest.json and freezes
+working inputs at execution startup. Referenced bytes must remain available for
+future regeneration; hashes alone cannot recover missing data.
 
 The integrated `app::prepare(request)` workflow in step 3 resolves the
 observations selection/settings, reads canonical inputs in one store read transaction, invokes this track's
@@ -396,7 +392,7 @@ in-memory canonical values; no separate observation-only application command is
 needed. Step 3's `mgb-ops operation prepare` CLI exercises this same path.
 
 The observed section of step 3's strict preparation request contains observations
-path, review_set_id (or explicit no-review), provider_codes/station_ids/optional
+path, required ordered replacement_ids (empty for no edits), provider_codes/station_ids/optional
 series_ids, time_zone, interval_start/end (operation-local ISO labels),
 step_seconds=3600, geometry selection, bbox, resolution_degrees, nearest_stations,
 power and QC policy. Require at least one explicit provider/station selector,
@@ -405,19 +401,20 @@ workspace semantics. App adds a dedicated preparation request type with
 `deny_unknown_fields`; existing inspection Config remains unchanged. main.rs
 adds only the integrated preparation subcommand; src/lib.rs and the architecture
 allowlist expose the integrated workflow and intended canonical/analysis APIs.
-Step 3 owns staging/new-destination checks and complete preparation publication;
+Step 3 owns staging/new-destination checks and preparation finalization;
 failure preserves source SQLite and prior preparation. No observation-specific
-publication protocol or duplicate manifest format is introduced here.
+finalization protocol or duplicate recipe format is introduced here.
 
 ## Fixture conversion, implementation sequence, and acceptance
 
 1. Step 1 retains original evidence and creates the revised target
    `/workspace/regression-rs-hourly-r2`. Add `convert-observations.py` there only,
    never a Rust runtime Python dependency. Open frozen original SQLite read-only,
-   inspect its declared variable units, preserve source IDs/state/creation times,
+   inspect its declared variable units, preserve station/series IDs, state and creation times,
    retain local timestamps and attach the declared operation timezone, and write a
    new canonical observations.sqlite. Retain source file SHA256, command and
-   script hash. Copy the six saved review rows explicitly; do not rerun QC as
+   script hash. Convert the six saved NULL edits into point replacement instructions
+   and emit their ordered IDs in the fixture request; do not rerun QC as
    automatic authorization. Import necessary level station metadata/offsets from
    the qualified VB.NET source with station identity mapping and provenance.
 2. Implement store schema/typed validation/read-write round trips; synthetic
@@ -426,7 +423,9 @@ publication protocol or duplicate manifest format is introduced here.
    local-label/timezone preservation and original-source immutability.
 3. Implement pure ranking/review/QC, then shared grid and both IDW kernels.
    Tests cover ranking with gaps/ties/explicit IDs; NULL versus zero; numeric
-   insertion; exclusion endpoints/precedence; threshold equality; five versus
+   insertion; point matching, inclusive period start/exclusive end, open-ended
+   periods, overlaps with last-match precedence, point overrides, NA-to-numeric
+   overrides, missing observation rows, unknown/duplicate replacement IDs; threshold equality; five versus
    four low samples; 0/1 bounds; missing hour; unknown station; off-grid time;
    no source; fewer than k sources; exact coincidences; tied kth neighbors;
    row/column ordering; closed footprint; missing-weight renormalization; basin
@@ -449,7 +448,7 @@ publication protocol or duplicate manifest format is introduced here.
    [migration checklist](../migration/summary.md) only when implemented.
 
 Step 2a acceptance supplies reusable historical `BasinForcing`, its working-grid
-checkpoint, immutable selections/reviews/provenance, and station/offset records.
+checkpoint, recorded selections/replacements/provenance, and station/offset records.
 Engine boundary timing and measured tolerances remain step 1 qualification gates;
 Terrio NetCDF capability remains step 2b qualification. These are explicit
 prerequisites, not permission to invent scientific behavior during implementation.

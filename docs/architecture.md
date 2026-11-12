@@ -26,15 +26,15 @@ the currently implemented inspection capability.
 
 | Owner | Responsibility | Allowed internal dependencies |
 | --- | --- | --- |
-| `store` | Canonical data, schemas, metadata, persistence, queries, artifact registration, provenance, file lifecycle | None |
+| `store` | Canonical data, schemas, metadata, persistence, queries, provenance, file lifecycle | None |
 | `adapters` | Provider acquisition, source parsing, normalization; return data without deciding persistence | `store` |
 | `analysis` | QC, corrections, transformations, forcing, diagnostics, metrics, report content/rendering | `store` |
 | `model` | Engine prerequisites, input serialization, execution, state mechanics, staged decoding, fixed station-reference conversion | `store` |
-| `app` | Workflows, private configuration/path resolution, selection, preparation/scenario coordination, failures, publication policy | All four core owners |
+| `app` | Workflows, private configuration/path resolution, selection, preparation/scenario coordination, failures, run outcomes | All four core owners |
 | CLI/desktop | Arguments, invocation-directory capture, presentation, interactive state | Intended public library APIs |
 
 These boundaries keep scientific processing independent of acquisition, registry
-lookups, and operational publication. Canonical values work without database
+lookups, and execution coordination. Canonical values work without database
 connections or filesystem state. Adapters, analysis, and model do not depend on
 each other. App supplies selected data to analysis for canonical forcing, then to
 model for serialization, execution, and staged decoding. App also coordinates
@@ -53,12 +53,22 @@ first used. Do not equate missing values with zero or silently discard timezones
 ## Operational data decisions
 
 The next operational increment uses Rust-owned canonical formats. SQLite holds
-observations, station metadata, and observation review instructions. A separate
-SQLite holds the forecast catalog and its correction instructions. SQLite also
-holds operation/scenario records and artifact references. NetCDF holds native
-forecast grids, working grids, basin forcing/results, and station-level results.
+observations, station metadata, and observation review instructions, without a
+source/provenance table or source foreign keys. A separate
+SQLite holds a two-table forecast asset/correction catalog. Each run generates
+a JSON manifest containing its resolved recipe, ordered instruction values,
+input references, scenario outcomes and output paths for CLI/desktop consumption.
+There is no workspace-wide operations database or official-run pointer. NetCDF
+holds native forecast grids, working grids, basin forcing/results, and station-level results.
 Store owns these schemas and persistence; adapters return normalized canonical
 data without choosing persistence. Concrete layouts grow with the capabilities.
+
+Observation replacements preserve raw measurements and support a point or a
+[start,end) period, with an absent end meaning indefinitely. NA replacements
+express exclusions; ordered selected instructions apply with last match winning.
+There is no separate review-set or station-exclusion entity. Forecast scenarios
+select an asset and an explicit ordered list of correction IDs. Run artifacts
+record the actual selected instruction values, not only mutable IDs.
 
 Canonical timestamps use the operation's timezone, recorded in artifact metadata.
 Forecast normalization converts source UTC timestamps into that convention while
@@ -125,13 +135,19 @@ These requirements govern the next operational increment, not read-only inspecti
   Store retains values or immutable versions, not merely selectors, mutable paths,
   or hashes without retained data.
 - Later acquisition/editing cannot alter an execution. Refreshing inputs creates a
-  new snapshot; reruns cannot require live providers, mutable history, or caches.
+  new snapshot. Regeneration from the recorded recipe requires referenced data
+  and the compatible engine to remain available; hashes cannot recover missing bytes.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
-- App asks store to publish only a complete, durable requested set with consistent
-  status/references. Failure retains staged outputs/diagnostics and leaves the
-  previous published set official. Model never publishes individual scenarios.
+- Each run has independent results and a generated JSON manifest
+  for CLI/desktop use. App reports success only after every requested scenario and
+  its required outputs validate. Failures preserve diagnostics and successful
+  siblings' outputs without modifying other runs. No official-set publication or
+  latest-run pointer is maintained.
+- Operators may copy the recipe, dependencies, results or cache outputs elsewhere
+  for long-term storage. Generation is normal application behavior; no retention
+  flags, cleanup policy or archive-management workflow is added.
 
-Specify concrete snapshot/publication mechanisms with saved RS preparation,
+Specify concrete snapshot/run-artifact mechanisms with saved RS preparation,
 execution, and decoding. Carry the saved state unchanged; hot-start generation
 and chaining follow later.

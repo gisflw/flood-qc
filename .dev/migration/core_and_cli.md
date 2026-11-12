@@ -3,7 +3,7 @@
 ## Scope and references
 
 Shared library workflows cover workspace/configuration, selection, input snapshots,
-execution status, publication, and commands for acquisition, review, preparation,
+execution status, per-run artifacts, and commands for acquisition, review, preparation,
 execution, reporting, and completed-run operations. Persistence grows with the
 operations that need it; CLI and desktop share those workflows.
 
@@ -26,7 +26,7 @@ Rust does not silently read or convert legacy YAML. Current validation and revie
 gaps belong in the [migration summary](summary.md#current-migration-state).
 
 The first operational path adds saved RS preparation, real execution, and decoded
-results against the frozen reference, with snapshots and complete-set publication.
+results against the frozen reference, with frozen working inputs and generated per-run JSON manifests.
 Introduce the desktop after that path works, then extend both interfaces alongside
 the core. Target Linux and Windows; validate Linux first and qualify Windows later.
 
