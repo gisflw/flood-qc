@@ -1,7 +1,7 @@
 # Step 2b — Saved forecasts to canonical forecast forcing
 
 Status: implementation specification; no Rust forecast capability is implemented.
-Dependencies: [reference qualification](rs-reference-alignment.md), shared values
+Dependencies: [reference qualification](../../references/regression/rs-hourly/README.md), shared values
 with [observations](rs-observed-forcing.md), and the preparation join owned by
 [integration](rs-model-execution.md). This step does not run MGB.
 
@@ -37,7 +37,7 @@ working resolution 0.1°, native resolution 0.25°, IDW k=5/power=2,
 ECMWF correction hours 0–126, shift latitude +8 pixels, longitude −12 pixels,
 rotation +45°, multiplier 1.5. These are fixture configuration, not Rust defaults.
 The original capture uses 41 ECMWF native intervals covering forecast hourly ends;
-[step 1](rs-reference-alignment.md) fixes the Python application timeline at
+[step 1](../../references/regression/rs-hourly/README.md) fixes the Python application timeline at
 241 historical and 121 forecast rows.
 
 ## Files, owners, and callable boundaries

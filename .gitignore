@@ -1,4 +1,5 @@
 /target/
+/runs/
 .env
 .env.*
 !.env.example

@@ -17,7 +17,7 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 12, 2026. The RS hourly reference is established. The Rust
+Updated November 13, 2026. The consolidated RS hourly reference is accepted. The Rust
 read-only inspection library/CLI is implemented with strict TOML, dedicated path
 overrides, bounded text/JSON findings, and source-preservation checks. Disposable
 RS acceptance passed previously on Linux. Current local qualification with Rust
@@ -26,8 +26,8 @@ tests. The architecture checker now accepts same-owner re-exports and ordinary
 text containing `!`, with regression fixtures. Hosted CI and Windows remain
 unverified. Foundation acceptance remains in progress.
 
-Next: complete foundation acceptance, then qualify the corrected RS reference and
-implement the four operational specifications linked below. Carry the saved
+Next: complete foundation acceptance and implement the three operational
+specifications linked below. Carry the saved
 state unchanged and implement the [execution lifecycle](../../docs/architecture.md#execution-lifecycle).
 Supported behavior lives in the [workspace contract](../../docs/contracts/workspace.md).
 The operational specifications replace the saved RS operational plan; their
@@ -43,10 +43,9 @@ record unverified platforms and remaining gaps explicitly.
 
 | Capability and reference behavior | Delivery step | State, evidence, and gaps |
 | --- | --- | --- |
-| [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: reference capture | Complete for saved normalized inputs through decoded outputs: four scenarios and exact fresh repeat. [Case and evidence](../../references/regression/rs-hourly/README.md). Linux only; acquisition, Windows, and state qualification remain outside this case. |
+| [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: consolidated reference capture | Complete: canonical fixtures and staged expectations for four scenarios, exact fresh repeat, direct source normalization equality and shared history-only level recovery. Linux only; acquisition, Windows, state qualification and Rust equivalence remain outside this evidence. |
 | [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | In progress: bounded inspection and Linux checks pass; architecture checker regressions pass locally; hosted CI remains unverified. Rust uses TOML without YAML fallback/conversion. Windows, runtime compatibility, execution, and content/numerical validity unverified. |
-| [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Planned for the saved path; not implemented. Rust-owned SQLite/NetCDF contracts, a separate forecast/correction SQLite, and station-offset records follow the operational specifications. Regression-only conversion scripts may supply fixtures. |
-| [Consolidated regression-rs-hourly and canonical acceptance inputs](../changes/rs-reference-alignment.md) | 3, step 1: consolidate reference | Planned; replacement not built. Preserve Python application dates and all four scenarios, retain staged expectations and canonical fixtures, use shared history-only level recovery, verify fresh repetition, then delete r1. No timeline redesign or hot-start investigation gate. |
+| [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Planned for the saved path; not implemented. Rust-owned SQLite/NetCDF contracts, a separate forecast/correction SQLite, and station-offset records follow the operational specifications. Regression-only conversion scripts supply fixtures. |
 | [Canonical observations, QC, and observed forcing](../changes/rs-observed-forcing.md) | 3, step 2a: observed forcing | Planned; not implemented. Canonical saved history, ordered point/period replacements including six curated NULL edits, independent detection/interpolation acceptance, and station-offset persistence. |
 | [Saved forecast normalization and forecast forcing](../changes/rs-forecast-forcing.md) | 3, step 2b: forecast forcing | Planned; not implemented. Adapters normalize saved ECMWF/NOAA files; store persists native assets and corrections in two tables; analysis prepares forcing. Qualify native Terrio I/O independently of scientific processing. |
 | [Saved RS integration, execution, and decoded results](../changes/rs-model-execution.md) | 3, integration and step 3: first operational Rust path | Planned; not implemented. App freezes inputs, coordinates isolated scenarios, and generates per-run JSON manifests for CLI/GUI use. Model retains raw basin levels and produces station-referenced levels. Carry saved state unchanged; combined run-all commands deferred. |

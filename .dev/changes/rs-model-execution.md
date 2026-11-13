@@ -5,7 +5,7 @@ Status: implementation specification; capabilities and acceptance remain outstan
 Implement preparation from canonical saved sources, reusable prepared inputs, real
 MGB execution, full output decoding and a per-run JSON manifest.
 Dependencies are
-[qualified reference/time/output mapping](rs-reference-alignment.md),
+[qualified reference/time/output mapping](../../references/regression/rs-hourly/README.md),
 [observed preparation](rs-observed-forcing.md), and
 [forecast normalization/preparation](rs-forecast-forcing.md). The independent forcing
 tracks join here. No live providers, Python runtime, direct GRIB execution, run-all

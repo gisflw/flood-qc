@@ -1,7 +1,7 @@
 # Step 2a — Canonical observations to observed forcing
 
 Status: implementation specification; no operational implementation or acceptance
-is claimed. Depends on [step 1](rs-reference-alignment.md); can be implemented
+is claimed. Depends on [step 1](../../references/regression/rs-hourly/README.md); can be implemented
 independently of [step 2b](rs-forecast-forcing.md). [Step 3](rs-model-execution.md)
 owns the observed/forecast join, execution snapshots, and model serialization.
 

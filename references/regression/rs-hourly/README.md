@@ -1,53 +1,32 @@
-# RS hourly regression reference, revision 1
+# RS hourly regression reference
 
-The bundle is `/workspace/regression-rs-hourly-r1` (outside Git). Copy it with `cp -a /workspace/regression-rs-hourly-r1 /path/to/rs-hourly-r1`. The manifest inventory uses paths relative to that bundle; absolute paths inside execution records and the operation SQLite files record the original execution. Reproduction below creates new working databases from the frozen original history and rebases the two selected forecast paths to the new location. Do not use operational data as a fallback.
+The offline bundle is `/workspace/regression-rs-hourly`, outside Git. Its `case.json` fixes the operation, ordered scenarios, selected observations, corrections and complete application time axis. `manifest.json` records the source, interpreter, package, decoder and executable identities and retained-file hashes. `comparison.json` records the full capture/repeat comparison. The independently copied `frozen/` inputs contain the original history backup, native forecast grids, original GRIB downloads, runner inputs, engine and provenance; the capture does not read operational data.
 
-The frozen input set is stored once. Capture retains each scenario's changed inputs, the four raw flow and level streams needed for decoding, decoded NetCDF, working grids, logs and recovery evidence. Repeat retains its decoded outputs, logs and comparison results; its byte-identical inputs and raw streams are represented by capture's copies. Temporary decoding files, repeat grids and ancillary engine outputs are regenerated during reproduction. The unused `HAND_Flood.asc` is omitted from the frozen input set. `manifest.json` identifies the retained files, scenario definitions and limits; `expectations.json` and bundle `comparison.json` contain measured full-array comparisons and checkpoints. Capture and repeat matched exactly, including coordinates and missingness; packed output resolution is 0.001 in each exported unit. NetCDF `history` and `date_created` differ between runs. Forecast scenarios differ in rainfall, flow and level while their observed prefixes match.
+The reference is July 20, 2026 00:00 in `America/Sao_Paulo`. The application axis contains 241 historical and 121 forecast hourly labels, in that order, for 8,649 explicitly identified mini-basins. The four scenarios are zero, raw ECMWF, raw NOAA and corrected ECMWF. The ordered six NULL replacements and 101 station-offset records are retained in the canonical observations fixture. The forecast correction is applied to the native ECMWF grid before interval splitting and working-grid interpolation.
 
-The saved forecast metadata referred to October and a 361-step horizon. In each disposable input, `capture.py` updates only the date and horizon to July 20 01:00 and 121 steps. The forecast correction covers 41 three-hour source intervals from July 20 03:00 through July 25 06:00 UTC; 0–126 hours encompasses all 121 hourly forecast targets. `transformed-native.npz` retains their transformed values, NaN mask, bounds, coordinates and timestamps. Inputs are never written to the operational source.
+Each capture writes canonical SQLite/NetCDF fixtures and staged checkpoints. Working-grid checkpoints retain f64 values before the legacy NetCDF packing; basin and combined f64 checkpoints retain the values actually presented to engine serialization after the legacy grid's packed readback. CHUVABIN and the engine streams are retained byte-for-byte. Canonical basin and station levels are rounded to integer centimetres from unquantized engine metre values, with station offsets applied before rounding. Legacy packed result exports are retained separately. The capture records engine text timestamps as provenance; result labels follow the Python application axis.
 
-The engine writes separate 241-step observed and 121-step forecast streams. It also rewinds `YTUDO.MGB` and overwrites its first 121 observed-level steps with forecast levels. `recover-level.py` reruns the zero scenario in a private workspace with the same initial `DATA.hot` and forcing. The small `snapshot.c` interception copies the real observed-level stream immediately before that rewind. It checks all 241 observed flow steps and the 120 unaffected observed-level steps against each scenario. The staged decoding joins that snapshot with each scenario's raw forecast-level stream and joins the raw flow streams. The retained streams are unchanged. The `rewind-trace.txt`, recovery snapshot and logs document this adaptation; recovery inputs and outputs identical to the zero scenario are stored there once. The historical file-open trace is preserved in `provenance/engine-open-trace.log`; it was recorded during the earlier aligned zero-forcing diagnostic. The saved state date and engine state consumption remain uncertain; this is an empirical regression reference, not evidence of hydrological validity.
+The engine overwrites the first 121 historical level rows in its combined historical stream. One history-only execution supplies all 241 historical level rows, and capture verifies historical flow and the unaffected historical-level suffix against every scenario. Forecast levels come from each original forecast stream. The numerical engine, geometry, calibration, ancillary files and initial state are carried unchanged.
 
-## Reproduce in a fresh directory
+## Reproduce
 
-Use Linux x86-64, the ELF dependencies and Python packages in `environment.json`, GCC, and a clean `legacy_python` checkout at `15981642a7476fb583f63aeb89cdb1472cfd6b30`. The frozen SQLite is the original consistent backup; no source SQLite connection is needed. The code invokes the existing legacy APIs directly. Commands below create a new location and do not alter the reference bundle:
+Use Linux and a clean `legacy_python` checkout at revision `15981642a7476fb583f63aeb89cdb1472cfd6b30`, with its Python environment and native dependencies recorded in the bundle manifest. Capture output paths must not already exist. These commands use no operational data:
 
-```bash
-mkdir -p /path/to/rs-hourly-reproduction
-cp -a /workspace/regression-rs-hourly-r1/frozen /path/to/rs-hourly-reproduction/
-cp /workspace/regression-rs-hourly-r1/{capture.py,recover-level.py,snapshot.c,evidence.py,compare.py} /path/to/rs-hourly-reproduction/
-cd /workspace/legacy_python
-gcc -shared -fPIC -O2 -o /path/to/rs-hourly-reproduction/snapshot.so /path/to/rs-hourly-reproduction/snapshot.c -ldl
-.venv/bin/python -u /path/to/rs-hourly-reproduction/capture.py capture > /path/to/rs-hourly-reproduction/capture.log 2>&1
-.venv/bin/python -u /path/to/rs-hourly-reproduction/capture.py repeat > /path/to/rs-hourly-reproduction/repeat.log 2>&1
-.venv/bin/python -u /path/to/rs-hourly-reproduction/recover-level.py capture > /path/to/rs-hourly-reproduction/recover-level-capture.log 2>&1
-.venv/bin/python -u /path/to/rs-hourly-reproduction/recover-level.py repeat > /path/to/rs-hourly-reproduction/recover-level-repeat.log 2>&1
-.venv/bin/python /path/to/rs-hourly-reproduction/evidence.py
-.venv/bin/python /path/to/rs-hourly-reproduction/compare.py /workspace/regression-rs-hourly-r1
+```sh
+/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/capture.py --case /workspace/regression-rs-hourly/case.json --output /path/to/fresh/capture
+/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/capture.py --case /workspace/regression-rs-hourly/case.json --output /path/to/fresh/repeat
+/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/compare.py --actual /path/to/fresh/repeat --expected /path/to/fresh/capture
+/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/compare.py --self-check
 ```
 
-The scripts assert the six persisted null replacements, finite observed grid, source interval coverage, independent recovery alignment, equality of repeated model arrays and selected raw and input checkpoints, and equality with the archived reference. Inventory hashes identify preserved bytes; exact array comparison provides the numerical contract. The original backup changed the operational SQLite shared-memory sidecar's modification time; its pre-backup bytes were not hashed. Acquisition, Windows validation, state generation and Rust comparisons remain outside this case.
+For later Rust acceptance, compare the appropriate stage with the accepted `capture/` as expected, for example:
 
-## Validation and provenance
+```sh
+/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/compare.py --actual /path/to/rust/results --expected /workspace/regression-rs-hourly/capture --stage observed
+```
 
-The case covers zero rain, raw ECMWF, raw NOAA, and corrected ECMWF. Each decoded
-artifact has 362 hourly timestamps and 8,649 mini-basins, with precipitation,
-flow, and level: 241 observed and 121 forecast steps, from July 10 00:00 to
-July 25 01:00 in `America/Sao_Paulo`. Frozen preparation includes six NULL
-observation replacements. The existing legacy package and numerical engine were
-not changed for capture.
+Stages are `observed`, `normalization`, `forecast`, `engine` and `results`. Comparison is exact for arrays, masks, metadata, timestamps, identities and raw streams; creation/history metadata is excluded. A mismatch produces JSON and a nonzero exit. Direct ecCodes decoding and cropping reproduced both saved native arrays exactly. Fresh capture and repeat matched, historical outputs agreed across all scenarios, and each nonzero scenario differed from zero in forecast precipitation, flow and level. The comparator self-check rejected value, timestamp, missingness, nonfinite and truncated-stream mutations.
 
-Full-array review checked time/cell alignment, finite arrays, identical observed
-prefixes, and exact capture/repeat equality against raw streams and independently
-recovered observed levels. After compaction, a fresh capture/repeat reproduced the
-archived arrays and selected raw checkpoints; comparison also rejected a deliberately
-modified flow value. The compact bundle has 152 files (about 533 MiB). All 3,749
-original artifact sizes/checksums were verified before compaction; completion left
-29,834 operational source files' recorded sizes, modification times, and modes unchanged.
+The execution records preserve invocation, environment, status, stdout and stderr. The `snapshot_sha256` in result files hashes the concatenated hex SHA256 digests of PARHIG, Previsao, CHUVABIN, geometry and engine, in that order. Full file inventory and measured comparison details remain in the external bundle.
 
-NetCDF packing resolution is 0.001 in each exported unit. Raw-to-decoded packing
-error is distinct from repeat equality: float32 flow packing reaches about
-0.00224 m³/s. Full-precision raw outputs remain available. Saved initial-state
-files are carried unchanged; consumption and temporal compatibility remain
-unverified. This establishes Linux reference behavior, not Rust equivalence,
-Windows operation, or hydrological calibration validity.
+The saved state is an empirical regression input; its temporal compatibility and hydrological validity are not established by repeatability. This evidence is Linux-only. Windows, acquisition, state generation and Rust numerical equivalence remain unverified.

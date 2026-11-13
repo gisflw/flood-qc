@@ -376,7 +376,7 @@ Operation zone `America/Sao_Paulo`; reference July 20, 2026 at 00:00 local. The 
 
 Working resolution 0.1°, saved native forecast resolution 0.25°, IDW k=5 / power=2, saved working grid 83 × 102. ECMWF fixture correction: +8 latitude pixels, −12 longitude pixels, +45° rotation, ×1.5 during hours 0–126. These are explicit fixture settings. Six curated NULL replacements are retained instructions, rather than QC-generated authorization.
 
-Sources: [Step 1 · Reference qualification](../changes/rs-reference-alignment.md) · [Step 2a · Observed forcing](../changes/rs-observed-forcing.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2a · Observed forcing](../changes/rs-observed-forcing.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
 
 ## What can fail, and what remains unresolved
 
@@ -408,7 +408,7 @@ The architecture preserves frozen working inputs and controlled failure handling
 
 Later product scope Live acquisition, desktop framework, hot-start generation/chaining, calibration editors, AR(1), bulletins, completed-run sharing, scheduling and email are outside these four specifications. The broader architecture commits to those capabilities without prescribing their full implementation here.
 
-Sources: [Step 1 · Reference qualification](../changes/rs-reference-alignment.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md) · [Migration status](../migration/summary.md)
+Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md) · [Migration status](../migration/summary.md)
 
 ## Trace every view to its specification
 
@@ -418,7 +418,7 @@ This is a disposable visualization of the current specifications, including the 
 - [Step 2a · Observed forcing](../changes/rs-observed-forcing.md)
 - [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md)
 - [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
-- [Step 1 · Reference qualification](../changes/rs-reference-alignment.md)
+- [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md)
 - [Migration status](../migration/summary.md)
 - [Current inspection contract](../../docs/contracts/workspace.md)
 
