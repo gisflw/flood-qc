@@ -116,8 +116,8 @@ TOML* resolve from the selected workspace, matching existing resource semantics.
 Existing workspace.toml remains an inspection configuration; this request is a
 separate strict `deny_unknown_fields` structure at every nested table.
 
-The following is the RS fixture template; step 1 may correct its explicitly
-provisional forecast endpoint before accepting the fixture:
+The following RS fixture template preserves the fixed Python application
+timeline from step 1:
 
 ```toml
 schema_version = 1
@@ -387,8 +387,10 @@ Decode original `QTUDO_Inercial_Atual.MGB`, `QTUDO_Inercial_Prev.MGB`, `YTUDO.MG
 count × 4. Reject truncated/extra/nonmultiple bytes. Map rows to qualified sample
 labels independently of rainfall interval bounds. Preserve original streams and
 avoid fabricating missing observed levels from overwritten YTUDO prefixes.
-Step 1 must supply its resolved complete-level strategy before implementing that
-runtime path; neither interception nor an extra engine run is prescribed here.
+Use step 1's shared history-only execution (NT=241, forecast horizon zero)
+for complete historical levels, then the four independent scenario executions.
+Validate common historical flow and unaffected level suffixes as specified there;
+apply Python application labels without inferring them from engine text outputs.
 Promote f32 values to f64 without quantization. Unexpected nonfinite values fail;
 apply only qualified missing sentinels/masks, never blanket negative-value tests.
 
@@ -542,17 +544,17 @@ no application retention/archive lifecycle added here.
 ```sh
 cargo run -- operation prepare --workspace /path/to/disposable-rs --request /path/to/rs-request.toml --output /path/to/prepared-rs --json
 cargo run -- operation execute --workspace /path/to/disposable-rs --prepared /path/to/prepared-rs --json
-MGB_RS_REFERENCE=/workspace/regression-rs-hourly-r2 cargo test --locked --test rs_saved -- --ignored --nocapture
+MGB_RS_REFERENCE=/workspace/regression-rs-hourly cargo test --locked --test rs_saved -- --ignored --nocapture
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo test --locked --test architecture
 ```
 
-The real-case test consumes only explicit revised reference paths and retained
+The real-case test consumes only explicit consolidated reference paths and retained
 engine artifacts; missing prerequisites fail visibly. Routine tests remain
 regional-data/provider/engine independent. Use step 1 full-array structural/mask
-checks and measured stage-specific tolerance decisions; no tolerance hides a
+checks and exact numerical comparison policy; no tolerance hides a
 shifted timestamp, packed export discrepancy or lost forecast segment.
 
 Implementation updates `docs/contracts/operations.md` for supported request,

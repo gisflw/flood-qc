@@ -30,7 +30,7 @@ from QC sequence findings. These are fixture values, not product constants.
 The original fixture has 18 raw rainfall series, 7 raw level series and 6 raw
 flow series. Its variables declare rainfall mm, level cm, and flow m3/s. The
 captured observed endpoints run July 10 00:00 through July 20 00:00 in
-America/Sao_Paulo; step 1 qualifies their interpretation before acceptance.
+America/Sao_Paulo; step 1 preserves these Python application labels.
 
 The older direct station-to-basin branch uses missing-to-zero filling. The saved
 cache-grid path does not. Implement only the latter, retaining missingness and
@@ -407,16 +407,17 @@ finalization protocol or duplicate recipe format is introduced here.
 
 ## Fixture conversion, implementation sequence, and acceptance
 
-1. Step 1 retains original evidence and creates the revised target
-   `/workspace/regression-rs-hourly-r2`. Add `convert-observations.py` there only,
-   never a Rust runtime Python dependency. Open frozen original SQLite read-only,
+1. Step 1 creates `/workspace/regression-rs-hourly`; its `capture.py` owns
+   observation fixture conversion, never a Rust runtime Python dependency. Open
+   frozen original SQLite read-only,
    inspect its declared variable units, preserve station/series IDs, state and creation times,
    retain local timestamps and attach the declared operation timezone, and write a
    new canonical observations.sqlite. Retain source file SHA256, command and
    script hash. Convert the six saved NULL edits into point replacement instructions
    and emit their ordered IDs in the fixture request; do not rerun QC as
    automatic authorization. Import necessary level station metadata/offsets from
-   the qualified VB.NET source with station identity mapping and provenance.
+   the retained 101-record runner/Input/EstacoesNivel.txt fixture with station
+   identity mapping and provenance.
 2. Implement store schema/typed validation/read-write round trips; synthetic
    tests cover level `typeof(value)=integer` after persistence, exact negative/zero/i32 bounds round trips, fractional canonical level rejection, nearest/ties-even converter examples above, positive/negative i32 overflow rejection, and NULL distinct from zero; also FK failures, duplicate IDs/endpoints, invalid units/nonfinite
    values, version rejection, rollback, explicit zero and absent offsets,
@@ -438,7 +439,8 @@ finalization protocol or duplicate recipe format is introduced here.
 5. Convert/review saved fixture and compare complete selected/raw/effective
    observations, QC matches, the six NULL rows, coordinates, working grid and
    basin forcing with step 1 checkpoints. Require exact identity/time/masks and
-   qualified full-array numerical tolerances. Separate raw f64 algorithm
+   the reference plan's exact full-array comparison policy. Separate raw f64
+   algorithm
    differences from any historical packed NetCDF quantization. Require every
    selected historical endpoint and basin covered, and exact common forcing
    for all scenario consumers. Offsets round-trip signed/zero; missing remains
@@ -449,7 +451,6 @@ finalization protocol or duplicate recipe format is introduced here.
 
 Step 2a acceptance supplies reusable historical `BasinForcing`, its working-grid
 checkpoint, recorded selections/replacements/provenance, and station/offset records.
-Engine boundary timing and measured tolerances remain step 1 qualification gates;
-Terrio NetCDF capability remains step 2b qualification. These are explicit
-prerequisites, not permission to invent scientific behavior during implementation.
+Step 1 fixes Python application timing and the exact comparison policy; neither
+is an investigation gate. Terrio NetCDF capability remains step 2b qualification.
 Keep this specification until that evidence and scope are accepted.

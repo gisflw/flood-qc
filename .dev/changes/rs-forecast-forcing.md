@@ -37,7 +37,8 @@ working resolution 0.1°, native resolution 0.25°, IDW k=5/power=2,
 ECMWF correction hours 0–126, shift latitude +8 pixels, longitude −12 pixels,
 rotation +45°, multiplier 1.5. These are fixture configuration, not Rust defaults.
 The original capture uses 41 ECMWF native intervals covering forecast hourly ends;
-[step 1](rs-reference-alignment.md) settles the target timeline before acceptance.
+[step 1](rs-reference-alignment.md) fixes the Python application timeline at
+241 historical and 121 forecast rows.
 
 ## Files, owners, and callable boundaries
 
@@ -189,17 +190,13 @@ re-encoded file for normalization. NOAA directly normalizes its already cropped
 saved source. Rust crops decoded ECMWF values in memory and does not introduce a
 GRIB write/read round trip. This is format processing, not a scientific grid rule.
 
-Step 1 must preserve three distinct checkpoints: direct saved-source ecCodes
-values cropped by cell intersection; values decoded after legacy crop/re-packing;
-and the frozen normalized native interval fields. Compare first versus second to
-measure GRIB re-packing effects, then second versus frozen native fields to check
-unit conversion/differencing. Compare Terrio decoded source versus direct-source
-ecCodes before normalization to isolate Terrio f32 decoding precision. Finally
-compare Rust native intervals versus the qualified native reference, reporting
-these explained contributions separately. Do not hide re-packing differences in
-interpolation tolerances, require a new GRIB write, or change frozen arrays without
-step-1 evidence and reviewed expectations. Record complete masks/coordinates and
-per-stage maximum errors, not only final-field summaries.
+Step 1 retains direct saved-source ecCodes cumulative fields cropped by cell
+intersection and normalized native interval fields. Direct decoding/cropping
+already matches both saved native arrays exactly, so no separate re-packing
+checkpoint or tolerance is required for this fixture. Compare Terrio decoding
+against direct-source ecCodes, then normalized native intervals against the saved
+reference, under step 1's exact comparison policy. Retain masks, coordinates and
+per-stage error statistics; a mismatch fails rather than changing expectations.
 
 ## Corrections and forcing algorithm
 
@@ -266,7 +263,7 @@ Actual entry points, verified from source:
   not proof of unsupported I/O. Metadata bytes, bitmap/nodata, global longitude
   wrapping, north-up→ascending reordering and the source crops require real probes.
 
-Implement a disposable probe under revised reference `qualification/terrio/`, not
+Implement a disposable probe under `regression-rs-hourly/qualification/terrio/`, not
 production fallback code. Read both preserved sources band-by-band, compare each
 selected metadata record and complete cropped field/mask against ecCodes-derived
 reference; report maximum absolute/relative and cumulative-difference error.
@@ -283,8 +280,8 @@ Scientific interpolation/correction policy is independent of format adequacy.
 
 ## Implementation sequence and acceptance checks
 
-1. Settle shared timestamp encoding/types and corrected timeline with step 1;
-   qualify Terrio above. Add store values/NetCDF and synthetic round trips first.
+1. Use the shared timestamp encoding/types and fixed Python application timeline
+   specified by step 1; qualify Terrio above. Add store values/NetCDF and synthetic round trips first.
 2. Add adapter selection/differencing; create tiny checked-in GRIB fixtures under
    `tests/fixtures/forecast/` for both packing templates, lead0, rolling/cumulative
    duplicates, changed grid, conflicting duplicates, missing and invalid metadata.
@@ -300,15 +297,15 @@ Scientific interpolation/correction policy is independent of format adequacy.
    90° rotation and expanded canvas, fractional shifts, masks, duration splitting
    conservation, overlapping/gapped intervals, source coverage, exact coordinates,
    IDW neighbours and zero/no-provider behavior.
-5. Revised reference folder `/workspace/regression-rs-hourly-r2/` owns one-off
-   `convert-forecasts.py` / checkpoint conversion code; emit canonical expected
+5. Reference folder `/workspace/regression-rs-hourly/` owns fixture conversion
+   and checkpoint extraction inside `capture.py`; emit canonical expected
    normalized-native, transformed-frame, working-grid and basin artifacts plus
    hashes/settings. It may use legacy Python/ecCodes to build reference fixtures;
    production Rust never reads Python schemas or runs those scripts.
 6. Run explicit acceptance normalization against both saved GRIBs and compare full
    native fields/masks/bounds, raw versus corrected source reuse, transformed
    footprint/values, hourly working grid and final basin forcing against corrected
-   reference. Compare structural fields exactly; proposed numerical tolerances are
+   reference. Compare structural and numerical fields exactly; numerical errors are
    measured stage-by-stage and reviewed per step 1, never inflated to hide mismatch.
    Library and `forecast normalize` CLI must give identical canonical values;
    integration's `operation prepare` command consumes native artifacts without GRIB access.
