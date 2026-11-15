@@ -17,7 +17,8 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 14, 2026. The Linux saved-data operational path is complete:
+Updated November 15, 2026 for the desktop specification. Implementation evidence
+below remains from November 14, 2026. The Linux saved-data operational path is complete:
 workspace inspection, canonical observations/QC/replacements, saved forecast
 normalization/corrections, reusable prepared inputs, isolated real MGB execution,
 and raw/station integer-centimetre results through shared library/CLI workflows.
@@ -60,7 +61,7 @@ record unverified platforms and remaining gaps explicitly.
 | [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Saved-path forcing is implemented above; broader analysis remains not started. Observation-based AR(1) belongs to analysis for dataviz and is deferred. No model-internal dependencies. |
 | [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
 | [Completed-run regeneration and sharing](completed_runs.md) | 7: completed-run sharing | Not started in Rust. Operators may copy generated files; regeneration requires referenced dependencies and a compatible engine. No retention/archive manager in the saved-run increment. |
-| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Not started. The [initial GUI draft plan](../plans/desktop_gui.md) records agreed scope and egui/walkers direction; implementation and rendering/platform qualification remain pending. |
+| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Planned. The [GUI specification](../plans/desktop_gui.md) and [G01–G10 tasks](../plans/desktop_gui_tasks.md) define the agreed shared-operation activity tabs, drafts, disposable trials, visualization and exports. Implementation, rendering/dependency qualification and platform acceptance remain pending; the current saved execution retention contract is unchanged until the shared trial task lands. |
 | [Scheduling and email](desktop_and_automation.md) | 7: automate established operations | Not started in Rust. Follow the capabilities they automate. |
 
 Split these broad rows as individual capabilities are implemented, preserving
