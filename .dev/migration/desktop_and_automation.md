@@ -21,8 +21,8 @@ resolution, selection, execution snapshots, scenario coordination, failure
 handling, export, and run outcomes. Interface controls may call intended
 public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
-stay in store. Choose the desktop framework during implementation, keeping the
-application in Rust.
+stay in store. The [initial GUI draft plan](../plans/desktop_gui.md) records the
+selected framework direction and first-milestone behavior.
 
 At execution startup, freeze input values or immutable versions. Model stages
 canonical outputs; app records independent run/scenario outcomes and output paths
