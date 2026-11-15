@@ -29,4 +29,7 @@ Stages are `observed`, `normalization`, `forecast`, `engine` and `results`. Comp
 
 The execution records preserve invocation, environment, status, stdout and stderr. The `snapshot_sha256` in result files hashes the concatenated hex SHA256 digests of PARHIG, Previsao, CHUVABIN, geometry and engine, in that order. Full file inventory and measured comparison details remain in the external bundle.
 
-The saved state is an empirical regression input; its temporal compatibility and hydrological validity are not established by repeatability. This evidence is Linux-only. Windows, acquisition, state generation and Rust numerical equivalence remain unverified.
+The saved state is an empirical regression input; its temporal compatibility and hydrological validity are not established by repeatability. This evidence is Linux-only. Windows, acquisition and state generation remain unverified. Rust saved-path numerical equivalence is recorded separately below.
+
+The [Rust qualification record](rust-qualification.md) records driver/source
+identity, saved-path comparisons and numerical caveats for the successor.

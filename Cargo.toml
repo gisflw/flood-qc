@@ -4,9 +4,14 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+chrono = { version = "0.4.45", features = ["serde"] }
+chrono-tz = { version = "0.10.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+rusqlite = { version = "0.42.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10.9"
+terrio = { git = "https://github.com/opengeos/terrio", rev = "29fd6e78ba290e37e58aac16df61883e8ed4aed3", version = "0.8.0", default-features = false, features = ["grib", "netcdf-hdf5"] }
 toml = "0.9"
 
 [dev-dependencies]
@@ -22,3 +27,6 @@ all = { level = "warn", priority = -1 }
 dbg_macro = "warn"
 todo = "warn"
 unimplemented = "warn"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "1.1.6", features = ["fs"] }

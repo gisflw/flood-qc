@@ -1,3 +1,15 @@
+use serde::Serialize;
+
+mod input;
+mod output;
+mod process;
+
+pub(crate) use self::input::{read_basin_geometry, write_metadata, write_rainfall};
+pub(crate) use self::output::{
+    HistoryResults, decode_outputs, quantize_levels, read_history, reference_levels,
+};
+pub(crate) use self::process::{EnginePlan, run_engine};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrerequisiteCode {
     Ok,
@@ -120,4 +132,38 @@ pub(crate) fn inspect(executable: &Path, input_dir: &Path) -> Vec<Prerequisite> 
         });
     }
     findings
+}
+
+#[derive(Debug, Serialize)]
+pub(crate) enum ModelError {
+    InvalidTiming(String),
+    InvalidGeometry(String),
+    InvalidForcing(String),
+    Io(String),
+    Spawn(String),
+    NonzeroExit(String),
+    MissingOutput(String),
+    MalformedOutput(String),
+    Decode(String),
+}
+impl std::fmt::Display for ModelError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidTiming(message)
+            | Self::InvalidGeometry(message)
+            | Self::InvalidForcing(message)
+            | Self::Io(message)
+            | Self::Spawn(message)
+            | Self::NonzeroExit(message)
+            | Self::MissingOutput(message)
+            | Self::MalformedOutput(message)
+            | Self::Decode(message) => f.write_str(message),
+        }
+    }
+}
+impl std::error::Error for ModelError {}
+impl From<ModelError> for String {
+    fn from(error: ModelError) -> Self {
+        error.to_string()
+    }
 }

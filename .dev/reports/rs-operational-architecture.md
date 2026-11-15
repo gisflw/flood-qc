@@ -63,7 +63,7 @@ Arrows mean “may depend on”. App may use all four core owners; adapters, ana
 
 The dependency picture describes the target architecture. Only app/model inspection behavior exists at this baseline. Rust privacy and the architecture test enforce source boundaries; behavioral ownership still requires review.
 
-Sources: [Architecture and ownership](../../docs/architecture.md) · [Step 2a · Observed forcing](../changes/rs-observed-forcing.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+Sources: [Architecture and ownership](../../docs/architecture.md) · [Step 2a · Observed forcing](../../docs/contracts/observations.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 
 ## Three workflows, independent run outputs
 
@@ -136,7 +136,7 @@ flowchart TD
 
 Model workers do not write the run manifest. The coordinator atomically writes the JSON manifest and releases the lock after all launched children finish. Automatic unfinished-run/process-tree recovery remains deferred.
 
-Sources: [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+Sources: [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 
 ## Two registries; one generated run artifact
 
@@ -256,7 +256,7 @@ Schema version 1. State is prepared, running, failed or completed. recipe stores
 
 Validate JSON structure, schema version, IDs, paths and input hashes before execution. Reject malformed/truncated manifests. Write a temporary sibling, flush/sync, rename atomically and sync the parent on Linux. A failed write must not expose partial JSON or report completion. Hashes cannot recover missing dependencies. No retention flags or archive manager.
 
-Sources: [Step 2a · Observed forcing](../changes/rs-observed-forcing.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+Sources: [Step 2a · Observed forcing](../../docs/contracts/observations.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 
 ## Working artifacts, with operator-controlled copying
 
@@ -315,7 +315,7 @@ Files are generated for consumption during normal operation. Long-term copying i
 
 Verify input hashes after copying; never hard-link mutable inputs or copy a live SQLite/WAL file blindly. Preparation finalizes by staging rename to a new destination. Execution verifies required outputs and records independent run outcomes; there is no promotion transaction. The root manifest.json points into snapshot/; its copied prepared recipe stays unchanged. Hash the prepared manifest separately rather than listing it as its own input. Update run manifests atomically through a temporary sibling file so readers never see partial JSON.
 
-Sources: [Step 2a · Observed forcing](../changes/rs-observed-forcing.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+Sources: [Step 2a · Observed forcing](../../docs/contracts/observations.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 
 ## Preserve meaning at every conversion
 
@@ -376,7 +376,7 @@ Operation zone `America/Sao_Paulo`; reference July 20, 2026 at 00:00 local. The 
 
 Working resolution 0.1°, saved native forecast resolution 0.25°, IDW k=5 / power=2, saved working grid 83 × 102. ECMWF fixture correction: +8 latitude pixels, −12 longitude pixels, +45° rotation, ×1.5 during hours 0–126. These are explicit fixture settings. Six curated NULL replacements are retained instructions, rather than QC-generated authorization.
 
-Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2a · Observed forcing](../changes/rs-observed-forcing.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2a · Observed forcing](../../docs/contracts/observations.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 
 ## What can fail, and what remains unresolved
 
@@ -408,16 +408,16 @@ The architecture preserves frozen working inputs and controlled failure handling
 
 Later product scope Live acquisition, desktop framework, hot-start generation/chaining, calibration editors, AR(1), bulletins, completed-run sharing, scheduling and email are outside these four specifications. The broader architecture commits to those capabilities without prescribing their full implementation here.
 
-Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md) · [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md) · [Migration status](../migration/summary.md)
+Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md) · [Migration status](../migration/summary.md)
 
 ## Trace every view to its specification
 
 This is a disposable visualization of the current specifications, including the November 12, 2026 simplification. The linked documents remain authoritative; this report does not replace their contracts or prescribe additional architecture.
 
 - [Architecture and ownership](../../docs/architecture.md)
-- [Step 2a · Observed forcing](../changes/rs-observed-forcing.md)
-- [Step 2b · Forecast forcing](../changes/rs-forecast-forcing.md)
-- [Step 3 · Execution and run artifacts](../changes/rs-model-execution.md)
+- [Step 2a · Observed forcing](../../docs/contracts/observations.md)
+- [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md)
+- [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 - [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md)
 - [Migration status](../migration/summary.md)
 - [Current inspection contract](../../docs/contracts/workspace.md)

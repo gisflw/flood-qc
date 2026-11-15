@@ -3,6 +3,7 @@
 //! attribute strings are checked; unknown attributes and generated source fail.
 use std::fs;
 use std::path::{Path, PathBuf};
+use syn::parse::Parser;
 use syn::visit::{self, Visit};
 use syn::{Attribute, Item, ItemUse, Path as SynPath, UseTree};
 
@@ -11,6 +12,7 @@ const OWNERS: &[&str] = &["store", "adapters", "analysis", "model", "app"];
 struct Gate {
     owner: String,
     depth: usize,
+    source: Option<PathBuf>,
     errors: Vec<String>,
     modules: Vec<Vec<String>>,
 }
@@ -40,10 +42,30 @@ impl Gate {
                 return;
             }
             if segments.len() < 2 || !OWNERS.contains(&segments[1].as_str()) {
+                if self.owner == "interface"
+                    && segments.len() == 3
+                    && segments[1] == "BatchStatus"
+                    && ["Completed", "Failed"].contains(&segments[2].as_str())
+                {
+                    return;
+                }
                 // The facade exposes only app APIs to interfaces.
                 if self.owner == "interface"
                     && segments.len() == 2
                     && [
+                        "normalize_forecast",
+                        "NormalizeForecastRequest",
+                        "NormalizeForecastReport",
+                        "NormalizeForecastError",
+                        "prepare",
+                        "execute_prepared",
+                        "PreparationRequest",
+                        "PreparationReport",
+                        "ExecutionRequest",
+                        "ExecutionReport",
+                        "OperationError",
+                        "ScenarioExecution",
+                        "BatchStatus",
                         "inspect",
                         "example_config",
                         "InspectionRequest",
@@ -135,6 +157,16 @@ impl Gate {
 }
 impl<'ast> Visit<'ast> for Gate {
     fn visit_visibility(&mut self, _: &'ast syn::Visibility) {}
+    fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
+        // A bare expression identifier names a value, including local variables.
+        if path.qself.is_none() && path.path.get_ident().is_some() {
+            for attribute in &path.attrs {
+                self.visit_attribute(attribute);
+            }
+            return;
+        }
+        visit::visit_expr_path(self, path);
+    }
     fn visit_path(&mut self, path: &'ast SynPath) {
         self.path(
             &path
@@ -176,6 +208,50 @@ impl<'ast> Visit<'ast> for Gate {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         self.visit_path(&mac.path);
         let name = mac.path.segments.last().unwrap().ident.to_string();
+        if name == "params" {
+            let path = mac
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>();
+            let expressions =
+                syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
+                    .parse2(mac.tokens.clone());
+            if self.owner != "store" || !(path == ["params"] || path == ["rusqlite", "params"]) {
+                self.error("SQLite parameter macro is limited to store");
+            }
+            match expressions {
+                Ok(expressions) => {
+                    for expression in expressions {
+                        self.visit_expr(&expression);
+                    }
+                }
+                Err(_) => self.error("unsupported SQLite parameter expression"),
+            }
+            return;
+        }
+        if name == "include_str" {
+            let schema = syn::parse2::<syn::LitStr>(mac.tokens.clone());
+            let valid = mac.path.is_ident("include_str")
+                && self.owner == "store"
+                && self.source.as_deref() == Some(Path::new("store/observations.rs"))
+                && schema.is_ok_and(|literal| {
+                    literal.value() == "sql/observations_v1.sql"
+                        && self
+                            .source
+                            .as_ref()
+                            .unwrap()
+                            .parent()
+                            .unwrap()
+                            .join(literal.value())
+                            == Path::new("store/sql/observations_v1.sql")
+                });
+            if !valid {
+                self.error("include_str permits only the owned observations schema");
+            }
+            return;
+        }
         if ![
             "format",
             "format_args",
@@ -338,10 +414,14 @@ fn private_modules(items: &[Item]) -> Vec<String> {
         .collect()
 }
 fn check_at(owner: &str, source: &str, depth: usize) -> Vec<String> {
+    check_source(owner, source, depth, None)
+}
+fn check_source(owner: &str, source: &str, depth: usize, path: Option<&Path>) -> Vec<String> {
     let file = syn::parse_file(source).expect("source parses");
     let mut gate = Gate {
         owner: owner.into(),
         depth,
+        source: path.map(Path::to_path_buf),
         errors: Vec::new(),
         modules: vec![private_modules(&file.items)],
     };
@@ -456,7 +536,7 @@ fn owned_sources_obey_graph() {
                     - 1
                     - usize::from(relative.file_name().is_some_and(|n| n == "mod.rs"))
             };
-            check_at(owner, &source, depth)
+            check_source(owner, &source, depth, Some(relative))
         };
         assert!(errors.is_empty(), "{}: {errors:?}", file.display());
     }
@@ -478,6 +558,8 @@ fn graph_fixtures() {
         ("store", "model"),
         ("model", "analysis"),
         ("analysis", "adapters"),
+        ("adapters", "analysis"),
+        ("model", "adapters"),
         ("adapters", "model"),
         ("model", "app"),
         ("app", "interface"),
@@ -531,4 +613,76 @@ fn graph_fixtures() {
     assert!(!root("pub use model::{x::*};").is_empty());
     assert!(root("pub mod app; pub use app::{inspect, InspectionRequest};").is_empty());
     assert!(check("interface", "use mgb_ops::app::inspect;").is_empty());
+    assert!(
+        check(
+            "interface",
+            "use mgb_ops::{normalize_forecast, NormalizeForecastRequest};"
+        )
+        .is_empty()
+    );
+    assert!(check("interface", "use mgb_ops::{prepare, execute_prepared, PreparationRequest, ExecutionRequest, BatchStatus};").is_empty());
+    assert!(
+        check(
+            "interface",
+            "fn x() { let status = mgb_ops::BatchStatus::Completed; }"
+        )
+        .is_empty()
+    );
+    assert!(!check("interface", "use mgb_ops::OperationError::unknown;").is_empty());
+    assert!(
+        check(
+            "app",
+            "mod forecast { pub struct Thing; } pub use self::forecast::Thing;"
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn schema_inclusion_is_limited_to_its_owner_and_static_path() {
+    let source = Path::new("store/observations.rs");
+    let accepted = r#"const DDL: &str = include_str!("sql/observations_v1.sql");"#;
+    assert!(check_source("store", accepted, 1, Some(source)).is_empty());
+    for expression in [
+        r#"include_str!(SCHEMA)"#,
+        r#"include_str!("../store/sql/observations_v1.sql")"#,
+        r#"include_str!("../analysis/schema.sql")"#,
+        r#"include_str!("sql/observations_v1.rs")"#,
+        r#"include_str!(concat!("sql/", "observations_v1.sql"))"#,
+        r#"include!("sql/observations_v1.sql")"#,
+    ] {
+        let code = format!("const DDL: &str = {expression};");
+        assert!(!check_source("store", &code, 1, Some(source)).is_empty());
+    }
+    assert!(!check_source("analysis", accepted, 1, Some(source)).is_empty());
+    assert!(!check_source("store", accepted, 1, Some(Path::new("store/other.rs"))).is_empty());
+    assert!(!check_source("store", "pub use crate::adapters::Thing;", 1, Some(source)).is_empty());
+}
+
+#[test]
+fn sqlite_parameters_preserve_expression_checks() {
+    assert!(
+        check(
+            "store",
+            "fn x() { rusqlite::params![row.id, None::<f64>]; }"
+        )
+        .is_empty()
+    );
+    assert!(check("store", "fn x() { params![value]; }").is_empty());
+    for source in [
+        "fn x() { params![crate::analysis::value]; }",
+        "fn x() { params![include_str!(\"outside\")]; }",
+        "fn x() { params![other_macro!()]; }",
+    ] {
+        assert!(!check("store", source).is_empty(), "accepted {source}");
+    }
+    assert!(!check("analysis", "fn x() { rusqlite::params![value]; }").is_empty());
+}
+
+#[test]
+fn owner_names_as_local_values_do_not_create_import_edges() {
+    assert!(check("store", "fn x(model: &str) { let _ = model.len(); }").is_empty());
+    assert!(!check("store", "use model;").is_empty());
+    assert!(!check("store", "fn x() { model::run(); }").is_empty());
+    assert!(!check("store", "fn x() { crate::model::run(); }").is_empty());
 }

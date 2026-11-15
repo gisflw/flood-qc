@@ -1,3 +1,17 @@
+mod operation;
+mod request;
+pub use self::operation::{
+    BatchStatus, ExecutionReport, ExecutionRequest, OperationError, PreparationReport,
+    PreparationRequest, ScenarioExecution, execute_prepared,
+};
+mod forecast;
+pub use self::forecast::{
+    NormalizeForecastError, NormalizeForecastReport, NormalizeForecastRequest, normalize_forecast,
+};
+
+mod prepare;
+pub use self::prepare::{ObservedInputs, ObservedRequest, prepare, prepare_observations};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FindingCode {

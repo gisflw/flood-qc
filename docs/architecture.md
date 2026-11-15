@@ -2,7 +2,8 @@
 
 Use one Rust Cargo package with a shared library and thin CLI/desktop interfaces.
 The external MGB executable remains the numerical engine. Add owners only when
-behavior exists; the foundation currently implements app and model.
+behavior exists; app, store, adapters, analysis and model own the implemented
+inspection, saved-forcing and execution capabilities.
 
 ## Product direction
 
@@ -19,8 +20,9 @@ forecast products are excluded; ONS hydraulic observations and reservoir schedul
 are included. Both existing bulletin families inform report content, with PDF,
 Markdown, HTML, and relevant CSV exports. Sharing concerns completed runs between
 independent workspaces; live multi-operator editing is outside scope. These are
-product commitments; the [workspace contract](contracts/workspace.md) describes
-the currently implemented inspection capability.
+product commitments; the [workspace](contracts/workspace.md),
+[observation](contracts/observations.md), [forecast](contracts/forecasts.md) and
+[operation](contracts/operations.md) contracts describe implemented behavior.
 
 ## Ownership
 
@@ -52,7 +54,7 @@ first used. Do not equate missing values with zero or silently discard timezones
 
 ## Operational data decisions
 
-The next operational increment uses Rust-owned canonical formats. SQLite holds
+Saved operations use Rust-owned canonical formats. SQLite holds
 observations, station metadata, and observation review instructions, without a
 source/provenance table or source foreign keys. A separate
 SQLite holds a two-table forecast asset/correction catalog. Each run generates
@@ -127,7 +129,7 @@ weakening the ownership rules to accommodate a bypass.
 
 ## Execution lifecycle
 
-These requirements govern the next operational increment, not read-only inspection:
+Saved preparation and execution follow these rules:
 
 - At startup, app freezes actual selected observations, forecasts, corrections,
   settings, calibration, geometry, initial state, and station offsets, and records
@@ -148,6 +150,6 @@ These requirements govern the next operational increment, not read-only inspecti
   for long-term storage. Generation is normal application behavior; no retention
   flags, cleanup policy or archive-management workflow is added.
 
-Specify concrete snapshot/run-artifact mechanisms with saved RS preparation,
-execution, and decoding. Carry the saved state unchanged; hot-start generation
-and chaining follow later.
+The [operation contract](contracts/operations.md) defines the implemented prepared
+snapshots, isolated execution and per-run artifacts. The saved state is carried
+unchanged; hot-start generation and chaining follow later.

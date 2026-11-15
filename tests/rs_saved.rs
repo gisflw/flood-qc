@@ -1,0 +1,421 @@
+use mgb_ops::store::{ForecastCatalog, ForecastCorrection, copy_tree};
+use mgb_ops::{
+    BatchStatus, ExecutionRequest, NormalizeForecastRequest, PreparationRequest, execute_prepared,
+    normalize_forecast, prepare,
+};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+};
+
+#[test]
+#[ignore = "requires the explicit consolidated RS reference and real engine"]
+fn saved_rs_full_workflow() {
+    let reference = PathBuf::from(
+        std::env::var_os("MGB_RS_REFERENCE")
+            .expect("MGB_RS_REFERENCE must name the consolidated saved reference"),
+    );
+    for path in [
+        "case.json",
+        "capture/fixtures/observations.sqlite",
+        "frozen/runner/Input/MINI.gtp",
+        "frozen/runner/MGB_Inercial_Prev_RSH",
+        "frozen/downloads/ecmwf/ifs_fc_20260720T000000Z.grib2",
+        "frozen/downloads/noaa/gfs_fc_20260720T000000Z.grib2",
+        "capture/runs/zero/Input/CHUVABIN.hig",
+    ] {
+        assert!(
+            reference.join(path).is_file(),
+            "missing required RS prerequisite: {path}"
+        );
+    }
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let root = dir.keep().canonicalize().unwrap();
+    eprintln!("RS qualification artifacts: {}", root.display());
+    fs::copy(
+        reference.join("capture/fixtures/observations.sqlite"),
+        root.join("observations.sqlite"),
+    )
+    .unwrap();
+    let db = rusqlite::Connection::open(root.join("observations.sqlite")).unwrap();
+    db.execute(
+        "UPDATE observation_series SET created_at=replace(created_at,' ','T')",
+        [],
+    )
+    .unwrap();
+    let mut query = db
+        .prepare("SELECT station_id FROM station_offset ORDER BY station_id")
+        .unwrap();
+    let station_ids: Vec<String> = query
+        .query_map([], |row| row.get(0))
+        .unwrap()
+        .map(Result::unwrap)
+        .collect();
+    assert!(!station_ids.is_empty());
+    drop(query);
+    drop(db);
+    copy_tree(&reference.join("frozen/runner/Input"), &root.join("Input")).unwrap();
+    copy_tree(
+        &reference.join("frozen/runner/MGB_Inercial_Prev_RSH"),
+        &root.join("engine"),
+    )
+    .unwrap();
+    let mut assets = Vec::new();
+    for (provider, model, source) in [
+        (
+            "ecmwf",
+            "ifs",
+            "frozen/downloads/ecmwf/ifs_fc_20260720T000000Z.grib2",
+        ),
+        (
+            "noaa",
+            "gfs",
+            "frozen/downloads/noaa/gfs_fc_20260720T000000Z.grib2",
+        ),
+    ] {
+        let source_path = root.join(format!("{provider}.grib2"));
+        fs::copy(reference.join(source), &source_path).unwrap();
+        let text = format!(
+            "schema_version = 1\nprovider = \"{provider}\"\nmodel = \"{model}\"\nproduct = \"fc\"\ncycle_utc = \"2026-07-20T00:00:00Z\"\noperation_timezone = \"America/Sao_Paulo\"\nsource = \"{}\"\ncrop_bbox = [-79.13530,-50.61209,-28.67245,-10.08729]\ncatalog = \"forecast.sqlite\"\nartifact_root = \"forecast-assets\"\n",
+            source_path.display()
+        );
+        let path = root.join(format!("normalize-{provider}.toml"));
+        fs::write(&path, text).unwrap();
+        assets.push(
+            normalize_forecast(NormalizeForecastRequest {
+                workspace: root.clone(),
+                invocation_dir: root.clone(),
+                request_file: path,
+            })
+            .unwrap()
+            .asset_id,
+        );
+    }
+    let catalog = ForecastCatalog::open(
+        &root,
+        Path::new("forecast.sqlite"),
+        Path::new("forecast-assets"),
+    )
+    .unwrap();
+    catalog
+        .save_correction(&ForecastCorrection {
+            correction_id: "rs-ecmwf-correction".into(),
+            asset_id: assets[0].clone(),
+            t0_hour: 0,
+            t1_hour: 126,
+            shift_lat_pixels: 8.0,
+            shift_lon_pixels: -12.0,
+            rotation_deg: 45.0,
+            multiplication_factor: 1.5,
+            editor: None,
+            reason: "fixed regression correction".into(),
+            created_at: "2026-07-20T00:00:00Z".into(),
+        })
+        .unwrap();
+    drop(catalog);
+    let stations = station_ids
+        .iter()
+        .map(|id| format!("\"{id}\""))
+        .collect::<Vec<_>>()
+        .join(",");
+    let request = format!(
+        r#"schema_version = 1
+time_zone = "America/Sao_Paulo"
+reference_time = "2026-07-20T00:00:00"
+step_seconds = 3600
+historical_first_end = "2026-07-10T00:00:00"
+historical_last_end = "2026-07-20T00:00:00"
+forecast_first_end = "2026-07-20T01:00:00"
+forecast_last_end = "2026-07-25T01:00:00"
+[observed]
+path = "observations.sqlite"
+provider_codes = ["ana"]
+station_ids = []
+series_ids = []
+replacement_ids = ["rs-null-1","rs-null-2","rs-null-3","rs-null-4","rs-null-5","rs-null-6"]
+[geometry]
+mini_gtp = "Input/MINI.gtp"
+[grid]
+bbox = [-58.95016,-34.40217,-48.85759,-26.29721]
+resolution_degrees = 0.1
+[interpolation]
+nearest_stations = 5
+power = 2.0
+[qc]
+high_threshold_mm = 50.0
+sequence_lower_mm = 0.0
+sequence_upper_mm = 1.0
+sequence_min_length = 5
+[levels]
+station_ids = [{stations}]
+[engine]
+executable = "engine"
+input_dir = "Input"
+omp_threads = 1
+[forecasts]
+catalog = "forecast.sqlite"
+[[scenarios]]
+id = "zero"
+kind = "zero"
+[[scenarios]]
+id = "ecmwf-raw"
+kind = "raw"
+asset_id = "{}"
+[[scenarios]]
+id = "noaa-raw"
+kind = "raw"
+asset_id = "{}"
+[[scenarios]]
+id = "ecmwf-corrected"
+kind = "corrected"
+asset_id = "{}"
+correction_ids = ["rs-ecmwf-correction"]
+"#,
+        assets[0], assets[1], assets[0]
+    );
+    fs::write(root.join("request.toml"), request).unwrap();
+    prepare(PreparationRequest {
+        workspace: root.clone(),
+        invocation_dir: root.clone(),
+        request_file: "request.toml".into(),
+        output: "prepared".into(),
+    })
+    .unwrap();
+    let manifest_path = root.join("prepared/manifest.json");
+    let original_manifest = fs::read(&manifest_path).unwrap();
+    let mut altered: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+    altered["recipe"]["document"]["correction_values"][0]["multiplication_factor"] = 2.0.into();
+    fs::write(&manifest_path, serde_json::to_vec(&altered).unwrap()).unwrap();
+    assert!(matches!(
+        execute_prepared(ExecutionRequest {
+            workspace: root.clone(),
+            invocation_dir: root.clone(),
+            prepared: "prepared".into()
+        }),
+        Err(mgb_ops::OperationError::InvalidPrepared { .. })
+    ));
+    fs::write(&manifest_path, original_manifest).unwrap();
+    fs::remove_dir_all(root.join("Input")).unwrap();
+    fs::remove_file(root.join("engine")).unwrap();
+    fs::remove_file(root.join("observations.sqlite")).unwrap();
+    fs::remove_file(root.join("forecast.sqlite")).unwrap();
+    fs::remove_dir_all(root.join("forecast-assets")).unwrap();
+    let run = || {
+        execute_prepared(ExecutionRequest {
+            workspace: root.clone(),
+            invocation_dir: root.clone(),
+            prepared: "prepared".into(),
+        })
+        .unwrap()
+    };
+    let first = run();
+    assert!(
+        matches!(first.status, BatchStatus::Completed),
+        "{:?}",
+        first.scenarios
+    );
+    let second = run();
+    assert!(
+        matches!(second.status, BatchStatus::Completed),
+        "{:?}",
+        second.scenarios
+    );
+    for scenario in ["zero", "ecmwf-raw", "noaa-raw", "ecmwf-corrected"] {
+        for (file, headers) in [
+            (
+                "PARHIG.hig",
+                &[&["DIA", "MES", "ANO", "HORA"][..], &["NT", "DT"][..]][..],
+            ),
+            ("Previsao.meta", &[&["HORIZ(NT)"][..]][..]),
+        ] {
+            compare_metadata(
+                &reference.join("frozen/runner/Input").join(file),
+                &reference
+                    .join("capture/runs")
+                    .join(scenario)
+                    .join("Input")
+                    .join(file),
+                &first
+                    .run_root
+                    .join("scenarios")
+                    .join(scenario)
+                    .join("Input")
+                    .join(file),
+                headers,
+            );
+        }
+        for file in [
+            "Input/CHUVABIN.hig",
+            "Output/QTUDO_Inercial_Atual.MGB",
+            "Output/QTUDO_Inercial_Prev.MGB",
+            "Output/YTUDO.MGB",
+            "Output/YTUDO_prev.MGB",
+        ] {
+            let expected =
+                fs::read(reference.join("capture/runs").join(scenario).join(file)).unwrap();
+            assert!(
+                fs::read(first.run_root.join("scenarios").join(scenario).join(file)).unwrap()
+                    == expected,
+                "{scenario}/{file}"
+            );
+            assert!(
+                fs::read(second.run_root.join("scenarios").join(scenario).join(file)).unwrap()
+                    == expected,
+                "repeat {scenario}/{file}"
+            );
+        }
+        let generated_basin = first
+            .run_root
+            .join("results")
+            .join(scenario)
+            .join("basin.nc");
+        let generated_station = first
+            .run_root
+            .join("results")
+            .join(scenario)
+            .join("station.nc");
+        let basin = mgb_ops::store::read_result_series(&generated_basin).unwrap();
+        let station = mgb_ops::store::read_station_results(&generated_station).unwrap();
+        assert_eq!(station.station_ids, station_ids);
+        let first_time = chrono::NaiveDate::from_ymd_opt(2026, 7, 10)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        assert_eq!(basin.timeline.bounds.len(), 362);
+        assert_eq!(station.timeline, basin.timeline);
+        for (index, interval) in basin.timeline.bounds.iter().enumerate() {
+            assert_eq!(
+                interval.end,
+                first_time + chrono::Duration::hours(index as i64)
+            );
+            assert_eq!(interval.start, interval.end - chrono::Duration::hours(1));
+        }
+        compare_arrays(
+            &generated_basin,
+            &reference
+                .join("capture/checkpoints/results")
+                .join(format!("{scenario}-basin.nc")),
+            &[
+                "mini_id",
+                "basin_latitude",
+                "basin_longitude",
+                "time_segment",
+                "precipitation",
+                "precipitation_valid",
+                "flow",
+                "flow_valid",
+                "raw_level",
+                "raw_level_valid",
+            ],
+        );
+        compare_arrays(
+            &generated_station,
+            &reference
+                .join("capture/checkpoints/results")
+                .join(format!("{scenario}-station.nc")),
+            &[
+                "mini_id",
+                "mini_valid",
+                "offset_m",
+                "offset_valid",
+                "level",
+                "level_valid",
+                "time_segment",
+            ],
+        );
+        for file in ["basin.nc", "station.nc"] {
+            assert!(
+                fs::read(first.run_root.join("results").join(scenario).join(file)).unwrap()
+                    == fs::read(second.run_root.join("results").join(scenario).join(file)).unwrap(),
+                "repeat {scenario}/{file}"
+            );
+        }
+    }
+}
+
+fn compare_arrays(actual: &Path, expected: &Path, names: &[&str]) {
+    let actual = terrio::multidim::open(actual.to_str().unwrap()).unwrap();
+    let expected = terrio::multidim::open(expected.to_str().unwrap()).unwrap();
+    for name in names {
+        let actual = actual.array(name).unwrap();
+        let expected = expected.array(name).unwrap();
+        assert_eq!(
+            actual.info.data_type, expected.info.data_type,
+            "{name} type"
+        );
+        let actual_shape: Vec<_> = actual.info.dimensions.iter().map(|dim| dim.size).collect();
+        let expected_shape: Vec<_> = expected
+            .info
+            .dimensions
+            .iter()
+            .map(|dim| dim.size)
+            .collect();
+        assert_eq!(actual_shape, expected_shape, "{name} shape");
+        assert!(
+            actual.read().unwrap().bytes == expected.read().unwrap().bytes,
+            "{name} values"
+        );
+    }
+}
+
+fn compare_metadata(baseline: &Path, expected: &Path, actual: &Path, headers: &[&[&str]]) {
+    let base = fs::read(baseline).unwrap();
+    let expected = fs::read(expected).unwrap();
+    let actual = fs::read(actual).unwrap();
+    let lines = |data: &[u8]| {
+        data.split_inclusive(|byte| *byte == b'\n')
+            .map(<[u8]>::to_vec)
+            .collect::<Vec<_>>()
+    };
+    let base = lines(&base);
+    let expected = lines(&expected);
+    let actual = lines(&actual);
+    assert_eq!(base.len(), actual.len());
+    let mut changed = Vec::new();
+    for tokens in headers {
+        let find = |lines: &[Vec<u8>]| {
+            let indices: Vec<_> = lines
+                .iter()
+                .enumerate()
+                .filter(|(_, line)| {
+                    tokens.iter().all(|token| {
+                        line.windows(token.len())
+                            .any(|word| word.eq_ignore_ascii_case(token.as_bytes()))
+                    })
+                })
+                .map(|(index, _)| index)
+                .collect();
+            assert_eq!(indices.len(), 1);
+            (indices[0] + 1..lines.len())
+                .find(|index| {
+                    let line = lines[*index].trim_ascii();
+                    !line.is_empty() && line[0] != b'!'
+                })
+                .unwrap()
+        };
+        let actual_index = find(&actual);
+        let expected_index = find(&expected);
+        assert_eq!(actual_index, expected_index);
+        let numbers = |line: &[u8]| {
+            std::str::from_utf8(line)
+                .unwrap()
+                .split_whitespace()
+                .map(|value| value.parse::<f64>().unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            numbers(&actual[actual_index]),
+            numbers(&expected[expected_index])
+        );
+        changed.push(actual_index);
+    }
+    for index in 0..base.len() {
+        if !changed.contains(&index) {
+            assert_eq!(
+                base[index], actual[index],
+                "changed unrelated metadata line {index}"
+            );
+        }
+    }
+}
