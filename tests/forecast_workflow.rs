@@ -1,4 +1,7 @@
-use mgb_ops::{NormalizeForecastRequest, normalize_forecast};
+use mgb_ops::{
+    NormalizeForecastDocument, NormalizeForecastRequest, normalize_forecast,
+    normalize_forecast_document,
+};
 
 fn document() -> String {
     r#"schema_version = 1
@@ -52,7 +55,7 @@ fn library_and_cli_normalize_the_same_canonical_values() {
         .replace("[-60.0,-35.0,-50.0,-25.0]", "[-180.0,-90.0,180.0,90.0]");
     std::fs::create_dir(dir.path().join("requests")).unwrap();
     std::fs::write(dir.path().join("requests/normalize.toml"), &request_text).unwrap();
-    for name in ["library", "cli"] {
+    for name in ["library", "cli", "typed"] {
         let sources = dir.path().join(name).join("sources");
         std::fs::create_dir_all(&sources).unwrap();
         std::fs::copy(&fixture, sources.join("noaa.grib2")).unwrap();
@@ -63,6 +66,15 @@ fn library_and_cli_normalize_the_same_canonical_values() {
         request_file: "requests/normalize.toml".into(),
     })
     .unwrap();
+    let typed: NormalizeForecastDocument = toml::from_str(&request_text).unwrap();
+    let typed_report =
+        normalize_forecast_document(dir.path(), std::path::Path::new("typed"), typed).unwrap();
+    assert_eq!(typed_report.asset_id, report.asset_id);
+    assert_eq!(typed_report.source_id, report.source_id);
+    assert_eq!(
+        mgb_ops::store::read_grid_series(&typed_report.native_artifact).unwrap(),
+        mgb_ops::store::read_grid_series(&report.native_artifact).unwrap()
+    );
     let output = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
         .current_dir(dir.path())
         .args([

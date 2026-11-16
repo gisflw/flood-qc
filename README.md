@@ -2,7 +2,8 @@
 
 MGB Ops is a Rust successor with a shared library and CLI. It provides regional
 workspace inspection, canonical saved observations and forecast normalization,
-forcing preparation, and isolated MGB execution from retained prepared inputs.
+editable JSON drafts and previews, forcing preparation, and isolated MGB execution
+from retained prepared inputs.
 The external MGB executable remains the numerical engine.
 
 ## Development
@@ -53,15 +54,25 @@ cargo run -- operation execute --workspace /regional/workspace --prepared prepar
 
 See the [forecast request](docs/contracts/forecasts.md) and
 [operation request and retained artifacts](docs/contracts/operations.md).
-Preparation does not launch MGB; execution creates an independent run with logs,
-results and a JSON manifest. Live acquisition and new hot starts remain deferred.
+Preparation does not launch MGB; execution creates a disposable trial with logs,
+validated successful results and a recipe manifest. SIGINT cancels controlled
+execution and reaps owned engines. Live acquisition and new hot starts remain deferred.
+
+Use [operation drafts](docs/contracts/drafts.md) to save incomplete settings and
+ordered edits, explicitly refresh selected inputs, and preview changes before
+preparation. `mgb-ops draft run --workspace /regional/workspace --draft draft.json
+--json` prepares and executes current accepted draft values. The library and
+`mgb-ops draft` commands share that workflow.
 
 ## Project guidance
 
 - [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.
 - [Saved forecasts](docs/contracts/forecasts.md): normalization command, catalog, and forcing APIs.
+- [Series and CSV](docs/contracts/series.md): rainfall summaries, chart queries and selected-series exports.
+- [Local geometry](docs/contracts/spatial.md): mini topology, map coordinates and station links.
 - [Canonical observations](docs/contracts/observations.md): SQLite, review selection, and observed forcing APIs.
 - [Saved operations](docs/contracts/operations.md): preparation/execution commands, snapshots and results.
+- [Operation drafts](docs/contracts/drafts.md): JSON recipes, source acceptance, previews and save behavior.
 - [Migration summary](.dev/migration/summary.md): temporary capability tracking, validation status, and next work.
 - [Agent guidance](AGENTS.md): change and documentation rules.
 - [Legacy worktree record](references/retirement_record.md), [Python map](references/python_map.md),

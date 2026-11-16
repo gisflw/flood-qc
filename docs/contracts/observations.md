@@ -10,14 +10,22 @@ or reinterpret inspection's optional `data/history.sqlite` path.
 existing destination. `open_read_only(path)` validates its format, schema version
 and IANA timezone without creating a database. `write_batch` validates and commits
 all supplied rows together; an invalid row rolls back the batch. Every connection
-enables foreign keys. The version is `PRAGMA user_version=1`, with metadata
+enables foreign keys. New databases use `PRAGMA user_version=1`; an explicit reference upgrade produces
+version 2. Read-only access supports both versions without migration. Metadata is
 `format=mgb-ops-observations` and `time_zone`.
 
 The [owned SQL schema](../../src/store/sql/observations_v1.sql) defines stations,
 observation series, samples, rainfall replacements and station offsets. IDs are
-nonempty strings. Station coordinates are both present or both absent. Unknown
-level-station coordinates are permitted; selected rain stations need coordinates.
+nonempty strings. Station coordinates are both present or both absent. Missing
+station coordinates are permitted for search and data-only review; forcing
+interpolation requires coordinates for selected rain stations.
 Duplicate keys, orphan rows, invalid units and nonfinite values fail.
+Replacement reason text may be empty or omitted; supplied text is preserved.
+`open_writable` opens an existing database without creating one.
+`register_replacements` commits an idempotent selected batch: identical existing
+values succeed and conflicting values under the same ID roll back the batch.
+The shared [draft registration workflow](drafts.md#explicit-registration) returns
+catalog mappings and independent cross-catalog outcomes.
 
 | Variable | Canonical value | Interval |
 | --- | --- | --- |
@@ -38,7 +46,8 @@ offset changes are not supported in this increment.
 
 `read_selection(selection, interval, replacement_ids)` reads eligible stations,
 series, samples, ordered replacement values and offsets in one transaction,
-returning detached owned values. Select providers and/or station IDs explicitly;
+returning detached owned values. Rain samples use `(start,end]`; instantaneous
+level/flow samples include both endpoints. Select providers and/or station IDs explicitly;
 unknown selectors and unknown/duplicate replacement IDs fail. An empty replacement
 list selects no edits. `read_station_offsets` returns only known records: an
 absent offset stays unknown, while explicit zero and signed finite metre offsets
@@ -52,7 +61,7 @@ approved, curated, then raw, and newer creation labels within a state. Equal
 winning ranks/timestamps require explicit selection. An explicit series ID
 overrides ranking; gaps are never filled from a lower-ranked series.
 
-`effective_observations` retains raw presence/value, selected series, effective
+`effective_observations` retains optional coordinates, raw presence/value, selected series, effective
 value, replacement kind and applied instruction IDs. A point matches its exact
 label; a period matches `[start,end)`, or every label at/after start when end is
 absent. Selected instructions apply in request order, with the last match winning.
@@ -89,3 +98,47 @@ execution are separate capabilities.
 
 Linux behavior is tested. Windows, live acquisition, general observation-unit
 conversion and hydrological validity remain unverified or outside this increment.
+
+## Station reference levels
+
+Upgrade an existing canonical observation database explicitly before importing:
+
+```sh
+mgb-ops references upgrade --database /regional/workspace/data/observations.sqlite --json
+mgb-ops references import --database /regional/workspace/data/observations.sqlite --provider ana --thresholds station_level_reference.csv --history registered_floods.csv --json
+```
+
+The corresponding shared actions are `upgrade_level_references(database)` and
+`import_level_references(database, provider, thresholds, history)`. Paths resolve
+from the invocation directory. JSON mode returns `{ok:true,result:...}` or
+`{ok:false,error:...}` on stdout, with exit 0 for success, 1 for operational
+failure and 2 for invalid arguments. Import results contain the imported record
+count and sorted unmatched station codes; upgrade returns a null result. Without
+`--json`, import prints the report and upgrade prints a completion message. It replaces all threshold/historical reference
+records together, without changing stations, observation samples, replacements or
+model offsets. Both files must validate before replacement. Validation or persistence
+failure preserves the previous records. Upgrade is transactional and preserves
+existing canonical contents; a v1 reference read returns an empty collection.
+
+Threshold CSV columns are `station_code`, `station_name`, `level_atention`,
+`level_alert`, `level_flood`, `level_severe`; the spelling `atention` is intentional.
+Historical CSV columns are `station_code`, `level_registered`, `date`.
+Files use UTF-8 with optional BOM, comma delimiters and CSV quoting. Values are
+finite source-precision f64 centimetres, including zero and negative values.
+Blank thresholds omit a line; a historical level requires a value and an ISO
+`YYYY-MM-DD` date. Duplicate reference keys, invalid values and dates fail,
+including invalid rows for unmatched stations. Threshold keys are station/kind;
+historical keys are station/level/date.
+
+The provider is explicit and must exist in the catalog. Station codes are trimmed, uppercased and stripped of
+leading zeroes consistently in the source and selected provider's catalog;
+ambiguous normalized catalog codes fail. Unmatched codes are reported as skipped,
+including threshold rows with no supplied levels. No stations or relationships
+are created by import.
+
+`ObservationStore::read_level_references()` returns detached `LevelReference`
+values with kinds `attention`, `alert`, `flood`, `severe` or dated `historical`.
+`replace_level_references` provides the same transactional storage boundary for
+validated supplied records, after `upgrade_references`. References are optional
+chart lines, independent of offsets. Station coordinates and explicit mini-link
+availability follow the [spatial contract](spatial.md).

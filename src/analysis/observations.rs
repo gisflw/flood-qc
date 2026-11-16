@@ -15,8 +15,8 @@ pub struct SelectedObservation {
     pub station_id: String,
     pub series_id: String,
     pub observed_at: NaiveDateTime,
-    pub longitude: f64,
-    pub latitude: f64,
+    pub longitude: Option<f64>,
+    pub latitude: Option<f64>,
     pub value: Option<f64>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -30,8 +30,8 @@ pub struct EffectiveObservation {
     pub station_id: String,
     pub series_id: String,
     pub observed_at: NaiveDateTime,
-    pub longitude: f64,
-    pub latitude: f64,
+    pub longitude: Option<f64>,
+    pub latitude: Option<f64>,
     pub raw_present: bool,
     pub raw_value: Option<f64>,
     pub effective_value: Option<f64>,
@@ -389,8 +389,9 @@ pub fn effective_observations(
                     && (-90.0..=90.0).contains(&a)
                     && (-180.0..=180.0).contains(&b) =>
             {
-                (a, b)
+                (Some(a), Some(b))
             }
+            (None, None) => (None, None),
             _ => {
                 return Err(error(format!(
                     "station {}: invalid coordinates",
@@ -463,6 +464,15 @@ pub fn prepare_observed_forcing(
     grid.validate().map_err(|e| error(e.to_string()))?;
     basins.validate().map_err(|e| error(e.to_string()))?;
     let effective = effective_observations(inputs, timeline)?;
+    if let Some(row) = effective
+        .iter()
+        .find(|r| r.longitude.is_none() || r.latitude.is_none())
+    {
+        return Err(error(format!(
+            "station {}: coordinates required for interpolation",
+            row.station_id
+        )));
+    }
     let raw: Vec<_> = effective
         .iter()
         .filter(|r| r.raw_present)
@@ -557,8 +567,8 @@ pub fn prepare_observed_forcing(
             return Err(error(format!("no usable rainfall at {}", interval.end)));
         }
         let ids: Vec<_> = points.iter().map(|r| r.station_id.clone()).collect();
-        let lons: Vec<_> = points.iter().map(|r| r.longitude).collect();
-        let lats: Vec<_> = points.iter().map(|r| r.latitude).collect();
+        let lons: Vec<_> = points.iter().map(|r| r.longitude.unwrap()).collect();
+        let lats: Vec<_> = points.iter().map(|r| r.latitude.unwrap()).collect();
         let rain: Vec<_> = points.iter().map(|r| r.effective_value.unwrap()).collect();
         values.extend(
             crate::analysis::interpolate_stations(

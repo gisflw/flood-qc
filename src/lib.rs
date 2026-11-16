@@ -22,9 +22,34 @@ pub use store::{
 };
 
 pub use app::{
-    BatchStatus, ExecutionReport, ExecutionRequest, OperationError, PreparationReport,
-    PreparationRequest, ScenarioExecution, execute_prepared, prepare,
+    BatchStatus, EngineDocument, ExecutionReport, ExecutionRequest, ForecastsDocument,
+    GeometryDocument, GridDocument, InterpolationDocument, LevelsDocument, ObservedDocument,
+    OperationControl, OperationError, OperationProgress, OperationStage, PreparationDocument,
+    PreparationReport, PreparationRequest, ScenarioDocument, ScenarioExecution, ScenarioProgress,
+    TrialCache, TypedPreparationRequest, discover_trials, execute_prepared,
+    execute_prepared_controlled, prepare, prepare_controlled, prepare_typed, read_trial, run_draft,
+    tail_log,
 };
 pub use app::{
-    NormalizeForecastError, NormalizeForecastReport, NormalizeForecastRequest, normalize_forecast,
+    NormalizeForecastDocument, NormalizeForecastError, NormalizeForecastReport,
+    NormalizeForecastRequest, normalize_forecast, normalize_forecast_document,
+};
+
+pub use app::{
+    Draft, DraftAction, DraftCorrection, DraftDocument, DraftEngine, DraftFinding, DraftForecasts,
+    DraftGeometry, DraftGrid, DraftInstructions, DraftInterpolation, DraftLevels, DraftObserved,
+    DraftOperation, DraftQc, DraftReplacement, DraftScenario, DraftSources, DraftVisualization,
+    ForecastPreview, ObservationPreview, RegistrationCorrectionSelection, RegistrationMapping,
+    RegistrationOutcome, RegistrationReport, RegistrationSelection,
+};
+
+pub use app::{ReferenceImportReport, import_level_references, upgrade_level_references};
+
+pub use analysis::{
+    GridAccumulation, HourlyWindow, RainSummary, accumulated_grid_frame, accumulated_grid_rain,
+    accumulated_rain, resolve_hourly_window,
+};
+pub use app::{
+    ChartSeries, Location, QueryFinding, SeriesPoint, SeriesQuery, SeriesReport, SeriesSelection,
+    Variable, export_series_csv, query_series,
 };

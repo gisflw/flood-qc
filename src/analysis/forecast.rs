@@ -191,12 +191,162 @@ fn corrected_frame(
     Ok(frame)
 }
 
+pub fn corrected_forecast_frames(
+    native: &crate::store::GridSeries,
+    corrections: &[crate::store::ForecastCorrection],
+    used: &[usize],
+) -> Result<
+    (
+        Vec<crate::store::GridFrame>,
+        Vec<crate::store::CorrectionCoverage>,
+    ),
+    ForecastPreparationError,
+> {
+    use crate::store::{CorrectionCoverage, GridFrame};
+    let invalid = |s: &str| ForecastPreparationError::InvalidInput(s.into());
+    native.validate().map_err(|e| invalid(&e.to_string()))?;
+    if native
+        .timeline
+        .bounds
+        .windows(2)
+        .any(|v| v[1].start < v[0].end)
+    {
+        return Err(ForecastPreparationError::AmbiguousInterval(
+            "overlapping native intervals".into(),
+        ));
+    }
+    if native
+        .values
+        .iter()
+        .zip(&native.valid)
+        .any(|(v, valid)| *valid && *v < 0.0)
+    {
+        return Err(invalid("negative forecast rainfall"));
+    }
+    if used.iter().any(|i| *i >= native.timeline.bounds.len()) {
+        return Err(invalid("native interval index out of range"));
+    }
+    for &index in used {
+        let interval = &native.timeline.bounds[index];
+        let seconds = (interval.end - interval.start).num_seconds();
+        if seconds <= 0 || seconds % 3600 != 0 {
+            return Err(invalid("native duration must be divisible by an hour"));
+        }
+    }
+    let cycle = if corrections.is_empty() {
+        None
+    } else {
+        let value = native
+            .provenance
+            .processing
+            .get("normalization")
+            .and_then(|v| v.get("cycle_utc"))
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                ForecastPreparationError::SourceMismatch("missing forecast cycle".into())
+            })?;
+        let utc = chrono::DateTime::parse_from_rfc3339(value)
+            .map_err(|e| ForecastPreparationError::SourceMismatch(e.to_string()))?;
+        let zone = native
+            .timeline
+            .time_zone
+            .parse::<chrono_tz::Tz>()
+            .map_err(|e| ForecastPreparationError::SourceMismatch(e.to_string()))?;
+        Some(utc.with_timezone(&zone).naive_local())
+    };
+    let expected_asset = native
+        .provenance
+        .processing
+        .get("asset_id")
+        .and_then(serde_json::Value::as_str);
+    let mut ids = std::collections::HashSet::new();
+    for c in corrections {
+        if c.correction_id.is_empty()
+            || !ids.insert(&c.correction_id)
+            || expected_asset != Some(c.asset_id.as_str())
+            || c.t0_hour < 0
+            || c.t1_hour < c.t0_hour
+            || ![
+                c.shift_lat_pixels,
+                c.shift_lon_pixels,
+                c.rotation_deg,
+                c.multiplication_factor,
+            ]
+            .iter()
+            .all(|x| x.is_finite())
+            || c.multiplication_factor <= 0.
+        {
+            return Err(ForecastPreparationError::InvalidCorrection(format!(
+                "invalid correction {}",
+                c.correction_id
+            )));
+        }
+    }
+    let mut coverage: Vec<CorrectionCoverage> = corrections
+        .iter()
+        .enumerate()
+        .map(|(position, c)| CorrectionCoverage {
+            correction_id: c.correction_id.clone(),
+            position,
+            native_interval_indices: Vec::new(),
+        })
+        .collect();
+    let cells = native
+        .grid
+        .latitudes
+        .len()
+        .checked_mul(native.grid.longitudes.len())
+        .ok_or_else(|| invalid("native shape overflow"))?;
+    let mut transformed = Vec::new();
+    for &i in used {
+        let b = &native.timeline.bounds[i];
+        let mut frame = GridFrame {
+            interval: b.clone(),
+            time_zone: native.timeline.time_zone.clone(),
+            grid: native.grid.clone(),
+            values: native.values[i * cells..(i + 1) * cells].to_vec(),
+            valid: native.valid[i * cells..(i + 1) * cells].to_vec(),
+            provenance: native.provenance.clone(),
+        };
+        let mut applied = Vec::new();
+        for (j, c) in corrections.iter().enumerate() {
+            let start = cycle
+                .unwrap()
+                .checked_add_signed(
+                    chrono::Duration::try_hours(c.t0_hour)
+                        .ok_or_else(|| invalid("correction hour overflow"))?,
+                )
+                .ok_or_else(|| invalid("correction hour overflow"))?;
+            let end = cycle
+                .unwrap()
+                .checked_add_signed(
+                    chrono::Duration::try_hours(c.t1_hour)
+                        .ok_or_else(|| invalid("correction hour overflow"))?,
+                )
+                .ok_or_else(|| invalid("correction hour overflow"))?;
+            if b.start >= start && b.end <= end {
+                frame = corrected_frame(frame, c)?;
+                coverage[j].native_interval_indices.push(i);
+                applied.push(c.clone());
+            }
+        }
+        if let Some(map) = frame.provenance.processing.as_object_mut() {
+            map.insert(
+                "corrections".into(),
+                serde_json::to_value(applied).map_err(|e| invalid(&e.to_string()))?,
+            );
+        }
+        transformed.push(frame);
+    }
+    Ok((transformed, coverage))
+}
+
 pub fn prepare_forecast(
     native: &crate::store::GridSeries,
     corrections: &[crate::store::ForecastCorrection],
     request: &ForecastPreparationRequest,
 ) -> Result<crate::store::ForecastPreparation, ForecastPreparationError> {
-    use crate::store::{CorrectionCoverage, ForecastPreparation, GridFrame, GridSeries};
+    use crate::store::{ForecastPreparation, GridSeries};
     let invalid = |s: &str| ForecastPreparationError::InvalidInput(s.into());
     if native
         .timeline
@@ -272,111 +422,7 @@ pub fn prepare_forecast(
             used.push(i);
         }
     }
-    let cycle = if corrections.is_empty() {
-        None
-    } else {
-        let value = native
-            .provenance
-            .processing
-            .get("normalization")
-            .and_then(|v| v.get("cycle_utc"))
-            .and_then(serde_json::Value::as_str)
-            .ok_or_else(|| {
-                ForecastPreparationError::SourceMismatch("missing forecast cycle".into())
-            })?;
-        let utc = chrono::DateTime::parse_from_rfc3339(value)
-            .map_err(|e| ForecastPreparationError::SourceMismatch(e.to_string()))?;
-        let zone = native
-            .timeline
-            .time_zone
-            .parse::<chrono_tz::Tz>()
-            .map_err(|e| ForecastPreparationError::SourceMismatch(e.to_string()))?;
-        Some(utc.with_timezone(&zone).naive_local())
-    };
-    let expected_asset = native
-        .provenance
-        .processing
-        .get("asset_id")
-        .and_then(serde_json::Value::as_str);
-    let mut ids = std::collections::HashSet::new();
-    for c in corrections {
-        if c.correction_id.is_empty()
-            || !ids.insert(&c.correction_id)
-            || expected_asset != Some(c.asset_id.as_str())
-            || c.t0_hour < 0
-            || c.t1_hour < c.t0_hour
-            || ![
-                c.shift_lat_pixels,
-                c.shift_lon_pixels,
-                c.rotation_deg,
-                c.multiplication_factor,
-            ]
-            .iter()
-            .all(|x| x.is_finite())
-            || c.multiplication_factor <= 0.
-        {
-            return Err(ForecastPreparationError::InvalidCorrection(format!(
-                "invalid correction {}",
-                c.correction_id
-            )));
-        }
-    }
-    let mut coverage: Vec<CorrectionCoverage> = corrections
-        .iter()
-        .enumerate()
-        .map(|(position, c)| CorrectionCoverage {
-            correction_id: c.correction_id.clone(),
-            position,
-            native_interval_indices: Vec::new(),
-        })
-        .collect();
-    let cells = native
-        .grid
-        .latitudes
-        .len()
-        .checked_mul(native.grid.longitudes.len())
-        .ok_or_else(|| invalid("native shape overflow"))?;
-    let mut transformed = Vec::new();
-    for &i in &used {
-        let b = &native.timeline.bounds[i];
-        let mut frame = GridFrame {
-            interval: b.clone(),
-            time_zone: native.timeline.time_zone.clone(),
-            grid: native.grid.clone(),
-            values: native.values[i * cells..(i + 1) * cells].to_vec(),
-            valid: native.valid[i * cells..(i + 1) * cells].to_vec(),
-            provenance: native.provenance.clone(),
-        };
-        let mut applied = Vec::new();
-        for (j, c) in corrections.iter().enumerate() {
-            let start = cycle
-                .unwrap()
-                .checked_add_signed(
-                    chrono::Duration::try_hours(c.t0_hour)
-                        .ok_or_else(|| invalid("correction hour overflow"))?,
-                )
-                .ok_or_else(|| invalid("correction hour overflow"))?;
-            let end = cycle
-                .unwrap()
-                .checked_add_signed(
-                    chrono::Duration::try_hours(c.t1_hour)
-                        .ok_or_else(|| invalid("correction hour overflow"))?,
-                )
-                .ok_or_else(|| invalid("correction hour overflow"))?;
-            if b.start >= start && b.end <= end {
-                frame = corrected_frame(frame, c)?;
-                coverage[j].native_interval_indices.push(i);
-                applied.push(c.clone());
-            }
-        }
-        if let Some(map) = frame.provenance.processing.as_object_mut() {
-            map.insert(
-                "corrections".into(),
-                serde_json::to_value(applied).map_err(|e| invalid(&e.to_string()))?,
-            );
-        }
-        transformed.push(frame);
-    }
+    let (transformed, coverage) = corrected_forecast_frames(native, corrections, &used)?;
     let mut values = Vec::new();
     let mut valid = Vec::new();
     for (target_index, &source_index) in selected.iter().enumerate() {
@@ -506,6 +552,28 @@ mod tests {
             reason: "test".into(),
             created_at: "2026-07-20T00:00:00Z".into(),
         }
+    }
+    #[test]
+    fn preview_rejects_invalid_native_values_and_intervals() {
+        let frame = sample();
+        let mut native = crate::store::GridSeries {
+            timeline: crate::store::IntervalAxis {
+                time_zone: frame.time_zone,
+                bounds: vec![frame.interval],
+            },
+            grid: frame.grid,
+            values: frame.values,
+            valid: frame.valid,
+            provenance: frame.provenance,
+        };
+        native.values[0] = -1.0;
+        let negative = corrected_forecast_frames(&native, &[], &[0]).is_err();
+        assert!(negative);
+        native.values[0] = 1.0;
+        native.timeline.bounds[0].end =
+            native.timeline.bounds[0].start + chrono::Duration::minutes(30);
+        let interval = corrected_forecast_frames(&native, &[], &[0]).is_err();
+        assert!(interval);
     }
     #[test]
     fn ties_even_translation_and_rotation() {

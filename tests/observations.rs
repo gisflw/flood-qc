@@ -60,6 +60,14 @@ fn integer_levels_null_and_atomic_rollback() {
         ..Default::default()
     };
     store.write_batch(&batch).unwrap();
+    assert_eq!(
+        store.series_choices().unwrap(),
+        vec![
+            ("l".into(), "s".into(), "level".into()),
+            ("r".into(), "s".into(), "rain".into())
+        ]
+    );
+    assert!(store.replacement_choices().unwrap().is_empty());
     let conn = rusqlite::Connection::open(&path).unwrap();
     assert_eq!(
         conn.query_row(
@@ -158,6 +166,17 @@ fn fractional_level_and_schema_versions_are_rejected() {
     drop(store);
     let conn = rusqlite::Connection::open(&path).unwrap();
     conn.execute_batch("PRAGMA user_version=2").unwrap();
+    drop(conn);
+    assert!(ObservationStore::open_read_only(&path).is_err());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE level_reference(station_id TEXT,kind TEXT,date TEXT); PRAGMA user_version=2;",
+    )
+    .unwrap();
+    drop(conn);
+    assert!(ObservationStore::open_read_only(&path).is_err());
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute_batch("PRAGMA user_version=3").unwrap();
     drop(conn);
     assert!(ObservationStore::open_read_only(&path).is_err());
 }

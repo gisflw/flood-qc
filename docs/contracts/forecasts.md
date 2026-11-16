@@ -35,7 +35,11 @@ source files and the catalog may use explicit absolute paths.
 JSON output is one report containing source/asset IDs, retained source/native
 paths, native shape, effective bounds and canonical timeline. The CLI exits 0
 on success, 1 on operation/output failure and 2 for invalid CLI arguments.
-`app::normalize_forecast` exposes the same workflow without printing.
+`app::normalize_forecast` exposes the same file-based workflow without printing.
+`app::normalize_forecast_document` accepts a typed `NormalizeForecastDocument`
+with the same fields and validation, resolving its paths from the supplied
+workspace. Both entry points produce the same canonical values and catalog
+identities; callers do not need to create a temporary request file.
 `adapters::normalize_saved_forecast` returns canonical values and normalization
 evidence independently of persistence.
 
@@ -70,6 +74,12 @@ Corrections contain an asset ID, lead-hour bounds, latitude/longitude pixel
 shifts, rotation, positive multiplier and audit fields. Callers select explicit
 ordered correction IDs. Unknown/duplicate IDs and cross-asset selections fail.
 `load_selected` reads the asset and selected correction values in one transaction.
+Editor and reason are optional; supplied text is preserved. `open_writable`
+opens an existing catalog without creating it. `register_corrections` commits a
+selected batch atomically, reusing identical existing values and rejecting
+conflicting values under an existing ID. See the shared
+[draft registration workflow](drafts.md#explicit-registration) for selection and
+independent catalog outcomes.
 
 ## Pure preparation
 

@@ -238,15 +238,38 @@ correction_ids = ["rs-ecmwf-correction"]
                     .join(file),
                 &first
                     .run_root
-                    .join("scenarios")
+                    .join("results")
                     .join(scenario)
-                    .join("Input")
+                    .join("engine-inputs")
                     .join(file),
                 headers,
             );
         }
+        {
+            use sha2::{Digest, Sha256};
+            let expected = fs::read(
+                reference
+                    .join("capture/runs")
+                    .join(scenario)
+                    .join("Input/CHUVABIN.hig"),
+            )
+            .unwrap();
+            let hash = format!("{:x}", Sha256::digest(expected));
+            for trial in [&first, &second] {
+                assert_eq!(
+                    fs::read_to_string(
+                        trial
+                            .run_root
+                            .join("results")
+                            .join(scenario)
+                            .join("engine-inputs/CHUVABIN.sha256")
+                    )
+                    .unwrap(),
+                    hash
+                );
+            }
+        }
         for file in [
-            "Input/CHUVABIN.hig",
             "Output/QTUDO_Inercial_Atual.MGB",
             "Output/QTUDO_Inercial_Prev.MGB",
             "Output/YTUDO.MGB",

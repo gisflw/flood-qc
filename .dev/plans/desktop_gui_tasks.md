@@ -1,11 +1,9 @@
 # Desktop GUI implementation tasks
 
-Status: specified, not implemented. The [GUI specification](desktop_gui.md) owns
-product behavior; this file owns work boundaries, dependencies and acceptance.
-All tasks start not started. No task is complete merely because its code merges:
-its stated acceptance must have evidence. Retire these temporary documents after
-milestone acceptance, moving only unique durable decisions/contracts to their
-proper homes under [AGENTS.md](../../AGENTS.md).
+Status: desktop work is planned. Typed preparation, drafts, registration,
+controlled trials, geometry, reference imports, summaries and CSV queries are
+available as headless capabilities. The [GUI specification](desktop_gui.md)
+records product behavior; this file defines work boundaries and acceptance.
 
 ## Delivery order
 
@@ -16,15 +14,15 @@ proper homes under [AGENTS.md](../../AGENTS.md).
 | G03 | Shared drafts, source acceptance and previews | G02 |
 | G04 | Optional audit fields and explicit registration | G03 |
 | G05 | Shared disposable trials, status and cancellation | G02, G03 |
-| G06 | Geometry/topology and reference-level import/read APIs | G01 for chosen geometry integration |
+| G06 | Geometry/topology and reference-level import/read APIs | None |
 | G07 | Shared visualization queries, area summaries and CSV | G03, G06 |
 | G08 | Working operational desktop with activity tabs | G01, G03, G04, G05 |
 | G09 | Complete maps/charts, PNG and reference import UI | G06, G07, G08 |
 | G10 | End-to-end acceptance and current documentation | G01–G09 |
 
-G02 may proceed before G01 passes; GUI expansion waits for G01. Dependencies
-describe deliverables, not a requirement to create all proposed modules upfront.
-G06/G07 expose headless APIs before G09 connects their controls. G08 is a usable
+G02–G07 headless capabilities are implemented; GUI expansion waits for G01.
+Dependencies describe deliverables, not a requirement to create all proposed
+modules upfront. G09 connects the G06/G07 APIs to interface controls. G08 is a usable
 operational increment, not a placeholder shell waiting for every visualization.
 
 ## Common definition of done

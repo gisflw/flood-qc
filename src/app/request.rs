@@ -23,7 +23,7 @@ fn invalid(field: &str, message: impl Into<String>) -> RequestError {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct PreparationDocument {
+pub struct PreparationDocument {
     pub schema_version: u32,
     pub time_zone: String,
     pub reference_time: String,
@@ -44,7 +44,7 @@ pub(super) struct PreparationDocument {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ObservedDocument {
+pub struct ObservedDocument {
     pub path: PathBuf,
     pub provider_codes: Vec<String>,
     pub station_ids: Vec<String>,
@@ -54,41 +54,41 @@ pub(super) struct ObservedDocument {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct GeometryDocument {
+pub struct GeometryDocument {
     pub mini_gtp: PathBuf,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct GridDocument {
+pub struct GridDocument {
     pub bbox: [f64; 4],
     pub resolution_degrees: f64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct InterpolationDocument {
+pub struct InterpolationDocument {
     pub nearest_stations: usize,
     pub power: f64,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct LevelsDocument {
+pub struct LevelsDocument {
     pub station_ids: Vec<String>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct EngineDocument {
+pub struct EngineDocument {
     pub executable: PathBuf,
     pub input_dir: PathBuf,
     pub omp_threads: usize,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ForecastsDocument {
+pub struct ForecastsDocument {
     pub catalog: PathBuf,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct ScenarioDocument {
+pub struct ScenarioDocument {
     pub id: String,
     pub kind: String,
     pub asset_id: Option<String>,
@@ -103,7 +103,7 @@ pub(super) struct ValidatedRequest {
     pub interpolation: IdwSettings,
     pub qc: PrecipitationQcPolicy,
 }
-fn timestamp(field: &str, value: &str) -> Result<NaiveDateTime, RequestError> {
+pub(super) fn timestamp(field: &str, value: &str) -> Result<NaiveDateTime, RequestError> {
     let time = NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S")
         .map_err(|_| invalid(field, "expected local YYYY-MM-DDTHH:MM:SS"))?;
     if value.len() != 19
@@ -116,7 +116,7 @@ fn timestamp(field: &str, value: &str) -> Result<NaiveDateTime, RequestError> {
     }
     Ok(time)
 }
-fn axis(
+pub(super) fn axis(
     first: NaiveDateTime,
     last: NaiveDateTime,
     zone: &str,
@@ -185,6 +185,13 @@ pub(super) fn parse_request(request_bytes: Vec<u8>) -> Result<ValidatedRequest, 
         .map_err(|_| invalid("request", "expected UTF-8 TOML"))?;
     let document: PreparationDocument =
         toml::from_str(text).map_err(|e| invalid("request", e.message()))?;
+    validate_document(document, request_bytes)
+}
+
+pub(super) fn validate_document(
+    document: PreparationDocument,
+    request_bytes: Vec<u8>,
+) -> Result<ValidatedRequest, RequestError> {
     if document.schema_version != 1 {
         return Err(invalid("schema_version", "unsupported schema version"));
     }
@@ -319,7 +326,13 @@ pub(super) fn read_request(
 ) -> Result<ValidatedRequest, RequestError> {
     let request_bytes =
         std::fs::read(request_file).map_err(|e| invalid("request", e.to_string()))?;
-    let mut accepted = parse_request(request_bytes)?;
+    resolve_request(workspace, parse_request(request_bytes)?)
+}
+
+pub(super) fn resolve_request(
+    workspace: &Path,
+    mut accepted: ValidatedRequest,
+) -> Result<ValidatedRequest, RequestError> {
     let document = &mut accepted.document;
     resolve_file(
         workspace,

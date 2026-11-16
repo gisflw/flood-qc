@@ -10,7 +10,97 @@ use serde::{Deserialize, Serialize};
 use std::{
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperationStage {
+    Preparation,
+    History,
+    Scenarios,
+    Finalization,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OperationProgress {
+    pub stage: OperationStage,
+    pub scenario: Option<String>,
+    pub fraction: Option<f64>,
+    pub attempt: Option<PathBuf>,
+    pub scenarios: Vec<ScenarioProgress>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ScenarioProgress {
+    pub id: String,
+    pub state: String,
+}
+
+#[derive(Clone, Default, Debug)]
+pub struct OperationControl {
+    cancelled: Arc<AtomicBool>,
+    progress: Arc<Mutex<Option<OperationProgress>>>,
+    committed: Arc<Mutex<bool>>,
+}
+
+impl OperationControl {
+    pub fn cancel(&self) {
+        let committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
+        if !*committed {
+            self.cancelled.store(true, Ordering::Release);
+        }
+    }
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+    pub fn progress(&self) -> Option<OperationProgress> {
+        self.progress
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+    pub(super) fn check(&self) -> Result<(), OperationError> {
+        if self.is_cancelled() {
+            Err(OperationError::Cancelled {
+                message: "operation cancelled".into(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+    pub(super) fn set_progress(
+        &self,
+        stage: OperationStage,
+        scenario: Option<String>,
+        attempt: Option<PathBuf>,
+    ) {
+        let scenarios = self.progress().map(|p| p.scenarios).unwrap_or_default();
+        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(OperationProgress {
+            stage,
+            scenario,
+            fraction: None,
+            attempt,
+            scenarios,
+        });
+    }
+    fn scenario_state(&self, id: &str, state: &str) {
+        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(progress) = progress.as_mut() {
+            if let Some(scenario) = progress.scenarios.iter_mut().find(|s| s.id == id) {
+                scenario.state = state.into();
+            } else {
+                progress.scenarios.push(ScenarioProgress {
+                    id: id.into(),
+                    state: state.into(),
+                });
+            }
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct PreparationRequest {
@@ -54,10 +144,17 @@ pub struct ExecutionReport {
     pub run_artifact: PathBuf,
     pub status: BatchStatus,
     pub scenarios: Vec<ScenarioExecution>,
+    pub error: Option<String>,
 }
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum OperationError {
+    Cancelled {
+        message: String,
+    },
+    BatchFailed {
+        report: ExecutionReport,
+    },
     InvalidRequest {
         field: String,
         message: String,
@@ -399,6 +496,15 @@ fn scenario_record(id: String) -> ScenarioRecord {
 }
 
 pub fn execute_prepared(request: ExecutionRequest) -> Result<ExecutionReport, OperationError> {
+    execute_prepared_controlled(request, &OperationControl::default())
+}
+
+pub fn execute_prepared_controlled(
+    request: ExecutionRequest,
+    control: &OperationControl,
+) -> Result<ExecutionReport, OperationError> {
+    control.check()?;
+    control.set_progress(OperationStage::Preparation, None, None);
     let workspace = resolved(&request.invocation_dir, &request.workspace)
         .canonicalize()
         .map_err(|e| OperationError::Source {
@@ -411,88 +517,217 @@ pub fn execute_prepared(request: ExecutionRequest) -> Result<ExecutionReport, Op
             path: request.prepared.clone(),
             message: e.to_string(),
         })?;
+    let lock = lock_workspace(&workspace)?;
+    execute_locked(&workspace, &prepared, control, &lock, false)
+}
+
+fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
         .create(true)
         .truncate(false)
         .open(workspace.join(".operation.lock"))
-        .map_err(|e| store_error(&workspace, e))?;
+        .map_err(|e| store_error(workspace, e))?;
     lock.try_lock().map_err(|e| match e {
         std::fs::TryLockError::WouldBlock => OperationError::Busy {
-            workspace: workspace.clone(),
+            workspace: workspace.to_path_buf(),
         },
-        std::fs::TryLockError::Error(e) => store_error(&workspace, e),
+        std::fs::TryLockError::Error(e) => store_error(workspace, e),
     })?;
+    Ok(lock)
+}
+
+pub fn run_draft(
+    draft: &super::Draft,
+    control: &OperationControl,
+) -> Result<ExecutionReport, OperationError> {
+    control.check()?;
+    let workspace = draft
+        .workspace
+        .canonicalize()
+        .map_err(|e| OperationError::Source {
+            path: draft.workspace.clone(),
+            message: e.to_string(),
+        })?;
+    let lock = lock_workspace(&workspace)?;
+    let base = workspace.join("data/cache/preparations");
+    fs::create_dir_all(&base).map_err(|e| store_error(&workspace, e))?;
+    let prepared = base.join(format!(
+        "{}-{}",
+        chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"),
+        std::process::id()
+    ));
+    let report = draft.prepare_controlled(workspace.clone(), prepared, control)?;
+    let result = control
+        .check()
+        .and_then(|()| execute_locked(&workspace, &report.prepared, control, &lock, true));
+    if let Err(error) = remove_if_exists(&report.prepared) {
+        return Err(store_error(
+            &report.prepared,
+            format!(
+                "{}; preparation cleanup failed: {error}",
+                result
+                    .as_ref()
+                    .err()
+                    .map(ToString::to_string)
+                    .unwrap_or_else(|| "trial completed".into())
+            ),
+        ));
+    }
+    result
+}
+
+fn execute_locked(
+    workspace: &Path,
+    prepared: &Path,
+    control: &OperationControl,
+    _lock: &std::fs::File,
+    temporary_preparation: bool,
+) -> Result<ExecutionReport, OperationError> {
+    control.check()?;
     let manifest_identity = digest_file(&prepared.join("manifest.json")).map_err(|message| {
         OperationError::InvalidPrepared {
-            path: prepared.clone(),
+            path: prepared.to_path_buf(),
             message,
         }
     })?;
     let mut manifest =
-        read_operation_manifest(&prepared).map_err(|e| OperationError::InvalidPrepared {
-            path: prepared.clone(),
+        read_operation_manifest(prepared).map_err(|e| OperationError::InvalidPrepared {
+            path: prepared.to_path_buf(),
             message: e,
         })?;
     let recipe: ExecutionRecipe = serde_json::from_value(manifest.recipe.clone()).map_err(|e| {
         OperationError::InvalidPrepared {
-            path: prepared.clone(),
+            path: prepared.to_path_buf(),
             message: e.to_string(),
         }
     })?;
-    validate_recipe(&prepared, &recipe, &manifest.scenarios).map_err(|message| {
+    validate_recipe(prepared, &recipe, &manifest.scenarios).map_err(|message| {
         OperationError::InvalidPrepared {
-            path: prepared.clone(),
+            path: prepared.to_path_buf(),
             message,
         }
     })?;
     let run_base = workspace.join("data/runs");
-    fs::create_dir_all(&run_base).map_err(|e| store_error(&workspace, e))?;
+    fs::create_dir_all(&run_base).map_err(|e| store_error(workspace, e))?;
     let run_root = run_base.join(format!(
         "{}-{}",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"),
         std::process::id()
     ));
     fs::create_dir(&run_root).map_err(|e| store_error(&run_root, e))?;
+    control.set_progress(OperationStage::Preparation, None, Some(run_root.clone()));
     let snapshot = run_root.join("snapshot");
-    copy_tree(&prepared, &snapshot).map_err(|e| store_error(&run_root, e))?;
-    verify_inputs(&snapshot, &manifest.inputs).map_err(|e| store_error(&run_root, e))?;
-    if digest_file(&snapshot.join("manifest.json")).map_err(|e| store_error(&run_root, e))?
-        != manifest_identity
-    {
+    let freeze = (|| -> Result<(), OperationError> {
+        copy_tree(prepared, &snapshot).map_err(|e| store_error(&run_root, e))?;
+        control.check()?;
+        verify_inputs(&snapshot, &manifest.inputs).map_err(|e| store_error(&run_root, e))?;
+        if digest_file(&snapshot.join("manifest.json")).map_err(|e| store_error(&run_root, e))?
+            != manifest_identity
+        {
+            return Err(store_error(
+                &run_root,
+                "prepared manifest changed while freezing",
+            ));
+        }
+        control.check()
+    })();
+    if let Err(error) = freeze {
+        fs::remove_dir_all(&run_root)
+            .map_err(|e| store_error(&run_root, format!("{error}; cleanup failed: {e}")))?;
+        return Err(error);
+    }
+    if temporary_preparation && let Err(error) = fs::remove_dir_all(prepared) {
+        fs::remove_dir_all(&run_root).map_err(|cleanup| {
+            store_error(
+                &run_root,
+                format!("preparation cleanup failed: {error}; attempt cleanup failed: {cleanup}"),
+            )
+        })?;
         return Err(store_error(
-            &run_root,
-            "prepared manifest changed while freezing",
+            prepared,
+            format!("preparation cleanup failed: {error}"),
         ));
     }
+    manifest.preparation_sha256 = Some(manifest_identity.0.clone());
     manifest.state = "running".into();
     manifest.created_at = now(&recipe);
     manifest.finished_at = None;
     for item in &mut manifest.inputs {
         item.path = Path::new("snapshot").join(&item.path);
     }
-    write_run_manifest(&run_root, &manifest).map_err(|e| store_error(&run_root, e))?;
-    for scenario in &mut manifest.scenarios {
-        scenario.state = "running".into();
-        scenario.started_at = Some(now(&recipe));
+    let setup = fs::create_dir(run_root.join("scenarios"))
+        .and_then(|()| fs::create_dir(run_root.join("results")));
+    if let Err(error) = setup {
+        fs::remove_dir_all(&run_root).map_err(|cleanup| {
+            store_error(&run_root, format!("{error}; cleanup failed: {cleanup}"))
+        })?;
+        return Err(store_error(&run_root, error));
     }
-    write_run_manifest(&run_root, &manifest).map_err(|e| store_error(&run_root, e))?;
-    fs::create_dir(run_root.join("scenarios")).map_err(|e| store_error(&run_root, e))?;
-    fs::create_dir(run_root.join("results")).map_err(|e| store_error(&run_root, e))?;
-    let records = execute_scenarios(&run_root, &snapshot, &recipe, &manifest.scenarios);
+    let records = execute_scenarios(&run_root, &snapshot, &recipe, &manifest.scenarios, control);
     manifest.scenarios = records;
+    control.set_progress(OperationStage::Finalization, None, Some(run_root.clone()));
     let complete = manifest
         .scenarios
         .iter()
         .all(|item| item.state == "completed");
-    sync_tree(&run_root).map_err(|e| store_error(&run_root, e))?;
-    std::fs::File::open(&run_base)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| store_error(&run_root, e))?;
-    manifest.state = if complete { "completed" } else { "failed" }.into();
+    // Keep engine logs, successful original streams, and validated canonical results.
+    let mut cleanup_errors = Vec::new();
+    for record in &manifest.scenarios {
+        let worker = run_root.join("scenarios").join(&record.id);
+        if let Err(error) = clean_worker(&worker, record.state == "completed") {
+            cleanup_errors.push(format!("{}: {error}", worker.display()));
+        }
+        if record.state != "completed" {
+            let path = run_root.join("results").join(&record.id);
+            if let Err(error) = remove_if_exists(&path) {
+                cleanup_errors.push(format!("{}: {error}", path.display()));
+            }
+        }
+    }
+    let history = run_root.join("scenarios/.history");
+    if let Err(error) = clean_worker(&history, false) {
+        cleanup_errors.push(format!("{}: {error}", history.display()));
+    }
+    if let Err(error) = remove_if_exists(&snapshot) {
+        cleanup_errors.push(format!("{}: {error}", snapshot.display()));
+    }
+    if !cleanup_errors.is_empty() {
+        return Err(store_error(&run_root, cleanup_errors.join("; ")));
+    }
+    manifest.inputs.clear();
+    if manifest.scenarios.iter().any(|s| s.state == "completed") {
+        sync_tree(&run_root).map_err(|e| store_error(&run_root, e))?;
+    }
+    let mut committed = control.committed.lock().unwrap_or_else(|e| e.into_inner());
+    let cancelled = control.is_cancelled();
+    manifest.state = if complete && !cancelled {
+        "completed"
+    } else {
+        "failed"
+    }
+    .into();
     manifest.finished_at = Some(now(&recipe));
-    write_run_manifest(&run_root, &manifest).map_err(|e| store_error(&run_root, e))?;
+    if cancelled {
+        manifest.error = Some("operation cancelled".into());
+    }
+    if manifest.scenarios.iter().any(|s| s.state == "completed")
+        && let Err(error) = write_run_manifest(&run_root, &manifest)
+    {
+        let temporary = run_root.join("manifest.json.tmp");
+        if let Err(cleanup) = fs::remove_file(&temporary)
+            && cleanup.kind() != std::io::ErrorKind::NotFound
+        {
+            return Err(store_error(
+                &run_root,
+                format!("{error}; cleanup failed: {cleanup}"),
+            ));
+        }
+        return Err(store_error(&run_root, error));
+    }
+    *committed = true;
+    drop(committed);
     let scenarios = manifest
         .scenarios
         .iter()
@@ -518,16 +753,72 @@ pub fn execute_prepared(request: ExecutionRequest) -> Result<ExecutionReport, Op
             error: record.error.clone(),
         })
         .collect();
-    Ok(ExecutionReport {
+    let report = ExecutionReport {
         run_artifact: run_root.join("manifest.json"),
         run_root,
-        status: if complete {
+        status: if complete && !cancelled {
             BatchStatus::Completed
         } else {
             BatchStatus::Failed
         },
         scenarios,
-    })
+        error: manifest.error.clone(),
+    };
+    if cancelled || !complete {
+        Err(OperationError::BatchFailed { report })
+    } else {
+        Ok(report)
+    }
+}
+
+fn clean_worker(path: &Path, success: bool) -> std::io::Result<()> {
+    let entries = match fs::read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error),
+    };
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "logs" || (success && name == "Output") {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            fs::remove_dir_all(entry.path())?;
+        } else {
+            fs::remove_file(entry.path())?;
+        }
+    }
+    if success {
+        let output = path.join("Output");
+        for entry in fs::read_dir(output)? {
+            let entry = entry?;
+            if [
+                "QTUDO_Inercial_Atual.MGB",
+                "QTUDO_Inercial_Prev.MGB",
+                "YTUDO.MGB",
+                "YTUDO_prev.MGB",
+            ]
+            .iter()
+            .any(|name| entry.file_name() == *name)
+            {
+                continue;
+            }
+            if entry.file_type()?.is_dir() {
+                fs::remove_dir_all(entry.path())?;
+            } else {
+                fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_if_exists(path: &Path) -> std::io::Result<()> {
+    match fs::remove_dir_all(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
 }
 
 fn execute_scenarios(
@@ -535,28 +826,37 @@ fn execute_scenarios(
     snapshot: &Path,
     recipe: &ExecutionRecipe,
     requested: &[ScenarioRecord],
+    control: &OperationControl,
 ) -> Vec<ScenarioRecord> {
+    control.set_progress(OperationStage::History, None, Some(root.to_path_buf()));
     let first = &requested[0].id;
-    let history = prepare_worker(snapshot, root, first, true, recipe).and_then(|plan| {
-        let outcome = run_engine(&plan)?;
-        if let Some(error) = outcome.error {
-            return Err(format!("history run: {error}"));
-        }
-        let count = recipe
-            .historical_count
-            .checked_mul(
-                read_basin_forcing(&snapshot.join("forcing").join(format!("{first}.nc")))
-                    .map_err(|e| e.to_string())?
-                    .basins
-                    .mini_ids
-                    .len(),
-            )
-            .ok_or("history length overflow")?;
-        Ok(read_history(&plan.output, count)?)
-    });
+    let history = control
+        .check()
+        .map_err(|e| e.to_string())
+        .and_then(|()| prepare_worker(snapshot, root, first, true, recipe))
+        .and_then(|plan| {
+            let outcome = run_engine(&plan, &control.cancelled)?;
+            if let Some(error) = outcome.error {
+                return Err(format!("history run: {error}"));
+            }
+            let count = recipe
+                .historical_count
+                .checked_mul(
+                    read_basin_forcing(&snapshot.join("forcing").join(format!("{first}.nc")))
+                        .map_err(|e| e.to_string())?
+                        .basins
+                        .mini_ids
+                        .len(),
+                )
+                .ok_or("history length overflow")?;
+            Ok(read_history(&plan.output, count)?)
+        });
     let history = match history {
         Ok(value) => value,
         Err(error) => {
+            for item in requested {
+                control.scenario_state(&item.id, "failed");
+            }
             return requested
                 .iter()
                 .map(|item| {
@@ -576,6 +876,10 @@ fn execute_scenarios(
                 .collect();
         }
     };
+    control.set_progress(OperationStage::Scenarios, None, Some(root.to_path_buf()));
+    for item in requested {
+        control.scenario_state(&item.id, "pending");
+    }
     let plans: Vec<_> = requested
         .iter()
         .map(|item| prepare_worker(snapshot, root, &item.id, false, recipe))
@@ -586,7 +890,9 @@ fn execute_scenarios(
             .zip(plans)
             .map(|(item, plan)| {
                 let history = &history;
-                scope.spawn(move || run_scenario(root, snapshot, recipe, &item.id, plan, history))
+                scope.spawn(move || {
+                    run_scenario(root, snapshot, recipe, &item.id, plan, history, control)
+                })
             })
             .collect();
         handles
@@ -595,6 +901,7 @@ fn execute_scenarios(
             .map(|(handle, item)| match handle.join() {
                 Ok(record) => record,
                 Err(_) => {
+                    control.scenario_state(&item.id, "failed");
                     let mut record = scenario_record(item.id.clone());
                     record.state = "failed".into();
                     record.error = Some(ScenarioFailure {
@@ -617,20 +924,24 @@ fn run_scenario(
     id: &str,
     plan: Result<EnginePlan, String>,
     history: &HistoryResults,
+    control: &OperationControl,
 ) -> ScenarioRecord {
+    control.scenario_state(id, "running");
     let mut record = scenario_record(id.into());
     record.state = "running".into();
     record.started_at = Some(now(recipe));
     let result = (|| -> Result<(), String> {
+        control.check().map_err(|e| e.to_string())?;
         let plan = plan?;
         record.stdout = Some(Path::new("scenarios").join(id).join("logs/stdout.log"));
         record.stderr = Some(Path::new("scenarios").join(id).join("logs/stderr.log"));
-        let outcome = run_engine(&plan)?;
+        let outcome = run_engine(&plan, &control.cancelled)?;
         record.exit_code = outcome.exit_code;
         record.signal = outcome.signal;
         if let Some(error) = outcome.error {
             return Err(error.to_string());
         }
+        control.check().map_err(|e| e.to_string())?;
         let mut forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{id}.nc")))
             .map_err(|e| e.to_string())?;
         let mut hashes = String::new();
@@ -679,6 +990,16 @@ fn run_scenario(
             .map_err(|e| e.to_string())?;
         crate::store::read_station_results(&result_dir.join("station.nc"))
             .map_err(|e| e.to_string())?;
+        let evidence = result_dir.join("engine-inputs");
+        fs::create_dir(&evidence).map_err(|e| e.to_string())?;
+        for name in ["PARHIG.hig", "Previsao.meta"] {
+            fs::copy(plan.input.join(name), evidence.join(name)).map_err(|e| e.to_string())?;
+        }
+        fs::write(
+            evidence.join("CHUVABIN.sha256"),
+            digest_file(&plan.input.join("CHUVABIN.hig"))?.0,
+        )
+        .map_err(|e| e.to_string())?;
         sync_tree(&result_dir)?;
         record.basin_result = Some(Path::new("results").join(id).join("basin.nc"));
         record.station_result = Some(Path::new("results").join(id).join("station.nc"));
@@ -699,5 +1020,104 @@ fn run_scenario(
             });
         }
     }
+    control.scenario_state(id, &record.state);
     record
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TrialCache {
+    pub root: PathBuf,
+    pub preparation_sha256: Option<String>,
+    pub recipe: serde_json::Value,
+    pub scenarios: Vec<ScenarioExecution>,
+}
+
+pub fn discover_trials(workspace: &Path) -> Result<Vec<PathBuf>, OperationError> {
+    let base = workspace.join("data/runs");
+    let entries = match fs::read_dir(&base) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(store_error(&base, error)),
+    };
+    let mut roots = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| store_error(&base, e))?;
+        if entry.path().join("manifest.json").is_file() {
+            roots.push(entry.path());
+        }
+    }
+    roots.sort();
+    Ok(roots)
+}
+
+pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
+    let manifest = crate::store::read_retained_manifest(root).map_err(|e| store_error(root, e))?;
+    if manifest.state == "prepared" {
+        return Err(store_error(root, "expected trial cache"));
+    }
+    let mut scenarios = Vec::new();
+    for record in manifest.scenarios.iter().filter(|s| s.state == "completed") {
+        let id = &record.id;
+        if id.is_empty()
+            || !id
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+        {
+            return Err(store_error(root, "invalid scenario ID"));
+        }
+        let basin = root.join("results").join(id).join("basin.nc");
+        let station = root.join("results").join(id).join("station.nc");
+        crate::store::read_result_series(&basin).map_err(|e| store_error(root, e))?;
+        crate::store::read_station_results(&station).map_err(|e| store_error(root, e))?;
+        if manifest.preparation_sha256.is_some() {
+            for name in [
+                "QTUDO_Inercial_Atual.MGB",
+                "QTUDO_Inercial_Prev.MGB",
+                "YTUDO.MGB",
+                "YTUDO_prev.MGB",
+            ] {
+                if !root
+                    .join("scenarios")
+                    .join(id)
+                    .join("Output")
+                    .join(name)
+                    .is_file()
+                {
+                    return Err(store_error(
+                        root,
+                        format!("missing engine stream for {id}: {name}"),
+                    ));
+                }
+            }
+        }
+        scenarios.push(ScenarioExecution {
+            id: id.clone(),
+            status: BatchStatus::Completed,
+            exit_code: record.exit_code,
+            signal: record.signal,
+            logs: ["stdout.log", "stderr.log"]
+                .iter()
+                .map(|name| root.join("scenarios").join(id).join("logs").join(name))
+                .collect(),
+            results: vec![basin, station],
+            error: None,
+        });
+    }
+    Ok(TrialCache {
+        root: root.into(),
+        preparation_sha256: manifest.preparation_sha256,
+        recipe: manifest.recipe,
+        scenarios,
+    })
+}
+
+pub fn tail_log(path: &Path, max_bytes: usize) -> std::io::Result<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path)?;
+    let size = file.metadata()?.len();
+    let count = max_bytes.min(65536) as u64;
+    file.seek(SeekFrom::Start(size.saturating_sub(count)))?;
+    let mut bytes = Vec::new();
+    file.take(count).read_to_end(&mut bytes)?;
+    Ok(bytes)
 }

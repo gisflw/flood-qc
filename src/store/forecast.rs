@@ -12,11 +12,24 @@ use std::{
 
 const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT UNIQUE NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),schema_version INTEGER NOT NULL,normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
 #[derive(Debug, Clone)]
+pub struct ForecastAssetChoice {
+    pub asset_id: String,
+    pub provider: String,
+    pub model: String,
+    pub product: String,
+    pub cycle_utc: String,
+}
+#[derive(Debug, Clone)]
 pub struct ForecastAsset {
     pub asset_id: String,
     pub source_id: String,
     pub retained_source: PathBuf,
     pub native_artifact: PathBuf,
+}
+pub struct ForecastSnapshotSelection {
+    pub asset_id: String,
+    pub correction_ids: Vec<String>,
+    pub corrections: Option<Vec<ForecastCorrection>>,
 }
 pub struct ForecastCatalog {
     workspace: PathBuf,
@@ -155,10 +168,9 @@ fn check_source(source: &ForecastSource, native: &GridSeries) -> Result<(), Stor
     }
     Ok(())
 }
-fn check_correction(c: &ForecastCorrection) -> Result<(), StoreError> {
+pub fn check_correction(c: &ForecastCorrection) -> Result<(), StoreError> {
     if c.correction_id.is_empty()
         || c.asset_id.is_empty()
-        || c.reason.trim().is_empty()
         || chrono::DateTime::parse_from_rfc3339(&c.created_at).is_err()
         || c.t0_hour < 0
         || c.t1_hour < c.t0_hour
@@ -177,15 +189,48 @@ fn check_correction(c: &ForecastCorrection) -> Result<(), StoreError> {
     Ok(())
 }
 impl ForecastCatalog {
+    pub fn asset_choices(&self) -> Result<Vec<ForecastAssetChoice>, StoreError> {
+        let mut statement = self.connection.prepare("SELECT asset_id,provider,model,product,cycle_utc FROM asset ORDER BY cycle_utc DESC,asset_id")?;
+        let rows = statement.query_map([], |row| {
+            Ok(ForecastAssetChoice {
+                asset_id: row.get(0)?,
+                provider: row.get(1)?,
+                model: row.get(2)?,
+                product: row.get(3)?,
+                cycle_utc: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+    pub fn correction_choices(&self) -> Result<Vec<(String, String)>, StoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT correction_id,asset_id FROM correction ORDER BY correction_id")?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
     pub fn open_read_only(workspace: &Path, catalog: &Path) -> Result<Self, StoreError> {
+        Self::open_existing(workspace, catalog, false)
+    }
+    pub fn open_writable(workspace: &Path, catalog: &Path) -> Result<Self, StoreError> {
+        Self::open_existing(workspace, catalog, true)
+    }
+    fn open_existing(workspace: &Path, catalog: &Path, writable: bool) -> Result<Self, StoreError> {
         let workspace = workspace.canonicalize()?;
         let path = if catalog.is_absolute() {
             catalog.to_path_buf()
         } else {
             workspace.join(catalog)
         };
-        let connection =
-            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        let connection = Connection::open_with_flags(
+            path,
+            if writable {
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+            } else {
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+            },
+        )?;
+        connection.pragma_update(None, "foreign_keys", true)?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if version != 1 {
             return Err(StoreError::Schema(format!(
@@ -197,6 +242,29 @@ impl ForecastCatalog {
             root: PathBuf::new(),
             connection,
         })
+    }
+    pub fn check_asset_available(&self, asset_id: &str) -> Result<(), StoreError> {
+        let (source, native): (String, String) = self
+            .connection
+            .query_row(
+                "SELECT source_path, native_path FROM asset WHERE asset_id=?1",
+                [asset_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?
+            .ok_or_else(|| invalid("unknown asset"))?;
+        for path in [source, native] {
+            let path = resolve(&self.workspace, Path::new(&path))?;
+            let metadata = fs::metadata(&path)?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                return Err(invalid(format!(
+                    "unavailable forecast file {}",
+                    path.display()
+                )));
+            }
+            File::open(path)?;
+        }
+        Ok(())
     }
     pub fn open(
         workspace: &Path,
@@ -439,6 +507,46 @@ impl ForecastCatalog {
         )?;
         Ok(())
     }
+    pub fn register_corrections(
+        &self,
+        corrections: &[ForecastCorrection],
+    ) -> Result<(), StoreError> {
+        let tx = self.connection.unchecked_transaction()?;
+        for c in corrections {
+            check_correction(c)?;
+            let existing: Option<bool> = tx.query_row(
+                "SELECT asset_id IS ?2 AND t0_hour IS ?3 AND t1_hour IS ?4 AND shift_lat_pixels IS ?5 AND shift_lon_pixels IS ?6 AND rotation_deg IS ?7 AND multiplication_factor IS ?8 AND editor IS ?9 AND reason IS ?10 AND created_at IS ?11 FROM correction WHERE correction_id=?1",
+                params![c.correction_id,c.asset_id,c.t0_hour,c.t1_hour,c.shift_lat_pixels,c.shift_lon_pixels,c.rotation_deg,c.multiplication_factor,c.editor,c.reason,c.created_at], |row| row.get(0)
+            ).optional()?;
+            if let Some(matches) = existing {
+                if !matches {
+                    return Err(invalid(format!(
+                        "conflicting correction {}",
+                        c.correction_id
+                    )));
+                }
+                continue;
+            }
+            tx.execute(
+                "INSERT INTO correction VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                params![
+                    c.correction_id,
+                    c.asset_id,
+                    c.t0_hour,
+                    c.t1_hour,
+                    c.shift_lat_pixels,
+                    c.shift_lon_pixels,
+                    c.rotation_deg,
+                    c.multiplication_factor,
+                    c.editor,
+                    c.reason,
+                    c.created_at
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
     pub fn load_selected(
         &self,
         asset_id: &str,
@@ -461,6 +569,22 @@ impl ForecastCatalog {
         destination: &Path,
         selections: &[(String, Vec<String>)],
     ) -> Result<Vec<(ForecastAsset, GridSeries, Vec<ForecastCorrection>)>, StoreError> {
+        let selections: Vec<_> = selections
+            .iter()
+            .map(|(id, ids)| ForecastSnapshotSelection {
+                asset_id: id.clone(),
+                correction_ids: ids.clone(),
+                corrections: None,
+            })
+            .collect();
+        self.snapshot_selected_values(destination, &selections)
+    }
+
+    pub fn snapshot_selected_values(
+        &self,
+        destination: &Path,
+        selections: &[ForecastSnapshotSelection],
+    ) -> Result<Vec<(ForecastAsset, GridSeries, Vec<ForecastCorrection>)>, StoreError> {
         let tx = self.connection.unchecked_transaction()?;
         let mut destination_db = Connection::open(destination)?;
         destination_db.execute_batch(SCHEMA)?;
@@ -468,10 +592,29 @@ impl ForecastCatalog {
         let destination_tx = destination_db.transaction()?;
         let mut selected = Vec::new();
         let mut asset_ids = HashSet::new();
-        let mut correction_ids = HashSet::new();
-        for (id, ids) in selections {
+        let mut correction_ids = std::collections::HashMap::new();
+        for selection in selections {
+            let id = &selection.asset_id;
+            let ids = &selection.correction_ids;
+            let supplied = &selection.corrections;
             let (asset, mut native) = self.load_native(id)?;
-            let corrections = self.load_corrections(id, ids)?;
+            let corrections = if let Some(values) = supplied {
+                if values.iter().map(|c| &c.correction_id).ne(ids.iter()) {
+                    return Err(invalid("correction IDs do not match supplied values"));
+                }
+                let mut seen = HashSet::new();
+                for c in values {
+                    check_correction(c)?;
+                    if c.asset_id != *id || !seen.insert(&c.correction_id) {
+                        return Err(invalid(
+                            "duplicate correction ID or correction belongs to another asset",
+                        ));
+                    }
+                }
+                values.clone()
+            } else {
+                self.load_corrections(id, ids)?
+            };
             if let Some(processing) = native.provenance.processing.as_object_mut() {
                 processing.insert("asset_id".into(), id.clone().into());
             } else if !ids.is_empty() {
@@ -495,17 +638,27 @@ impl ForecastCatalog {
                 )?;
             }
             for correction in &corrections {
-                if correction_ids.insert(correction.correction_id.clone()) {
-                    let mut query =
-                        tx.prepare("SELECT * FROM correction WHERE correction_id=?1")?;
-                    let values = query.query_row([&correction.correction_id], |row| {
-                        (0..11)
-                            .map(|index| row.get::<_, rusqlite::types::Value>(index))
-                            .collect::<Result<Vec<_>, _>>()
-                    })?;
+                if let Some(previous) = correction_ids.get(&correction.correction_id) {
+                    if previous != correction {
+                        return Err(invalid("conflicting correction ID"));
+                    }
+                } else {
+                    correction_ids.insert(correction.correction_id.clone(), correction.clone());
                     destination_tx.execute(
                         "INSERT INTO correction VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
-                        rusqlite::params_from_iter(values),
+                        params![
+                            correction.correction_id,
+                            correction.asset_id,
+                            correction.t0_hour,
+                            correction.t1_hour,
+                            correction.shift_lat_pixels,
+                            correction.shift_lon_pixels,
+                            correction.rotation_deg,
+                            correction.multiplication_factor,
+                            correction.editor,
+                            correction.reason,
+                            correction.created_at
+                        ],
                     )?;
                 }
             }

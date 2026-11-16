@@ -3,7 +3,8 @@ use std::{
     fs::{self, File},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::Instant,
+    sync::atomic::{AtomicBool, Ordering},
+    time::{Duration, Instant},
 };
 
 pub(crate) struct EnginePlan {
@@ -43,7 +44,7 @@ pub(crate) struct ProcessOutcome {
     pub error: Option<super::ModelError>,
 }
 
-fn run_engine_inner(plan: &EnginePlan) -> Result<ProcessOutcome, String> {
+fn run_engine_inner(plan: &EnginePlan, cancelled: &AtomicBool) -> Result<ProcessOutcome, String> {
     if plan.omp_threads == 0
         || !plan.executable.is_absolute()
         || !plan.cwd.is_absolute()
@@ -69,7 +70,7 @@ fn run_engine_inner(plan: &EnginePlan) -> Result<ProcessOutcome, String> {
     };
     let start = Instant::now();
     let started_at = local_now();
-    let status = Command::new(&plan.executable)
+    let child = Command::new(&plan.executable)
         .current_dir(&plan.cwd)
         .env_clear()
         .env("MGB_INPUT_DIR", &plan.input)
@@ -77,7 +78,39 @@ fn run_engine_inner(plan: &EnginePlan) -> Result<ProcessOutcome, String> {
         .env("OMP_NUM_THREADS", plan.omp_threads.to_string())
         .stdout(Stdio::from(stdout))
         .stderr(Stdio::from(stderr))
-        .status();
+        .spawn();
+    let mut was_cancelled = false;
+    let status = match child {
+        Err(error) => Err(error),
+        Ok(mut child) => loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if cancelled.load(Ordering::Acquire) => {
+                    was_cancelled = true;
+                    if let Err(error) = child.kill() {
+                        match child.try_wait() {
+                            Ok(Some(status)) => break Ok(status),
+                            _ => {
+                                let waited = child.wait();
+                                return Err(format!(
+                                    "failed to stop engine: {error}; wait: {waited:?}"
+                                ));
+                            }
+                        }
+                    }
+                    break child.wait();
+                }
+                Ok(None) => std::thread::sleep(Duration::from_millis(25)),
+                Err(error) => {
+                    let killed = child.kill();
+                    let waited = child.wait();
+                    return Err(format!(
+                        "failed to poll engine: {error}; kill: {killed:?}; wait: {waited:?}"
+                    ));
+                }
+            }
+        },
+    };
     #[cfg(unix)]
     let signal = {
         use std::os::unix::process::ExitStatusExt;
@@ -106,6 +139,10 @@ fn run_engine_inner(plan: &EnginePlan) -> Result<ProcessOutcome, String> {
             .and_then(std::process::ExitStatus::code),
         signal,
         error: match status {
+            Err(error) if was_cancelled => Some(super::ModelError::Io(format!(
+                "failed to wait for cancelled engine: {error}"
+            ))),
+            Ok(_) if was_cancelled => Some(super::ModelError::Io("engine cancelled".into())),
             Ok(status) if status.success() => None,
             Ok(status) => Some(super::ModelError::NonzeroExit(format!(
                 "engine exited {status}"
@@ -125,6 +162,62 @@ fn write_outcome(path: &Path, outcome: &ProcessOutcome) -> Result<(), String> {
     file.sync_all().map_err(|error| error.to_string())
 }
 
-pub(crate) fn run_engine(plan: &EnginePlan) -> Result<ProcessOutcome, super::ModelError> {
-    run_engine_inner(plan).map_err(super::ModelError::Io)
+pub(crate) fn run_engine(
+    plan: &EnginePlan,
+    cancelled: &AtomicBool,
+) -> Result<ProcessOutcome, super::ModelError> {
+    run_engine_inner(plan, cancelled).map_err(super::ModelError::Io)
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering;
+
+    #[test]
+    fn cancellation_reaps_sleeping_engine() {
+        fs::create_dir_all("runs").unwrap();
+        let dir = tempfile::Builder::new()
+            .prefix("engine-cancel-")
+            .tempdir_in("runs")
+            .unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let executable = root.join("engine");
+        fs::write(
+            &executable,
+            "#!/bin/sh\necho $$ > \"$MGB_OUTPUT_DIR/pid\"\nexec /bin/sleep 30\n",
+        )
+        .unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let plan = EnginePlan {
+            executable,
+            cwd: root.clone(),
+            input: root.clone(),
+            output: root.join("output"),
+            logs: root.join("logs"),
+            omp_threads: 1,
+            time_zone: "UTC".into(),
+        };
+        let cancelled = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| run_engine(&plan, &cancelled).unwrap());
+            let pid_path = plan.output.join("pid");
+            for _ in 0..200 {
+                if pid_path.exists() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pid = fs::read_to_string(pid_path).unwrap();
+            cancelled.store(true, Ordering::Release);
+            let outcome = worker.join().unwrap();
+            assert!(outcome.error.unwrap().to_string().contains("cancelled"));
+            #[cfg(target_os = "linux")]
+            {
+                let reaped = !Path::new("/proc").join(pid.trim()).exists();
+                assert!(reaped);
+            }
+        });
+    }
 }

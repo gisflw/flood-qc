@@ -49,15 +49,50 @@ impl Gate {
                 {
                     return;
                 }
+                if self.owner == "interface"
+                    && segments.len() == 3
+                    && segments[1] == "OperationControl"
+                    && segments[2] == "default"
+                {
+                    return;
+                }
+                if self.owner == "interface"
+                    && segments.len() == 3
+                    && segments[1] == "Draft"
+                    && ["new", "open", "import_toml", "import_manifest"]
+                        .contains(&segments[2].as_str())
+                {
+                    return;
+                }
+                if self.owner == "interface"
+                    && segments.len() == 3
+                    && segments[1] == "DraftAction"
+                    && ["Preparation", "ObservationPreview", "ForecastPreview"]
+                        .contains(&segments[2].as_str())
+                {
+                    return;
+                }
                 // The facade exposes only app APIs to interfaces.
                 if self.owner == "interface"
                     && segments.len() == 2
                     && [
+                        "SeriesQuery",
+                        "query_series",
+                        "export_series_csv",
+                        "RegistrationSelection",
+                        "RegistrationMapping",
                         "normalize_forecast",
+                        "import_level_references",
+                        "upgrade_level_references",
                         "NormalizeForecastRequest",
                         "NormalizeForecastReport",
                         "NormalizeForecastError",
                         "prepare",
+                        "prepare_controlled",
+                        "execute_prepared_controlled",
+                        "OperationControl",
+                        "run_draft",
+                        "Draft",
                         "execute_prepared",
                         "PreparationRequest",
                         "PreparationReport",
@@ -346,6 +381,7 @@ impl<'ast> Visit<'ast> for Gate {
                         .unwrap_or_default();
                     let path_keys = [
                         "default",
+                        "default_value",
                         "with",
                         "serialize_with",
                         "deserialize_with",
@@ -368,6 +404,7 @@ impl<'ast> Visit<'ast> for Gate {
                         "content",
                         "untagged",
                         "long",
+                        "global",
                         "short",
                         "version",
                         "subcommand",
@@ -377,7 +414,9 @@ impl<'ast> Visit<'ast> for Gate {
                     if !path_keys.contains(&key.as_str()) && !plain_keys.contains(&key.as_str()) {
                         return Err(meta.error("unsupported helper attribute"));
                     }
-                    if meta.input.peek(syn::Token![=]) {
+                    if meta.input.peek(syn::Token![=]) && key == "global" {
+                        let _: syn::LitBool = meta.value()?.parse()?;
+                    } else if meta.input.peek(syn::Token![=]) {
                         let literal: syn::LitStr = meta.value()?.parse()?;
                         if path_keys.contains(&key.as_str()) {
                             let path: SynPath = literal.parse()?;

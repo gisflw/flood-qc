@@ -1,16 +1,35 @@
+mod series;
+pub use self::series::{
+    ChartSeries, Location, QueryFinding, SeriesPoint, SeriesQuery, SeriesReport, SeriesSelection,
+    Variable, export_series_csv, query_series,
+};
+mod references;
+pub use self::references::{
+    ReferenceImportReport, import_level_references, upgrade_level_references,
+};
 mod operation;
 mod request;
 pub use self::operation::{
-    BatchStatus, ExecutionReport, ExecutionRequest, OperationError, PreparationReport,
-    PreparationRequest, ScenarioExecution, execute_prepared,
+    BatchStatus, ExecutionReport, ExecutionRequest, OperationControl, OperationError,
+    OperationProgress, OperationStage, PreparationReport, PreparationRequest, ScenarioExecution,
+    ScenarioProgress, TrialCache, discover_trials, execute_prepared, execute_prepared_controlled,
+    read_trial, run_draft, tail_log,
+};
+pub use self::request::{
+    EngineDocument, ForecastsDocument, GeometryDocument, GridDocument, InterpolationDocument,
+    LevelsDocument, ObservedDocument, PreparationDocument, ScenarioDocument,
 };
 mod forecast;
 pub use self::forecast::{
-    NormalizeForecastError, NormalizeForecastReport, NormalizeForecastRequest, normalize_forecast,
+    NormalizeForecastDocument, NormalizeForecastError, NormalizeForecastReport,
+    NormalizeForecastRequest, normalize_forecast, normalize_forecast_document,
 };
 
 mod prepare;
-pub use self::prepare::{ObservedInputs, ObservedRequest, prepare, prepare_observations};
+pub use self::prepare::{
+    ObservedInputs, ObservedRequest, TypedPreparationRequest, prepare, prepare_controlled,
+    prepare_observations, prepare_typed,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -453,3 +472,12 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     }
     finish(workspace, config_path, findings)
 }
+
+mod draft;
+pub use self::draft::{
+    Draft, DraftAction, DraftCorrection, DraftDocument, DraftEngine, DraftFinding, DraftForecasts,
+    DraftGeometry, DraftGrid, DraftInstructions, DraftInterpolation, DraftLevels, DraftObserved,
+    DraftOperation, DraftQc, DraftReplacement, DraftScenario, DraftSources, DraftVisualization,
+    ForecastPreview, ObservationPreview, RegistrationCorrectionSelection, RegistrationMapping,
+    RegistrationOutcome, RegistrationReport, RegistrationSelection,
+};

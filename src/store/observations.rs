@@ -96,6 +96,7 @@ pub enum ReplacementKind {
     Period,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObservationReplacement {
     pub replacement_id: String,
     pub station_id: String,
@@ -104,6 +105,7 @@ pub struct ObservationReplacement {
     pub start_at: NaiveDateTime,
     pub end_at: Option<NaiveDateTime>,
     pub value: Option<f64>,
+    #[serde(default)]
     pub reason: String,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -182,14 +184,13 @@ fn validate_sample(s: &ObservationSample, variable: &str) -> Result<(), Observat
         ))),
     }
 }
-fn validate_replacement(r: &ObservationReplacement) -> Result<(), ObservationError> {
+pub fn validate_replacement(r: &ObservationReplacement) -> Result<(), ObservationError> {
     validate_time(r.start_at, &r.replacement_id)?;
     if let Some(end) = r.end_at {
         validate_time(end, &r.replacement_id)?;
     }
     nonempty(&r.replacement_id, "replacement ID")?;
     nonempty(&r.station_id, "replacement station")?;
-    nonempty(&r.reason, "replacement reason")?;
     if r.variable != "rain"
         || (r.kind == ReplacementKind::Point && r.end_at.is_some())
         || r.end_at.is_some_and(|end| end <= r.start_at)
@@ -250,12 +251,34 @@ impl ObservationStore {
         Self::verify(&connection)?;
         Ok(Self { connection })
     }
+    pub fn open_writable(path: &Path) -> Result<Self, ObservationError> {
+        let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
+        connection.execute_batch("PRAGMA foreign_keys=ON;")?;
+        Self::verify(&connection)?;
+        Ok(Self { connection })
+    }
     fn verify(connection: &Connection) -> Result<String, ObservationError> {
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != 1 {
+        if version != 1 && version != 2 {
             return Err(error(format!(
                 "unsupported observation schema version {version}"
             )));
+        }
+        if version == 2 {
+            let table_exists: bool = connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='level_reference')",
+                [],
+                |row| row.get(0),
+            )?;
+            if !table_exists
+                || connection
+                    .prepare("SELECT station_id,kind,date,level_cm FROM level_reference LIMIT 0")
+                    .is_err()
+            {
+                return Err(error(
+                    "invalid observation schema version 2: missing reference table or columns",
+                ));
+            }
         }
         let format: String =
             connection.query_row("SELECT value FROM metadata WHERE key='format'", [], |r| {
@@ -277,6 +300,25 @@ impl ObservationStore {
         Self::verify(&self.connection)
     }
     pub fn write_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
+        self.write_batch_inner(batch, false)
+    }
+    pub fn register_replacements(
+        &mut self,
+        replacements: Vec<ObservationReplacement>,
+    ) -> Result<(), ObservationError> {
+        self.write_batch_inner(
+            &ObservationBatch {
+                replacements,
+                ..ObservationBatch::default()
+            },
+            true,
+        )
+    }
+    fn write_batch_inner(
+        &mut self,
+        batch: &ObservationBatch,
+        idempotent: bool,
+    ) -> Result<(), ObservationError> {
         let tx = self.connection.transaction()?;
         let zone: chrono_tz::Tz = Self::verify(&tx)?
             .parse()
@@ -363,6 +405,21 @@ impl ObservationStore {
             if let Some(end) = r.end_at {
                 unique(end, &r.replacement_id)?;
             }
+            if idempotent {
+                let existing: Option<bool> = tx.query_row(
+                    "SELECT station_id IS ?2 AND variable IS ?3 AND kind IS ?4 AND start_at IS ?5 AND end_at IS ?6 AND value IS ?7 AND reason IS ?8 FROM observation_replacement WHERE replacement_id=?1",
+                    params![r.replacement_id, r.station_id, r.variable, if r.kind == ReplacementKind::Point { "point" } else { "period" }, label(r.start_at), r.end_at.map(label), r.value, r.reason], |row| row.get(0)
+                ).optional()?;
+                if let Some(matches) = existing {
+                    if !matches {
+                        return Err(error(format!(
+                            "conflicting replacement {}",
+                            r.replacement_id
+                        )));
+                    }
+                    continue;
+                }
+            }
             tx.execute(
                 "INSERT INTO observation_replacement VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
                 params![
@@ -402,6 +459,12 @@ impl ObservationStore {
         let result = offsets(&tx, station_ids)?;
         tx.commit()?;
         Ok(result)
+    }
+    pub fn load_replacements(
+        &self,
+        ids: &[String],
+    ) -> Result<Vec<ObservationReplacement>, ObservationError> {
+        read_replacements(&self.connection, ids)
     }
     pub fn read_selection(
         &self,
@@ -504,7 +567,7 @@ impl ObservationStore {
             .map(|s| (s.series_id.as_str(), s.variable.as_str()))
             .collect();
         {
-            let mut stmt = tx.prepare("SELECT series_id,observed_at,value FROM observation WHERE observed_at>?1 AND observed_at<=?2 ORDER BY series_id,observed_at")?;
+            let mut stmt = tx.prepare("SELECT series_id,observed_at,value FROM observation WHERE observed_at>=?1 AND observed_at<=?2 ORDER BY series_id,observed_at")?;
             let mut rows = stmt.query(params![label(start), label(end)])?;
             while let Some(r) = rows.next()? {
                 let id: String = r.get(0)?;
@@ -513,6 +576,9 @@ impl ObservationStore {
                 };
                 let time: String = r.get(1)?;
                 let at = timestamp(&time, &id)?;
+                if *variable == "rain" && at == start {
+                    continue;
+                }
                 let value = match (r.get_ref(2)?, *variable) {
                     (ValueRef::Null, _) => None,
                     (ValueRef::Integer(v), "level") => Some(ObservationValue::LevelCm(
@@ -538,29 +604,7 @@ impl ObservationStore {
                 inputs.samples.push(s);
             }
         }
-        let mut seen = HashSet::new();
-        for id in replacement_ids {
-            if !seen.insert(id) {
-                return Err(error(format!("duplicate replacement {id}")));
-            }
-            let r = tx.query_row("SELECT station_id,variable,kind,start_at,end_at,value,reason FROM observation_replacement WHERE replacement_id=?1",[id],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<f64>>(5)?,r.get::<_,String>(6)?))).optional()?.ok_or_else(|| error(format!("unknown replacement {id}")))?;
-            let item = ObservationReplacement {
-                replacement_id: id.clone(),
-                station_id: r.0,
-                variable: r.1,
-                kind: match r.2.as_str() {
-                    "point" => ReplacementKind::Point,
-                    "period" => ReplacementKind::Period,
-                    _ => return Err(error(format!("replacement {id}: invalid kind"))),
-                },
-                start_at: timestamp(&r.3, id)?,
-                end_at: r.4.map(|v| timestamp(&v, id)).transpose()?,
-                value: r.5,
-                reason: r.6,
-            };
-            validate_replacement(&item)?;
-            inputs.replacements.push(item);
-        }
+        inputs.replacements = read_replacements(&tx, replacement_ids)?;
         let selected_ids: Vec<_> = inputs
             .stations
             .iter()
@@ -570,6 +614,36 @@ impl ObservationStore {
         tx.commit()?;
         Ok((inputs, offsets))
     }
+}
+fn read_replacements(
+    connection: &Connection,
+    ids: &[String],
+) -> Result<Vec<ObservationReplacement>, ObservationError> {
+    let mut result = Vec::new();
+    let mut seen = HashSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            return Err(error(format!("duplicate replacement {id}")));
+        }
+        let r = connection.query_row("SELECT station_id,variable,kind,start_at,end_at,value,reason FROM observation_replacement WHERE replacement_id=?1",[id],|r| Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,String>(3)?,r.get::<_,Option<String>>(4)?,r.get::<_,Option<f64>>(5)?,r.get::<_,String>(6)?))).optional()?.ok_or_else(|| error(format!("unknown replacement {id}")))?;
+        let item = ObservationReplacement {
+            replacement_id: id.clone(),
+            station_id: r.0,
+            variable: r.1,
+            kind: match r.2.as_str() {
+                "point" => ReplacementKind::Point,
+                "period" => ReplacementKind::Period,
+                _ => return Err(error(format!("replacement {id}: invalid kind"))),
+            },
+            start_at: timestamp(&r.3, id)?,
+            end_at: r.4.map(|v| timestamp(&v, id)).transpose()?,
+            value: r.5,
+            reason: r.6,
+        };
+        validate_replacement(&item)?;
+        result.push(item);
+    }
+    Ok(result)
 }
 fn offsets(
     connection: &Connection,
@@ -595,4 +669,175 @@ fn offsets(
         }
     }
     Ok(result)
+}
+
+/// A reference line, in centimetres; it is independent of model offsets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LevelReference {
+    pub station_id: String,
+    pub kind: String,
+    pub date: Option<chrono::NaiveDate>,
+    pub level_cm: f64,
+}
+
+/// A station and its explicitly supplied model offset, if present.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StationLocation {
+    pub station: Station,
+    pub offset: Option<StationOffset>,
+}
+
+fn validate_level_references(references: &[LevelReference]) -> Result<(), ObservationError> {
+    let mut keys = HashSet::new();
+    for r in references {
+        nonempty(&r.station_id, "reference station")?;
+        finite(r.level_cm, "reference level")?;
+        let level_key = if r.kind == "historical" && r.level_cm != 0.0 {
+            r.level_cm.to_bits()
+        } else {
+            0
+        };
+        if !keys.insert((r.station_id.clone(), r.kind.clone(), r.date, level_key)) {
+            return Err(error("duplicate reference key"));
+        }
+        if !matches!(
+            (r.kind.as_str(), r.date),
+            ("attention" | "alert" | "flood" | "severe", None) | ("historical", Some(_))
+        ) {
+            return Err(error("invalid reference kind/date"));
+        }
+    }
+    Ok(())
+}
+
+impl ObservationStore {
+    /// Explicitly upgrade an existing writable database to reference schema v2.
+    pub fn upgrade_references(&mut self) -> Result<(), ObservationError> {
+        let tx = self.connection.transaction()?;
+        Self::verify(&tx)?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version == 1 {
+            tx.execute_batch("CREATE TABLE level_reference(station_id TEXT NOT NULL REFERENCES station(station_id), kind TEXT NOT NULL, date TEXT NOT NULL, level_cm REAL NOT NULL, PRIMARY KEY(station_id,kind,date,level_cm)); CREATE UNIQUE INDEX level_threshold_key ON level_reference(station_id,kind) WHERE date=''; PRAGMA user_version=2;")?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+    pub fn station_locations(&self) -> Result<Vec<StationLocation>, ObservationError> {
+        let mut stmt = self.connection.prepare("SELECT s.station_id,s.provider_code,s.station_code,s.name,s.latitude,s.longitude,o.mini_id,o.offset_m FROM station s LEFT JOIN station_offset o ON o.station_id=s.station_id ORDER BY s.station_id")?;
+        let rows = stmt.query_map([], |r| {
+            let station = Station {
+                station_id: r.get(0)?,
+                provider_code: r.get(1)?,
+                station_code: r.get(2)?,
+                name: r.get(3)?,
+                latitude: r.get(4)?,
+                longitude: r.get(5)?,
+            };
+            let mini_id: Option<i64> = r.get(6)?;
+            let offset = mini_id
+                .map(|mini_id| {
+                    Ok::<_, rusqlite::Error>(StationOffset {
+                        station_id: station.station_id.clone(),
+                        mini_id,
+                        offset_m: r.get(7)?,
+                    })
+                })
+                .transpose()?;
+            Ok(StationLocation { station, offset })
+        })?;
+        let result: Vec<_> = rows.collect::<Result<_, rusqlite::Error>>()?;
+        for entry in &result {
+            validate_station(&entry.station)?;
+            if let Some(offset) = &entry.offset {
+                validate_offset(offset)?;
+            }
+        }
+        Ok(result)
+    }
+    pub fn series_choices(&self) -> Result<Vec<(String, String, String)>, ObservationError> {
+        let mut statement = self.connection.prepare(
+            "SELECT series_id,station_id,variable FROM observation_series ORDER BY series_id",
+        )?;
+        let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+    pub fn replacement_choices(&self) -> Result<Vec<String>, ObservationError> {
+        let mut statement = self.connection.prepare(
+            "SELECT replacement_id FROM observation_replacement ORDER BY replacement_id",
+        )?;
+        let rows = statement.query_map([], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+    pub fn read_level_references(&self) -> Result<Vec<LevelReference>, ObservationError> {
+        let version: i64 = self
+            .connection
+            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version == 1 {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.connection.prepare("SELECT station_id,kind,date,level_cm FROM level_reference ORDER BY station_id,kind,date,level_cm")?;
+        let rows = stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, f64>(3)?,
+            ))
+        })?;
+        let mut result = Vec::new();
+        for row in rows {
+            let (station_id, kind, date, level_cm) = row?;
+            let date = if date.is_empty() {
+                None
+            } else {
+                Some(
+                    chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+                        .map_err(|e| error(e.to_string()))?,
+                )
+            };
+            if !level_cm.is_finite()
+                || !matches!(
+                    (kind.as_str(), date),
+                    ("attention" | "alert" | "flood" | "severe", None) | ("historical", Some(_))
+                )
+            {
+                return Err(error("invalid reference level or kind/date"));
+            }
+            result.push(LevelReference {
+                station_id,
+                kind,
+                date,
+                level_cm,
+            });
+        }
+        validate_level_references(&result)?;
+        Ok(result)
+    }
+    pub fn replace_level_references(
+        &mut self,
+        references: &[LevelReference],
+    ) -> Result<(), ObservationError> {
+        validate_level_references(references)?;
+        let tx = self.connection.transaction()?;
+        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+        if version != 2 {
+            return Err(error("reference schema upgrade required"));
+        }
+        tx.execute("DELETE FROM level_reference", [])?;
+        for r in references {
+            tx.execute(
+                "INSERT INTO level_reference VALUES (?1,?2,?3,?4)",
+                params![
+                    r.station_id,
+                    r.kind,
+                    r.date
+                        .map(|d| d.format("%Y-%m-%d").to_string())
+                        .unwrap_or_default(),
+                    r.level_cm
+                ],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
 }

@@ -1,6 +1,6 @@
 # Architecture
 
-Use one Rust Cargo package with a shared library and thin CLI/desktop interfaces.
+Use one Rust Cargo package with a shared library and thin CLI.
 The external MGB executable remains the numerical engine. Add owners only when
 behavior exists; app, store, adapters, analysis and model own the implemented
 inspection, saved-forcing and execution capabilities.
@@ -8,7 +8,7 @@ inspection, saved-forcing and execution capabilities.
 ## Product direction
 
 The intended application targets Linux and Windows. Core operations remain
-available through the CLI; desktop and scheduling use the same library workflows.
+available through the CLI and shared library workflows.
 Operational capabilities belong in Rust, including station-inventory updates and
 bulletin generation currently supplied by regional Python scripts. Regional data
 and settings remain in independently selected workspaces.
@@ -33,7 +33,7 @@ product commitments; the [workspace](contracts/workspace.md),
 | `analysis` | QC, corrections, transformations, forcing, diagnostics, metrics, report content/rendering | `store` |
 | `model` | Engine prerequisites, input serialization, execution, state mechanics, staged decoding, fixed station-reference conversion | `store` |
 | `app` | Workflows, private configuration/path resolution, selection, preparation/scenario coordination, failures, run outcomes | All four core owners |
-| CLI/desktop | Arguments, invocation-directory capture, presentation, interactive state | Intended public library APIs |
+| CLI | Arguments, invocation-directory capture, presentation | Intended public library APIs |
 
 These boundaries keep scientific processing independent of acquisition, registry
 lookups, and execution coordination. Canonical values work without database
@@ -59,11 +59,18 @@ observations, station metadata, and observation review instructions, without a
 source/provenance table or source foreign keys. A separate
 SQLite holds a two-table forecast asset/correction catalog. Each run generates
 a JSON manifest containing its resolved recipe, ordered instruction values,
-input references, scenario outcomes and output paths for CLI/desktop consumption.
+input references, scenario outcomes and output paths for CLI consumption.
 There is no workspace-wide operations database or official-run pointer. NetCDF
 holds native forecast grids, working grids, basin forcing/results, and station-level results.
 Store owns these schemas and persistence; adapters return normalized canonical
 data without choosing persistence. Concrete layouts grow with the capabilities.
+
+Geometry and CRS readers are store capabilities using the pinned Terrio vector
+integration. Analysis derives upstream membership from validated model topology and local areas, not map-coordinate
+area estimates. Reference CSV adapters parse values; app resolves explicit station
+identities and store replaces references transactionally after an explicit schema
+upgrade. Read-only opens never migrate. See the [spatial](contracts/spatial.md) and
+[reference-level](contracts/observations.md#station-reference-levels) contracts.
 
 Observation replacements preserve raw measurements and support a point or a
 [start,end) period, with an absent end meaning indefinitely. NA replacements
@@ -141,15 +148,19 @@ Saved preparation and execution follow these rules:
   and the compatible engine to remain available; hashes cannot recover missing bytes.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
-- Each run has independent results and a generated JSON manifest
-  for CLI/desktop use. App reports success only after every requested scenario and
+- Each trial has independent successful result caches and a generated JSON manifest
+  for CLI use. App reports success only after every requested scenario and
   its required outputs validate. Failures preserve diagnostics and successful
   siblings' outputs without modifying other runs. No official-set publication or
-  latest-run pointer is maintained.
+  latest-run pointer is maintained. Temporary execution snapshots and private inputs
+  are removed after workers stop; independently saved preparations remain reusable.
 - Operators may copy the recipe, dependencies, results or cache outputs elsewhere
   for long-term storage. Generation is normal application behavior; no retention
   flags, cleanup policy or archive-management workflow is added.
 
 The [operation contract](contracts/operations.md) defines the implemented prepared
-snapshots, isolated execution and per-run artifacts. The saved state is carried
+snapshots, isolated execution and disposable trial caches. App owns cancellation
+and progress; model stops and reaps its owned child processes using an explicit
+cancellation signal. CLI uses `ctrlc` for portable SIGINT delivery to that shared
+control, rather than asynchronous signal handling inside the engine layer. The saved state is carried
 unchanged; hot-start generation and chaining follow later.

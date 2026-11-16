@@ -38,35 +38,52 @@ pub struct NormalizeForecastReport {
     pub native_shape: [usize; 3],
     pub effective_bbox: [f64; 4],
 }
-#[derive(Deserialize)]
+#[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Document {
-    schema_version: u32,
-    provider: ForecastProvider,
-    model: String,
-    product: String,
-    cycle_utc: String,
-    operation_timezone: String,
-    source: PathBuf,
-    crop_bbox: [f64; 4],
-    catalog: PathBuf,
-    artifact_root: PathBuf,
+pub struct NormalizeForecastDocument {
+    pub schema_version: u32,
+    pub provider: ForecastProvider,
+    pub model: String,
+    pub product: String,
+    pub cycle_utc: String,
+    pub operation_timezone: String,
+    pub source: PathBuf,
+    pub crop_bbox: [f64; 4],
+    pub catalog: PathBuf,
+    pub artifact_root: PathBuf,
 }
 pub fn normalize_forecast(
     request: NormalizeForecastRequest,
 ) -> Result<NormalizeForecastReport, NormalizeForecastError> {
     let invalid = NormalizeForecastError::Configuration;
     let workspace = super::absolute(&request.invocation_dir, &request.workspace);
-    let request_file = super::absolute(&request.invocation_dir, &request.request_file);
     if !workspace.is_dir() {
         return Err(invalid(format!(
             "workspace is not a directory: {}",
             workspace.display()
         )));
     }
+    let request_file = super::absolute(&request.invocation_dir, &request.request_file);
     let bytes = std::fs::read_to_string(&request_file)
         .map_err(|e| invalid(format!("cannot read {}: {e}", request_file.display())))?;
-    let config: Document = toml::from_str(&bytes).map_err(|e| invalid(e.message().into()))?;
+    let config: NormalizeForecastDocument =
+        toml::from_str(&bytes).map_err(|e| invalid(e.message().into()))?;
+    normalize_forecast_document(&request.invocation_dir, &request.workspace, config)
+}
+
+pub fn normalize_forecast_document(
+    invocation_dir: &std::path::Path,
+    workspace: &std::path::Path,
+    config: NormalizeForecastDocument,
+) -> Result<NormalizeForecastReport, NormalizeForecastError> {
+    let invalid = NormalizeForecastError::Configuration;
+    let workspace = super::absolute(invocation_dir, workspace);
+    if !workspace.is_dir() {
+        return Err(invalid(format!(
+            "workspace is not a directory: {}",
+            workspace.display()
+        )));
+    }
     if config.schema_version != 1 {
         return Err(invalid("unsupported schema_version".into()));
     }

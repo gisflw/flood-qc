@@ -23,10 +23,9 @@ public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. The [GUI specification](../plans/desktop_gui.md) records confirmed
 first-milestone behavior; [G01–G10](../plans/desktop_gui_tasks.md) specify separate
-tasks and acceptance. One working operation uses shared activity tabs. Trials
-will produce disposable caches without run registration, retaining successful
-scenarios and debugging logs on failure/cancellation; this planned change to
-current execution retention belongs in shared core, not a GUI-only workflow.
+tasks and acceptance. One working operation uses shared activity tabs. Shared
+core now produces disposable trial caches without run registration, retaining
+successful scenarios and debugging logs on failure/cancellation.
 
 At execution startup, freeze input values or immutable versions. Model stages
 canonical outputs; app records independent run/scenario outcomes and output paths

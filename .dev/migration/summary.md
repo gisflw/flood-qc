@@ -17,8 +17,8 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 15, 2026 for the desktop specification. Implementation evidence
-below remains from November 14, 2026. The Linux saved-data operational path is complete:
+Updated November 16, 2026 for shared operational capabilities.
+The Linux saved-data operational path is complete:
 workspace inspection, canonical observations/QC/replacements, saved forecast
 normalization/corrections, reusable prepared inputs, isolated real MGB execution,
 and raw/station integer-centimetre results through shared library/CLI workflows.
@@ -27,8 +27,12 @@ from retained inputs after the disposable original sources were removed. The
 [qualification record](../../references/regression/rs-hourly/rust-qualification.md)
 retains source/driver identities, comparison evidence and numerical caveats.
 
-Rust 1.99.1 formatting, Clippy, 60 routine tests, the independent architecture gate
-and explicit real-engine saved-case acceptance passed. Failure checks cover OS
+Shared library and CLI capabilities include typed preparation, drafts and
+previews, selective registration, controlled trials, geometry and reference
+imports, rainfall summaries, series queries and CSV exports.
+The last explicit frozen-case release RS acceptance
+passed in 82.76 seconds after coordinate-independent review was separated from
+interpolation requirements. Failure checks cover OS
 lock contention, nonzero/spawn/malformed output, surviving siblings, unavailable
 original sources, altered prepared inputs and failed final manifest persistence.
 Linux is qualified for this saved case; Windows and hosted CI remain unverified.
@@ -38,8 +42,8 @@ Current usage lives in the [workspace](../../docs/contracts/workspace.md),
 [observation](../../docs/contracts/observations.md),
 [forecast](../../docs/contracts/forecasts.md) and
 [operation](../../docs/contracts/operations.md) contracts. The accepted operational
-specifications are retired. Next is the early shared-core GUI; live acquisition,
-broader review/analysis and new hot starts follow their migration rows below.
+specifications are retired. Live acquisition, broader review/analysis and new hot
+starts follow their migration rows below.
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
@@ -53,7 +57,7 @@ record unverified platforms and remaining gaps explicitly.
 | [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Complete for the saved path: canonical observation and forecast/correction SQLite, forcing/result NetCDF, frozen prepared dependencies and per-run JSON. Legacy conversion remains regression-only; broader imports follow acquisition. |
 | [Canonical observations, QC, and observed forcing](../../docs/contracts/observations.md) | 3, step 2a: observed forcing | Complete: canonical SQLite, explicit ordered replacements, ranking/QC and pure interpolation; full saved arrays, selected rows and findings exact. Timestamp fixture conversion and numerical provenance retained in the qualification record. |
 | [Saved forecast normalization and forecast forcing](../../docs/contracts/forecasts.md) | 3, step 2b: forecast forcing | Complete: qualified driver and metadata/grid validation, immutable catalog, ordered corrections and library/CLI workflow. Full native, working, basin and transformed-frame comparisons exact; masks, coordinates and decoded local times/bounds verified. |
-| [Saved RS integration, execution, and decoded results](../../docs/contracts/operations.md) | 3, integration and step 3: first operational Rust path | Complete on Linux: reusable frozen preparation, OS lock, isolated scenarios, history-only level recovery, raw/station integer centimetres and durable per-run manifests. Two saved executions match full arrays and raw streams exactly after original sources are removed; lifecycle/failure and integrity checks pass. State generation, Windows and hydrological validity remain unqualified. |
+| [Saved RS integration, execution, and decoded results](../../docs/contracts/operations.md) | 3, integration and step 3: first operational Rust path | Complete on Linux: reusable frozen preparation, OS lock, isolated scenarios, history-only level recovery, raw/station integer centimetres and per-trial manifests. Two saved executions match full arrays and raw streams exactly after original sources are removed; lifecycle/failure and integrity checks pass. State generation, Windows and hydrological validity remain unqualified. |
 | [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
 | [Broader QC, review, corrections, and availability](review_and_corrections.md) | 5: extend analysis beyond the saved path | Not started beyond the saved-case capabilities implemented above. Analysis operates on canonical data; store persists explicit review instructions and preserved sources. |
 | [Additional forcing inputs and hot-start lifecycle](model_and_hotstarts.md) | 5: extend model support | Not started in Rust. State generation, consumption, and chaining still require qualification. |
@@ -61,7 +65,7 @@ record unverified platforms and remaining gaps explicitly.
 | [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Saved-path forcing is implemented above; broader analysis remains not started. Observation-based AR(1) belongs to analysis for dataviz and is deferred. No model-internal dependencies. |
 | [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
 | [Completed-run regeneration and sharing](completed_runs.md) | 7: completed-run sharing | Not started in Rust. Operators may copy generated files; regeneration requires referenced dependencies and a compatible engine. No retention/archive manager in the saved-run increment. |
-| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Planned. The [GUI specification](../plans/desktop_gui.md) and [G01–G10 tasks](../plans/desktop_gui_tasks.md) define the agreed shared-operation activity tabs, drafts, disposable trials, visualization and exports. Implementation, rendering/dependency qualification and platform acceptance remain pending; the current saved execution retention contract is unchanged until the shared trial task lands. |
+| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Planned. The [GUI specification](../plans/desktop_gui.md) and [tasks](../plans/desktop_gui_tasks.md) describe the intended interface; shared headless prerequisites are available. |
 | [Scheduling and email](desktop_and_automation.md) | 7: automate established operations | Not started in Rust. Follow the capabilities they automate. |
 
 Split these broad rows as individual capabilities are implemented, preserving

@@ -317,6 +317,7 @@ pub struct ForecastSource {
     pub normalization_json: serde_json::Value,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ForecastCorrection {
     pub correction_id: String,
     pub asset_id: String,
@@ -327,6 +328,7 @@ pub struct ForecastCorrection {
     pub rotation_deg: f64,
     pub multiplication_factor: f64,
     pub editor: Option<String>,
+    #[serde(default)]
     pub reason: String,
     pub created_at: String,
 }

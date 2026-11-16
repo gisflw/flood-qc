@@ -13,6 +13,10 @@ fn main() {
     let output = PathBuf::from(env::var_os("MGB_OUTPUT_DIR").unwrap());
     let scenario = input.parent().unwrap().file_name().unwrap().to_string_lossy();
     let control = fs::read_to_string(input.join("control.txt")).unwrap_or_default();
+    if control.lines().any(|line| line == format!("sleep:{scenario}")) {
+        fs::write(input.parent().unwrap().join("pid"), std::process::id().to_string()).unwrap();
+        std::thread::sleep(std::time::Duration::from_secs(30));
+    }
     if control.lines().any(|line| line == format!("fail:{scenario}")) { std::process::exit(3); }
     if control.lines().any(|line| line == format!("large:{scenario}")) {
         use std::io::Write;

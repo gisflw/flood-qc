@@ -67,6 +67,10 @@ fn retained_source_is_immutable_and_correction_order_is_explicit() {
     assert_eq!(count, 0);
     let asset = c.register_native(&src, &source, &native).unwrap();
     assert_ne!(asset.asset_id, asset.source_id);
+    let choices = c.asset_choices().unwrap();
+    assert_eq!(choices.len(), 1);
+    assert_eq!(choices[0].asset_id, asset.asset_id);
+    assert_eq!(choices[0].provider, "noaa");
     std::fs::write(&src, b"changed").unwrap();
     let (_, got) = c.load_native(&asset.asset_id).unwrap();
     assert_eq!(got.values, [3.]);
@@ -85,6 +89,13 @@ fn retained_source_is_immutable_and_correction_order_is_explicit() {
     };
     c.save_correction(&correction("first")).unwrap();
     c.save_correction(&correction("second")).unwrap();
+    assert_eq!(
+        c.correction_choices().unwrap(),
+        vec![
+            ("first".into(), asset.asset_id.clone()),
+            ("second".into(), asset.asset_id.clone())
+        ]
+    );
     let ids = vec!["second".into(), "first".into()];
     let (_, loaded, selected) = c.load_selected(&asset.asset_id, &ids).unwrap();
     assert_eq!(loaded.provenance.processing["asset_id"], asset.asset_id);
@@ -107,9 +118,11 @@ fn retained_source_is_immutable_and_correction_order_is_explicit() {
         [],
     )
     .unwrap();
-    assert!(
+    assert_eq!(
         c.load_corrections(&asset.asset_id, &["first".into()])
-            .is_err()
+            .unwrap()[0]
+            .reason,
+        ""
     );
     db.execute("UPDATE asset SET normalization_json='{'", [])
         .unwrap();

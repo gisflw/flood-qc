@@ -1,3 +1,10 @@
+mod summary;
+pub use self::summary::{
+    GridAccumulation, HourlyWindow, RainSummary, accumulated_grid_frame, accumulated_grid_rain,
+    accumulated_rain, resolve_hourly_window,
+};
+mod topology;
+pub use self::topology::upstream_minis;
 mod forecast;
 mod observations;
 mod spatial;
@@ -14,5 +21,6 @@ pub use self::spatial::{
 };
 
 pub use self::forecast::{
-    ForecastPreparationError, ForecastPreparationRequest, prepare_forecast, prepare_zero_forecast,
+    ForecastPreparationError, ForecastPreparationRequest, corrected_forecast_frames,
+    prepare_forecast, prepare_zero_forecast,
 };

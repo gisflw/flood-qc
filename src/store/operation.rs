@@ -43,6 +43,8 @@ pub struct ScenarioRecord {
 #[serde(deny_unknown_fields)]
 pub struct OperationManifest {
     pub schema_version: u32,
+    #[serde(default)]
+    pub preparation_sha256: Option<String>,
     pub state: String,
     pub recipe: serde_json::Value,
     pub inputs: Vec<InputReference>,
@@ -229,6 +231,24 @@ pub fn write_run_manifest(root: &Path, manifest: &OperationManifest) -> Result<(
     File::open(root)
         .and_then(|file| file.sync_all())
         .map_err(|e| e.to_string())
+}
+
+pub fn read_retained_manifest(root: &Path) -> Result<OperationManifest, String> {
+    let file = File::open(root.join("manifest.json")).map_err(|e| e.to_string())?;
+    let manifest: OperationManifest = serde_json::from_reader(file).map_err(|e| e.to_string())?;
+    if manifest.state == "prepared" {
+        return read_operation_manifest(root);
+    }
+    if manifest.schema_version != 1
+        || !["completed", "failed"].contains(&manifest.state.as_str())
+        || !manifest
+            .scenarios
+            .iter()
+            .any(|scenario| scenario.state == "completed")
+    {
+        return Err("invalid retained run manifest".into());
+    }
+    Ok(manifest)
 }
 
 pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String> {

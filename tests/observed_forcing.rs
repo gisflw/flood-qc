@@ -105,8 +105,8 @@ fn qc_uses_strict_thresholds_and_consecutive_hours() {
             station_id: "s".into(),
             series_id: "r".into(),
             observed_at: start + Duration::hours(h),
-            longitude: 0.0,
-            latitude: 0.0,
+            longitude: Some(0.0),
+            latitude: Some(0.0),
             value: Some(if h == 5 { 50.0 } else { 0.5 }),
         })
         .collect();
@@ -176,6 +176,27 @@ fn preparation_interpolates_zero_and_reports_missing_coverage() {
     .unwrap();
     assert_eq!(out.basin.values, vec![0.0, 0.0]);
     assert!(out.working.valid.iter().all(|x| *x));
+    inputs.stations[0].latitude = None;
+    inputs.stations[0].longitude = None;
+    let rows = effective_observations(&inputs, &axis).unwrap();
+    assert_eq!((rows[0].latitude, rows[0].longitude), (None, None));
+    assert_eq!(rows[0].effective_value, Some(0.));
+    assert!(
+        prepare_observed_forcing(
+            &inputs,
+            &axis,
+            &grid,
+            &basins,
+            &settings,
+            &PrecipitationQcPolicy::default()
+        )
+        .is_err()
+    );
+    inputs.stations[0].latitude = Some(0.);
+    assert!(effective_observations(&inputs, &axis).is_err());
+    inputs.stations[0].longitude = Some(f64::NAN);
+    assert!(effective_observations(&inputs, &axis).is_err());
+    inputs.stations[0].longitude = Some(0.);
     inputs.samples.clear();
     assert!(
         prepare_observed_forcing(

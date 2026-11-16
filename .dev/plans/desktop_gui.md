@@ -1,9 +1,8 @@
 # Desktop GUI specification
 
-Status: product decisions confirmed in chat on November 15, 2026; implementation
-not started. This specifies the initial milestone, not current supported behavior.
-The [task specifications](desktop_gui_tasks.md) define delivery and acceptance.
-Rendering, dependency compatibility and platform behavior remain unqualified.
+Status: planned. Shared headless capabilities are documented in the current
+contracts. The [task specifications](desktop_gui_tasks.md) define delivery and
+acceptance for the interface.
 
 ## Outcome and references
 

@@ -14,6 +14,20 @@ Preparation creates a new directory and never invokes MGB. Execution uses retain
 prepared dependencies, independently of subsequent changes to their source files.
 A new preparation is needed to select different data or settings.
 
+Library callers can also use `prepare_typed(TypedPreparationRequest)` with a
+`PreparationDocument` and the same workspace, invocation-directory and output
+path rules. `replacements: None` resolves the document's replacement IDs;
+`Some(values)` supplies the ordered replacement values and replaces those IDs.
+`corrections` contains one entry per scenario in scenario order: `None` resolves
+its correction IDs, while `Some(values)` supplies ordered correction values and
+replaces those IDs. Use `None` for a zero scenario. Supplied records receive the
+same validation as registered records and are not registered in source catalogs.
+The prepared snapshot retains their actual values and a generated request, so it
+can execute after the original sources are removed.
+
+[Editable drafts](drafts.md) provide incomplete JSON recipes, explicit source
+acceptance and unregistered previews over this same typed preparation workflow.
+
 ## Request
 
 The separate UTF-8 TOML request is strict at every table: unknown keys fail.
@@ -105,13 +119,15 @@ state compatibility or generate a new hot start.
 
 Preparation freezes selected canonical observation rows, ordered replacement and
 correction values, station metadata/offsets, selected forecast source/native files,
-request bytes, numerical settings, baseline Input and executable. Source SQLite
-subsets are read consistently rather than copied from an open WAL file. Canonical
+request bytes (or a generated typed request), numerical settings, baseline Input
+and executable. Source SQLite subsets are read consistently rather than copied
+from an open WAL file. Canonical
 forcing/checkpoints retain f64 precision. A version-1 `manifest.json` records the
 recipe and input paths, kinds, sizes and SHA256 identities.
 
 Manifest fields are `schema_version`, `state`, `recipe`, `inputs`, `scenarios`,
-`created_at`, `finished_at` and `error`. State is `prepared`, `running`, `failed`
+`created_at`, `finished_at`, `error` and optional `preparation_sha256`. The latter
+identifies the preparation used by a new trial; older manifests omit it. State is `prepared`, `running`, `failed`
 or `completed`. The recipe contains the resolved request document, full selected
 station/series and instruction records, historical/forecast counts, selected
 output stations, offsets and thread count. Each input reference has `path`,
@@ -127,42 +143,65 @@ The prepared tree contains `request.toml`, `sources/`, `baseline/Input/`,
 combined historical/forecast `forcing/<id>.nc`. The original baseline and source
 files remain separate from writable engine inputs. Symlinks and escaping retained
 paths fail. Files are closed and synced before atomic finalization to a new
-destination on Linux. Failed staging is retained with diagnostics.
+destination on Linux. Failed or cancelled staging is removed; an existing complete
+preparation is preserved.
 
 Execution takes a nonblocking OS lock on `<workspace>/.operation.lock`, held until
-children finish and outcome recording ends. Concurrent execution in that workspace
-returns `Busy`; the lock file remains present and its existence alone means
-nothing. Each invocation reserves a new `data/runs/<run-id>/` containing:
+children and workers stop and all file work finishes. Concurrent execution in that
+workspace returns `Busy`; the lock file's existence alone means nothing. Each
+invocation reserves a fresh disposable trial under `data/runs/`. During execution
+it uses a verified preparation snapshot, shared history worker and isolated
+scenario inputs. Finalization removes those temporary working trees.
 
-```text
-manifest.json
-snapshot/manifest.json
-snapshot/...                 verified frozen preparation
-scenarios/.history/...       shared history-only execution
-scenarios/<id>/Input/         private writable baseline + generated inputs
-scenarios/<id>/Output/        original engine streams
-scenarios/<id>/logs/          stdout.log, stderr.log, execution.json
-results/<id>/basin.nc
-results/<id>/station.nc
-```
+A trial with successful scenarios retains its recipe, preparation identity,
+validated canonical `results/<id>/basin.nc` and `station.nc`, the four original
+engine streams under `scenarios/<id>/Output/`, and debugging logs. Small
+`results/<id>/engine-inputs/` evidence retains the actual generated metadata and
+rainfall digest. These are comparison caches, not reusable preparations or a run
+registry. The root manifest has no retained input references after cleanup.
+Failed scenarios lose incomplete outputs. Zero successes leaves debugging logs
+without a result manifest. No Save run action, retention policy or automatic cache
+cleanup is provided. Existing saved artifacts are neither rewritten nor removed.
 
-The root manifest describes current outcomes; the snapshot manifest preserves the
-prepared recipe. Input references are rebased into `snapshot/`. No workspace run
-database, official-run pointer, publication or retention policy is added.
-Copying only a manifest records instructions; it cannot restore missing bytes.
+`discover_trials(workspace)` lists retained manifest roots; `read_trial(root)`
+validates successful canonical results and required engine streams. Older saved
+runs remain readable. Copying a recipe does not recover missing source bytes.
+Use an independently saved preparation for source-independent re-execution.
 
-Scenarios run in isolated directories with direct executable invocation, an
-explicit working directory, and an environment containing only `MGB_INPUT_DIR`,
-`MGB_OUTPUT_DIR` and `OMP_NUM_THREADS`. Stdout and stderr go directly to separate
-files. Execution records include command, environment, status and elapsed time.
-Every launched child is joined; a failed scenario preserves healthy siblings'
-results and diagnostics. A run reports completed only after all selected scenarios
-and required results validate and outcome persistence succeeds. Otherwise it
-reports failed or returns a structured operation error identifying retained paths.
+Scenarios run concurrently in isolated directories with direct executable
+invocation, an explicit working directory, and only `MGB_INPUT_DIR`,
+`MGB_OUTPUT_DIR` and `OMP_NUM_THREADS` in the environment. Stdout and stderr go
+directly to separate files. Execution records include command, environment,
+status and elapsed time. Every launched child is waited for and every worker is
+joined. Failed scenarios preserve validated successful siblings and diagnostics.
+Success requires all selected scenarios and required outputs to validate, cleanup
+to finish and the outcome to persist. Failure returns a structured operation
+error; `BatchFailed` carries the partial `ExecutionReport`. Persistence and cleanup
+errors identify their paths and never claim success.
 
-Interrupted runs can remain unfinished and children can survive whole-process
-termination. Automatic recovery and process-tree cleanup are outside this contract.
-Existing runs and mutable regional sources are never cleared or overwritten.
+## Controlled actions and cancellation
+
+Use a fresh `OperationControl` per action with `prepare_controlled`,
+`Draft::prepare_controlled`, `execute_prepared_controlled` or `run_draft`. The
+ordinary preparation/execution functions use the same workflow with a fresh
+control. `run_draft` prepares current accepted draft values and executes while
+holding the workspace lock throughout. It removes its own temporary preparation;
+Prepare only saves a reusable preparation and stops before launching MGB.
+
+Cloned controls expose `cancel()`, `is_cancelled()` and the latest `progress()`.
+Progress identifies preparation, history, scenarios and finalization, includes the
+attempt path when known and per-scenario state, and leaves unknown fractions
+absent. `tail_log(path, max_bytes)` reads at most 65,536 trailing bytes without
+loading the entire file. JSON stdout contains the result, not progress text.
+
+CLI SIGINT requests cancellation. Controlled cancellation checks preparation
+boundaries, stops and reaps owned engines, joins concurrent workers, and finishes
+cleanup under the lock. It returns an error while preserving validated successful
+scenario caches and logs. Cancellation before the final commit marks the batch
+failed with an explicit cancellation reason; cancellation after that commit
+preserves success. Existing reusable preparations and unrelated attempts survive.
+Hard process termination and engine-created descendant processes are outside this
+normal cancellation guarantee; automatic recovery is not provided.
 
 ## Engine and canonical results
 

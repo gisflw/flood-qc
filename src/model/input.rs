@@ -1,4 +1,4 @@
-use crate::store::{BasinForcing, BasinGeometry, Provenance};
+use crate::store::{BasinForcing, BasinGeometry};
 use chrono::{Datelike, NaiveDateTime, Timelike};
 use std::{fs, io::Write, path::Path};
 
@@ -27,43 +27,7 @@ impl InputFailure {
 
 fn read_basin_geometry_inner(path: &Path) -> Result<BasinGeometry, InputFailure> {
     let content = fs::read_to_string(path).map_err(|error| InputFailure::Io(error.to_string()))?;
-    let mut lines = content.lines();
-    let header: Vec<_> = lines
-        .next()
-        .ok_or("missing MINI header")?
-        .split_whitespace()
-        .collect();
-    let column = |name| {
-        header
-            .iter()
-            .position(|value| *value == name)
-            .ok_or_else(|| format!("missing MINI {name} column"))
-    };
-    let (mini, x, y) = (column("Mini")?, column("Xcen")?, column("Ycen")?);
-    let mut geometry = BasinGeometry {
-        mini_ids: Vec::new(),
-        longitudes: Vec::new(),
-        latitudes: Vec::new(),
-        source: Provenance {
-            source_ids: Vec::new(),
-            processing: serde_json::Value::Null,
-        },
-    };
-    for line in lines.filter(|line| !line.trim().is_empty()) {
-        let fields: Vec<_> = line.split_whitespace().collect();
-        let field = |index| fields.get(index).ok_or("short MINI row");
-        geometry
-            .mini_ids
-            .push(field(mini)?.parse().map_err(|_| "invalid MINI ID")?);
-        geometry
-            .longitudes
-            .push(field(x)?.parse().map_err(|_| "invalid MINI longitude")?);
-        geometry
-            .latitudes
-            .push(field(y)?.parse().map_err(|_| "invalid MINI latitude")?);
-    }
-    geometry.validate().map_err(|error| error.to_string())?;
-    Ok(geometry)
+    crate::store::parse_basin_geometry(&content).map_err(InputFailure::Invalid)
 }
 
 fn write_rainfall_inner(path: &Path, forcing: &BasinForcing) -> Result<(), InputFailure> {

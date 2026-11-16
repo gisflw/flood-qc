@@ -1,3 +1,8 @@
+pub(crate) use self::geometry::parse_basin_geometry;
+mod geometry;
+pub use self::geometry::{
+    MiniTopology, read_basin_geometry, read_mini_topology, validate_mini_topology,
+};
 mod forecast;
 mod netcdf;
 mod observations;
@@ -5,9 +10,9 @@ mod operation;
 mod values;
 
 pub use self::observations::{
-    ObservationBatch, ObservationError, ObservationInputs, ObservationReplacement,
+    LevelReference, ObservationBatch, ObservationError, ObservationInputs, ObservationReplacement,
     ObservationSample, ObservationSelection, ObservationSeries, ObservationStore, ObservationValue,
-    ReplacementKind, Station, StationOffset,
+    ReplacementKind, Station, StationLocation, StationOffset, validate_replacement,
 };
 pub use self::values::{
     BasinForcing, BasinGeometry, CorrectionCoverage, ForecastCorrection, ForecastPreparation,
@@ -20,14 +25,23 @@ pub use self::netcdf::{
     write_grid_frame, write_grid_series,
 };
 
-pub use self::forecast::{ForecastAsset, ForecastCatalog};
+pub use self::forecast::{
+    ForecastAsset, ForecastAssetChoice, ForecastCatalog, ForecastSnapshotSelection,
+    check_correction,
+};
 
 pub use self::operation::{
     InputReference, OperationManifest, ScenarioFailure, ScenarioRecord, collect_inputs, copy_tree,
-    copy_working_inputs, digest_file, finalize_prepared, read_operation_manifest, sync_tree,
-    verify_inputs, write_run_manifest,
+    copy_working_inputs, digest_file, finalize_prepared, read_operation_manifest,
+    read_retained_manifest, sync_tree, verify_inputs, write_run_manifest,
 };
 
 pub use self::netcdf::{
     read_result_series, read_station_results, write_result_series, write_station_results,
 };
+
+mod map;
+pub use self::map::{MapLayer, MiniMapFeature, read_map_layers, read_mini_map_layer};
+
+mod draft;
+pub use self::draft::{read_draft, write_atomic, write_draft};
