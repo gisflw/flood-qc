@@ -22,8 +22,8 @@ handling, export, and run outcomes. Interface controls may call intended
 public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. The [GUI specification](../plans/desktop_gui.md) records confirmed
-first-milestone behavior; [G01–G10](../plans/desktop_gui_tasks.md) specify separate
-tasks and acceptance. One working operation uses shared activity tabs. Shared
+first-delivery behavior, delivery order and acceptance. Monitoring uses a main map
+tab with side panes; QC editors and forecast comparison need separate planning. Shared
 core now produces disposable trial caches without run registration, retaining
 successful scenarios and debugging logs on failure/cancellation.
 
