@@ -1,24 +1,39 @@
-# Desktop GUI implementation specification
+# Desktop GUI functional requirements
 
 The first desktop delivery opens regional projects, presents monitoring on a map
 with linked charts and tables, prepares rainfall inputs, and executes MGB.
-RustGIS supplies the GUI baseline; MGB Ops retains operational backend ownership.
+MGB Ops retains operational backend ownership. The GUI framework, rendering
+technology, packaging and implementation approach remain undecided.
 This specification records the agreed first delivery. QC editors and forecast
 comparison require separate planning.
+
+## Starting point and scope
+
+The repository currently contains the shared Rust library and CLI, with no desktop
+implementation. This plan is prospective. The next delivery focuses exclusively
+on the GUI over existing backend behavior; acquisition, scientific algorithms, schemas and operational
+lifecycle changes are outside this work.
+
+The backend already supports workspace configuration, editable drafts and operation
+TOML, validation/previews, artifact discovery, spatial selection, series queries,
+rainfall accumulation, and controlled preparation/execution with progress and
+cancellation. The GUI exposes these existing capabilities under their contracts.
+Any concrete missing backend capability must be identified separately before
+expanding scope. Existing headless checks remain the baseline.
 
 ## Project opening and configuration
 
 Provide Open TOML, recent projects, and forms for creating and editing
 configuration. Opening a known project must not require a setup wizard or repeated
-path entry. Remember its workspace association. For implementation, infer the
-workspace for the standard `config/workspace.toml` layout; associate an explicit
+path entry. Remember its workspace association. Infer the workspace for the
+standard `config/workspace.toml` layout; associate an explicit
 workspace with nonstandard locations without changing backend path semantics.
 
 Workspace configuration and operation settings have separate existing schemas.
 Forms must save the appropriate TOML configuration/request rather than inserting
 operation fields into `workspace.toml`. Preserve unregistered instruction values
-through the existing draft API where necessary. Do not require a separate RustGIS
-project file to open an operational project.
+through the existing draft contract where necessary. Do not require another
+user-managed project file to open an operational project.
 
 Restore map extent, visible layers, selected completed run/scenarios and working
 settings. Persist display preferences automatically without another user-managed
@@ -27,28 +42,32 @@ operational inputs. Opening does not acquire data, generate caches or execute MG
 
 Show whatever data exists in the project and its generated artifact locations.
 Missing caches mean there is nothing of that kind to load. Invalid model
-prerequisites block execution while leaving available data inspectable. Load
-data asynchronously so project opening and the interface remain responsive.
+prerequisites block execution while leaving available data inspectable. Project
+opening and data loading must leave the interface responsive.
 
-## Interface and RustGIS boundary
+## Interface behavior and backend boundary
 
-Use RustGIS's map tabs, side panes, layer management, design, basemap chooser and
-assistant interface. Monitoring is the first main tab. Side panes provide layers,
-monitoring configuration, selected-location summaries, tables/charts, processing
-settings/status and chat. Support resizing/hiding panes, keyboard operation and
-readable status/error feedback. Preserve the dashboard's English and Brazilian
-Portuguese interface support.
+Provide maps, layer management, basemap selection, monitoring controls,
+selected-location summaries, tables/charts, processing settings/status and chat.
+Keep monitoring as the main working view. Support adaptable layouts, keyboard
+operation and readable status/error feedback. Preserve the dashboard's English
+and Brazilian Portuguese interface support, with concise labels in the selected
+language.
 
-Retain layer visibility, ordering, opacity, legends, styling and the basemap
-chooser. Allow adding local GIS files beyond configured project layers. Adding a
-display layer does not automatically change model geometry or operational inputs.
+Keep the map useful at normal window sizes. Common actions and processing status
+must remain reachable without scrolling through unrelated settings. Project setup,
+monitoring and processing must be easy to distinguish. The detailed layout and
+choice of tabs, panes, dialogs or other controls remain undecided.
 
-RustGIS's frontend currently depends on its session/command engine. Transitive
-RustGIS dependencies may support maps, layers, rendering, basemaps and assistant
-presentation. MGB Ops must continue to own configuration, canonical stores,
-forecast catalogs, QC, forcing, execution, provenance and persistence. GUI and
-assistant actions call intended public MGB Ops APIs. Library and CLI operation
-remain independent of the GUI. Rendering adapters must not duplicate domain logic.
+Provide layer visibility, ordering, opacity, legends, styling and basemap selection.
+Allow adding local GIS files beyond configured project layers. Adding a display
+layer does not automatically change model geometry or operational inputs.
+
+The shared backend continues to own configuration, canonical stores, forecast
+catalogs, QC, forcing, execution, provenance and persistence. GUI and assistant
+actions use the same backend behavior as the CLI. Library and CLI operation remain
+independent of GUI dependencies and types. Presentation must not duplicate domain
+calculations, operational format handling or execution lifecycle rules.
 
 ## Data and completed runs
 
@@ -63,32 +82,34 @@ Do not introduce an official-run pointer, required run registration or archive
 manager. Preserve generated files and unrelated runs. Future acquisition tools
 will update canonical data through the backend without creating a second store.
 
-Model-result visualization loads completed runs. A run made from draft settings
-is also a complete run: QC instructions and scenario settings need not be
-registered permanently. The manifest records the actual recipe and provenance.
-There is no separate draft overlay on previous model results.
+For visualization, a complete run means a run that produced result caches,
+including successful scenarios from a partially failed attempt. Use the existing
+backend discovery and available outputs; do not add a completed-status filter.
+A run made from draft settings is equally loadable: QC instructions and scenario
+settings need not be registered permanently. The manifest records the actual
+recipe and provenance. There is no separate draft overlay on previous results.
 
 Observations, forecast assets, static layers and prepared rainfall remain
 inspectable independently of model results. Show the loaded run identity,
 reference time, scenarios and manifest provenance. Distinguish current observations
-from retained model inputs/results. Failed/incomplete attempts provide diagnostics
-and must not appear as completed runs. Visualization of successful scenarios from
-partially failed attempts is outside this first delivery.
+from retained model inputs/results. Show actual run/scenario status and diagnostics
+alongside available caches; do not invent outputs for failed scenarios.
 
 ## Monitoring
 
-Preserve the dashboard's monitoring interactions within the map and side panes:
+Preserve the dashboard's monitoring interactions:
 
 - Station locations, mini segments/catchments, rainfall layers and available
   scenario results, with legends, tooltips and rainfall-value inspection.
 - Rainfall accumulation selected either by signed hours relative to reference
   time or explicit start/end dates. Negative hours select observed rainfall;
-  positive hours select forecast rainfall. Both controls show a consistent
-  resolved interval and use shared backend accumulation semantics.
+  positive hours select forecast rainfall. Both controls display the same
+  resolved interval and accumulation values for equivalent selections, using
+  the shared backend semantics.
 - Mini-basin selection, upstream boundary and area/rainfall summaries derived
   from validated model topology.
-- Clicking a station or mini-basin updates one shared side panel containing its
-  summary, table and rainfall/flow/level charts. Table/search selection also
+- Clicking a station or mini-basin updates one consistent location selection for
+  its summary, table and rainfall/flow/level charts. Table/search selection also
   reaches stations without map coordinates.
 - Select the map scenario and overlay scenarios from the same completed run in
   charts. Comparison across completed runs is deferred.
@@ -103,8 +124,8 @@ valid selections; accept changed operational inputs through the draft contract.
 
 ## Processing settings
 
-Keep period, scenarios and output stations readily visible. Place paths and
-numerical settings in collapsible sections, initialized from existing project
+Keep period, scenarios and output stations readily accessible. Group paths and
+advanced numerical settings clearly, initialized from existing project
 configuration where available. Do not silently select forecast inputs.
 
 | Group | Controls |
@@ -143,15 +164,18 @@ Do not build an additional plugin framework or inactive acquisition controls now
 
 ## AI assistant
 
-Retain RustGIS provider/model settings and chat presentation. Expose project
-inspection, settings preparation and the same operational actions as the buttons
-through structured MGB Ops tools. Backend validation/lifecycle rules apply equally
+Provide provider/model settings and a chat interface. Allow the assistant to
+inspect projects, prepare settings and request the same operational actions as
+manual controls. Backend validation/lifecycle rules apply equally
 to assistant and manual actions; there is no direct database/engine bypass.
 
 The assistant prepares settings for review before execution. Show the effective
 period, sources/scenarios, instructions and model configuration, and require
 explicit operator approval before starting execution. Draft execution does not
-register instructions permanently.
+register instructions permanently. Use the current draft for settings review and
+existing preparation/run manifests for retained inputs and outputs. If the reviewed
+settings or selected preparation change, show them again before execution; do not
+introduce another provenance, manifest or approval-identity system.
 
 The assistant requests confirmation before loading a completed run into the
 visualizations, including after its own successful execution. Confirmed loading
@@ -159,27 +183,20 @@ uses the same maps, tables and charts as manual controls. Show tool outcomes/err
 in chat and processing status. Declining loading preserves the current view and
 does not delete generated results.
 
-## Delivery order
-
-1. Prove RustGIS integration with project opening, regional geometry, rainfall
-   raster display, feature selection, basemaps and a backend action callable from
-   chat. Determine whether public APIs suffice or narrow upstream changes are
-   needed before committing to the full shell.
-2. Deliver TOML forms, recent projects, data discovery and Monitoring with linked
-   summaries, tables and charts.
-3. Connect settings, existing instruction selection and the three processing
-   actions with progress, cancellation and automatic result loading.
-4. Complete assistant review/confirmation and verify the full operator path.
-
 ## Acceptance
 
 - A configured project reopens without repeated setup. TOML forms preserve
   supported values and existing destination bytes on failed save.
 - A project without caches still opens with its observations, forecast assets
   and static layers. Missing engine prerequisites do not block inspection.
+- Available caches from partially failed runs remain loadable, with accurate
+  scenario status and diagnostics.
 - Both rainfall selectors yield matching backend intervals/values. Station/mini
   selection updates matching summaries, tables and charts.
 - Layer controls, local GIS additions and basemaps work without altering inputs.
+- Monitoring, processing and project setup are easy to navigate; routine actions
+  do not require scrolling through unrelated controls. Labels use the selected
+  interface language, and the map remains useful at normal window sizes.
 - Prepare exposes rainfall without launching MGB; Execute uses retained inputs;
   Run all performs both. Processing and cancellation leave the map responsive.
 - Unregistered draft values produce a completed run without catalog registration,
@@ -192,15 +209,16 @@ does not delete generated results.
 
 Target Linux and Windows. Qualify the first path on Linux and record Windows
 evidence separately. Use required Rust checks and focused GUI/integration checks
-for these behaviors. RustGIS build compatibility, extension points and rendering
-performance require evidence in the first increment.
+for these behaviors. Verify Wayland and X11 separately on Linux; an X11 test does
+not qualify Wayland. Distinguish virtual/software rendering from interactive
+performance on operator hardware. Headless builds must continue to work without
+requiring GUI dependencies.
 
 ## Deferred scope
 
 Plan observation QC editors and forecast editing/comparison separately. Forecast
-comparison is intended to use synchronized maps in the main area with side
-configuration, but its detailed interactions are deferred. Also defer comparison
-across completed runs, API acquisition, new hot starts, calibration editors,
+comparison requires synchronized maps, but its detailed interactions are deferred.
+Also defer comparison across completed runs, API acquisition, new hot starts, calibration editors,
 broader VB.NET tools, bulletins, scheduling and email. Add GUI tools as their
 backend capabilities and separate requirements are established.
 
@@ -214,5 +232,3 @@ backend capabilities and separate requirements are established.
 - [Series and rainfall](../../docs/contracts/series.md)
 - [Python dashboard](../../../legacy_python/apps/ops_dashboard/README.md)
 - [VB.NET functionality](../../references/vbnet_map.md)
-- [RustGIS architecture](https://github.com/opengeos/RustGIS/blob/main/README.md#architecture)
-- [RustGIS frontend](https://github.com/opengeos/RustGIS/blob/main/crates/ui-egui/src/lib.rs)
