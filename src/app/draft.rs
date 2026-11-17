@@ -313,6 +313,16 @@ pub struct Draft {
 impl Draft {
     pub fn new(workspace: PathBuf, invocation_dir: &Path) -> Self {
         let workspace = super::absolute(invocation_dir, &workspace);
+        let config = super::read_workspace_config(&workspace.join("config/workspace.toml")).ok();
+        Self::new_with_workspace_config(workspace, invocation_dir, config.as_ref())
+    }
+
+    pub fn new_with_workspace_config(
+        workspace: PathBuf,
+        invocation_dir: &Path,
+        config: Option<&super::WorkspaceConfig>,
+    ) -> Self {
+        let workspace = super::absolute(invocation_dir, &workspace);
         let mut document = DraftDocument {
             schema_version: 1,
             workspace: workspace.clone(),
@@ -321,10 +331,8 @@ impl Draft {
             instructions: DraftInstructions::default(),
             visualization: None,
         };
-        if let Ok(text) = std::fs::read_to_string(workspace.join("config/workspace.toml"))
-            && let Ok(config) = toml::from_str::<super::Config>(&text)
-        {
-            let engine = config.engine.unwrap_or_default();
+        if let Some(config) = config {
+            let engine = config.engine.clone().unwrap_or_default();
             document.operation.engine = Some(DraftEngine {
                 executable: Some(
                     engine
@@ -484,6 +492,24 @@ impl Draft {
             .ok_or("invalid operation")?
             .insert("schema_version".into(), 1.into());
         serde_json::from_value(value).map_err(|e| e.to_string())
+    }
+    pub fn save_preparation_toml(&self, path: &Path) -> Result<(), String> {
+        if self.document.instructions.replacements.is_some()
+            || self
+                .document
+                .instructions
+                .corrections
+                .iter()
+                .any(Option::is_some)
+        {
+            return Err("Draft instruction values cannot be saved in an operation TOML; save the draft instead".into());
+        }
+        let document = self.preparation_document()?;
+        let text = toml::to_string_pretty(&document).map_err(|e| e.to_string())?;
+        crate::store::write_atomic(
+            &super::absolute(&self.invocation_dir, path),
+            text.as_bytes(),
+        )
     }
     pub fn open(workspace: PathBuf, invocation_dir: &Path, path: &Path) -> Result<Self, String> {
         let workspace = super::absolute(invocation_dir, &workspace);

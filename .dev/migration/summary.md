@@ -29,7 +29,10 @@ retains source/driver identities, comparison evidence and numerical caveats.
 
 Shared library and CLI capabilities include typed preparation, drafts and
 previews, selective registration, controlled trials, geometry and reference
-imports, rainfall summaries, series queries and CSV exports.
+imports, rainfall summaries, series queries and CSV exports. Library callers can also read
+and atomically save workspace configuration, initialize drafts from selected
+configuration, export representable operation TOML, discover retained rainfall
+grids, and resolve signed rainfall hours through shared interval validation.
 The last explicit frozen-case release RS acceptance
 passed in 82.76 seconds after coordinate-independent review was separated from
 interpolation requirements. Failure checks cover OS

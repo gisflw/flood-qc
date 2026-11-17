@@ -4,6 +4,12 @@ A draft is an incomplete recipe with ordered instruction values. It does not
 embed observations, forecast grids, geometry or results. Saving a draft neither
 registers instructions nor prepares inputs or starts MGB.
 
+Library callers may initialize a draft with `Draft::new_with_workspace_config`
+when the selected workspace TOML is outside its standard location.
+`Draft::save_preparation_toml` saves a complete operation request atomically. It
+rejects embedded instruction values that the request schema cannot represent;
+save the JSON draft to retain those values without catalog registration.
+
 ## CLI actions
 
 ```sh

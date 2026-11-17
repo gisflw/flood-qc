@@ -5,7 +5,9 @@ mod model;
 pub mod store;
 
 pub use app::{
-    FindingCode, FindingStatus, InspectionReport, InspectionRequest, example_config, inspect,
+    FindingCode, FindingStatus, InspectionReport, InspectionRequest, WorkspaceConfig,
+    WorkspaceEngine, WorkspaceSpatial, discover_rainfall_grids, example_config, inspect,
+    read_workspace_config, write_workspace_config,
 };
 
 pub use analysis::{
@@ -46,8 +48,8 @@ pub use app::{
 pub use app::{ReferenceImportReport, import_level_references, upgrade_level_references};
 
 pub use analysis::{
-    GridAccumulation, HourlyWindow, RainSummary, accumulated_grid_frame, accumulated_grid_rain,
-    accumulated_rain, resolve_hourly_window,
+    GridAccumulation, HourlyWindow, RainSummary, RainfallSource, accumulated_grid_frame,
+    accumulated_grid_rain, accumulated_rain, resolve_hourly_window, signed_rainfall_window,
 };
 pub use app::{
     ChartSeries, Location, QueryFinding, SeriesPoint, SeriesQuery, SeriesReport, SeriesSelection,

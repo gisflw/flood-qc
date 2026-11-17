@@ -16,6 +16,35 @@ pub enum HourlyWindow {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RainfallSource {
+    Observed,
+    Forecast,
+}
+
+/// Resolve signed hours around the reference time for rainfall selection.
+pub fn signed_rainfall_window(
+    zone: &str,
+    reference: NaiveDateTime,
+    hours: i32,
+) -> Result<(RainfallSource, TimeInterval), String> {
+    if hours == 0 {
+        return Err("rainfall hours must be nonzero".into());
+    }
+    let other = reference
+        .checked_add_signed(Duration::hours(i64::from(hours)))
+        .ok_or("window overflow")?;
+    let (source, start, end) = if hours < 0 {
+        (RainfallSource::Observed, other, reference)
+    } else {
+        (RainfallSource::Forecast, reference, other)
+    };
+    Ok((
+        source,
+        resolve_hourly_window(zone, &HourlyWindow::Explicit { start, end })?,
+    ))
+}
+
 pub fn resolve_hourly_window(zone: &str, window: &HourlyWindow) -> Result<TimeInterval, String> {
     let (start, end) = match *window {
         HourlyWindow::Explicit { start, end } => (start, end),

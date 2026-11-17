@@ -1,3 +1,5 @@
+mod project;
+pub use self::project::discover_rainfall_grids;
 mod series;
 pub use self::series::{
     ChartSeries, Location, QueryFinding, SeriesPoint, SeriesQuery, SeriesReport, SeriesSelection,
@@ -135,22 +137,47 @@ fn serialize_optional_path<S: Serializer>(
     }
 }
 
-#[derive(Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Config {
-    spatial: Option<Spatial>,
-    engine: Option<Engine>,
+pub struct WorkspaceConfig {
+    pub spatial: Option<WorkspaceSpatial>,
+    pub engine: Option<WorkspaceEngine>,
 }
-#[derive(Default, Deserialize)]
+type Config = WorkspaceConfig;
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Spatial {
-    gpkg_path: Option<String>,
+pub struct WorkspaceSpatial {
+    pub gpkg_path: Option<String>,
 }
-#[derive(Default, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Engine {
-    executable: Option<String>,
-    input_dir: Option<String>,
+pub struct WorkspaceEngine {
+    pub executable: Option<String>,
+    pub input_dir: Option<String>,
+}
+
+pub fn read_workspace_config(path: &Path) -> Result<WorkspaceConfig, String> {
+    let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    toml::from_str(&contents).map_err(|e| e.to_string())
+}
+
+pub fn write_workspace_config(path: &Path, config: &WorkspaceConfig) -> Result<(), String> {
+    if config
+        .spatial
+        .as_ref()
+        .and_then(|s| s.gpkg_path.as_deref())
+        .is_none_or(|p| p.trim().is_empty())
+        || config.engine.as_ref().is_some_and(|e| {
+            [e.executable.as_deref(), e.input_dir.as_deref()]
+                .into_iter()
+                .flatten()
+                .any(|p| p.trim().is_empty())
+        })
+    {
+        return Err("configuration paths must be nonempty".into());
+    }
+    let contents = toml::to_string_pretty(config).map_err(|e| e.to_string())?;
+    crate::store::write_atomic(path, contents.as_bytes())
 }
 
 const LINUX_ENGINE: &str = "mgb_runner/MGB_Inercial_Prev_RSH";

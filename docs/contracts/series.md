@@ -12,6 +12,11 @@ ordered whole hours in a valid operation timezone. Ambiguous/nonexistent labels,
 timezone transitions and overflowing arithmetic fail. The returned interval is
 the actual selection, including for relative shortcuts.
 
+`signed_rainfall_window(time_zone, reference_time, hours)` selects observations
+from reference time plus negative hours to reference time, or forecasts from
+reference time to reference time plus positive hours. It returns the source kind
+and the same validated interval as an equivalent explicit window. Zero hours fail.
+
 `accumulated_rain(results, topology, outlet, upstream, window)` uses canonical
 `ResultSeries` precipitation and validated local mini areas. It includes the
 selected mini, and optionally all its upstream minis. The result reports total

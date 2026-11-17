@@ -22,6 +22,14 @@ arguments and repeated single-value options are usage errors. `--help` and
 The `mgb_ops` crate re-exports `inspect`, `InspectionRequest`, `InspectionReport`,
 `FindingStatus`, `FindingCode`, and `example_config`. `example_config()` returns
 the editable TOML as a `String`.
+`read_workspace_config(path)` and `write_workspace_config(path, config)` use the
+same typed TOML schema (`WorkspaceConfig`, `WorkspaceSpatial`, `WorkspaceEngine`).
+Paths inside the document remain unchanged. Saving validates nonempty configured
+paths and atomically replaces the destination; a failed save preserves its bytes.
+`discover_rainfall_grids(workspace)` lists retained observed and scenario working
+grids under `data/cache/preparations` and `data/runs` without creating artifacts.
+Missing roots return no grids; discovery requires a manifest alongside the
+checkpoints and does not filter by run success.
 `inspect(request)` returns an `InspectionReport`, including expected failures;
 it does not print output or choose an exit code. Findings are available through
 `report.findings`, with their type exposed as `mgb_ops::app::Finding`. Finding

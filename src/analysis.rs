@@ -1,7 +1,7 @@
 mod summary;
 pub use self::summary::{
-    GridAccumulation, HourlyWindow, RainSummary, accumulated_grid_frame, accumulated_grid_rain,
-    accumulated_rain, resolve_hourly_window,
+    GridAccumulation, HourlyWindow, RainSummary, RainfallSource, accumulated_grid_frame,
+    accumulated_grid_rain, accumulated_rain, resolve_hourly_window, signed_rainfall_window,
 };
 mod topology;
 pub use self::topology::upstream_minis;
