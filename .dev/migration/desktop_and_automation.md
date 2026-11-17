@@ -23,9 +23,9 @@ public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. The [GUI specification](../plans/desktop_gui.md) records confirmed
 first-delivery behavior, delivery order and acceptance. Monitoring uses a main map
-tab with side panes. The [monitoring implementation plan](../changes/desktop_monitoring.md)
-tracks the implemented optional rsplot/walkers monitoring interface and open
-hardware qualification gates; processing and assistant integration follow.
+tab with side panes. The [GUI plan qualification gates](../plans/desktop_gui.md#remaining-monitoring-qualification)
+track open hardware acceptance; the [desktop contract](../../docs/contracts/desktop.md)
+records the implemented optional rsplot/walkers interface; processing and assistant integration follow.
 QC editors and forecast comparison need separate planning. Shared
 core now produces disposable trial caches without run registration, retaining
 successful scenarios and debugging logs on failure/cancellation.

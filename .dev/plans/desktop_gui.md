@@ -3,18 +3,16 @@
 The first desktop delivery opens regional projects, presents monitoring on a map
 with linked charts and tables, prepares rainfall inputs, and executes MGB.
 MGB Ops retains operational backend ownership. The
-[monitoring implementation plan](../changes/desktop_monitoring.md) records the
-monitoring-first milestone, egui/rsplot/walkers implementation and remaining
-hardware qualification gates. Packaging and final map qualification remain
-open.
+[desktop contract](../../docs/contracts/desktop.md) records the implemented
+monitoring milestone. Packaging and the qualification gates below remain open.
 This specification records the agreed first delivery. QC editors and forecast
 comparison require separate planning.
 
 ## Starting point and scope
 
 The repository contains the shared Rust library and CLI plus an optional native
-monitoring interface. Monitoring qualification is tracked in its implementation
-plan; processing, settings editors and assistant behavior below remain prospective.
+monitoring interface. Monitoring qualification is tracked below; processing,
+settings editors and assistant behavior below remain prospective.
 This delivery focuses exclusively
 on the GUI over existing backend behavior; acquisition, scientific algorithms, schemas and operational
 lifecycle changes are outside this work.
@@ -61,8 +59,10 @@ language.
 
 Keep the map useful at normal window sizes. Common actions and processing status
 must remain reachable without scrolling through unrelated settings. Project setup,
-monitoring and processing must be easy to distinguish. The detailed layout and
-choice of tabs, panes, dialogs or other controls remain undecided.
+monitoring and processing must be easy to distinguish. The next increment's
+ribbon, panes, docking and runner interactions are specified in the
+[layout and runners specification](../changes/desktop_layout_and_runners.md).
+Later pages and tools retain the broader scope below.
 
 Provide layer visibility, ordering, opacity, legends, styling and basemap selection.
 Allow adding local GIS files beyond configured project layers. Adding a display
@@ -135,7 +135,7 @@ configuration where available. Do not silently select forecast inputs.
 
 | Group | Controls |
 | --- | --- |
-| Period | Reference date/time, historical start, forecast end and timezone. Derive contiguous hourly boundaries; the timestep is currently fixed at one hour. |
+| Period | One reference date/time, timezone, observed days before and forecast days after. Show backend-derived coverage; hourly steps are fixed. |
 | Observations | SQLite path, providers, optional station/series selection and ordered existing replacement instructions. |
 | Forecast scenarios | Scenario ID, zero/raw/corrected rainfall, forecast asset and ordered existing corrections. |
 | Output stations | Explicit stations for station-level model results. |
@@ -237,3 +237,14 @@ backend capabilities and separate requirements are established.
 - [Series and rainfall](../../docs/contracts/series.md)
 - [Python dashboard](../../../legacy_python/apps/ops_dashboard/README.md)
 - [VB.NET functionality](../../references/vbnet_map.md)
+
+## Remaining monitoring qualification
+
+The existing Linux virtual X11 and llvmpipe evidence does not establish operator
+hardware performance or long-session memory behavior. Agree measurable performance
+and memory acceptance thresholds, then check representative regional workloads
+on operator hardware. HiDPI, keyboard/input behavior and distributable packaging
+remain unqualified. Record Windows and Wayland evidence separately; neither is
+established by the Linux X11 checks. Basemap equivalence to the legacy Carto style
+and final map acceptance remain open. Preserve these gates while subsequent layout
+and runner increments are delivered.

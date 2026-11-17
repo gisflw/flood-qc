@@ -53,13 +53,13 @@ workspace reference never replaces that selection; a mismatch produces a finding
 and blocks dependent actions until the reference is repaired. External paths and
 native filesystem lookup semantics remain supported.
 
-## Version 1 JSON
+## JSON authoring versions
 
 The smallest incomplete document is:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "workspace": "/regional/workspace",
   "sources": {},
   "operation": {},
@@ -71,7 +71,19 @@ The smallest incomplete document is:
 Fields and nested settings may be absent or null while editing; scenario order is
 retained. New drafts initialize available engine paths from valid workspace
 configuration and leave other settings incomplete. They select no forecast or
-scenario automatically. Imports retain explicit dates and selections.
+scenario automatically. Imports retain exact coverage and selections. Version 2
+operations use one
+`reference_time`, `time_zone`, `observed_horizon_days` and `forecast_horizon_days`;
+boundary datetimes and `step_seconds` are absent. Fields may remain incomplete.
+Observation-local acceptance/preview needs only the observed horizon, reference,
+timezone and its own source/QC settings, independently of forecast/model readiness.
+Version 1 drafts with explicit boundaries remain supported without changing
+coverage or rewriting their files. Imports compact compatible version 1 periods
+losslessly; incompatible periods retain version 1 and exact explicit boundaries.
+Complete TOML export likewise uses version 2 only when lossless. New drafts use
+version 2. Desktop automatic restoration and anchored filenames are planned in the
+[runner specification](../../.dev/changes/desktop_layout_and_runners.md), not yet
+implemented by the backend's explicit-path save/open APIs.
 
 `instructions.replacements` is an optional ordered array of objects containing
 `draft_id`, optional `registered_origin`, and an observation replacement `value`.

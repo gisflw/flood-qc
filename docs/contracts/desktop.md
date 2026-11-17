@@ -86,6 +86,8 @@ Functional tests and a regional virtual X11 inspection pass on Linux. PNG checks
 use Vulkan llvmpipe software rendering. These do not establish operator-hardware
 performance, long-session memory behavior, HiDPI/input packaging, Wayland or
 Windows compatibility. Performance/memory thresholds and hardware acceptance
-remain open in the monitoring plan. Basemap equivalence to the legacy Carto
+remain open in the
+[GUI plan](../../.dev/plans/desktop_gui.md#remaining-monitoring-qualification).
+Basemap equivalence to the legacy Carto
 style is not qualified. The desktop does not yet expose preparation/execution,
 configuration editing or the assistant; those follow monitoring acceptance.

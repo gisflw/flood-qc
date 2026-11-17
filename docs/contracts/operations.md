@@ -36,14 +36,11 @@ saved observations and a zero-rain forecast; replace paths and times for the
 selected regional baseline:
 
 ```toml
-schema_version = 1
+schema_version = 2
 time_zone = "America/Sao_Paulo"
 reference_time = "2026-07-20T00:00:00"
-step_seconds = 3600
-historical_first_end = "2026-07-10T00:00:00"
-historical_last_end = "2026-07-20T00:00:00"
-forecast_first_end = "2026-07-20T01:00:00"
-forecast_last_end = "2026-07-25T01:00:00"
+observed_horizon_days = 10
+forecast_horizon_days = 5
 
 [observed]
 path = "data/observations.sqlite"
@@ -93,9 +90,27 @@ QC findings do not automatically create reviews. Output level station IDs are
 explicit and ordered; `[]` requests no station columns. Unknown stations fail.
 
 Times are local `YYYY-MM-DDTHH:MM:SS`, hour aligned, in the supplied IANA timezone.
-Only 3600-second steps are supported. Historical and forecast axes are contiguous;
-reference equals the final historical endpoint, followed by the first forecast
-endpoint one hour later. Ambiguous/nonexistent local labels and offset transitions
+Version 2 authoring has one datetime: `reference_time`. `observed_horizon_days`
+is a nonnegative integer; `forecast_horizon_days` is a positive integer. Hourly
+steps are fixed. The first historical label is midnight on the reference date
+minus observed days; the last is the reference. Forecast labels run from reference
+plus one hour through reference plus forecast days plus one hour, inclusively.
+Thus the example has 241 historical and 121 forecast labels; a non-midnight
+reference adds historical labels since midnight. These are interval-end labels,
+so covered rainfall begins one hour before the first label.
+Historical and forecast axes are contiguous. Explicit boundary datetimes and
+`step_seconds` cannot be combined with version 2 day horizons.
+
+Version 1 requests with `step_seconds = 3600` and explicit
+`historical_first_end`, `historical_last_end`, `forecast_first_end`, and
+`forecast_last_end` remain readable with their original exact coverage. The
+reference must equal the final historical endpoint, followed by the first
+forecast endpoint one hour later. The typed `PreparationDocument` API and retained
+recipes keep this resolved version 1 representation; retained preparations,
+requests and manifests are not rewritten. Draft import/export converts to version
+2 only when expansion reproduces every original boundary and step exactly;
+otherwise it retains version 1. No rounding to whole days occurs.
+Ambiguous/nonexistent local labels and offset transitions
 fail. Grid bounds and resolution, IDW settings, QC thresholds and thread count
 are validated. Engine-bound rainfall must be present, finite and nonnegative.
 

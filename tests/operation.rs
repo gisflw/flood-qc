@@ -1317,7 +1317,7 @@ fn draft_preparation_requires_refresh_and_freezes_current_inputs() {
     draft.refresh_inputs().unwrap();
     let original = draft.preview_observations().unwrap();
     let mut invalid = draft.clone();
-    invalid.document.schema_version = 2;
+    invalid.document.schema_version = 3;
     assert!(invalid.preview_observations().is_err());
     assert!(
         invalid
@@ -1975,4 +1975,112 @@ fn cli_uncontrolled_draft_import_keeps_default_sigint() {
     };
     drop(writer);
     assert_eq!(status.signal(), Some(2));
+}
+
+#[test]
+fn reference_horizons_prepare_execute_and_incomplete_draft_preview() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fixture(&root);
+    let mut db = ObservationStore::open_writable(&root.join("observations.sqlite")).unwrap();
+    db.write_batch(&ObservationBatch {
+        stations: vec![],
+        series: vec![],
+        replacements: vec![],
+        offsets: vec![],
+        samples: vec![ObservationSample {
+            series_id: "r".into(),
+            observed_at: time("2026-01-01T00:00:00"),
+            value: Some(ObservationValue::RainMm(1.0)),
+        }],
+    })
+    .unwrap();
+    let text = fs::read_to_string(root.join("request.toml")).unwrap();
+    let text = text.replace("schema_version = 1", "schema_version = 2")
+        .replace("step_seconds = 3600\nhistorical_first_end = \"2026-01-01T01:00:00\"\nhistorical_last_end = \"2026-01-01T02:00:00\"\nforecast_first_end = \"2026-01-01T03:00:00\"\nforecast_last_end = \"2026-01-01T03:00:00\"", "observed_horizon_days = 0\nforecast_horizon_days = 1");
+    fs::write(root.join("request.toml"), text).unwrap();
+    let mut draft =
+        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
+    assert_eq!(draft.document.schema_version, 2);
+    assert_eq!(draft.document.operation.observed_horizon_days, Some(0));
+    assert!(draft.document.operation.historical_first_end.is_none());
+    draft.save(Path::new("draft.json"), true).unwrap();
+    let mut local = mgb_ops::Draft::open(root.clone(), &root, Path::new("draft.json")).unwrap();
+    local.document.operation.forecast_horizon_days = None;
+    local.document.operation.engine = None;
+    for horizon in [None, Some(0), Some(u32::MAX)] {
+        local.document.operation.forecast_horizon_days = horizon;
+        local.refresh_observations().unwrap();
+        assert_eq!(local.preview_observations().unwrap().rows.len(), 3);
+    }
+    draft.refresh_inputs().unwrap();
+    draft
+        .save_preparation_toml(Path::new("export.toml"))
+        .unwrap();
+    let exported = fs::read_to_string(root.join("export.toml")).unwrap();
+    assert!(exported.contains("observed_horizon_days"));
+    assert!(!exported.contains("historical_first_end"));
+    let exported_draft =
+        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("export.toml")).unwrap();
+    assert_eq!(exported_draft.document.operation, draft.document.operation);
+    draft.prepare(root.clone(), "prepared-v2".into()).unwrap();
+    let report = mgb_ops::app::execute_prepared(mgb_ops::app::ExecutionRequest {
+        workspace: root.clone(),
+        invocation_dir: root.clone(),
+        prepared: "prepared-v2".into(),
+    })
+    .unwrap();
+    assert!(matches!(
+        report.status,
+        mgb_ops::app::BatchStatus::Completed
+    ));
+    assert_eq!(
+        mgb_ops::read_trial(&report.run_root)
+            .unwrap()
+            .scenarios
+            .len(),
+        4
+    );
+    let retained = mgb_ops::Draft::import_manifest(root.clone(), &root, &report.run_root).unwrap();
+    assert_eq!(
+        retained.document.operation.reference_time,
+        draft.document.operation.reference_time
+    );
+    assert_eq!(retained.document.operation.observed_horizon_days, Some(0));
+    assert_eq!(retained.document.operation.forecast_horizon_days, Some(1));
+}
+
+#[test]
+fn legacy_invalid_recipe_remains_importable_for_repair() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fixture(&root);
+    let original = fs::read_to_string(root.join("request.toml")).unwrap();
+    fs::write(
+        root.join("request.toml"),
+        original.replace("omp_threads = 1", "omp_threads = 0"),
+    )
+    .unwrap();
+    let draft =
+        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
+    assert_eq!(draft.document.schema_version, 1);
+    assert_eq!(
+        draft
+            .document
+            .operation
+            .engine
+            .as_ref()
+            .unwrap()
+            .omp_threads,
+        Some(0)
+    );
+    assert_eq!(
+        draft.document.operation.historical_first_end.as_deref(),
+        Some("2026-01-01T01:00:00")
+    );
+    assert!(!draft.validate_preparation().is_empty());
 }

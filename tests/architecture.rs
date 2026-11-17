@@ -384,6 +384,7 @@ impl<'ast> Visit<'ast> for Gate {
                         "default_value",
                         "with",
                         "serialize_with",
+                        "skip_serializing_if",
                         "deserialize_with",
                         "from",
                         "try_from",
@@ -626,6 +627,7 @@ fn graph_fixtures() {
         "pub use crate::store::Thing;",
         "crate::model::println!(\"x\");",
         "#[serde(with = \"model\")] struct S;",
+        "#[serde(skip_serializing_if = \"crate::model::hidden\")] struct S;",
         "#[path = \"outside.rs\"] use crate::store::Thing;",
     ] {
         assert!(!check("adapters", source).is_empty(), "accepted {source}");
@@ -638,6 +640,7 @@ fn graph_fixtures() {
         "use crate::store::{Thing as Alias, Other};",
         "mod x { use super::helper; }",
         "#[serde(default = \"crate::store::default_value\")] struct S;",
+        "#[serde(skip_serializing_if = \"Option::is_none\")] struct S;",
         "#[serde(default = \"crate::adapters::default_value\")] struct S;",
     ] {
         assert!(check("adapters", source).is_empty(), "rejected {source}");

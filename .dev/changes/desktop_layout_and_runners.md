@@ -8,8 +8,9 @@ the [desktop contract](../../docs/contracts/desktop.md) describes current behavi
 
 Preserve existing monitoring, exports, backend validation, workspace path semantics,
 source acceptance and execution lifecycle. Use the shared workspace configuration,
-operation draft and controlled preparation/execution APIs. Do not introduce new
-operational schemas or duplicate scientific processing in the GUI.
+operation draft and controlled preparation/execution APIs. Use the reference/horizon
+authoring format in the shared backend; do not duplicate
+period derivation or scientific processing in the GUI.
 
 ## Ribbon and pane layout
 
@@ -98,7 +99,7 @@ configuration where available. Do not silently select forecast inputs.
 
 | Group | Controls |
 | --- | --- |
-| Period | Reference date/time, historical start, forecast end and timezone. Derive contiguous hourly boundaries; the timestep is currently fixed at one hour. |
+| Period | One reference date/time, timezone, observed days before and forecast days after. Display backend-derived coverage read-only; hourly steps are fixed. |
 | Observations | SQLite path, providers, optional station/series selection and ordered existing replacement instructions. |
 | Forecast scenarios | Scenario ID, zero/raw/corrected rainfall, forecast asset and ordered existing corrections. |
 | Output stations | Explicit stations for station-level model results. |
@@ -117,6 +118,36 @@ recipe or discard edits. Provide explicit draft saving through the existing JSON
 draft contract, including incomplete settings. Execute MGB separately selects a
 retained preparation and displays its frozen period, scenarios and provenance;
 editing the shared draft does not alter that preparation.
+
+Provide New run, Open, Save and Save As for the one active draft per project.
+A New run always starts fresh, even if a matching saved draft exists. Fix its
+reference immediately to the current hour in the selected operation timezone;
+it does not advance while editing. Initialize available workspace paths, leaving
+operational source/scenario choices unselected. Use the shared reference/horizon
+format and its exact inclusive-hour convention (10 observed days and 5 forecast
+days at midnight produce 241 and 121 labels); do not reinterpret day horizons.
+
+Save drafts under `config/drafts/operation-20260720T000000-0300.json`, using the
+reference's local timestamp and UTC offset. Remember at most one active saved
+draft per project. Before reading that draft, establish the candidate run reference
+from the current hour in the selected operation timezone, or an explicitly requested
+reference. Never derive this candidate from the remembered file or path. On reopening,
+restore it only for an exact candidate reference and IANA timezone match; never
+fall back to the latest older draft. Validate the
+content match rather than relying on the filename: zones can share an offset.
+A changed reference changes the save destination and preserves the previous file.
+Save As must also retain the reference anchor in its filename. Protect existing
+destinations from accidental overwrite. Save/Discard/Cancel protects unsaved work
+before New run or Open replaces a draft; failed saves keep it active. Incomplete
+settings remain saveable once their reference and timezone identify the draft.
+No automatic saving of operational edits. Legacy recipes retain their exact
+coverage; convert to day horizons only when lossless, otherwise explain the
+incompatibility and preserve the original for existing backend workflows.
+
+Provide **Accept/Refresh selected inputs**, with visible readiness and changed-source
+feedback, separately from monitoring Refresh/F5. F5 only refreshes monitoring.
+Accepting inputs uses the existing explicit shared-backend API. Prepare and Run
+All must not implicitly accept changed inputs or register instructions.
 
 ## Processing actions
 
@@ -141,8 +172,13 @@ must not stop its job or lose access to this status. Allow one active processing
 job per workspace, with useful feedback when another is requested, while keeping
 monitoring responsive and honoring backend workspace locks. Closing or collapsing
 a pane is not cancellation. Project changes or application exit during processing
-must not detach an engine: finish the job or use controlled cancellation and wait
-for cleanup before releasing its workspace.
+offer **Cancel job and leave** and **Stay**. Stay preserves the job and current
+project. Cancel job and leave requests controlled cancellation, keeps the project
+and Jobs status available until all workers/engines stop and cleanup finishes,
+then resolves unsaved-work Save/Discard/Cancel before leaving. A cleanup failure
+keeps the project available with an actionable error. Never detach an engine or
+release its workspace before cleanup. If the job finishes before cancellation,
+preserve its completed result and continue normal unsaved-work handling.
 
 Later backend actions such as Fetch data can join the processing interface.
 Do not build an additional plugin framework or inactive acquisition controls now.
@@ -168,6 +204,16 @@ Do not build an additional plugin framework or inactive acquisition controls now
 - Prepare and Run All share one draft. Execute uses explicitly selected retained
   inputs. Preparation does not launch MGB; Run All performs both stages. Successful
   manual execution loads results without changing focus or docking layout.
+- New run starts fresh with a fixed current-hour reference. New/Open/Save/Save As
+  preserve dirty-work handling, exact reference+zone restoration and anchored
+  filenames. A changed reference preserves the old file; destination collisions
+  require explicit overwrite. Incomplete drafts round-trip without selecting inputs.
+- Period controls have one reference and two day counts; displayed coverage matches
+  CLI/backend labels exactly. Legacy coverage is never rounded during conversion.
+- Accept/Refresh selected inputs shows readiness and source changes. F5 does not
+  accept operational inputs; Prepare and Run All fail until required inputs are accepted.
+- Leaving during processing offers Cancel job and leave / Stay. Cancellation waits
+  for workers, engines and cleanup, then handles dirty work; failures keep the project.
 - Jobs keeps progress, logs, outcomes and Cancel available independently of runner
   visibility. One active processing job is allowed per workspace. Monitoring stays
   responsive; cancellation and failure preserve unrelated data and usable results.

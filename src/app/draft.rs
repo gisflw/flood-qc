@@ -1,6 +1,9 @@
 use super::operation::{OperationError, PreparationReport};
 use super::prepare::{TypedPreparationRequest, prepare_typed_checked};
-use super::request::{PreparationDocument, axis, resolve_request, timestamp, validate_document};
+use super::request::{
+    PreparationDocument, axis, compact_period, decode_request, expand_period, historical_start,
+    resolve_request, timestamp, validate_document,
+};
 use crate::analysis::{
     EffectiveObservation, PrecipitationQcFinding, PrecipitationQcPolicy, SelectedObservation,
     corrected_forecast_frames, detect_suspect_precipitation, effective_observations,
@@ -128,10 +131,19 @@ pub struct DraftScenario {
 pub struct DraftOperation {
     pub time_zone: Option<String>,
     pub reference_time: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_horizon_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forecast_horizon_days: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub step_seconds: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub historical_first_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub historical_last_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forecast_first_end: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub forecast_last_end: Option<String>,
     pub observed: Option<DraftObserved>,
     pub geometry: Option<DraftGeometry>,
@@ -142,6 +154,21 @@ pub struct DraftOperation {
     pub engine: Option<DraftEngine>,
     pub forecasts: Option<DraftForecasts>,
     pub scenarios: Vec<DraftScenario>,
+}
+
+impl DraftOperation {
+    fn validate_period_format(&self, version: u32) -> Result<(), String> {
+        let explicit = self.step_seconds.is_some()
+            || self.historical_first_end.is_some()
+            || self.historical_last_end.is_some()
+            || self.forecast_first_end.is_some()
+            || self.forecast_last_end.is_some();
+        let horizons = self.observed_horizon_days.is_some() || self.forecast_horizon_days.is_some();
+        if (version == 2 && explicit) || (version == 1 && horizons) {
+            return Err("draft period fields disagree with schema version".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -324,7 +351,7 @@ impl Draft {
     ) -> Self {
         let workspace = super::absolute(invocation_dir, &workspace);
         let mut document = DraftDocument {
-            schema_version: 1,
+            schema_version: 2,
             workspace: workspace.clone(),
             sources: DraftSources::default(),
             operation: DraftOperation::default(),
@@ -386,6 +413,7 @@ impl Draft {
             .as_object_mut()
             .ok_or("invalid preparation")?
             .remove("schema_version");
+        draft.document.schema_version = if compact_period(&mut value) { 2 } else { 1 };
         draft.document.operation = serde_json::from_value(value).map_err(|e| e.to_string())?;
         draft.baseline = draft.document.clone();
         Ok(draft)
@@ -397,7 +425,7 @@ impl Draft {
     ) -> Result<Self, String> {
         let path = super::absolute(invocation_dir, path);
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let document: PreparationDocument = toml::from_str(&text).map_err(|e| e.to_string())?;
+        let document = decode_request(text.as_bytes()).map_err(|e| e.to_string())?;
         Self::from_preparation(workspace, invocation_dir, document)
     }
     pub fn import_manifest(
@@ -491,6 +519,7 @@ impl Draft {
             .as_object_mut()
             .ok_or("invalid operation")?
             .insert("schema_version".into(), 1.into());
+        expand_period(&mut value).map_err(|e| e.to_string())?;
         serde_json::from_value(value).map_err(|e| e.to_string())
     }
     pub fn save_preparation_toml(&self, path: &Path) -> Result<(), String> {
@@ -505,7 +534,28 @@ impl Draft {
             return Err("Draft instruction values cannot be saved in an operation TOML; save the draft instead".into());
         }
         let document = self.preparation_document()?;
-        let text = toml::to_string_pretty(&document).map_err(|e| e.to_string())?;
+        let mut value = serde_json::to_value(&document).map_err(|e| e.to_string())?;
+        let mut output = toml::Value::try_from(&document).map_err(|e| e.to_string())?;
+        if compact_period(&mut value) {
+            let table = output.as_table_mut().ok_or("invalid preparation")?;
+            for key in [
+                "step_seconds",
+                "historical_first_end",
+                "historical_last_end",
+                "forecast_first_end",
+                "forecast_last_end",
+            ] {
+                table.remove(key);
+            }
+            table.insert("schema_version".into(), 2.into());
+            for key in ["observed_horizon_days", "forecast_horizon_days"] {
+                table.insert(
+                    key.into(),
+                    value[key].as_i64().ok_or("invalid horizon")?.into(),
+                );
+            }
+        }
+        let text = toml::to_string_pretty(&output).map_err(|e| e.to_string())?;
         crate::store::write_atomic(
             &super::absolute(&self.invocation_dir, path),
             text.as_bytes(),
@@ -515,9 +565,10 @@ impl Draft {
         let workspace = super::absolute(invocation_dir, &workspace);
         let path = super::absolute(invocation_dir, path);
         let raw: RawDraftDocument = read_draft(&path)?;
-        if raw.schema_version != 1 {
+        if !matches!(raw.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
+        raw.operation.validate_period_format(raw.schema_version)?;
         let mut findings = Vec::new();
         let visualization = match raw.visualization {
             Some(value) => match serde_json::from_value::<DraftVisualization>(value) {
@@ -772,10 +823,11 @@ impl Draft {
         Ok(draft)
     }
     fn validate_boundary(&self) -> Result<(), String> {
-        if self.document.schema_version != 1 {
+        if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
         let operation = &self.document.operation;
+        operation.validate_period_format(self.document.schema_version)?;
         let mut numbers = Vec::new();
         if let Some(grid) = &operation.grid {
             numbers.extend(grid.bbox.into_iter().flatten());
@@ -865,22 +917,42 @@ impl Draft {
             .time_zone
             .as_deref()
             .ok_or("select operation timezone")?;
-        let first = timestamp(
-            "historical_first_end",
-            operation
-                .historical_first_end
-                .as_deref()
-                .ok_or("select historical start")?,
-        )
-        .map_err(|e| e.to_string())?;
-        let last = timestamp(
-            "historical_last_end",
-            operation
-                .historical_last_end
-                .as_deref()
-                .ok_or("select historical end")?,
-        )
-        .map_err(|e| e.to_string())?;
+        let (first, last) = if self.document.schema_version == 2 {
+            let reference = timestamp(
+                "reference_time",
+                operation
+                    .reference_time
+                    .as_deref()
+                    .ok_or("select reference time")?,
+            )
+            .map_err(|e| e.to_string())?;
+            let days = operation
+                .observed_horizon_days
+                .ok_or("select observed days")?;
+            (
+                historical_start(reference, chrono::Duration::days(i64::from(days)))
+                    .map_err(|e| e.to_string())?,
+                reference,
+            )
+        } else {
+            let first = timestamp(
+                "historical_first_end",
+                operation
+                    .historical_first_end
+                    .as_deref()
+                    .ok_or("select historical start")?,
+            )
+            .map_err(|e| e.to_string())?;
+            let last = timestamp(
+                "historical_last_end",
+                operation
+                    .historical_last_end
+                    .as_deref()
+                    .ok_or("select historical end")?,
+            )
+            .map_err(|e| e.to_string())?;
+            (first, last)
+        };
         let timeline = axis(first, last, zone, "historical").map_err(|e| e.to_string())?;
         let path = observed
             .path
@@ -1219,7 +1291,7 @@ impl Draft {
         Ok(())
     }
     pub fn materialize_replacements(&mut self) -> Result<(), String> {
-        if self.document.schema_version != 1 {
+        if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
         if !self.workspace_matches() {
@@ -1253,7 +1325,7 @@ impl Draft {
         Ok(())
     }
     pub fn materialize_corrections(&mut self, index: usize) -> Result<(), String> {
-        if self.document.schema_version != 1 {
+        if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
         if !self.workspace_matches() {
@@ -1317,7 +1389,7 @@ impl Draft {
         &mut self,
         mapping: &RegistrationMapping,
     ) -> Result<(), String> {
-        if self.document.schema_version != 1 {
+        if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
         if !self.workspace_matches() {
@@ -1404,7 +1476,7 @@ impl Draft {
     }
     pub fn register_selected(&self, selection: &RegistrationSelection) -> RegistrationReport {
         let observations = (|| -> Result<Vec<RegistrationMapping>, String> {
-            if self.document.schema_version != 1 {
+            if !matches!(self.document.schema_version, 1 | 2) {
                 return Err("unsupported draft schema version".into());
             }
             if selection.replacements.is_empty() {
@@ -1462,7 +1534,7 @@ impl Draft {
             Ok(mappings)
         })();
         let forecasts = (|| -> Result<Vec<RegistrationMapping>, String> {
-            if self.document.schema_version != 1 {
+            if !matches!(self.document.schema_version, 1 | 2) {
                 return Err("unsupported draft schema version".into());
             }
             if selection.corrections.is_empty() {
@@ -2024,7 +2096,7 @@ mod tests {
             .unwrap();
         assert_eq!(original_correction, 1.);
         let mut unsupported = edited_again.clone();
-        unsupported.document.schema_version = 2;
+        unsupported.document.schema_version = 3;
         let rejected = unsupported.register_selected(&edit_selection);
         assert!(rejected.observations.error.unwrap().contains("schema"));
         assert!(rejected.forecasts.error.unwrap().contains("schema"));
@@ -2105,7 +2177,7 @@ mod tests {
         );
         let text = String::from_utf8(bytes)
             .unwrap()
-            .replace("\"schema_version\": 1", "\"schema_version\": 2");
+            .replace("\"schema_version\": 2", "\"schema_version\": 3");
         std::fs::write(&path, text).unwrap();
         assert!(Draft::open("workspace".into(), &root, &path).is_err());
     }

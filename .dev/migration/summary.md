@@ -17,7 +17,7 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 17, 2026 for the optional desktop monitoring interface.
+Updated November 17, 2026 for reference/horizon authoring and the next desktop increment.
 The Linux saved-data operational path is complete:
 workspace inspection, canonical observations/QC/replacements, saved forecast
 normalization/corrections, reusable prepared inputs, isolated real MGB execution,
@@ -33,6 +33,9 @@ imports, rainfall summaries, series queries and CSV exports. Library callers can
 and atomically save workspace configuration, initialize drafts from selected
 configuration, export representable operation TOML, discover retained rainfall
 grids, and resolve signed rainfall hours through shared interval validation.
+Operation TOML and JSON drafts support reference/horizon authoring while preserving
+exact explicit-boundary recipes and unchanged retained artifacts. Focused checks
+cover period compatibility and the draft-to-preparation/execution workflow.
 The last explicit frozen-case release RS acceptance
 passed in 82.76 seconds after coordinate-independent review was separated from
 interpolation requirements. Failure checks cover OS

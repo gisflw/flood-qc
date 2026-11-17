@@ -180,12 +180,168 @@ fn resolve_file(
     }
     Ok(())
 }
+pub(super) fn compact_period(value: &mut serde_json::Value) -> bool {
+    let Some(reference) = value
+        .get("reference_time")
+        .and_then(|v| v.as_str())
+        .and_then(|v| timestamp("reference_time", v).ok())
+    else {
+        return false;
+    };
+    let Some(first) = value
+        .get("historical_first_end")
+        .and_then(|v| v.as_str())
+        .and_then(|v| timestamp("historical_first_end", v).ok())
+    else {
+        return false;
+    };
+    let Some(last) = value
+        .get("forecast_last_end")
+        .and_then(|v| v.as_str())
+        .and_then(|v| timestamp("forecast_last_end", v).ok())
+    else {
+        return false;
+    };
+    let history = reference
+        .date()
+        .signed_duration_since(first.date())
+        .num_days();
+    let forecast = (last - reference - Duration::hours(1)).num_seconds();
+    if first.time() != chrono::NaiveTime::MIN
+        || history < 0
+        || forecast <= 0
+        || forecast % 86400 != 0
+    {
+        return false;
+    }
+    let (Ok(history), Ok(forecast)) = (u32::try_from(history), u32::try_from(forecast / 86400))
+    else {
+        return false;
+    };
+    let mut compact = value.clone();
+    let object = compact.as_object_mut().unwrap();
+    for key in [
+        "step_seconds",
+        "historical_first_end",
+        "historical_last_end",
+        "forecast_first_end",
+        "forecast_last_end",
+    ] {
+        object.remove(key);
+    }
+    object.insert("observed_horizon_days".into(), history.into());
+    object.insert("forecast_horizon_days".into(), forecast.into());
+    let mut expanded = compact.clone();
+    if expand_period(&mut expanded).is_err() || expanded != *value {
+        return false;
+    }
+    *value = compact;
+    true
+}
+
+pub(super) fn historical_start(
+    reference: NaiveDateTime,
+    days: Duration,
+) -> Result<NaiveDateTime, RequestError> {
+    reference
+        .date()
+        .and_hms_opt(0, 0, 0)
+        .unwrap()
+        .checked_sub_signed(days)
+        .ok_or_else(|| invalid("observed_horizon_days", "timestamp overflow"))
+}
+
+// Authoring periods expand once; retained recipes keep the qualified v1 representation.
+pub(super) fn expand_period(value: &mut serde_json::Value) -> Result<(), RequestError> {
+    let object = value
+        .as_object_mut()
+        .ok_or_else(|| invalid("request", "expected object"))?;
+    if !object.contains_key("observed_horizon_days")
+        && !object.contains_key("forecast_horizon_days")
+    {
+        return Ok(());
+    }
+    for key in [
+        "step_seconds",
+        "historical_first_end",
+        "historical_last_end",
+        "forecast_first_end",
+        "forecast_last_end",
+    ] {
+        if object.get(key).is_some_and(|v| !v.is_null()) {
+            return Err(invalid(
+                key,
+                "cannot combine explicit boundaries with day horizons",
+            ));
+        }
+    }
+    let reference = timestamp(
+        "reference_time",
+        object
+            .get("reference_time")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| invalid("reference_time", "required"))?,
+    )?;
+    let days = |key: &str| -> Result<Duration, RequestError> {
+        let count = object
+            .get(key)
+            .and_then(|v| v.as_u64())
+            .and_then(|v| i64::try_from(v).ok())
+            .ok_or_else(|| invalid(key, "expected nonnegative integer days"))?;
+        Duration::try_days(count).ok_or_else(|| invalid(key, "day horizon overflow"))
+    };
+    let history = days("observed_horizon_days")?;
+    let forecast = days("forecast_horizon_days")?;
+    if forecast == Duration::zero() {
+        return Err(invalid(
+            "forecast_horizon_days",
+            "expected positive integer days",
+        ));
+    }
+    let hfirst = historical_start(reference, history)?;
+    let ffirst = reference
+        .checked_add_signed(Duration::hours(1))
+        .ok_or_else(|| invalid("reference_time", "timestamp overflow"))?;
+    let flast = ffirst
+        .checked_add_signed(forecast)
+        .ok_or_else(|| invalid("forecast_horizon_days", "timestamp overflow"))?;
+    object.remove("observed_horizon_days");
+    object.remove("forecast_horizon_days");
+    object.insert("step_seconds".into(), 3600.into());
+    for (key, time) in [
+        ("historical_first_end", hfirst),
+        ("historical_last_end", reference),
+        ("forecast_first_end", ffirst),
+        ("forecast_last_end", flast),
+    ] {
+        object.insert(
+            key.into(),
+            time.format("%Y-%m-%dT%H:%M:%S").to_string().into(),
+        );
+    }
+    Ok(())
+}
+
 pub(super) fn parse_request(request_bytes: Vec<u8>) -> Result<ValidatedRequest, RequestError> {
-    let text = std::str::from_utf8(&request_bytes)
-        .map_err(|_| invalid("request", "expected UTF-8 TOML"))?;
-    let document: PreparationDocument =
-        toml::from_str(text).map_err(|e| invalid("request", e.message()))?;
+    let document = decode_request(&request_bytes)?;
     validate_document(document, request_bytes)
+}
+
+pub(super) fn decode_request(request_bytes: &[u8]) -> Result<PreparationDocument, RequestError> {
+    let text = std::str::from_utf8(request_bytes)
+        .map_err(|_| invalid("request", "expected UTF-8 TOML"))?;
+    let raw: toml::Value = toml::from_str(text).map_err(|e| invalid("request", e.message()))?;
+    let mut value = serde_json::to_value(raw).map_err(|e| invalid("request", e.to_string()))?;
+    if value.get("schema_version").and_then(|v| v.as_u64()) == Some(2) {
+        if value.get("observed_horizon_days").is_none()
+            || value.get("forecast_horizon_days").is_none()
+        {
+            return Err(invalid("timeline", "version 2 requires both day horizons"));
+        }
+        expand_period(&mut value)?;
+        value["schema_version"] = 1.into();
+    }
+    serde_json::from_value(value).map_err(|e| invalid("request", e.to_string()))
 }
 
 pub(super) fn validate_document(
@@ -428,6 +584,87 @@ id = "zero"
 kind = "zero"
 "#
         .into()
+    }
+    fn v2_text() -> String {
+        let mut text = request_text().replace("schema_version = 1", "schema_version = 2");
+        for line in request_text().lines().filter(|line| {
+            line.starts_with("step_seconds")
+                || line.starts_with("historical_")
+                || line.starts_with("forecast_")
+        }) {
+            text = text.replace(&format!("{line}\n"), "");
+        }
+        text.replacen(
+            "[observed]",
+            "observed_horizon_days = 10\nforecast_horizon_days = 5\n[observed]",
+            1,
+        )
+    }
+    #[test]
+    fn reference_horizons_preserve_legacy_labels_and_reject_invalid_periods() {
+        let valid = parse_request(v2_text().into_bytes()).unwrap();
+        let legacy = parse_request(request_text().into_bytes()).unwrap();
+        assert_eq!(valid.historical, legacy.historical);
+        assert_eq!(valid.forecast, legacy.forecast);
+        assert_eq!(
+            serde_json::to_value(&valid.document).unwrap(),
+            serde_json::to_value(&legacy.document).unwrap()
+        );
+        assert_eq!(valid.historical.bounds.len(), 241);
+        assert_eq!(valid.forecast.bounds.len(), 121);
+        let nonmidnight = parse_request(
+            v2_text()
+                .replace("2026-07-20T00:00:00", "2026-07-20T06:00:00")
+                .into_bytes(),
+        )
+        .unwrap();
+        assert_eq!(nonmidnight.historical.bounds.len(), 247);
+        assert_eq!(nonmidnight.forecast.bounds.len(), 121);
+        let zero_history = parse_request(
+            v2_text()
+                .replace("observed_horizon_days = 10", "observed_horizon_days = 0")
+                .into_bytes(),
+        )
+        .unwrap();
+        assert_eq!(zero_history.historical.bounds.len(), 1);
+        for text in [
+            v2_text().replace("forecast_horizon_days = 5", "forecast_horizon_days = 0"),
+            v2_text().replace("observed_horizon_days = 10", "observed_horizon_days = -1"),
+            v2_text().replace(
+                "observed_horizon_days = 10",
+                "observed_horizon_days = 9223372036854775807",
+            ),
+            v2_text().replace(
+                "forecast_horizon_days = 5",
+                "forecast_horizon_days = 9223372036854775807",
+            ),
+            v2_text().replace("[observed]", "step_seconds = 3600\n[observed]"),
+            v2_text().replace(
+                "[observed]",
+                "historical_first_end = \"2026-07-10T00:00:00\"\n[observed]",
+            ),
+        ] {
+            assert!(parse_request(text.into_bytes()).is_err());
+        }
+        for reference in [
+            "2026-03-08T02:00:00",
+            "2026-11-01T01:00:00",
+            "2026-03-09T00:00:00",
+        ] {
+            let text = v2_text()
+                .replace("America/Sao_Paulo", "America/New_York")
+                .replace("2026-07-20T00:00:00", reference);
+            assert!(parse_request(text.into_bytes()).is_err());
+        }
+        let mut value = serde_json::to_value(valid.document).unwrap();
+        assert!(compact_period(&mut value));
+        assert_eq!(value["observed_horizon_days"], 10);
+        let mut arbitrary = serde_json::to_value(nonmidnight.document).unwrap();
+        arbitrary["historical_first_end"] = "2026-07-10T01:00:00".into();
+        let original = arbitrary.clone();
+        let remained_explicit = !compact_period(&mut arbitrary);
+        assert!(remained_explicit);
+        assert_eq!(arbitrary, original);
     }
     #[test]
     fn saved_axis_and_paths_are_explicit_and_zero_needs_no_forecast_catalog() {
