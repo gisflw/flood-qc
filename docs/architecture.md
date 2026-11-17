@@ -1,6 +1,7 @@
 # Architecture
 
-Use one Rust Cargo package with a shared library and thin CLI.
+Use one Rust Cargo package with a shared library, thin CLI and optional native
+desktop interface. Desktop dependencies are enabled only by the `desktop` feature.
 The external MGB executable remains the numerical engine. Add owners only when
 behavior exists; app, store, adapters, analysis and model own the implemented
 inspection, saved-forcing and execution capabilities.
@@ -33,7 +34,7 @@ product commitments; the [workspace](contracts/workspace.md),
 | `analysis` | QC, corrections, transformations, forcing, diagnostics, metrics, report content/rendering | `store` |
 | `model` | Engine prerequisites, input serialization, execution, state mechanics, staged decoding, fixed station-reference conversion | `store` |
 | `app` | Workflows, private configuration/path resolution, selection, preparation/scenario coordination, failures, run outcomes | All four core owners |
-| CLI | Arguments, invocation-directory capture, presentation | Intended public library APIs |
+| CLI and desktop | Arguments/project selection, invocation-directory capture, presentation and interactive state | Intended public library APIs |
 
 These boundaries keep scientific processing independent of acquisition, registry
 lookups, and execution coordination. Canonical values work without database

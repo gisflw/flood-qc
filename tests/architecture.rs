@@ -334,7 +334,7 @@ impl<'ast> Visit<'ast> for Gate {
         }
         if ![
             "derive", "serde", "command", "arg", "cfg", "cfg_attr", "doc", "allow", "warn", "deny",
-            "forbid", "test",
+            "forbid", "test", "ignore",
         ]
         .contains(&name.as_str())
         {
@@ -568,7 +568,7 @@ fn owned_sources_obey_graph() {
                 "unchecked source: {}",
                 file.display()
             );
-            let depth = if owner == "interface" || first.ends_with(".rs") {
+            let depth = if first.ends_with(".rs") {
                 0
             } else {
                 relative.components().count()
@@ -724,4 +724,24 @@ fn owner_names_as_local_values_do_not_create_import_edges() {
     assert!(!check("store", "use model;").is_empty());
     assert!(!check("store", "fn x() { model::run(); }").is_empty());
     assert!(!check("store", "fn x() { crate::model::run(); }").is_empty());
+}
+
+#[test]
+fn nested_interfaces_keep_relative_paths_inside_the_interface() {
+    assert!(check_at("interface", "use super::data::Job;", 1).is_empty());
+    let escaped = check_at("interface", "use super::super::data::Job;", 1);
+    assert!(escaped.iter().any(|e| e.contains("escapes owner")));
+    let bypass = check_at("interface", "use crate::store::ObservationStore;", 1);
+    assert!(
+        bypass
+            .iter()
+            .any(|e| e.contains("wrong library path prefix"))
+    );
+    assert!(
+        check(
+            "interface",
+            "#[test] #[ignore = \"requires a graphics adapter\"] fn graphics() {}"
+        )
+        .is_empty()
+    );
 }

@@ -1,19 +1,49 @@
 # Desktop monitoring implementation plan
 
-Status: planned; no desktop implementation or rendering qualification is claimed.
+Status: implementation in progress; functional checks pass, operator-hardware
+rendering/performance acceptance remains open.
 Decision record: November 17, 2026.
 
 Deliver the legacy Python monitoring experience as the first milestone of the
 Rust desktop application. Preserve its responsive map, linked location selection,
-rainfall inspection, summaries and hydrological charts. Use egui with rsplot;
-Galileo is the preferred map renderer pending the qualification gates below.
-Walkers remains the fallback, not a second renderer to ship.
+rainfall inspection, summaries and hydrological charts. Use egui with rsplot and the walkers fallback selected by the dependency/cache
+assessment below. Galileo was the initial preference; only walkers ships.
 
 The [desktop GUI specification](../plans/desktop_gui.md) remains authoritative for
 the broader first delivery: project configuration, monitoring, preparation,
 execution and assistant behavior. This plan specifies implementation order and
 technology qualification for its monitoring milestone; it does not remove the
 remaining delivery requirements or claim new backend capabilities.
+
+## Implementation and qualification snapshot
+
+The optional `mgb-ops-desktop` target implements monitoring with eframe 0.36.0,
+egui/egui-wgpu 0.36.2, rsplot at the revision pinned in
+[Cargo.toml](../../Cargo.toml), walkers 0.62.0 and wgpu 30.0.2. Dependency inspection
+shows one egui/wgpu integration stack. Ordinary library/CLI builds exclude it.
+
+The walkers fallback is selected for this implementation. Galileo's inspected
+main revision `6bd4586` requires egui 0.37; the previous integration uses 0.34,
+while rsplot requires 0.36. Its 5,000-entry raster caches are private and have no
+public capacity setting. Maintaining a private integration and renderer/cache
+patches is disproportionate for this milestone. Walkers 0.62.0 supports egui
+0.36 with a 256-entry tile cache. This is a count bound, not a byte/VRAM guarantee.
+OpenStreetMap/OpenTopoMap raster basemaps have visible attribution; Carto style
+parity is not claimed.
+
+Local Linux checks exercise the full regional geometry in Xvfb and complete
+1×/2×/3× PNG exports through Vulkan llvmpipe (LLVM 15, Mesa 22.3.6). These are
+virtual/software checks, not operator-hardware benchmarks. Synthetic checks
+cover holes/multipart rings, masks/zero/signed levels, coordinate-less stations,
+partial-run availability, stale replies, rainfall cache reuse, retained geometry
+on failed replacement and updates to independent observation sources. The
+regional fixture also verifies unchanged-source geometry cache reuse.
+Current controls and limits live in the [desktop contract](../../docs/contracts/desktop.md).
+
+No operator hardware or latency/memory thresholds have been supplied. Wayland,
+Windows, HiDPI/input packaging, long-session memory and rendering/selection
+performance acceptance remain open. Keep this plan until those acceptance gates
+are resolved; monitoring does not complete processing or assistant delivery.
 
 ## Decisions and scope
 
@@ -23,8 +53,8 @@ remaining delivery requirements or claim new backend capabilities.
 | Rust desktop implementation | Agreed direction. Prefer native Rust UI/rendering without Python, JavaScript or a webview in the operational display path. Platform libraries and graphics drivers are still dependencies. |
 | egui application shell | Working choice. Use eframe with wgpu so map and chart integrations can share the rendering device. Qualify the complete dependency combination before implementation. |
 | rsplot charts | Selected. Verify the hydrological comparison rather than substituting egui_plot or a basic line-chart demonstration. |
-| Galileo map | Preferred, not finally qualified. Retained geometry and redraw-controlled map textures fit the workload; cache policy, precision and dependency compatibility are gates. |
-| Walkers | Fallback if Galileo qualification requires disproportionate maintenance. Do not build a renderer abstraction or maintain both implementations. |
+| Galileo map | Initial preference, not selected for this implementation after dependency/cache assessment. Keep its assessment as provenance. |
+| Walkers | Selected fallback with a compatible released stack. Hardware performance/memory qualification remains open; no renderer abstraction or second renderer ships. |
 | Legacy behavior | Acceptance reference, including interaction and performance. Reuse its successful caching and independent update patterns, without reproducing its Panel layout or JavaScript wiring. |
 | Backend ownership | Unchanged. Configuration, formats, identity, CRS conversion, topology, accumulation and scientific series stay in shared Rust APIs. |
 
@@ -287,7 +317,8 @@ renderer plugin interface or speculative background service is required.
 
 ## Delivery sequence
 
-All steps below are planned. This change adds documentation only.
+The functional monitoring implementation is present. The sequence below remains
+the acceptance checklist; virtual/software evidence does not close hardware gates.
 
 1. **Qualify the dependency/rendering combination.** Select compatible rsplot and
    Galileo revisions, egui/eframe and wgpu; demonstrate one window with map and

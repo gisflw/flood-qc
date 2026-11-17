@@ -24,8 +24,8 @@ algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. The [GUI specification](../plans/desktop_gui.md) records confirmed
 first-delivery behavior, delivery order and acceptance. Monitoring uses a main map
 tab with side panes. The [monitoring implementation plan](../changes/desktop_monitoring.md)
-records the first milestone, selected rsplot charts and provisional Galileo
-direction with qualification gates; processing and assistant integration follow.
+tracks the implemented optional rsplot/walkers monitoring interface and open
+hardware qualification gates; processing and assistant integration follow.
 QC editors and forecast comparison need separate planning. Shared
 core now produces disposable trial caches without run registration, retaining
 successful scenarios and debugging logs on failure/cancellation.

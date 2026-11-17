@@ -4,16 +4,18 @@ The first desktop delivery opens regional projects, presents monitoring on a map
 with linked charts and tables, prepares rainfall inputs, and executes MGB.
 MGB Ops retains operational backend ownership. The
 [monitoring implementation plan](../changes/desktop_monitoring.md) records the
-monitoring-first milestone, egui/rsplot direction and provisional Galileo
-preference with qualification gates. Packaging and final map qualification remain
+monitoring-first milestone, egui/rsplot/walkers implementation and remaining
+hardware qualification gates. Packaging and final map qualification remain
 open.
 This specification records the agreed first delivery. QC editors and forecast
 comparison require separate planning.
 
 ## Starting point and scope
 
-The repository currently contains the shared Rust library and CLI, with no desktop
-implementation. This plan is prospective. The next delivery focuses exclusively
+The repository contains the shared Rust library and CLI plus an optional native
+monitoring interface. Monitoring qualification is tracked in its implementation
+plan; processing, settings editors and assistant behavior below remain prospective.
+This delivery focuses exclusively
 on the GUI over existing backend behavior; acquisition, scientific algorithms, schemas and operational
 lifecycle changes are outside this work.
 

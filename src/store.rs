@@ -41,7 +41,7 @@ pub use self::netcdf::{
 };
 
 mod map;
-pub use self::map::{MapLayer, MiniMapFeature, read_map_layers, read_mini_map_layer};
+pub use self::map::{MapLayer, MapPolygon, MiniMapFeature, read_map_layers, read_mini_map_layer};
 
 mod draft;
 pub use self::draft::{read_draft, write_atomic, write_draft};

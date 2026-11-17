@@ -49,6 +49,10 @@ checker; test and review behavioral responsibilities as well as import direction
 Run `cargo fmt --check`, `cargo clippy --locked --all-targets -- -D warnings`,
 `cargo test --locked`, and the independently runnable
 `cargo test --locked --test architecture` for Rust changes.
+For desktop changes, also run `cargo clippy --locked --features desktop
+--all-targets -- -D warnings`, `cargo test --locked --features desktop`, and
+`cargo build --locked --features desktop --bin mgb-ops-desktop`. Graphics tests
+remain explicit, ignored checks; distinguish software rendering from hardware evidence.
 Clippy uses its default group plus `dbg_macro`, `todo`, and `unimplemented`;
 exceptions must be narrowly scoped and include a concrete reason. Documentation-only
 changes need link/content checks, not a Rust test rerun.

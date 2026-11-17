@@ -12,7 +12,10 @@ outlet. Invalid IDs, unknown downstream references and cycles fail.
 `validate_mini_topology` applies these checks to supplied values as well.
 `analysis::upstream_minis(topology, outlet)` includes the selected outlet and
 returns members in topology input order. It does not infer drainage from polygon
-coordinates or calculate area in geographic degrees. Weighted rainfall and
+coordinates or calculate area in geographic degrees.
+`analysis::mini_area(topology, mini_ids)` sums authoritative local areas for a
+nonempty, unique explicit selection, rejecting unknown IDs and aggregate overflow.
+It supports area inspection without requiring model results. Weighted rainfall and
 coverage use these local areas through the [series APIs](series.md#time-windows-and-accumulation).
 
 `read_mini_map_layer(path, name, topology)` reads one named vector layer, validates
@@ -22,6 +25,11 @@ mini identity and do not create extra area weights. The configured regional laye
 are `mini_segments` and `mini_catchments`; a missing or invalid layer returns a
 finding to its caller, without invalidating unrelated data or activities.
 `read_map_layers` remains available for geographic boundary inspection.
+Both `MapLayer` and `MiniMapFeature` retain `paths` for boundary consumers and
+`polygons: Vec<MapPolygon>` for filled rendering. Each polygon part has its own
+closed `exterior` and closed `interiors` rings; multipart polygons and holes do
+not become independent filled exteriors. Display simplification never changes
+these authoritative coordinates or topology.
 Unsupported geometry/CRS, undersized or degenerate polygon rings, and mismatched
 IDs fail. The vector library stores ring closure implicitly; returned polygon
 paths explicitly repeat the first point. Segment and catchment layers require

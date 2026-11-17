@@ -17,7 +17,7 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 16, 2026 for shared operational capabilities.
+Updated November 17, 2026 for the optional desktop monitoring interface.
 The Linux saved-data operational path is complete:
 workspace inspection, canonical observations/QC/replacements, saved forecast
 normalization/corrections, reusable prepared inputs, isolated real MGB execution,
@@ -68,7 +68,7 @@ record unverified platforms and remaining gaps explicitly.
 | [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Saved-path forcing is implemented above; broader analysis remains not started. Observation-based AR(1) belongs to analysis for dataviz and is deferred. No model-internal dependencies. |
 | [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
 | [Completed-run regeneration and sharing](completed_runs.md) | 7: completed-run sharing | Not started in Rust. Operators may copy generated files; regeneration requires referenced dependencies and a compatible engine. No retention/archive manager in the saved-run increment. |
-| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | Planned. The [GUI specification](../plans/desktop_gui.md) defines the broader delivery. The [monitoring implementation plan](../changes/desktop_monitoring.md) starts with legacy monitoring parity using egui/rsplot and prefers Galileo pending dependency, memory and rendering qualification; walkers is the fallback. No desktop implementation or rendering benchmarks yet. Processing/assistant follow monitoring; QC editors and forecast comparison require separate planning. Linux/Windows GUI behavior remains unverified. |
+| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | In progress: optional egui/rsplot/walkers monitoring target, asynchronous project/run/rainfall loading, linked selection and series, polygon holes, display preferences and CSV/complete PNG exports. Headless and desktop tests, regional virtual X11 inspection and 1×/2×/3× software-Vulkan PNG checks pass locally. The [monitoring plan](../changes/desktop_monitoring.md) retains open performance/memory, precision and platform acceptance; no operator-hardware benchmark or Wayland/Windows qualification. Processing/settings editors and assistant remain subsequent work under the [GUI specification](../plans/desktop_gui.md). |
 | [Scheduling and email](desktop_and_automation.md) | 7: automate established operations | Not started in Rust. Follow the capabilities they automate. |
 
 Split these broad rows as individual capabilities are implemented, preserving

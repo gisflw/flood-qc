@@ -2,6 +2,7 @@
 name = "mgb-ops"
 version = "0.1.0"
 edition = "2024"
+default-run = "mgb-ops"
 
 [dependencies]
 chrono = { version = "0.4.45", features = ["serde"] }
@@ -17,6 +18,7 @@ terrio = { git = "https://github.com/opengeos/terrio", rev = "29fd6e78ba290e37e5
 toml = "0.9"
 
 [dev-dependencies]
+pollster = "0.4"
 proc-macro2 = "1"
 tempfile = "3"
 syn = { version = "2", features = ["full", "visit"] }
@@ -35,3 +37,40 @@ rustix = { version = "1.1.6", features = ["fs"] }
 
 [dependencies.wbvector]
 version = "=0.1.6"
+
+[features]
+default = []
+desktop = ["dep:eframe", "dep:rsplot", "dep:walkers", "dep:rfd", "dep:lyon_tessellation", "dep:ab_glyph"]
+
+[[bin]]
+name = "mgb-ops-desktop"
+path = "src/bin/monitor.rs"
+required-features = ["desktop"]
+
+[dependencies.eframe]
+version = "=0.36.0"
+optional = true
+default-features = false
+features = ["accesskit", "default_fonts", "wgpu", "persistence", "x11", "wayland"]
+
+[dependencies.rsplot]
+git = "https://github.com/physwkim/rsplot"
+rev = "db6d04647aad4a7abb5b5b593d25094aadfec836"
+optional = true
+
+[dependencies.walkers]
+version = "=0.62.0"
+optional = true
+features = ["serde"]
+
+[dependencies.rfd]
+version = "0.17"
+optional = true
+
+[dependencies.lyon_tessellation]
+version = "1"
+optional = true
+
+[dependencies.ab_glyph]
+version = "0.2"
+optional = true

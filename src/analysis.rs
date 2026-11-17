@@ -4,7 +4,7 @@ pub use self::summary::{
     accumulated_grid_rain, accumulated_rain, resolve_hourly_window, signed_rainfall_window,
 };
 mod topology;
-pub use self::topology::upstream_minis;
+pub use self::topology::{mini_area, upstream_minis};
 mod forecast;
 mod observations;
 mod spatial;

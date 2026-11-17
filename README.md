@@ -1,6 +1,6 @@
 # MGB Ops Rust successor
 
-MGB Ops is a Rust successor with a shared library and CLI. It provides regional
+MGB Ops is a Rust successor with a shared library, CLI, and optional native monitoring interface. It provides regional
 workspace inspection, canonical saved observations and forecast normalization,
 editable JSON drafts and previews, forcing preparation, and isolated MGB execution
 from retained prepared inputs.
@@ -64,10 +64,26 @@ preparation. `mgb-ops draft run --workspace /regional/workspace --draft draft.js
 --json` prepares and executes current accepted draft values. The library and
 `mgb-ops draft` commands share that workflow.
 
+## Desktop monitoring
+
+```sh
+cargo run --locked --features desktop --bin mgb-ops-desktop -- /regional/workspace/config/workspace.toml
+```
+
+Open TOML also opens projects from the interface. Nonstandard configuration
+locations ask for their workspace once; recent projects retain that association.
+The desktop inspects available data without preparing inputs or starting MGB.
+It uses the same spatial, rainfall and series APIs as the CLI. See the
+[desktop contract](docs/contracts/desktop.md) for controls and current limits.
+GUI dependencies are optional and excluded from ordinary library/CLI builds.
+Linux virtual X11/software rendering has been exercised; operator hardware,
+Wayland and Windows remain unverified.
+
 ## Project guidance
 
 - [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.
 - [Saved forecasts](docs/contracts/forecasts.md): normalization command, catalog, and forcing APIs.
+- [Desktop monitoring](docs/contracts/desktop.md): project opening, linked views and exports.
 - [Series and CSV](docs/contracts/series.md): rainfall summaries, chart queries and selected-series exports.
 - [Local geometry](docs/contracts/spatial.md): mini topology, map coordinates and station links.
 - [Canonical observations](docs/contracts/observations.md): SQLite, review selection, and observed forcing APIs.
