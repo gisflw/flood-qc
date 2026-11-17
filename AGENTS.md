@@ -19,19 +19,28 @@ each fact one authoritative home and link to it elsewhere.
 - `.dev/migration/`: temporary migration scope, capability progress, evidence, gaps,
   and next work; the checklist lives in `summary.md`. Retire it after migration.
 - `references/`: legacy source maps, frozen expectations, provenance, and reproduction.
-- `.dev/plans/` and `.dev/changes/`: temporary plans and specifications for active work.
+- `.dev/plans/`: broader functionality plans spanning multiple implementation
+  increments; preserve their full scope as individual changes are specified.
+- `.dev/changes/`: specifications for a specific implementation increment,
+  including its scope, interactions, acceptance criteria and validation.
 - `.dev/reports/`: disposable implementation/review results, retained for Git history
   when useful. These are historical records, not architectural authority or required reading.
 
 Before creating a document, identify its unique reader need and check whether an
-existing document already serves it. Do not create a completion report by default.
+existing document at the same planning level already serves it. A broader plan
+does not replace an implementation specification: put the latter in `.dev/changes/`
+and link to the plan. Do not rewrite, narrow or repurpose a broader plan to record
+one implementation increment unless the user explicitly requests a change to the
+broader plan itself. Do not create a completion report by default.
 When a report is useful or requested, put it under `.dev/reports/` and keep it brief.
 Keep private helpers, checker allowlists, parser mechanics, and test procedures in
 code/tests. Omit agent/model names, fixing-round counts, installation narratives,
 and temporary paths from project documentation. Keep necessary scientific provenance
 and numerical caveats with the reference they qualify.
 
-Remove plans/specifications after acceptance or abandonment, retaining only unique
+Remove plans/specifications after their full scope is accepted or abandoned;
+acceptance of one implementation increment does not retire its broader plan.
+Retain only unique
 durable information in its proper home and repairing links. Keep a specification
 while its acceptance remains disputed. Before removing migration documents, retain
 unique lasting scope/design decisions in architecture, supported behavior in
