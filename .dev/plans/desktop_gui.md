@@ -2,8 +2,11 @@
 
 The first desktop delivery opens regional projects, presents monitoring on a map
 with linked charts and tables, prepares rainfall inputs, and executes MGB.
-MGB Ops retains operational backend ownership. The GUI framework, rendering
-technology, packaging and implementation approach remain undecided.
+MGB Ops retains operational backend ownership. The
+[monitoring implementation plan](../changes/desktop_monitoring.md) records the
+monitoring-first milestone, egui/rsplot direction and provisional Galileo
+preference with qualification gates. Packaging and final map qualification remain
+open.
 This specification records the agreed first delivery. QC editors and forecast
 comparison require separate planning.
 
