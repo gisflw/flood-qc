@@ -81,9 +81,14 @@ Version 1 drafts with explicit boundaries remain supported without changing
 coverage or rewriting their files. Imports compact compatible version 1 periods
 losslessly; incompatible periods retain version 1 and exact explicit boundaries.
 Complete TOML export likewise uses version 2 only when lossless. New drafts use
-version 2. Desktop automatic restoration and anchored filenames are planned in the
-[runner specification](../../.dev/changes/desktop_layout_and_runners.md), not yet
-implemented by the backend's explicit-path save/open APIs.
+version 2. The [desktop interface](desktop.md#workspace-settings-and-operation-drafts)
+adds exact-reference restoration and anchored filenames; explicit-path backend and
+CLI save/open APIs retain their existing path behavior.
+`Draft::new_run` establishes a validated fixed-reference baseline without selecting
+operational sources. `DraftOperation::coverage` displays the shared period derivation after validating
+the IANA timezone and all hourly labels against the same offset-transition rules,
+and `Draft::use_day_horizons` converts legacy coverage only when every hourly label
+is unchanged.
 
 `instructions.replacements` is an optional ordered array of objects containing
 `draft_id`, optional `registered_origin`, and an observation replacement `value`.

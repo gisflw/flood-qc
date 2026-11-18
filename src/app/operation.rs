@@ -694,7 +694,10 @@ fn execute_locked(
         cleanup_errors.push(format!("{}: {error}", snapshot.display()));
     }
     if !cleanup_errors.is_empty() {
-        return Err(store_error(&run_root, cleanup_errors.join("; ")));
+        return Err(store_error(
+            &run_root,
+            format!("cleanup failed: {}", cleanup_errors.join("; ")),
+        ));
     }
     manifest.inputs.clear();
     if manifest.scenarios.iter().any(|s| s.state == "completed") {

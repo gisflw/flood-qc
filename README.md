@@ -1,6 +1,6 @@
 # MGB Ops Rust successor
 
-MGB Ops is a Rust successor with a shared library, CLI, and optional native monitoring interface. It provides regional
+MGB Ops is a Rust successor with a shared library, CLI, and optional native desktop interface. It provides regional
 workspace inspection, canonical saved observations and forecast normalization,
 editable JSON drafts and previews, forcing preparation, and isolated MGB execution
 from retained prepared inputs.
@@ -64,7 +64,7 @@ preparation. `mgb-ops draft run --workspace /regional/workspace --draft draft.js
 --json` prepares and executes current accepted draft values. The library and
 `mgb-ops draft` commands share that workflow.
 
-## Desktop monitoring
+## Desktop interface
 
 ```sh
 cargo run --locked --features desktop --bin mgb-ops-desktop -- /regional/workspace/config/workspace.toml
@@ -72,9 +72,12 @@ cargo run --locked --features desktop --bin mgb-ops-desktop -- /regional/workspa
 
 Open TOML also opens projects from the interface. Nonstandard configuration
 locations ask for their workspace once; recent projects retain that association.
-The desktop inspects available data without preparing inputs or starting MGB.
+The desktop opens linked Map, Charts and Data pages, edits workspace settings and
+operation drafts, and prepares or executes operations through explicit runner actions.
+Monitoring Refresh/F5 only reloads displayed data; use Accept/Refresh selected inputs
+to accept operational sources before Prepare or Run All.
 It uses the same spatial, rainfall and series APIs as the CLI. See the
-[desktop contract](docs/contracts/desktop.md) for controls and current limits.
+[desktop contract](docs/contracts/desktop.md) for layout, draft handling, Jobs and current limits.
 GUI dependencies are optional and excluded from ordinary library/CLI builds.
 Linux virtual X11/software rendering has been exercised; operator hardware,
 Wayland and Windows remain unverified.

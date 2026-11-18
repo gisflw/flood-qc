@@ -9,7 +9,7 @@ use mgb_ops::store::{
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc,
 };
 use std::thread::{self, JoinHandle};
@@ -611,6 +611,7 @@ pub struct Worker {
     pub generations: [u64; 5],
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
+    outstanding: Arc<AtomicUsize>,
 }
 impl Worker {
     pub fn new(context: eframe::egui::Context) -> Self {
@@ -618,6 +619,8 @@ impl Worker {
         let (replies, receiver) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let active = outstanding.clone();
         let thread = thread::spawn(move || {
             let mut rain_cache = None;
             let mut last_project: Option<Arc<Project>> = None;
@@ -689,6 +692,7 @@ impl Worker {
                 {
                     break;
                 }
+                active.fetch_sub(1, Ordering::AcqRel);
                 context.request_repaint();
             }
         });
@@ -699,7 +703,11 @@ impl Worker {
             generations: [0; 5],
             stop,
             thread: Some(thread),
+            outstanding,
         }
+    }
+    pub fn is_busy(&self) -> bool {
+        self.pending.iter().any(Option::is_some) || self.outstanding.load(Ordering::Acquire) > 0
     }
     pub fn submit(&mut self, job: Job) {
         let slot = job.slot();
@@ -713,13 +721,18 @@ impl Worker {
     pub fn poll(&mut self) -> Vec<Reply> {
         for pending in &mut self.pending {
             if let Some(job) = pending.take() {
+                self.outstanding.fetch_add(1, Ordering::AcqRel);
                 match self.sender.as_ref().unwrap().try_send(job) {
                     Ok(()) => {}
                     Err(mpsc::TrySendError::Full(job)) => {
+                        self.outstanding.fetch_sub(1, Ordering::AcqRel);
                         *pending = Some(job);
                         break;
                     }
-                    Err(mpsc::TrySendError::Disconnected(_)) => break,
+                    Err(mpsc::TrySendError::Disconnected(_)) => {
+                        self.outstanding.fetch_sub(1, Ordering::AcqRel);
+                        break;
+                    }
                 }
             }
         }
@@ -748,6 +761,52 @@ pub fn infer_workspace(config: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn invalidated_inflight_monitoring_remains_busy_until_the_read_stops() {
+        let (sender, jobs) = mpsc::sync_channel::<(u64, Job)>(1);
+        let (replies, receiver) = mpsc::channel();
+        let (started, start) = mpsc::channel();
+        let (release, blocked) = mpsc::channel();
+        let outstanding = Arc::new(AtomicUsize::new(0));
+        let active = outstanding.clone();
+        let thread = thread::spawn(move || {
+            let (generation, _job) = jobs.recv().unwrap();
+            started.send(()).unwrap();
+            blocked.recv().unwrap();
+            replies
+                .send(Reply {
+                    slot: 1,
+                    generation,
+                    result: Err("delayed read".into()),
+                })
+                .unwrap();
+            active.fetch_sub(1, Ordering::AcqRel);
+        });
+        let mut worker = Worker {
+            sender: Some(sender),
+            receiver,
+            pending: [None, None, None, None, None],
+            generations: [0; 5],
+            stop: Arc::new(AtomicBool::new(false)),
+            thread: Some(thread),
+            outstanding,
+        };
+        worker.submit(Job::Run("delayed".into()));
+        assert!(worker.is_busy());
+        assert!(worker.poll().is_empty());
+        start.recv().unwrap();
+        worker.invalidate(1);
+        assert!(worker.is_busy());
+        assert!(worker.poll().is_empty());
+        release.send(()).unwrap();
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while worker.is_busy() {
+            assert!(std::time::Instant::now() < limit);
+            thread::yield_now();
+        }
+        assert!(worker.poll().is_empty());
+        drop(worker);
+    }
     fn saved_trial(root: &Path, longitude: f64, latitude: f64) {
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         let timeline = canonical::IntervalAxis {

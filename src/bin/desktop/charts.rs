@@ -235,6 +235,14 @@ impl Charts {
         Ok(())
     }
     pub fn show(&mut self, ui: &mut egui::Ui, portuguese: bool) {
+        for plot in &mut self.plots {
+            plot.set_background_colors(ui.visuals().panel_fill, ui.visuals().extreme_bg_color);
+            plot.set_foreground_colors(
+                ui.visuals().text_color(),
+                ui.visuals().widgets.noninteractive.bg_stroke.color,
+            );
+        }
+
         if self.report.is_none() {
             ui.centered_and_justified(|ui| {
                 ui.label(if portuguese {

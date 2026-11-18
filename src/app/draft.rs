@@ -157,6 +157,47 @@ pub struct DraftOperation {
 }
 
 impl DraftOperation {
+    /// Read-only inclusive hourly coverage using the shared authoring-period rules.
+    pub fn coverage(&self) -> Result<String, String> {
+        let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
+        expand_period(&mut value).map_err(|e| e.to_string())?;
+        let zone = self.time_zone.as_deref().ok_or("Timezone required")?;
+        for (first, last) in [
+            ("historical_first_end", "historical_last_end"),
+            ("forecast_first_end", "forecast_last_end"),
+        ] {
+            let first = timestamp(first, value[first].as_str().ok_or("Day horizons required")?)
+                .map_err(|e| e.to_string())?;
+            let end = timestamp(last, value[last].as_str().ok_or("Day horizons required")?)
+                .map_err(|e| e.to_string())?;
+            let start = first
+                .checked_sub_signed(chrono::Duration::hours(1))
+                .ok_or("Coverage start overflow")?;
+            // A contiguous span validates the same hourly labels without allocating every hourly interval.
+            IntervalAxis {
+                time_zone: zone.into(),
+                bounds: vec![crate::store::TimeInterval { start, end }],
+            }
+            .validate()
+            .map_err(|e| e.to_string())?;
+        }
+        Ok(format!(
+            "{} → {} · {} → {} · 1 h",
+            value["historical_first_end"]
+                .as_str()
+                .ok_or("Observed horizon required")?,
+            value["historical_last_end"]
+                .as_str()
+                .ok_or("Reference required")?,
+            value["forecast_first_end"]
+                .as_str()
+                .ok_or("Forecast horizon required")?,
+            value["forecast_last_end"]
+                .as_str()
+                .ok_or("Forecast horizon required")?
+        ))
+    }
+
     fn validate_period_format(&self, version: u32) -> Result<(), String> {
         let explicit = self.step_seconds.is_some()
             || self.historical_first_end.is_some()
@@ -383,6 +424,59 @@ impl Draft {
             findings: Vec::new(),
         }
     }
+    /// Initialize a fresh fixed-reference run without selecting operational sources.
+    pub fn new_run(
+        workspace: PathBuf,
+        invocation_dir: &Path,
+        config: Option<&super::WorkspaceConfig>,
+        reference: &str,
+        zone: &str,
+    ) -> Result<Self, String> {
+        let time = timestamp("reference_time", reference).map_err(|e| e.to_string())?;
+        let timezone: chrono_tz::Tz = zone.parse().map_err(|_| "expected IANA timezone")?;
+        use chrono::TimeZone;
+        timezone
+            .from_local_datetime(&time)
+            .single()
+            .ok_or("ambiguous or absent local reference")?;
+        let mut draft = Self::new_with_workspace_config(workspace, invocation_dir, config);
+        draft.document.operation.reference_time = Some(reference.into());
+        draft.document.operation.time_zone = Some(zone.into());
+        for (path, kind) in [
+            (PathBuf::from("data/history.sqlite"), 0),
+            (PathBuf::from("data/forecasts.sqlite"), 1),
+        ] {
+            if super::absolute(&draft.workspace, &path).is_file() {
+                if kind == 0 {
+                    draft.document.operation.observed = Some(DraftObserved {
+                        path: Some(path),
+                        ..Default::default()
+                    });
+                } else {
+                    draft.document.operation.forecasts = Some(DraftForecasts {
+                        catalog: Some(path),
+                    });
+                }
+            }
+        }
+        if let Some(input) = draft
+            .document
+            .operation
+            .engine
+            .as_ref()
+            .and_then(|e| e.input_dir.as_ref())
+        {
+            let path = input.join("MINI.gtp");
+            if super::absolute(&draft.workspace, &path).is_file() {
+                draft.document.operation.geometry = Some(DraftGeometry {
+                    mini_gtp: Some(path),
+                });
+            }
+        }
+        draft.baseline = draft.document.clone();
+        Ok(draft)
+    }
+
     pub fn from_preparation(
         workspace: PathBuf,
         invocation_dir: &Path,
@@ -511,6 +605,21 @@ impl Draft {
         draft.baseline = draft.document.clone();
         Ok(draft)
     }
+    /// Convert an explicit-boundary recipe only when all inclusive hourly labels are unchanged.
+    pub fn use_day_horizons(&mut self) -> Result<(), String> {
+        if self.document.schema_version == 2 {
+            return Ok(());
+        }
+        let mut value =
+            serde_json::to_value(&self.document.operation).map_err(|e| e.to_string())?;
+        if !compact_period(&mut value) {
+            return Err("Legacy coverage cannot be represented by whole-day horizons without changing labels; original file preserved. Use the existing CLI workflow.".into());
+        }
+        self.document.operation = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        self.document.schema_version = 2;
+        Ok(())
+    }
+
     pub fn preparation_document(&self) -> Result<PreparationDocument, String> {
         self.validate_boundary()?;
         let mut value =
@@ -1774,6 +1883,69 @@ impl Draft {
 mod tests {
     use super::*;
 
+    #[test]
+    fn displayed_coverage_rejects_the_same_timezone_transitions_as_preparation() {
+        let mut operation = DraftOperation {
+            time_zone: Some("America/New_York".into()),
+            reference_time: Some("2026-11-01T00:00:00".into()),
+            observed_horizon_days: Some(0),
+            forecast_horizon_days: Some(1),
+            ..Default::default()
+        };
+        assert!(operation.coverage().is_err());
+        operation.time_zone = Some("Not/AZone".into());
+        assert!(operation.coverage().is_err());
+        operation.time_zone = Some("UTC".into());
+        assert!(operation.coverage().is_ok());
+    }
+    #[test]
+    fn fresh_reference_coverage_and_legacy_conversion_preserve_labels() {
+        let root = PathBuf::from("/workspace/synthetic");
+        let mut draft = Draft::new_run(
+            root.clone(),
+            &root,
+            None,
+            "2026-07-20T00:00:00",
+            "America/Sao_Paulo",
+        )
+        .unwrap();
+        {
+            let unchanged = !(draft.is_dirty());
+            assert!(unchanged);
+        };
+        draft.document.operation.observed_horizon_days = Some(10);
+        draft.document.operation.forecast_horizon_days = Some(5);
+        let coverage = draft.document.operation.coverage().unwrap();
+        assert_eq!(
+            coverage,
+            "2026-07-10T00:00:00 → 2026-07-20T00:00:00 · 2026-07-20T01:00:00 → 2026-07-25T01:00:00 · 1 h"
+        );
+        let mut explicit = serde_json::to_value(&draft.document.operation).unwrap();
+        expand_period(&mut explicit).unwrap();
+        draft.document.operation = serde_json::from_value(explicit.clone()).unwrap();
+        draft.document.schema_version = 1;
+        draft.use_day_horizons().unwrap();
+        assert_eq!(draft.document.schema_version, 2);
+        let mut converted = serde_json::to_value(&draft.document.operation).unwrap();
+        expand_period(&mut converted).unwrap();
+        assert_eq!(converted, explicit);
+        draft.document.operation = serde_json::from_value(explicit).unwrap();
+        draft.document.schema_version = 1;
+        draft.document.operation.forecast_last_end = Some("2026-07-25T02:00:00".into());
+        let original = draft.document.clone();
+        assert!(draft.use_day_horizons().is_err());
+        assert_eq!(draft.document, original);
+        assert!(
+            Draft::new_run(
+                root.clone(),
+                &root,
+                None,
+                "2026-07-20T00:00:00",
+                "Not/AZone"
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn selected_registration_rolls_back_and_retries_independently() {
         use crate::store::{ObservationBatch, ReplacementKind, Station};
