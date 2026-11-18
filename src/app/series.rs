@@ -1,7 +1,7 @@
 use crate::analysis::{HourlyWindow, effective_observations, resolve_hourly_window};
 use crate::store::{
-    IntervalAxis, ObservationSelection, ObservationStore, ObservationValue, TimeInterval,
-    read_result_series, read_retained_manifest, read_station_results,
+    IntervalAxis, ObservationSelection, ObservationStore, ObservationValue, ResultSeries,
+    StationResults, TimeInterval, read_result_series, read_retained_manifest, read_station_results,
 };
 use chrono::{Duration, NaiveDateTime};
 use serde::{Deserialize, Serialize};
@@ -90,14 +90,19 @@ fn valid_id(id: &str) -> bool {
 }
 type ModelMapping = Option<(i64, f64, f64, f64)>;
 
-fn model(
+struct ModelSource {
+    basin: ResultSeries,
+    station: Result<Option<StationResults>, String>,
+    reference: String,
+    run_id: String,
+}
+
+fn read_model(
     root: &Path,
     scenario: &str,
-    variable: &Variable,
-    location: &Location,
     zone: &str,
-    window: &TimeInterval,
-) -> Result<(ChartSeries, ModelMapping), String> {
+    comparison: bool,
+) -> Result<ModelSource, String> {
     if !valid_id(scenario) {
         return Err("invalid scenario ID".into());
     }
@@ -129,14 +134,29 @@ fn model(
     }
     let basin = read_result_series(&root.join("results").join(scenario).join("basin.nc"))
         .map_err(|e| e.to_string())?;
-    let station = read_station_results(&root.join("results").join(scenario).join("station.nc"))
-        .map_err(|e| e.to_string())?;
-    if basin.timeline != station.timeline
-        || basin.time_segment != station.time_segment
-        || basin.timeline.time_zone != zone
-        || basin.provenance.processing.get("reference_time")
-            != station.provenance.processing.get("reference_time")
-    {
+    let station_path = root.join("results").join(scenario).join("station.nc");
+    let station = if comparison && matches!(station_path.try_exists(), Ok(false)) {
+        Ok(None)
+    } else {
+        read_station_results(&station_path)
+            .map_err(|e| e.to_string())
+            .and_then(|station| {
+                if basin.timeline != station.timeline
+                    || basin.time_segment != station.time_segment
+                    || basin.provenance.processing.get("reference_time")
+                        != station.provenance.processing.get("reference_time")
+                {
+                    return Err(
+                        "result timeline, timezone, segment or reference metadata disagree".into(),
+                    );
+                }
+                Ok(Some(station))
+            })
+    };
+    if !comparison {
+        station.as_ref().map_err(Clone::clone)?;
+    }
+    if basin.timeline.time_zone != zone {
         return Err("result timeline, timezone, segment or reference metadata disagree".into());
     }
     let reference = basin
@@ -146,34 +166,6 @@ fn model(
         .and_then(|v| v.as_str())
         .ok_or("missing forecast reference time")?
         .to_owned();
-    let mapping = match location {
-        Location::Mini(id) => Some((*id, 0.0)),
-        Location::Station(id) => {
-            let index = station
-                .station_ids
-                .iter()
-                .position(|v| v == id)
-                .ok_or_else(|| format!("station {id} missing from results"))?;
-            station.mini_ids[index].zip(station.offsets_m[index])
-        }
-    };
-    let mini = mapping
-        .map(|v| v.0)
-        .ok_or("station has no explicit mini/offset association")?;
-    let bi = basin
-        .basins
-        .mini_ids
-        .iter()
-        .position(|v| *v == mini)
-        .ok_or_else(|| format!("MINI {mini} missing from basin results"))?;
-    let mapping = mapping.map(|(id, offset)| {
-        (
-            id,
-            offset,
-            basin.basins.longitudes[bi],
-            basin.basins.latitudes[bi],
-        )
-    });
     let parsed_reference = NaiveDateTime::parse_from_str(&reference, "%Y-%m-%dT%H:%M:%S")
         .map_err(|_| "invalid forecast reference time")?;
     if parsed_reference.format("%Y-%m-%dT%H:%M:%S").to_string() != reference
@@ -199,8 +191,68 @@ fn model(
     }
     .validate()
     .map_err(|e| e.to_string())?;
-    let si = if let Location::Station(id) = location {
-        station.station_ids.iter().position(|v| v == id)
+    Ok(ModelSource {
+        basin,
+        station,
+        reference,
+        run_id: root
+            .file_name()
+            .ok_or("run root needs a name")?
+            .to_string_lossy()
+            .into_owned(),
+    })
+}
+
+fn model(
+    source: &ModelSource,
+    scenario: &str,
+    variable: &Variable,
+    location: &Location,
+    comparison_station: Option<&str>,
+    window: &TimeInterval,
+) -> Result<(ChartSeries, ModelMapping), String> {
+    let basin = &source.basin;
+    let station = source.station.as_ref().ok().and_then(|s| s.as_ref());
+    let mapping = match location {
+        Location::Mini(id) => Some((*id, 0.0)),
+        Location::Station(id) => {
+            let station = station.ok_or("missing station results")?;
+            let index = station
+                .station_ids
+                .iter()
+                .position(|v| v == id)
+                .ok_or_else(|| format!("station {id} missing from results"))?;
+            station.mini_ids[index].zip(station.offsets_m[index])
+        }
+    };
+    let mini = mapping
+        .map(|v| v.0)
+        .ok_or("station has no explicit mini/offset association")?;
+    let bi = basin
+        .basins
+        .mini_ids
+        .iter()
+        .position(|v| *v == mini)
+        .ok_or_else(|| format!("MINI {mini} missing from basin results"))?;
+    let mapping = mapping.map(|(id, offset)| {
+        (
+            id,
+            offset,
+            basin.basins.longitudes[bi],
+            basin.basins.latitudes[bi],
+        )
+    });
+    let station_level = if matches!(variable, Variable::Level) {
+        source.station.as_ref().map_err(Clone::clone)?;
+        station.and_then(|station| {
+            let id = match location {
+                Location::Station(id) => id,
+                Location::Mini(_) => comparison_station?,
+            };
+            let index = station.station_ids.iter().position(|value| value == id)?;
+            (station.mini_ids[index] == Some(mini) && station.offsets_m[index].is_some())
+                .then_some((station, index))
+        })
     } else {
         None
     };
@@ -228,7 +280,7 @@ fn model(
             Variable::Rain => basin.precipitation_valid[i].then_some(basin.precipitation[i]),
             Variable::Flow => basin.flow_valid[i].then_some(basin.flow[i]),
             Variable::Level => {
-                if let Some(si) = si {
+                if let Some((station, si)) = station_level {
                     let j = t * station.station_ids.len() + si;
                     station.level_valid[j].then_some(f64::from(station.level_cm[j]))
                 } else {
@@ -246,20 +298,15 @@ fn model(
     Ok((
         ChartSeries {
             selection_index: 0,
-            series_kind: if matches!((location, variable), (Location::Mini(_), Variable::Level)) {
-                "model_raw_level"
-            } else {
-                "model"
+            series_kind: match (variable, station_level, comparison_station) {
+                (Variable::Level, None, _) => "model_raw_level",
+                (Variable::Level, Some(_), Some(_)) => "model_station_level",
+                _ => "model",
             }
             .into(),
-            run_id: Some(
-                root.file_name()
-                    .ok_or("run root needs a name")?
-                    .to_string_lossy()
-                    .into_owned(),
-            ),
+            run_id: Some(source.run_id.clone()),
             scenario_id: Some(scenario.into()),
-            forecast_reference_time: Some(reference),
+            forecast_reference_time: Some(source.reference.clone()),
             variable: name.into(),
             unit: unit.into(),
             points,
@@ -269,7 +316,8 @@ fn model(
 }
 fn observation(
     selection: &SeriesSelection,
-    request: &SeriesQuery,
+    station: &Location,
+    zone: &str,
     window: &TimeInterval,
 ) -> Result<ChartSeries, String> {
     let SeriesSelection::Observation {
@@ -290,23 +338,28 @@ fn observation(
     } else {
         replacement_ids.as_slice()
     };
-    let Location::Station(id) = &request.location else {
+    let Location::Station(id) = station else {
         return Err("observations require a station".into());
     };
     if effective && !matches!(variable, Variable::Rain) {
         return Err("effective observations are supported for rainfall".into());
     }
-    let mut bounds = Vec::new();
-    let mut start = window.start;
-    while start < window.end {
-        let end = start
-            .checked_add_signed(Duration::hours(1))
-            .ok_or("window overflow")?;
-        bounds.push(TimeInterval { start, end });
-        start = end;
-    }
+    let bounds = if matches!(variable, Variable::Rain) {
+        let mut bounds = Vec::new();
+        let mut start = window.start;
+        while start < window.end {
+            let end = start
+                .checked_add_signed(Duration::hours(1))
+                .ok_or("window overflow")?;
+            bounds.push(TimeInterval { start, end });
+            start = end;
+        }
+        bounds
+    } else {
+        vec![window.clone()]
+    };
     let axis = IntervalAxis {
-        time_zone: request.time_zone.clone(),
+        time_zone: zone.into(),
         bounds,
     };
     let store = ObservationStore::open_read_only(database).map_err(|e| e.to_string())?;
@@ -348,35 +401,30 @@ fn observation(
             })
             .collect()
     } else if matches!(variable, Variable::Rain) {
-        if inputs.samples.iter().any(|s| {
-            s.series_id == *series_id
-                && !axis
-                    .bounds
-                    .iter()
-                    .any(|interval| interval.end == s.observed_at)
-        }) {
-            return Err("rain sample is off the hourly grid".into());
-        }
-        axis.bounds
+        let mut samples = inputs
+            .samples
             .iter()
-            .map(|interval| {
-                let value = inputs
-                    .samples
-                    .iter()
-                    .find(|s| s.series_id == *series_id && s.observed_at == interval.end)
-                    .and_then(|s| s.value)
-                    .map(|v| match v {
-                        ObservationValue::RainMm(v) => v,
-                        ObservationValue::FlowM3s(v) => v,
-                        ObservationValue::LevelCm(v) => f64::from(v),
-                    });
-                SeriesPoint {
-                    timestamp: interval.end,
-                    value,
-                    time_segment: None,
-                }
-            })
-            .collect()
+            .filter(|s| s.series_id == *series_id)
+            .peekable();
+        let mut points = Vec::with_capacity(axis.bounds.len());
+        for interval in &axis.bounds {
+            if samples.peek().is_some_and(|s| s.observed_at < interval.end) {
+                return Err("rain sample is off the hourly grid".into());
+            }
+            let value = samples
+                .next_if(|s| s.observed_at == interval.end)
+                .and_then(|s| s.value)
+                .map(|value| match value {
+                    ObservationValue::RainMm(v) | ObservationValue::FlowM3s(v) => v,
+                    ObservationValue::LevelCm(v) => f64::from(v),
+                });
+            points.push(SeriesPoint {
+                timestamp: interval.end,
+                value,
+                time_segment: None,
+            });
+        }
+        points
     } else {
         inputs
             .samples
@@ -416,6 +464,18 @@ fn observation(
     })
 }
 pub fn query_series(request: &SeriesQuery) -> Result<SeriesReport, String> {
+    query(request, None)
+}
+
+/// Compare model series for one MINI with observations from one station.
+pub fn query_comparison(request: &SeriesQuery, station: &str) -> Result<SeriesReport, String> {
+    if !matches!(request.location, Location::Mini(_)) || station.trim().is_empty() {
+        return Err("comparison requires a MINI and station ID".into());
+    }
+    query(request, Some(station))
+}
+
+fn query(request: &SeriesQuery, comparison_station: Option<&str>) -> Result<SeriesReport, String> {
     match &request.location {
         Location::Station(id) if id.trim().is_empty() => {
             return Err("station ID must be nonempty".into());
@@ -432,23 +492,50 @@ pub fn query_series(request: &SeriesQuery) -> Result<SeriesReport, String> {
         findings: vec![],
     };
     let mut mapping = None;
+    let mut model_source = None;
+    let observation_location = comparison_station.map(|id| Location::Station(id.into()));
     for (i, selection) in request.selections.iter().enumerate() {
         let result = match selection {
             SeriesSelection::Model {
                 root,
                 scenario_id,
                 variable,
-            } => model(
-                root,
-                scenario_id,
-                variable,
-                &request.location,
+            } => {
+                if model_source
+                    .as_ref()
+                    .is_none_or(|(path, scenario, _)| *path != root || *scenario != scenario_id)
+                {
+                    drop(model_source.take());
+                    model_source = Some((
+                        root,
+                        scenario_id,
+                        read_model(
+                            root,
+                            scenario_id,
+                            &request.time_zone,
+                            comparison_station.is_some(),
+                        ),
+                    ));
+                }
+                let (_, _, source) = model_source.as_ref().unwrap();
+                source.as_ref().map_err(Clone::clone).and_then(|source| {
+                    model(
+                        source,
+                        scenario_id,
+                        variable,
+                        &request.location,
+                        comparison_station,
+                        &window,
+                    )
+                })
+            }
+            SeriesSelection::Observation { .. } => observation(
+                selection,
+                observation_location.as_ref().unwrap_or(&request.location),
                 &request.time_zone,
                 &window,
-            ),
-            SeriesSelection::Observation { .. } => {
-                observation(selection, request, &window).map(|s| (s, None))
-            }
+            )
+            .map(|s| (s, None)),
         };
         match result {
             Ok((mut series, new_mapping)) => {
@@ -481,6 +568,24 @@ pub fn export_series_csv(
     destination: &Path,
 ) -> Result<SeriesReport, String> {
     let report = query_series(request)?;
+    write_series_csv(&report, None, destination)?;
+    Ok(report)
+}
+
+/// Export the comparison snapshot currently displayed by the desktop.
+pub fn export_comparison_csv(
+    report: &SeriesReport,
+    station: Option<&str>,
+    destination: &Path,
+) -> Result<(), String> {
+    write_series_csv(report, station, destination)
+}
+
+fn write_series_csv(
+    report: &SeriesReport,
+    station: Option<&str>,
+    destination: &Path,
+) -> Result<(), String> {
     if !report.findings.is_empty() {
         let details = report
             .findings
@@ -517,11 +622,17 @@ pub fn export_series_csv(
         Location::Mini(id) => ("mini", id.to_string()),
     };
     for (_, _, s, p) in rows {
+        let (kind, id) = match station {
+            Some(station) if s.scenario_id.is_none() || s.series_kind == "model_station_level" => {
+                ("station", station)
+            }
+            _ => (kind, id.as_str()),
+        };
         csv.write_record([
             p.timestamp.format("%Y-%m-%dT%H:%M:%S").to_string(),
             report.time_zone.clone(),
             kind.into(),
-            id.clone(),
+            id.into(),
             s.series_kind.clone(),
             s.run_id.clone().unwrap_or_default(),
             s.scenario_id.clone().unwrap_or_default(),
@@ -534,5 +645,5 @@ pub fn export_series_csv(
     }
     let bytes = csv.into_inner().map_err(|e| e.to_string())?;
     crate::store::write_atomic(destination, &bytes)?;
-    Ok(report)
+    Ok(())
 }

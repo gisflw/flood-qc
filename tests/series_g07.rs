@@ -94,11 +94,11 @@ fn canonical_comparisons_are_isolated_and_csv_is_atomic() {
     let station = StationResults {
         timeline: basin.timeline.clone(),
         time_segment: basin.time_segment.clone(),
-        station_ids: vec!["A,é".into()],
-        mini_ids: vec![Some(1)],
-        offsets_m: vec![Some(0.0)],
-        level_cm: vec![-1, 0],
-        level_valid: vec![true, true],
+        station_ids: vec!["A,é".into(), "002".into()],
+        mini_ids: vec![Some(1), Some(2)],
+        offsets_m: vec![Some(0.0), Some(0.1)],
+        level_cm: vec![-1, 20, 0, 21],
+        level_valid: vec![true; 4],
         provenance,
     };
     write_result_series(&root.join("results/good/basin.nc"), &basin).unwrap();
@@ -224,6 +224,119 @@ fn canonical_comparisons_are_isolated_and_csv_is_atomic() {
     assert_eq!(&rows[0][3], "A,é");
     assert_eq!(&rows[0][10], "-1");
     assert_eq!(&rows[1][10], "0");
+
+    use mgb_ops::app::{export_comparison_csv, query_comparison};
+    use mgb_ops::store::{
+        ObservationBatch, ObservationSample, ObservationSeries, ObservationStore, ObservationValue,
+        Station,
+    };
+    let path = dir.path().join("observations.sqlite");
+    let start = basin.timeline.bounds[0].start;
+    let mut database = ObservationStore::create(&path, "UTC").unwrap();
+    for (id, value) in [("A,é", 10), ("002", 19)] {
+        let series_id = format!("{id}-level");
+        database
+            .write_batch(&ObservationBatch {
+                stations: vec![Station {
+                    station_id: id.into(),
+                    station_code: id.into(),
+                    name: id.into(),
+                    provider_code: "test".into(),
+                    latitude: None,
+                    longitude: None,
+                }],
+                series: vec![ObservationSeries {
+                    series_id: series_id.clone(),
+                    station_id: id.into(),
+                    variable: "level".into(),
+                    unit: "cm".into(),
+                    state: "raw".into(),
+                    interval_seconds: None,
+                    created_at: start,
+                }],
+                samples: vec![ObservationSample {
+                    series_id,
+                    observed_at: start,
+                    value: Some(ObservationValue::LevelCm(value)),
+                }],
+                ..Default::default()
+            })
+            .unwrap();
+    }
+    let model_rain = SeriesSelection::Model {
+        root: root.clone(),
+        scenario_id: "good".into(),
+        variable: Variable::Rain,
+    };
+    let observed = SeriesSelection::Observation {
+        database: path,
+        series_id: "002-level".into(),
+        variable: Variable::Level,
+        effective: false,
+        replacement_ids: vec![],
+        replacements: None,
+    };
+    let mut comparison = SeriesQuery {
+        location: Location::Mini(2),
+        selections: vec![model_rain, selection("good"), observed],
+        ..mini_request
+    };
+    let report = query_comparison(&comparison, "002").unwrap();
+    assert!(report.findings.is_empty());
+    assert_eq!(
+        report
+            .series
+            .iter()
+            .map(|s| s.points[0].value)
+            .collect::<Vec<_>>(),
+        [Some(10.), Some(20.), Some(19.)],
+    );
+    assert_eq!(report.series[1].series_kind, "model_station_level");
+    export_comparison_csv(&report, Some("002"), &destination).unwrap();
+    let csv = csv::Reader::from_path(&destination)
+        .unwrap()
+        .into_records()
+        .map(Result::unwrap)
+        .collect::<Vec<_>>();
+    assert!(
+        csv.iter()
+            .filter(|row| &row[8] == "rain")
+            .all(|row| &row[2] == "mini" && &row[3] == "2")
+    );
+    assert!(
+        csv.iter()
+            .filter(|row| &row[8] == "level")
+            .all(|row| &row[2] == "station" && &row[3] == "002")
+    );
+
+    comparison.location = Location::Mini(1);
+    comparison.selections.push(selection("bad"));
+    let report = query_comparison(&comparison, "002").unwrap();
+    assert_eq!(report.findings[0].selection_index, 3);
+    assert_eq!(report.series[0].points[0].value, Some(2.));
+    assert_eq!(report.series[1].series_kind, "model_raw_level");
+    assert_eq!(report.series[1].points[0].value, Some(-2.));
+    assert_eq!(report.series[2].points[0].value, Some(19.));
+
+    // A corrupt station result must leave the model rainfall and recorded station observations usable.
+    fs::write(root.join("results/good/station.nc"), "corrupt").unwrap();
+    let report = query_comparison(&comparison, "002").unwrap();
+    assert_eq!(
+        report
+            .findings
+            .iter()
+            .map(|f| f.selection_index)
+            .collect::<Vec<_>>(),
+        [1, 3]
+    );
+    assert_eq!(
+        report
+            .series
+            .iter()
+            .map(|s| s.selection_index)
+            .collect::<Vec<_>>(),
+        [0, 2]
+    );
 }
 
 #[test]

@@ -8,6 +8,7 @@ pub struct Charts {
     pub plots: [Plot1D; 3],
     cursors: [ItemHandle; 3],
     pub report: Option<SeriesReport>,
+    pub comparison_station: Option<String>,
     pub source_labels: Vec<String>,
     pub references: Vec<LevelReference>,
     pub labels: Vec<(String, Color32)>,
@@ -88,6 +89,7 @@ impl Charts {
             plots,
             cursors,
             report: None,
+            comparison_station: None,
             source_labels: vec![],
             references: vec![],
             labels: vec![],
@@ -98,14 +100,27 @@ impl Charts {
     }
     pub fn clear(&mut self) {
         for plot in &mut self.plots {
-            plot.clear_items();
+            plot.clear();
             plot.backend().flush_scene();
         }
         self.report = None;
+        self.comparison_station = None;
         self.source_labels.clear();
         self.references.clear();
         self.labels.clear();
     }
+    pub fn location_caption(&self, report: &SeriesReport, portuguese: bool) -> String {
+        let mini = location_label(&report.location, portuguese);
+        self.comparison_station
+            .as_ref()
+            .map_or(mini.clone(), |station| {
+                format!(
+                    "{mini} × {}",
+                    location_label(&Location::Station(station.clone()), portuguese)
+                )
+            })
+    }
+
     pub fn load(
         &mut self,
         report: SeriesReport,
@@ -114,13 +129,12 @@ impl Charts {
     ) -> Result<(), String> {
         self.labels.clear();
         self.portuguese = portuguese;
-        self.references = references.to_vec();
         self.origin = seconds(report.window.start);
         for plot in &mut self.plots {
             plot.plot_mut().set_x_time_offset(self.origin);
         }
         for (i, plot) in self.plots.iter_mut().enumerate() {
-            plot.clear_items();
+            plot.clear();
             plot.set_graph_title(if portuguese {
                 ["Chuva", "Vazão", "Nível"][i]
             } else {
@@ -139,6 +153,44 @@ impl Charts {
             } else {
                 plot.clear_graph_x_label();
             }
+        }
+        let has_level = |raw| {
+            report.series.iter().any(|series| {
+                series.variable == "level"
+                    && (series.series_kind == "model_raw_level") == raw
+                    && series.points.iter().any(|point| point.value.is_some())
+            })
+        };
+        let has_station_levels = has_level(false);
+        self.references.clear();
+        if has_station_levels {
+            self.references.extend_from_slice(references);
+        }
+        let separate_raw = has_station_levels && has_level(true);
+        self.plots[2].set_graph_y_label(
+            if separate_raw {
+                if portuguese {
+                    "Estação (cm)"
+                } else {
+                    "Station (cm)"
+                }
+            } else {
+                "cm"
+            },
+            YAxis::Left,
+        );
+        if separate_raw {
+            self.plots[2].set_graph_y_label(
+                if portuguese {
+                    "MINI bruto (cm)"
+                } else {
+                    "Raw MINI (cm)"
+                },
+                YAxis::Right,
+            );
+        } else {
+            self.plots[2].clear_graph_y_label(YAxis::Right);
+            self.plots[2].plot_mut().y2 = None;
         }
         let scenarios: Vec<_> = report
             .series
@@ -161,13 +213,23 @@ impl Charts {
                 .scenario_id
                 .clone()
                 .unwrap_or_else(|| if portuguese { "Observado" } else { "Observed" }.into());
-            let label = if series.series_kind == "model_raw_level" {
+            let raw_level = series.series_kind == "model_raw_level";
+            let label = if raw_level {
                 format!(
                     "{name} · {}",
                     if portuguese {
                         "nível bruto da MINI"
                     } else {
                         "raw MINI level"
+                    }
+                )
+            } else if series.series_kind == "model_station_level" {
+                format!(
+                    "{name} · {}",
+                    if portuguese {
+                        "datum da estação"
+                    } else {
+                        "station datum"
                     }
                 )
             } else if series.scenario_id.is_none() {
@@ -197,6 +259,9 @@ impl Charts {
                     let mut spec = CurveSpec::new(&x, &y, color);
                     spec.line_width = 1.5 * self.line_scale;
                     spec.symbol_size = 7. * self.line_scale;
+                    if raw_level && separate_raw {
+                        spec.y_axis = YAxis::Right;
+                    }
                     if chunk[0].time_segment == Some(1) {
                         spec.line_style = LineStyle::Dashed;
                     }
@@ -216,7 +281,7 @@ impl Charts {
                 plot.add_x_marker(seconds(reference) - self.origin, Color32::RED);
             }
         }
-        for reference in references {
+        for reference in &self.references {
             let label = reference_label(reference, portuguese);
             let handle = self.plots[2].add_y_marker(
                 reference.level_cm,
@@ -234,7 +299,7 @@ impl Charts {
         self.report = Some(report);
         Ok(())
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, portuguese: bool) {
+    pub fn show(&mut self, ui: &mut egui::Ui, portuguese: bool, height: f32) {
         for plot in &mut self.plots {
             plot.set_background_colors(ui.visuals().panel_fill, ui.visuals().extreme_bg_color);
             plot.set_foreground_colors(
@@ -243,28 +308,19 @@ impl Charts {
             );
         }
 
-        if self.report.is_none() {
-            ui.centered_and_justified(|ui| {
-                ui.label(if portuguese {
-                    "Selecione uma estação ou MINI para visualizar as séries"
-                } else {
-                    "Select a station or MINI to view its series"
-                });
-            });
+        let Some(report) = &self.report else {
             return;
-        }
-        if let Some(report) = &self.report {
-            let source = report
-                .series
-                .iter()
-                .find_map(|s| s.run_id.as_deref())
-                .unwrap_or("OBS");
-            ui.small(format!(
-                "{} · {} · {source}",
-                location_label(&report.location, portuguese),
-                report.time_zone
-            ));
-        }
+        };
+        let source = report
+            .series
+            .iter()
+            .find_map(|s| s.run_id.as_deref())
+            .unwrap_or("OBS");
+        ui.small(format!(
+            "{} · {} · {source}",
+            self.location_caption(report, portuguese),
+            report.time_zone
+        ));
         ui.horizontal_wrapped(|ui| {
             for (label, color) in &self.labels {
                 ui.colored_label(*color, label);
@@ -275,7 +331,6 @@ impl Charts {
                 "— history · --- forecast · red: reference"
             });
         });
-        let height = ((ui.available_height() - 35.) / 3.).max(85.);
         let mut limits = None;
         let mut cursor = None;
         for plot in &mut self.plots {

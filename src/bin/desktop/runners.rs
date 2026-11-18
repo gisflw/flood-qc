@@ -663,7 +663,7 @@ impl Runners {
             active.control.cancel();
         }
         ui.label(self.localized_status(pt));
-        ui.collapsing(text(pt, "Logs", "Registros"), |ui| {
+        super::section(ui, text(pt, "Logs", "Registros"), |ui| {
             egui::ScrollArea::both().show(ui, |ui| {
                 ui.monospace(&self.logs);
             });
@@ -852,41 +852,39 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
     use mgb_ops::app::{DraftObserved, DraftScenario};
     let original = draft.document.operation.clone();
     let o = &mut draft.document.operation;
-    egui::CollapsingHeader::new(text(pt, "Period", "Período"))
-        .default_open(true)
-        .show(ui, |ui| {
-            string(
-                ui,
-                &text(pt, "Reference · local time", "Referência · hora local"),
-                &mut o.reference_time,
-            );
-            string(
-                ui,
-                &text(pt, "IANA timezone", "Fuso IANA"),
-                &mut o.time_zone,
-            );
-            number(
-                ui,
-                &text(pt, "Observed days before", "Dias observados antes"),
-                &mut o.observed_horizon_days,
-                pt,
-            );
-            number(
-                ui,
-                &text(pt, "Forecast days after", "Dias previstos depois"),
-                &mut o.forecast_horizon_days,
-                pt,
-            );
-            match o.coverage() {
-                Ok(coverage) => {
-                    ui.small(coverage);
-                }
-                Err(e) => {
-                    ui.small(e);
-                }
+    super::section(ui, text(pt, "Period", "Período"), |ui| {
+        string(
+            ui,
+            &text(pt, "Reference · local time", "Referência · hora local"),
+            &mut o.reference_time,
+        );
+        string(
+            ui,
+            &text(pt, "IANA timezone", "Fuso IANA"),
+            &mut o.time_zone,
+        );
+        number(
+            ui,
+            &text(pt, "Observed days before", "Dias observados antes"),
+            &mut o.observed_horizon_days,
+            pt,
+        );
+        number(
+            ui,
+            &text(pt, "Forecast days after", "Dias previstos depois"),
+            &mut o.forecast_horizon_days,
+            pt,
+        );
+        match o.coverage() {
+            Ok(coverage) => {
+                ui.small(coverage);
             }
-        });
-    ui.collapsing(text(pt, "Observations", "Observações"), |ui| {
+            Err(e) => {
+                ui.small(e);
+            }
+        }
+    });
+    super::section(ui, text(pt, "Observations", "Observações"), |ui| {
         let observed = o.observed.get_or_insert_with(DraftObserved::default);
         path(ui, "SQLite", &mut observed.path);
         list(
@@ -931,9 +929,10 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
             );
         }
     });
-    egui::CollapsingHeader::new(text(pt, "Forecast scenarios", "Cenários previstos"))
-        .default_open(true)
-        .show(ui, |ui| {
+    super::section(
+        ui,
+        text(pt, "Forecast scenarios", "Cenários previstos"),
+        |ui| {
             path(
                 ui,
                 &text(pt, "Forecast catalog", "Catálogo de previsões"),
@@ -1010,18 +1009,22 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
             if ui.button(text(pt, "+ Scenario", "+ Cenário")).clicked() {
                 o.scenarios.push(DraftScenario::default());
             }
-        });
-    egui::CollapsingHeader::new(text(pt, "Output stations", "Estações de saída"))
-        .default_open(true)
-        .show(ui, |ui| {
+        },
+    );
+    super::section(
+        ui,
+        text(pt, "Output stations", "Estações de saída"),
+        |ui| {
             list(
                 ui,
                 &text(pt, "Station IDs", "IDs de estações"),
                 &mut o.levels.get_or_insert_default().station_ids,
                 pt,
             );
-        });
-    ui.collapsing(
+        },
+    );
+    super::section(
+        ui,
         text(pt, "Spatial preparation", "Preparação espacial"),
         |ui| {
             path(
@@ -1070,7 +1073,7 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
             );
         },
     );
-    ui.collapsing(text(pt, "QC settings", "Configurações QC"), |ui| {
+    super::section(ui, text(pt, "QC settings", "Configurações QC"), |ui| {
         let qc = o.qc.get_or_insert_default();
         number(
             ui,
@@ -1106,7 +1109,7 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
             "Avisos nunca aplicam correções automaticamente",
         ));
     });
-    ui.collapsing(text(pt, "Model", "Modelo"), |ui| {
+    super::section(ui, text(pt, "Model", "Modelo"), |ui| {
         let engine = o.engine.get_or_insert_default();
         path(
             ui,

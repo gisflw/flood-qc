@@ -14,6 +14,7 @@ pub struct Export {
     pub scale: u32,
     pub title: String,
     pub limits: [(f64, f64, f64, f64); 3],
+    pub right_level_limits: Option<(f64, f64)>,
 }
 struct Canvas {
     pixels: Vec<u8>,
@@ -112,7 +113,13 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
         plot.set_graph_y_limits(ymin, ymax, rsplot::YAxis::Left);
         plot.plot_mut().data_background = Color32::WHITE;
         plot.backend().flush_scene();
-        let data_width = 1050 * scale;
+        let right = (i == 2).then_some(export.right_level_limits).flatten();
+        if let Some((min, max)) = right {
+            plot.set_graph_y_limits(min, max, rsplot::YAxis::Right);
+        }
+        let logical_width = if right.is_some() { 980 } else { 1050 };
+        let end_x = 120. + f64::from(logical_width);
+        let data_width = logical_width * scale;
         let data_height = 210 * scale;
         let rgba = rsplot::render::save::render_plot_rgba(
             &export.state,
@@ -132,7 +139,6 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
         } else {
             ["Rainfall (mm)", "Flow (m³/s)", "Level (cm)"][i]
         };
-        canvas.text(15., top as f32 - 24., title, Color32::BLACK);
         canvas.line(
             120.,
             f64::from(top),
@@ -143,15 +149,46 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
         canvas.line(
             120.,
             f64::from(top + 210),
-            1170.,
+            end_x,
             f64::from(top + 210),
             Color32::BLACK,
         );
+        if right.is_some() {
+            canvas.line(
+                end_x,
+                f64::from(top),
+                end_x,
+                f64::from(top + 210),
+                Color32::BLACK,
+            );
+            canvas.text(
+                15.,
+                top as f32 - 24.,
+                if export.portuguese {
+                    "Nível da estação (cm)"
+                } else {
+                    "Station level (cm)"
+                },
+                Color32::BLACK,
+            );
+            canvas.text(
+                end_x as f32,
+                top as f32 - 24.,
+                if export.portuguese {
+                    "MINI bruto"
+                } else {
+                    "Raw MINI (cm)"
+                },
+                Color32::BLACK,
+            );
+        } else {
+            canvas.text(15., top as f32 - 24., title, Color32::BLACK);
+        }
         if i == 2 {
-            for reference in &export.references {
+            for reference in &charts.references {
                 let y = f64::from(top) + 210. * (ymax - reference.level_cm) / (ymax - ymin);
                 if (f64::from(top)..=f64::from(top + 210)).contains(&y) {
-                    canvas.line(120., y, 1170., y, Color32::RED);
+                    canvas.line(120., y, end_x, y, Color32::RED);
                     canvas.text(
                         125.,
                         y as f32 - 16.,
@@ -168,7 +205,7 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
                 .map(|t| t.format("%m-%d %H:%M").to_string())
                 .unwrap_or_default();
             canvas.text(
-                (120. + 1050. * fraction - 40.).min(1080.) as f32,
+                (120. + f64::from(logical_width) * fraction - 40.).min(end_x - 75.) as f32,
                 (top + 215) as f32,
                 &label,
                 Color32::BLACK,
@@ -179,6 +216,14 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
                 &format!("{:.2}", ymin + (ymax - ymin) * fraction),
                 Color32::BLACK,
             );
+            if let Some((min, max)) = right {
+                canvas.text(
+                    end_x as f32 + 12.,
+                    (f64::from(top) + 210. * (1. - fraction) - 7.) as f32,
+                    &format!("{:.2}", min + (max - min) * fraction),
+                    Color32::BLACK,
+                );
+            }
         }
         // Reference and thresholds are UI overlays in rsplot, so retain their labels in the export.
         if let Some(reference) = export
@@ -189,9 +234,10 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
             .and_then(|r| super::data::timestamp(r).ok())
         {
             let x = 120.
-                + 1050. * (seconds(reference) - seconds(export.report.window.start) - xmin)
+                + f64::from(logical_width)
+                    * (seconds(reference) - seconds(export.report.window.start) - xmin)
                     / (xmax - xmin);
-            if (120.0..=1170.0).contains(&x) {
+            if (120.0..=end_x).contains(&x) {
                 canvas.line(x, f64::from(top), x, f64::from(top + 210), Color32::RED);
                 canvas.text(
                     x as f32,
@@ -258,6 +304,14 @@ mod tests {
                     .collect(),
             })
             .collect();
+        let mut series: Vec<_> = series;
+        let mut raw = series[2].clone();
+        raw.selection_index = 3;
+        raw.series_kind = "model_raw_level".into();
+        for point in &mut raw.points {
+            point.value = point.value.map(|value| value + 100.);
+        }
+        series.push(raw);
         let report = SeriesReport {
             location: Location::Mini(1),
             time_zone: "America/Sao_Paulo".into(),
@@ -270,6 +324,7 @@ mod tests {
         assert_eq!(charts.plots[0].plot().limits.0, 0.);
         assert_eq!(charts.plots[0].plot().limits.1, 14400.);
         assert_eq!(charts.origin, seconds(start));
+        assert!(charts.plots[2].plot().y2.is_some());
         let context = egui::Context::default();
         let mut frame = context.run_ui(
             egui::RawInput {
@@ -279,13 +334,25 @@ mod tests {
                 )),
                 ..Default::default()
             },
-            |ui| charts.show(ui, false),
+            |ui| charts.show(ui, false, 160.),
         );
         frame.textures_delta.clear();
         for plot in &charts.plots {
             assert_eq!(plot.x_limits(), (0., 14400.));
             assert!(plot.plot_bounds_in_pixels().unwrap().height() > 50.);
         }
+
+        let level_only = SeriesReport {
+            location: Location::Mini(2),
+            series: vec![report.series[2].clone()],
+            ..report.clone()
+        };
+        let right_level_limits = charts.plots[2].plot().y2;
+        charts.load(level_only, &[], false).unwrap();
+        assert!(charts.plots[0].get_all_histograms().is_empty());
+        assert!(charts.plots[1].get_all_curves().is_empty());
+        assert!(charts.plots[2].plot().y2.is_none());
+        assert_eq!(charts.plots[2].get_all_curves().len(), 2);
 
         std::fs::create_dir_all("runs/desktop-qualification").unwrap();
         for scale in 1..=3 {
@@ -299,7 +366,8 @@ mod tests {
                     references: vec![],
                     portuguese: true,
                     scale,
-                    title: "MGB Ops · Estação São José".into(),
+                    title: "MGB Ops · MINI: 1 × Estação: São José".into(),
+                    right_level_limits,
                     limits: [(0., seconds(end) - seconds(start), 0., 4.); 3],
                 },
                 &destination,

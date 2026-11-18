@@ -34,27 +34,35 @@ checkpoints and run manifests. Run state is displayed, including diagnostics and
 successful scenarios from partially failed attempts. Missing/corrupt scenario
 outputs produce findings rather than hiding usable siblings.
 
-Select a station/MINI through search, the location list or the map. Entering a
-positive numeric search selects that MINI, even without local topology. Stations
-without coordinates remain selectable. Station targets precede river/catchment
-targets. River hit tolerance is wider than its stroke; catchment containment
-excludes holes. Alt-click inspects rainfall without changing the location.
-Linked summaries, the table and three charts use shared backend queries.
-Missing station offsets stay unknown; an explicit metadata link supplies the mini.
-Station colors identify known model links and unknown associations.
+Select a station or MINI on the map or through Map search. Entering a positive
+numeric search selects that MINI even without local topology. Stations without
+coordinates remain selectable through search. Station targets precede river and
+catchment targets. River hit tolerance is wider than its stroke, and catchment
+containment excludes holes. Alt-click inspects rainfall independently of selection.
+Station colors identify explicit model links and unknown associations.
 
-Choose the map scenario and chart scenario overlays from one loaded run.
-Run/scenario selection associates the corresponding retained rainfall checkpoint;
-negative signed hours select its observed checkpoint and positive hours its
-scenario checkpoint. Missing remembered/requested resources report errors and
-are not replaced by another run or scenario. An explicitly selected standalone
-rainfall checkpoint remains independently inspectable.
+Charts has editable MINI ID and Station ID fields. A map or search selection
+fills its ID and the explicitly linked counterpart when unique. If the
+counterpart is unknown or ambiguous, its field keeps its current value.
+Enter or Apply submits the edited IDs. Model series use the selected MINI and
+observations use the selected station. The level chart uses retained station
+levels when the run records the matching MINI and offset. It labels raw MINI
+levels and uses a separate scale when both datums have data. Station thresholds
+use the station scale. An available side can be viewed independently.
 
-Signed hours and explicit start/end controls use shared hourly-window semantics.
-Both display the actual interval. Apply selects the entered rainfall and chart
-windows. Reference times and timestamps are local to the displayed timezone.
-Without a run, the initial display window uses the current project-local hour
-and the preceding week; this is a display preference, not an operational recipe.
+Choose the retained run in Files, the map scenario in Map, and the chart overlays
+in Charts. Negative signed map hours select the run's observed checkpoint and
+positive hours select its scenario checkpoint. A standalone checkpoint can be
+chosen in Map. Missing sources are reported independently.
+
+Apply the rainfall and chart windows in their respective pages. Both use shared
+hourly-window semantics. Map timestamps use the displayed timezone and chart
+timestamps use the run timezone or the project observation timezone. Without a
+run, the initial display window uses the current project-local hour and the
+preceding week. Chart loading runs independently of map and layer reads. Charts
+reports loading, data availability, and errors for the requested pair. If a
+replacement fails, a retained comparison keeps its original displayed IDs and
+exports.
 Rainfall inspection returns the accumulated original numeric cell, including NA
 and supplied zero. Display opacity does not alter accumulation or recreate its
 texture. Area/rain summaries use validated upstream topology and local mini areas.
@@ -70,7 +78,7 @@ close zoom uses original paths. Rainfall uses projected latitude strips to keep
 pixel edges aligned in Web Mercator, rather than stretching four image corners.
 Labels appear only at suitable zoom/spacing and do not intercept selection.
 
-The ribbon, fixed side panes and center pages use English or Brazilian Portuguese. Automatic interface preferences remember recent workspace associations,
+The ribbon, left sidebar and center pages use English or Brazilian Portuguese. Automatic interface preferences remember recent workspace associations,
 camera, layers, local files, selection, run/scenarios and time controls without a
 new project-file schema. Source errors identify the retained view separately.
 
@@ -78,21 +86,24 @@ Rainfall, flow and level panels share time navigation and cursor position. Bars
 use actual hourly interval edges. History and forecast are visually distinct;
 masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
-checkboxes control chart sources; legends identify those sources. CSV uses the
-[shared series export](series.md). Complete PNG export combines all three panels,
+checkboxes control chart sources; legends identify those sources. Charts exports the displayed snapshot. CSV keeps model and observation location
+IDs on each row using the [shared series export](series.md) format. Complete PNG
+export identifies the pair and combines all three panels,
 localized titles, local-time axes, units, reference/threshold annotations and
 legends at 1×, 2× or 3×, replacing its destination atomically.
 
 ## Layout and settings
 
-The ribbon groups Project, Draft, View, Processing and Settings actions. The fixed,
-resizable left pane has Layers, Files and Configs; Configs opens Workspace Settings
-in the fixed right pane. Processing opens Prepare inputs, Execute MGB, Run All or
-Jobs on the right. Closing a form hides it and preserves its current inputs.
-Jobs remains available while another form is hidden. Both panes collapse.
+The ribbon has Project, Draft, View, Processing and Settings tabs with labeled
+groups of visible actions. The single left sidebar resizes and collapses.
+Files contains the retained run selector, provenance, assets and findings.
+The ribbon opens Workspace Settings, Interface Settings, Prepare inputs,
+Execute MGB, Run All and Jobs as tabs in the same sidebar. Closing a form
+preserves its current inputs. Jobs can also reopen from the status bar.
 
-Map and Charts initially appear side by side; Data contains location summaries and
-the selected series table. Drag a center tab to join a group or split at an edge;
+Map and Charts initially appear side by side. The map has an inset, bordered
+viewport below its controls. Data contains location summaries and the selected
+series table. Drag a center tab to join a group or split at an edge;
 a shaded preview shows its destination. Each axis splits at most once along a
 branch, supporting one area, rows, columns, three areas and a 2×2 grid, with
 resizable dividers and at most four areas. Each page has one instance; moving or
@@ -101,9 +112,9 @@ updates never focus hidden pages. Floating windows are unsupported.
 
 Settings offers English/Brazilian Portuguese and System/Light/Dark, applied
 immediately and remembered app-wide. Interface preferences remember each project's
-pane widths, collapsed states, tabs and docking. Reset layout restores the initial
-Map/Charts arrangement, Layers open and forms collapsed, preserving results,
-selection and unfinished edits. Tab navigation and ribbon actions are keyboard
+sidebar width, visibility, tabs and docking. Old right-pane tabs migrate to
+the sidebar. Reset layout restores the initial Map/Charts arrangement and Files
+tab while preserving results, selections and unfinished edits. Tab navigation and ribbon actions are keyboard
 accessible; Ctrl+1/2/3 reopens/focuses Map/Charts/Data, Ctrl+S saves the draft, Ctrl+Q
 requests exit, and F5 refreshes monitoring.
 

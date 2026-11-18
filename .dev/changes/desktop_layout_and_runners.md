@@ -1,6 +1,6 @@
 # Desktop layout and runners specification
 
-Implement a RustGIS-style ribbon, three-pane layout and dockable linked monitoring
+Implement a RustGIS-style ribbon, single sidebar and dockable linked monitoring
 pages, with working configuration and preparation/execution forms over the existing
 backend. This increment implements part of the broader [GUI plan](../plans/desktop_gui.md)
 and does not replace or narrow that plan. Requirements here are planned behavior;
@@ -14,31 +14,19 @@ period derivation or scientific processing in the GUI.
 
 ## Ribbon and pane layout
 
-Use [RustGIS](https://github.com/opengeos/RustGIS) as the visual reference:
-compact desktop controls, icons with short labels, grouped ribbon actions,
-restrained colors and clear pane borders. Ribbon headings reveal groups of
-actions. The ribbon opens or focuses existing pages and forms rather than
-creating duplicate instances.
+Use [RustGIS](https://github.com/opengeos/RustGIS) as the visual reference.
+A top tab strip switches between visible labeled groups of compact actions.
+Ribbon actions open or focus existing pages and forms.
 
 | Region | Contents and behavior |
 | --- | --- |
-| Top ribbon | Project opening/saving, page and pane visibility, processing tool launchers, Reset layout and Settings. Settings contains interface language and appearance. |
-| Left navigation | Fixed tab group with Layers, Files and Configs; run/scenario selection and station/MINI search belong here. Configs selects configuration to edit on the right. |
-| Center workspace | Map, Charts and Data pages. Only this region supports docking and splitting. |
-| Right forms | Fixed tab group for Workspace Settings, Prepare inputs, Execute MGB, Run All and Jobs. Launching a form opens or focuses its tab and expands this pane. |
+| Top ribbon | Project and draft files, page and sidebar visibility, Reset layout, processing launchers and settings launchers. |
+| Left sidebar | Files, Workspace Settings, Interface Settings, Prepare inputs, Execute MGB, Run All and Jobs. Files owns the retained-run picker and provenance. Forms use labeled sections in scrollable tabs. |
+| Center workspace | Dockable Map, Charts and Data. The bordered map viewport sits below Map controls. Charts owns comparison fields, source/window controls and exports. Data contains the series table and location summaries. |
 
-Both side panes are resizable and collapsible. Their tabs remain in their
-respective panes and cannot dock into the center. Opening one right-side form
-does not replace another or discard its inputs. Configuration editors belong on
-the right, not among the center pages.
-
-The initial layout has Map on the left and Charts on the right within the
-center, the left pane open on Layers, and the right pane collapsed. Data is
-available from the ribbon. Rainfall, flow and level remain together in Charts;
-the existing series table and selected-location summaries belong in Data.
-Map display controls, including its time window, belong in Map; chart display
-controls and its time window belong in Charts. Run and scenario choices remain
-consistent across views under the monitoring rules below.
+The sidebar resizes and collapses. Launching a form opens or focuses its own tab
+and reveals the sidebar. Initially Files is active and Map and Charts appear
+side by side. Data can reopen from the ribbon.
 
 ### Center docking and linked pages
 
@@ -51,20 +39,25 @@ with one active tab. Moving the last tab out of an area removes the empty area.
 Tabs stay inside the main window; floating windows are outside this delivery.
 
 There is one instance per page. Ribbon actions focus a page if open or reopen
-it if closed. Map, Charts and Data share the selected station/MINI and loaded
-run state. A selection change updates linked pages in the background without
+it if closed. Map, Charts and Data share the loaded run state. A map pick updates the MINI ID
+and Station ID fields through explicit links when unique and otherwise retains
+the counterpart. Users can edit either field and submit with Enter or Apply.
+Charts compares the selected model MINI and observation station. Use the retained
+station datum for linked levels with a matching offset and label raw MINI levels
+when no matching result exists. Chart loading is independent of map rainfall and
+layer loading. A selection change updates linked pages in the background without
 activating a hidden tab, changing focus or rearranging the layout. Closing or
 moving a page does not clear shared selection or its view state.
 
 ### Settings and saved layout
 
-Under Settings, use a language dropdown with English and Brazilian Portuguese
+In the Interface Settings tab, use a language dropdown with English and Brazilian Portuguese
 and an appearance control with System, Light and Dark. Apply changes immediately
 and remember them app-wide. System follows the platform appearance. Apply the
 theme consistently to the ribbon, panes, forms, tables and charts while keeping
 data colors and labels readable.
 
-Remember pane widths, collapsed states, open tabs, active tabs and center docking
+Remember sidebar width, visibility, open and active tabs, and center docking
 layout separately for each project, using automatic interface preferences rather
 than another project-file schema. Reset layout restores the initial arrangement
 above while preserving selections, loaded results and unfinished form inputs.
@@ -74,15 +67,14 @@ usable controls through pane collapse and scrolling rather than clipped forms.
 
 ## Configuration editing and unsaved work
 
-Selecting Workspace in the left Configs tab opens or focuses Workspace Settings
-in the right pane. Edit the supported workspace TOML fields, currently geometry
+The Settings ribbon opens or focuses Workspace Settings in the sidebar. Edit the supported workspace TOML fields, currently geometry
 path and engine executable/input-directory paths, with explicit Save and Revert.
 Do not add unsupported configuration fields or place period/scenario settings in
 workspace TOML. Operation settings remain in the shared runner draft.
 Use the existing backend read/save APIs, validation, atomic replacement and path
 semantics. Failed saves preserve destination bytes and leave edits available.
 
-Center pages and right-side forms have close actions and can be reopened from
+Center pages and sidebar forms have close actions and can be reopened from
 the ribbon or navigation. Closing a form hides it while preserving unfinished
 inputs for the current project session; it does not save or discard them.
 Before closing a project, switching projects or quitting, offer Save, Discard
@@ -166,8 +158,8 @@ locking and cancellation/cleanup rules; success requires final manifest
 persistence. Failure must not replace displayed completed results with incomplete
 outputs. Preserve existing preparations and unrelated results.
 
-Provide a persistent Jobs tab in the right pane for stage progress, per-scenario
-status, expandable logs, outcomes and Cancel. Switching or closing a runner form
+Keep Jobs available in the sidebar for stage progress, per-scenario
+status, scrollable logs, outcomes and Cancel. Switching or closing a runner form
 must not stop its job or lose access to this status. Allow one active processing
 job per workspace, with useful feedback when another is requested, while keeping
 monitoring responsive and honoring backend workspace locks. Closing or collapsing
@@ -192,15 +184,14 @@ Do not build an additional plugin framework or inactive acquisition controls now
   and location summaries. Dragging supports tab groups and all specified center
   arrangements through 2×2, with drop previews and resizable dividers. Only center
   pages dock; each page and form has a single instance.
-- Both side panes resize and collapse. Configs opens Workspace Settings on the
-  right. Launching a tool expands the right pane and opens/focuses its form without
-  replacing other forms. Closing/reopening preserves inputs and shared selection.
-- Map clicks update linked Charts and Data, including hidden pages, without
-  stealing focus. Existing run/scenario, station/MINI and time-window semantics,
-  layer controls and exports continue to work after relocation.
-- Per-project layout survives reopening. Reset layout restores Map/Charts side by
-  side, Layers on the left and a collapsed right pane, preserving selections,
-  results and unfinished inputs. Data remains available from the ribbon.
+- The sidebar resizes and collapses. Workspace and Interface Settings open in
+  separate tabs alongside runner forms. Reopening preserves inputs.
+- Map clicks update both chart fields where the explicit link is unique.
+  Manual pairing, source-specific CSV rows and retained chart identity are verified.
+  A stalled map read leaves chart loading responsive, and only the latest result applies.
+- Per-project layout survives reopening, including preferences written by the
+  former layout. Reset restores side-by-side Map and Charts with Files on the left,
+  preserving selections, results and unfinished inputs.
 - Prepare and Run All share one draft. Execute uses explicitly selected retained
   inputs. Preparation does not launch MGB; Run All performs both stages. Successful
   manual execution loads results without changing focus or docking layout.

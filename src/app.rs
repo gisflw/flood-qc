@@ -3,7 +3,7 @@ pub use self::project::discover_rainfall_grids;
 mod series;
 pub use self::series::{
     ChartSeries, Location, QueryFinding, SeriesPoint, SeriesQuery, SeriesReport, SeriesSelection,
-    Variable, export_series_csv, query_series,
+    Variable, export_comparison_csv, export_series_csv, query_comparison, query_series,
 };
 mod references;
 pub use self::references::{

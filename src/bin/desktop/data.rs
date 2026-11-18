@@ -9,7 +9,7 @@ use mgb_ops::store::{
 use std::path::{Path, PathBuf};
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicBool, Ordering},
     mpsc,
 };
 use std::thread::{self, JoinHandle};
@@ -375,13 +375,10 @@ pub struct ViewRequest {
     pub project: Arc<Project>,
     pub run: Option<Arc<Run>>,
     pub location: Option<Location>,
-    pub overlays: Vec<String>,
-    pub observations: bool,
     pub map_scenario: String,
     pub grid: Option<PathBuf>,
     pub zone: String,
     pub window: HourlyWindow,
-    pub chart_window: HourlyWindow,
     pub upstream: bool,
 }
 pub struct Rain {
@@ -395,8 +392,7 @@ pub struct View {
     pub zone: String,
     pub run: Option<Arc<Run>>,
     pub map_scenario: String,
-    pub query: Option<SeriesQuery>,
-    pub series: Option<SeriesReport>,
+    pub location: Option<Location>,
     pub rainfall: Option<Arc<Rain>>,
     pub summary: Option<RainSummary>,
     pub upstream: Vec<i64>,
@@ -453,8 +449,7 @@ fn view(request: ViewRequest, cache: &mut RainCache) -> Result<View, String> {
         zone: request.zone.clone(),
         run: request.run.clone(),
         map_scenario: request.map_scenario.clone(),
-        query: None,
-        series: None,
+        location: request.location.clone(),
         rainfall: None,
         summary: None,
         upstream: vec![],
@@ -515,57 +510,80 @@ fn view(request: ViewRequest, cache: &mut RainCache) -> Result<View, String> {
                 }
             }
         }
-        let mut selections = Vec::new();
-        for variable in [Variable::Rain, Variable::Flow, Variable::Level] {
-            if let Some(run) = &request.run {
-                for scenario in &request.overlays {
-                    selections.push(SeriesSelection::Model {
-                        root: run.root.clone(),
-                        scenario_id: scenario.clone(),
-                        variable: variable.clone(),
-                    });
-                }
-            }
-            if let Location::Station(id) = &location
-                && request.observations
-            {
-                let name = match variable {
-                    Variable::Rain => "rain",
-                    Variable::Flow => "flow",
-                    Variable::Level => "level",
-                };
-                for (series, station, kind) in &request.project.series {
-                    if station == id && kind == name {
-                        selections.push(SeriesSelection::Observation {
-                            database: request.project.workspace.join("data/history.sqlite"),
-                            series_id: series.clone(),
-                            variable: variable.clone(),
-                            effective: false,
-                            replacement_ids: vec![],
-                            replacements: None,
-                        });
-                    }
-                }
-            }
-        }
-        let query = SeriesQuery {
-            location,
-            time_zone: request.zone,
-            window: request.chart_window,
-            selections,
-        };
-        match mgb_ops::app::query_series(&query) {
-            Ok(series) => {
-                result
-                    .findings
-                    .extend(series.findings.iter().map(|f| f.message.clone()));
-                result.series = Some(series);
-            }
-            Err(error) => result.findings.push(error),
-        }
-        result.query = Some(query);
     }
     Ok(result)
+}
+
+pub struct ChartRequest {
+    pub query: SeriesQuery,
+    pub comparison_station: Option<String>,
+    pub notices: Vec<String>,
+}
+
+impl ChartRequest {
+    pub fn load(self) -> Result<Loaded, String> {
+        let report = match &self.comparison_station {
+            Some(station) => mgb_ops::app::query_comparison(&self.query, station)?,
+            None => mgb_ops::app::query_series(&self.query)?,
+        };
+        let labels = self
+            .query
+            .selections
+            .into_iter()
+            .map(|selection| match selection {
+                SeriesSelection::Observation { series_id, .. } => series_id,
+                SeriesSelection::Model { scenario_id, .. } => scenario_id,
+            })
+            .collect();
+        Ok(Loaded::Chart {
+            report,
+            station: self.comparison_station,
+            labels,
+            notices: self.notices,
+        })
+    }
+}
+
+pub fn chart_selections(
+    project: &Project,
+    run: Option<&Run>,
+    overlays: &[String],
+    station: Option<&str>,
+) -> Vec<SeriesSelection> {
+    let mut selections = Vec::new();
+    if let Some(run) = run {
+        for scenario in overlays {
+            for variable in [Variable::Rain, Variable::Flow, Variable::Level] {
+                selections.push(SeriesSelection::Model {
+                    root: run.root.clone(),
+                    scenario_id: scenario.clone(),
+                    variable,
+                });
+            }
+        }
+    }
+    if let Some(id) = station {
+        for (series, station, kind) in &project.series {
+            if station != id {
+                continue;
+            }
+            let variable = match kind.as_str() {
+                "rain" => Variable::Rain,
+                "flow" => Variable::Flow,
+                "level" => Variable::Level,
+                _ => continue,
+            };
+            selections.push(SeriesSelection::Observation {
+                database: project.workspace.join("data/history.sqlite"),
+                series_id: series.clone(),
+                variable,
+                effective: false,
+                replacement_ids: vec![],
+                replacements: None,
+            });
+        }
+    }
+    selections
 }
 
 pub fn timestamp(value: &str) -> Result<NaiveDateTime, String> {
@@ -578,17 +596,19 @@ pub enum Job {
     Run(PathBuf),
     View(ViewRequest),
     Local(Vec<PathBuf>),
-    Export(SeriesQuery, PathBuf),
+    Export(SeriesReport, Option<String>, PathBuf),
+    Chart(ChartRequest),
     Png(Box<super::export::Export>, PathBuf),
 }
 impl Job {
-    fn slot(&self) -> usize {
+    pub fn slot(&self) -> usize {
         match self {
             Self::Open(..) => 0,
             Self::Run(..) => 1,
             Self::View(..) => 2,
             Self::Local(..) => 3,
             Self::Export(..) | Self::Png(..) => 4,
+            Self::Chart(..) => CHART_SLOT,
         }
     }
 }
@@ -598,29 +618,36 @@ pub enum Loaded {
     View(Box<View>),
     Local(Vec<super::map::LocalLayer>, Vec<String>),
     Export(PathBuf),
+    Chart {
+        report: SeriesReport,
+        station: Option<String>,
+        labels: Vec<String>,
+        notices: Vec<String>,
+    },
 }
 pub struct Reply {
     pub slot: usize,
     pub generation: u64,
     pub result: Result<Loaded, String>,
 }
+pub const CHART_SLOT: usize = 5;
+const SLOTS: usize = CHART_SLOT + 1;
+
 pub struct Worker {
-    sender: Option<mpsc::SyncSender<(u64, Job)>>,
+    sender: Option<mpsc::Sender<(u64, Job)>>,
     receiver: mpsc::Receiver<Reply>,
-    pending: [Option<(u64, Job)>; 5],
-    pub generations: [u64; 5],
+    pending: [Option<(u64, Job)>; SLOTS],
+    pub generations: [u64; SLOTS],
     stop: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
-    outstanding: Arc<AtomicUsize>,
+    in_flight: Option<(usize, u64)>,
 }
 impl Worker {
     pub fn new(context: eframe::egui::Context) -> Self {
-        let (sender, jobs) = mpsc::sync_channel::<(u64, Job)>(1);
+        let (sender, jobs) = mpsc::channel::<(u64, Job)>();
         let (replies, receiver) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
-        let outstanding = Arc::new(AtomicUsize::new(0));
-        let active = outstanding.clone();
         let thread = thread::spawn(move || {
             let mut rain_cache = None;
             let mut last_project: Option<Arc<Project>> = None;
@@ -674,9 +701,14 @@ impl Worker {
                     }
                     Job::Png(export, destination) => super::export::write(*export, &destination)
                         .map(|_| Loaded::Export(destination)),
-                    Job::Export(query, destination) => {
-                        mgb_ops::app::export_series_csv(&query, &destination)
-                            .map(|_| Loaded::Export(destination))
+                    Job::Chart(request) => request.load(),
+                    Job::Export(report, station, destination) => {
+                        mgb_ops::app::export_comparison_csv(
+                            &report,
+                            station.as_deref(),
+                            &destination,
+                        )
+                        .map(|_| Loaded::Export(destination))
                     }
                 };
                 if stopped.load(Ordering::Acquire) {
@@ -692,22 +724,21 @@ impl Worker {
                 {
                     break;
                 }
-                active.fetch_sub(1, Ordering::AcqRel);
                 context.request_repaint();
             }
         });
         Self {
             sender: Some(sender),
             receiver,
-            pending: [None, None, None, None, None],
-            generations: [0; 5],
+            pending: std::array::from_fn(|_| None),
+            generations: [0; SLOTS],
             stop,
             thread: Some(thread),
-            outstanding,
+            in_flight: None,
         }
     }
     pub fn is_busy(&self) -> bool {
-        self.pending.iter().any(Option::is_some) || self.outstanding.load(Ordering::Acquire) > 0
+        self.pending.iter().any(Option::is_some) || self.in_flight.is_some()
     }
     pub fn submit(&mut self, job: Job) {
         let slot = job.slot();
@@ -719,27 +750,54 @@ impl Worker {
         self.pending[slot] = None;
     }
     pub fn poll(&mut self) -> Vec<Reply> {
-        for pending in &mut self.pending {
-            if let Some(job) = pending.take() {
-                self.outstanding.fetch_add(1, Ordering::AcqRel);
-                match self.sender.as_ref().unwrap().try_send(job) {
-                    Ok(()) => {}
-                    Err(mpsc::TrySendError::Full(job)) => {
-                        self.outstanding.fetch_sub(1, Ordering::AcqRel);
-                        *pending = Some(job);
-                        break;
+        let mut replies = Vec::new();
+        loop {
+            match self.receiver.try_recv() {
+                Ok(reply) => {
+                    if self.in_flight == Some((reply.slot, reply.generation)) {
+                        self.in_flight = None;
                     }
-                    Err(mpsc::TrySendError::Disconnected(_)) => {
-                        self.outstanding.fetch_sub(1, Ordering::AcqRel);
-                        break;
+                    replies.push(reply);
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if let Some((slot, generation)) = self.in_flight.take() {
+                        replies.push(Reply {
+                            slot,
+                            generation,
+                            result: Err("Monitoring worker has stopped".into()),
+                        });
                     }
+                    break;
                 }
             }
         }
-        self.receiver
-            .try_iter()
-            .filter(|reply| reply.generation == self.generations[reply.slot])
-            .collect()
+        if self.in_flight.is_none()
+            && let Some((slot, pending)) = self
+                .pending
+                .iter_mut()
+                .enumerate()
+                .find(|(_, job)| job.is_some())
+        {
+            let (generation, job) = pending.take().unwrap();
+            if self
+                .sender
+                .as_ref()
+                .unwrap()
+                .send((generation, job))
+                .is_ok()
+            {
+                self.in_flight = Some((slot, generation));
+            } else {
+                replies.push(Reply {
+                    slot,
+                    generation,
+                    result: Err("Monitoring worker has stopped".into()),
+                });
+            }
+        }
+        replies.retain(|reply| reply.generation == self.generations[reply.slot]);
+        replies
     }
 }
 impl Drop for Worker {
@@ -762,13 +820,64 @@ pub fn infer_workspace(config: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     #[test]
+    fn chart_worker_completes_latest_request_while_map_lane_is_busy() {
+        let mut chart = Worker::new(eframe::egui::Context::default());
+        let mut map = Worker::new(eframe::egui::Context::default());
+        let (sender, in_flight) = mpsc::channel();
+        map.sender = Some(sender); // Hold the map request in flight until the chart reply is checked.
+        let start = timestamp("2026-01-01T00:00:00").unwrap();
+        let request = |id| {
+            Job::Chart(ChartRequest {
+                query: SeriesQuery {
+                    location: Location::Mini(id),
+                    time_zone: "UTC".into(),
+                    window: HourlyWindow::Explicit {
+                        start,
+                        end: start + chrono::Duration::hours(1),
+                    },
+                    selections: vec![],
+                },
+                comparison_station: Some("002".into()),
+                notices: vec![],
+            })
+        };
+        map.submit(Job::Run("slow-map-lane".into()));
+        assert!(map.poll().is_empty());
+        assert!(in_flight.try_recv().is_ok());
+        chart.submit(request(1));
+        chart.poll();
+        chart.submit(request(2));
+        chart.submit(request(3));
+        let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(reply) = chart.poll().pop() {
+                assert_eq!(reply.generation, 3);
+                let Loaded::Chart {
+                    report, station, ..
+                } = reply.result.unwrap()
+                else {
+                    panic!("expected chart reply");
+                };
+                let latest = matches!(report.location, Location::Mini(3));
+                assert!(latest);
+                assert_eq!(station.as_deref(), Some("002"));
+                assert!(report.series.is_empty());
+                break;
+            }
+            assert!(std::time::Instant::now() < limit);
+            thread::yield_now();
+        }
+        let idle = !chart.is_busy();
+        assert!(idle);
+        assert!(map.is_busy());
+    }
+
+    #[test]
     fn invalidated_inflight_monitoring_remains_busy_until_the_read_stops() {
-        let (sender, jobs) = mpsc::sync_channel::<(u64, Job)>(1);
+        let (sender, jobs) = mpsc::channel::<(u64, Job)>();
         let (replies, receiver) = mpsc::channel();
         let (started, start) = mpsc::channel();
         let (release, blocked) = mpsc::channel();
-        let outstanding = Arc::new(AtomicUsize::new(0));
-        let active = outstanding.clone();
         let thread = thread::spawn(move || {
             let (generation, _job) = jobs.recv().unwrap();
             started.send(()).unwrap();
@@ -780,16 +889,15 @@ mod tests {
                     result: Err("delayed read".into()),
                 })
                 .unwrap();
-            active.fetch_sub(1, Ordering::AcqRel);
         });
         let mut worker = Worker {
             sender: Some(sender),
             receiver,
-            pending: [None, None, None, None, None],
-            generations: [0; 5],
+            pending: std::array::from_fn(|_| None),
+            generations: [0; SLOTS],
             stop: Arc::new(AtomicBool::new(false)),
             thread: Some(thread),
-            outstanding,
+            in_flight: None,
         };
         worker.submit(Job::Run("delayed".into()));
         assert!(worker.is_busy());
@@ -801,6 +909,7 @@ mod tests {
         release.send(()).unwrap();
         let limit = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while worker.is_busy() {
+            assert!(worker.poll().is_empty());
             assert!(std::time::Instant::now() < limit);
             thread::yield_now();
         }
@@ -842,7 +951,7 @@ mod tests {
         let station = canonical::StationResults {
             timeline,
             time_segment: vec![0, 0, 1, 1],
-            station_ids: vec!["s".into()],
+            station_ids: vec!["002".into()],
             mini_ids: vec![Some(1)],
             offsets_m: vec![Some(0.)],
             level_cm: vec![-2, -1, 0, 1],
@@ -928,11 +1037,51 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             std::fs::remove_dir_all(&synthetic).unwrap();
         }
         saved_trial(&synthetic, geometry.longitudes[0], geometry.latitudes[0]);
+        let history = root.join("data/history.sqlite");
+        if !history.exists() {
+            let mut database = canonical::ObservationStore::create(&history, "UTC").unwrap();
+            let station_id = "002".to_owned();
+            let series_id = "fixture-level".to_owned();
+            let start = timestamp("2026-01-01T00:00:00").unwrap();
+            database
+                .write_batch(&canonical::ObservationBatch {
+                    stations: vec![canonical::Station {
+                        station_id: station_id.clone(),
+                        provider_code: "fixture".into(),
+                        station_code: station_id.clone(),
+                        name: "Fixture station".into(),
+                        latitude: Some(-30.),
+                        longitude: Some(-52.),
+                    }],
+                    offsets: vec![canonical::StationOffset {
+                        station_id: station_id.clone(),
+                        mini_id: 1,
+                        offset_m: 0.,
+                    }],
+                    series: vec![canonical::ObservationSeries {
+                        series_id: series_id.clone(),
+                        station_id,
+                        variable: "level".into(),
+                        unit: "cm".into(),
+                        state: "raw".into(),
+                        interval_seconds: None,
+                        created_at: start,
+                    }],
+                    samples: vec![canonical::ObservationSample {
+                        series_id,
+                        observed_at: start,
+                        value: Some(canonical::ObservationValue::LevelCm(-1)),
+                    }],
+                    ..Default::default()
+                })
+                .unwrap();
+        }
         let config = std::path::absolute(root.join("config/workspace.toml")).unwrap();
         let workspace = std::path::absolute(root).unwrap();
         let first = open(config.clone(), workspace.clone(), None).unwrap();
         let second = open(config, workspace, Some(&first)).unwrap();
         assert_eq!(first.topology.len(), 8649);
+        assert_eq!(first.stations[0].station.station_id, "002");
         assert!(Arc::ptr_eq(&first.segments, &second.segments));
         assert!(Arc::ptr_eq(&first.fills, &second.fills));
     }
@@ -974,13 +1123,10 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
                 project,
                 run: Some(run),
                 location: Some(Location::Mini(1)),
-                overlays: vec!["good".into()],
-                observations: false,
                 map_scenario: "good".into(),
                 grid: None,
                 zone: "America/Sao_Paulo".into(),
-                window: window.clone(),
-                chart_window: window,
+                window,
                 upstream: false,
             },
             &mut None,
@@ -1089,24 +1235,14 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             start,
             end: start + chrono::Duration::hours(1),
         };
-        let result = view(
-            ViewRequest {
-                project,
-                run: None,
-                location: Some(Location::Station("no-coordinate".into())),
-                overlays: vec![],
-                observations: true,
-                map_scenario: String::new(),
-                grid: None,
-                zone: "UTC".into(),
-                window: window.clone(),
-                chart_window: window,
-                upstream: true,
-            },
-            &mut None,
-        )
+        let result = mgb_ops::app::query_series(&SeriesQuery {
+            selections: chart_selections(&project, None, &[], Some("no-coordinate")),
+            location: Location::Station("no-coordinate".into()),
+            time_zone: "UTC".into(),
+            window,
+        })
         .unwrap();
-        assert_eq!(result.series.unwrap().series[0].points[0].value, Some(-2.));
+        assert_eq!(result.series[0].points[0].value, Some(-2.));
         assert_eq!(std::fs::read(config).unwrap(), original);
         let untouched = !root.join("data/runs").exists();
         assert!(untouched);

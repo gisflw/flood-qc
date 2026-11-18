@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{Datelike, NaiveDateTime, TimeZone, Timelike};
@@ -561,47 +561,44 @@ impl ObservationStore {
                 inputs.series.push(s);
             }
         }
-        let variables: HashMap<_, _> = inputs
-            .series
-            .iter()
-            .map(|s| (s.series_id.as_str(), s.variable.as_str()))
-            .collect();
         {
-            let mut stmt = tx.prepare("SELECT series_id,observed_at,value FROM observation WHERE observed_at>=?1 AND observed_at<=?2 ORDER BY series_id,observed_at")?;
-            let mut rows = stmt.query(params![label(start), label(end)])?;
-            while let Some(r) = rows.next()? {
-                let id: String = r.get(0)?;
-                let Some(variable) = variables.get(id.as_str()) else {
-                    continue;
-                };
-                let time: String = r.get(1)?;
-                let at = timestamp(&time, &id)?;
-                if *variable == "rain" && at == start {
-                    continue;
-                }
-                let value = match (r.get_ref(2)?, *variable) {
-                    (ValueRef::Null, _) => None,
-                    (ValueRef::Integer(v), "level") => Some(ObservationValue::LevelCm(
-                        i32::try_from(v)
-                            .map_err(|_| error(format!("sample {id} {time}: level outside i32")))?,
-                    )),
-                    (ValueRef::Integer(v), "rain") => Some(ObservationValue::RainMm(v as f64)),
-                    (ValueRef::Real(v), "rain") => Some(ObservationValue::RainMm(v)),
-                    (ValueRef::Integer(v), "flow") => Some(ObservationValue::FlowM3s(v as f64)),
-                    (ValueRef::Real(v), "flow") => Some(ObservationValue::FlowM3s(v)),
-                    _ => {
-                        return Err(error(format!(
-                            "sample {id} {time}: invalid numeric storage"
-                        )));
+            let mut stmt = tx.prepare("SELECT observed_at,value FROM observation WHERE series_id=?1 AND observed_at>=?2 AND observed_at<=?3 ORDER BY observed_at")?;
+            let (start_label, end_label) = (label(start), label(end));
+            for series in &inputs.series {
+                let id = &series.series_id;
+                let variable = series.variable.as_str();
+                let mut rows = stmt.query(params![id, start_label, end_label])?;
+                while let Some(r) = rows.next()? {
+                    let time: String = r.get(0)?;
+                    let at = timestamp(&time, id)?;
+                    if variable == "rain" && at == start {
+                        continue;
                     }
-                };
-                let s = ObservationSample {
-                    series_id: id,
-                    observed_at: at,
-                    value,
-                };
-                validate_sample(&s, variable)?;
-                inputs.samples.push(s);
+                    let value = match (r.get_ref(1)?, variable) {
+                        (ValueRef::Null, _) => None,
+                        (ValueRef::Integer(v), "level") => {
+                            Some(ObservationValue::LevelCm(i32::try_from(v).map_err(
+                                |_| error(format!("sample {id} {time}: level outside i32")),
+                            )?))
+                        }
+                        (ValueRef::Integer(v), "rain") => Some(ObservationValue::RainMm(v as f64)),
+                        (ValueRef::Real(v), "rain") => Some(ObservationValue::RainMm(v)),
+                        (ValueRef::Integer(v), "flow") => Some(ObservationValue::FlowM3s(v as f64)),
+                        (ValueRef::Real(v), "flow") => Some(ObservationValue::FlowM3s(v)),
+                        _ => {
+                            return Err(error(format!(
+                                "sample {id} {time}: invalid numeric storage"
+                            )));
+                        }
+                    };
+                    let s = ObservationSample {
+                        series_id: id.clone(),
+                        observed_at: at,
+                        value,
+                    };
+                    validate_sample(&s, variable)?;
+                    inputs.samples.push(s);
+                }
             }
         }
         inputs.replacements = read_replacements(&tx, replacement_ids)?;

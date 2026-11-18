@@ -435,44 +435,185 @@ impl Form {
         }
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(default)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SideTab {
+    Files,
+    Interface,
+    Form(Form),
+}
+
+impl SideTab {
+    pub fn label(self, pt: bool) -> String {
+        match self {
+            Self::Files => super::text(pt, "Files", "Arquivos"),
+            Self::Interface => super::text(pt, "Interface Settings", "Configurações da interface"),
+            Self::Form(form) => form.label(pt),
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
 pub struct Layout {
     pub dock: Dock,
     pub left: bool,
-    pub right: bool,
-    pub left_tab: usize,
-    pub forms: Vec<Form>,
-    pub active: Form,
+    pub tabs: Vec<SideTab>,
+    #[serde(rename = "active_tab")]
+    pub active: SideTab,
     pub left_width: f32,
-    pub right_width: f32,
 }
 impl Default for Layout {
     fn default() -> Self {
         Self {
             dock: Dock::default(),
             left: true,
-            right: false,
-            left_tab: 0,
-            forms: vec![Form::Jobs],
-            active: Form::Jobs,
-            left_width: 270.,
-            right_width: 390.,
+            tabs: vec![SideTab::Files],
+            active: SideTab::Files,
+            left_width: 300.,
         }
+    }
+}
+impl<'de> Deserialize<'de> for Layout {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(default)]
+        struct Stored {
+            dock: Dock,
+            left: bool,
+            tabs: Vec<SideTab>,
+            active_tab: SideTab,
+            active: Form,
+            left_width: f32,
+            forms: Vec<Form>,
+            right: bool,
+            right_width: f32,
+            left_tab: usize,
+        }
+        impl Default for Stored {
+            fn default() -> Self {
+                let default = Layout::default();
+                Self {
+                    dock: default.dock,
+                    left: default.left,
+                    tabs: Vec::new(),
+                    active_tab: SideTab::Files,
+                    active: Form::Jobs,
+                    left_width: default.left_width,
+                    forms: Vec::new(),
+                    right: false,
+                    right_width: 390.,
+                    left_tab: 0,
+                }
+            }
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        let mut layout = Self {
+            dock: stored.dock,
+            left: stored.left || stored.right,
+            left_width: if stored.right {
+                stored.right_width
+            } else {
+                stored.left_width
+            },
+            ..Self::default()
+        };
+        let (tabs, active) = if stored.tabs.is_empty() {
+            let active = if stored.right {
+                SideTab::Form(stored.active)
+            } else if stored.left_tab == 2 {
+                SideTab::Form(Form::Workspace)
+            } else {
+                SideTab::Files
+            };
+            (
+                stored.forms.into_iter().map(SideTab::Form).collect(),
+                active,
+            )
+        } else {
+            (stored.tabs, stored.active_tab)
+        };
+        for tab in tabs {
+            if !layout.tabs.contains(&tab) {
+                layout.tabs.push(tab);
+            }
+        }
+        if !layout.tabs.contains(&active) {
+            layout.tabs.push(active);
+        }
+        layout.active = active;
+        Ok(layout)
     }
 }
 impl Layout {
-    pub fn form(&mut self, form: Form) {
-        if !self.forms.contains(&form) {
-            self.forms.push(form)
+    pub fn open(&mut self, tab: SideTab) {
+        if !self.tabs.contains(&tab) {
+            self.tabs.push(tab);
         }
-        self.active = form;
-        self.right = true;
+        self.active = tab;
+        self.left = true;
+    }
+
+    pub fn form(&mut self, form: Form) {
+        self.open(SideTab::Form(form));
+    }
+
+    pub fn close(&mut self, tab: SideTab) {
+        if tab != SideTab::Files {
+            self.tabs.retain(|item| *item != tab);
+            if self.active == tab {
+                self.active = SideTab::Files;
+            }
+        }
     }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_right_pane_tabs_migrate_and_current_tabs_round_trip() {
+        struct Storage(String);
+        impl eframe::Storage for Storage {
+            fn get_string(&self, _: &str) -> Option<String> {
+                Some(self.0.clone())
+            }
+            fn set_string(&mut self, _: &str, value: String) {
+                self.0 = value;
+            }
+            fn remove_string(&mut self, _: &str) {
+                self.0.clear();
+            }
+            fn flush(&mut self) {}
+        }
+        let mut storage = Storage("(left:false,right:true,left_tab:2,left_width:270,right_width:390,forms:[Jobs,Workspace,Prepare],active:Prepare)".into());
+        let mut layout: Layout = eframe::get_value(&storage, "layout").unwrap();
+        assert!(layout.left);
+        assert_eq!(layout.left_width, 390.);
+        assert_eq!(layout.active, SideTab::Form(Form::Prepare));
+        assert_eq!(
+            layout.tabs,
+            [
+                SideTab::Files,
+                SideTab::Form(Form::Jobs),
+                SideTab::Form(Form::Workspace),
+                SideTab::Form(Form::Prepare)
+            ]
+        );
+        layout.close(SideTab::Form(Form::Prepare));
+        layout.open(SideTab::Interface);
+        eframe::set_value(&mut storage, "layout", &layout);
+        let round_trip: Layout = eframe::get_value(&storage, "layout").unwrap();
+        assert_eq!(round_trip.active, SideTab::Interface);
+        assert_eq!(round_trip.tabs, layout.tabs);
+        let collapsed: Layout = serde_json::from_str(
+            r#"{"left":false,"right":false,"forms":["RunAll"],"active":"RunAll"}"#,
+        )
+        .unwrap();
+        let hidden = !collapsed.left;
+        assert!(hidden);
+        assert_eq!(collapsed.active, SideTab::Files);
+        assert!(collapsed.tabs.contains(&SideTab::Form(Form::RunAll)));
+    }
+
     #[test]
     fn docking_preserves_single_instances_and_bounded_splits() {
         let mut d = Dock::default();
