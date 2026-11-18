@@ -4,6 +4,8 @@ Current VB.NET reference worktree: `/workspace/legacy_vbnet/`, branch
 `legacy/vbnet` at `10b61520d43512e8a5923989f38c0745398b01c5`.
 Source paths below are relative to the retained
 `Sistema_de_Previsao_RSH_2025_versao0.99/` directory in that worktree.
+See the [operator workflow inventory](vbnet_gui_flow.md) for the menu order,
+forecast steps and actions available in each screen.
 
 The main VB.NET project is under
 `FONTE_SISTEMA_PREV_RSH_2026_09_02/Telemetria/`; the form paths below are relative
