@@ -180,6 +180,18 @@ fn resolve_file(
     }
     Ok(())
 }
+/// Return retained operation day horizons when its frozen hourly boundaries round-trip exactly.
+pub fn retained_day_horizons(manifest: &crate::store::OperationManifest) -> Option<(u32, u32)> {
+    let mut document = manifest.recipe.get("document")?.clone();
+    if !compact_period(&mut document) {
+        return None;
+    }
+    Some((
+        u32::try_from(document["observed_horizon_days"].as_u64()?).ok()?,
+        u32::try_from(document["forecast_horizon_days"].as_u64()?).ok()?,
+    ))
+}
+
 pub(super) fn compact_period(value: &mut serde_json::Value) -> bool {
     let Some(reference) = value
         .get("reference_time")
@@ -665,6 +677,33 @@ kind = "zero"
         let remained_explicit = !compact_period(&mut arbitrary);
         assert!(remained_explicit);
         assert_eq!(arbitrary, original);
+    }
+    #[test]
+    fn retained_day_horizons_require_exact_frozen_hourly_boundaries() {
+        let preparation = decode_request(v2_text().as_bytes()).unwrap();
+        let mut manifest = crate::store::OperationManifest {
+            schema_version: 1,
+            preparation_sha256: None,
+            state: "completed".into(),
+            recipe: serde_json::Value::Object(
+                [(
+                    "document".into(),
+                    serde_json::to_value(preparation).unwrap(),
+                )]
+                .into_iter()
+                .collect(),
+            ),
+            inputs: vec![],
+            scenarios: vec![],
+            created_at: String::new(),
+            finished_at: None,
+            error: None,
+        };
+        assert_eq!(retained_day_horizons(&manifest), Some((10, 5)));
+        manifest.recipe["document"]["forecast_last_end"] = "2026-07-25T00:00:00".into();
+        assert_eq!(retained_day_horizons(&manifest), None);
+        manifest.recipe = serde_json::Value::Null;
+        assert_eq!(retained_day_horizons(&manifest), None);
     }
     #[test]
     fn saved_axis_and_paths_are_explicit_and_zero_needs_no_forecast_catalog() {

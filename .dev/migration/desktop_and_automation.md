@@ -22,8 +22,8 @@ handling, export, and run outcomes. Interface controls may call intended
 public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. The [GUI specification](../plans/desktop_gui.md) records confirmed
-first-delivery behavior, delivery order and acceptance. Monitoring uses a main map
-tab with side panes. The [GUI plan qualification gates](../plans/desktop_gui.md#remaining-monitoring-qualification)
+first-delivery behavior, delivery order and acceptance. Monitoring keeps the map visible between the run and Layers column and the
+tabbed right pane. The [GUI plan qualification gates](../plans/desktop_gui.md#remaining-monitoring-qualification)
 track open hardware acceptance; the [desktop contract](../../docs/contracts/desktop.md)
 records the implemented optional rsplot/walkers interface; processing and assistant integration follow.
 QC editors and forecast comparison need separate planning. Shared

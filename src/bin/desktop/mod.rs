@@ -4,9 +4,11 @@ mod export;
 mod layout;
 mod map;
 mod runners;
-use self::layout::{Form, Page, SideTab};
+use self::layout::{Form, SideTab};
 
-use self::data::{CHART_SLOT, ChartRequest, Job, Loaded, Project, Run, View, ViewRequest, Worker};
+use self::data::{
+    CHART_SLOT, ChartRequest, Job, Loaded, Project, Run, UPSTREAM_SLOT, View, ViewRequest, Worker,
+};
 use eframe::egui::{self, Color32};
 use mgb_ops::analysis::HourlyWindow;
 use mgb_ops::app::{Location, SeriesQuery, SeriesSelection};
@@ -103,6 +105,7 @@ struct Display {
     chart_start: String,
     chart_end: String,
     upstream: bool,
+    #[serde(rename = "right_pane")]
     layout: layout::Layout,
     draft: Option<PathBuf>,
     operation_zone: Option<String>,
@@ -162,6 +165,7 @@ struct ComparisonFields {
 
 impl ComparisonFields {
     fn select(&mut self, location: &Location, stations: &[mgb_ops::store::StationLocation]) {
+        *self = Self::default();
         match location {
             Location::Mini(id) => {
                 self.mini = id.to_string();
@@ -179,12 +183,8 @@ impl ComparisonFields {
             }
             Location::Station(id) => {
                 self.station.clone_from(id);
-                if let Some(offset) = stations
-                    .iter()
-                    .find(|station| station.station.station_id == *id)
-                    .and_then(|station| station.offset.as_ref())
-                {
-                    self.mini = offset.mini_id.to_string();
+                if let Some(mini) = data::location_mini(location, stations) {
+                    self.mini = mini.to_string();
                 }
             }
         }
@@ -227,7 +227,8 @@ struct Monitoring {
     switching_project: bool,
     open_candidate: Option<(PathBuf, String, String)>,
     ribbon: Ribbon,
-    map_layers: bool,
+    map_menu: Option<Location>,
+    upstream_basin: Option<(i64, Vec<i64>)>,
     chart_exports: bool,
     export_scale: u32,
 }
@@ -271,7 +272,8 @@ impl Monitoring {
             switching_project: false,
             open_candidate: None,
             ribbon: Ribbon::Project,
-            map_layers: false,
+            map_menu: None,
+            upstream_basin: None,
             chart_exports: false,
             export_scale: 1,
         };
@@ -424,13 +426,48 @@ impl Monitoring {
     }
 
     fn select_location(&mut self, location: Location) {
-        if let Some(project) = &self.project {
-            self.chart_fields.select(&location, &project.stations);
-            self.display.comparison = Some(self.chart_fields.clone());
-        }
         self.display.selection = Some(location);
         self.request_view();
-        self.request_chart();
+    }
+
+    fn view_time_series(&mut self, location: &Location) {
+        if let Some(project) = &self.project {
+            self.chart_fields.select(location, &project.stations);
+            self.display.comparison = Some(self.chart_fields.clone());
+            self.display.layout.open(SideTab::Charts);
+            self.request_chart();
+        }
+    }
+
+    fn upstream_outlet(&self, location: &Location) -> Option<i64> {
+        let project = self.project.as_ref()?;
+        let mini = data::location_mini(location, &project.stations)?;
+        project
+            .topology
+            .iter()
+            .any(|entry| entry.mini_id == mini)
+            .then_some(mini)
+    }
+
+    fn clear_upstream(&mut self) {
+        self.worker.invalidate(UPSTREAM_SLOT);
+        self.loading[UPSTREAM_SLOT] = false;
+        self.upstream_basin = None;
+    }
+
+    fn load_upstream(&mut self, mini: i64) {
+        self.clear_upstream();
+        if let Some(project) = self.project.clone() {
+            if let Some(layer) = self
+                .display
+                .layers
+                .iter_mut()
+                .find(|l| l.kind == "upstream")
+            {
+                layer.visible = true;
+            }
+            self.submit(Job::Upstream(project, mini));
+        }
     }
 
     fn request_chart(&mut self) {
@@ -537,6 +574,7 @@ impl Monitoring {
             }
             match reply.result {
                 Err(error) if reply.slot == CHART_SLOT => self.chart_message = error,
+                Err(error) if reply.slot == UPSTREAM_SLOT => self.status = error,
                 Err(error) => {
                     self.status = format!(
                         "{error} · {}",
@@ -580,6 +618,8 @@ impl Monitoring {
                         .is_none_or(|old| !Arc::ptr_eq(&old.fills, &project.fills))
                     {
                         self.cache.clear();
+                        self.clear_upstream();
+                        self.map_menu = None;
                     }
                     if !same {
                         self.runners = runners::Runners::default();
@@ -772,6 +812,14 @@ impl Monitoring {
                         view.findings.join("; ")
                     };
                     self.view = Some(view);
+                }
+                Ok(Loaded::Upstream { mini, ids }) => {
+                    self.upstream_basin = Some((mini, ids));
+                    self.status = text(
+                        self.preferences.portuguese,
+                        "Upstream basin loaded",
+                        "Bacia a montante carregada",
+                    );
                 }
                 Ok(Loaded::Local(layers, findings)) => {
                     self.local.retain(|old| {
@@ -1022,23 +1070,24 @@ impl Monitoring {
                     }
                     Ribbon::View => {
                         ribbon_group(ui, text(pt, "Pages", "Páginas"), |ui| {
-                            for page in [Page::Map, Page::Charts, Page::Data] {
-                                if ui.button(page.label(pt)).clicked() {
-                                    self.display.layout.dock.open(page);
+                            for tab in [
+                                SideTab::Charts,
+                                SideTab::Data,
+                                SideTab::Rainfall,
+                                SideTab::Files,
+                            ] {
+                                if ui.button(tab.label(pt)).clicked() {
+                                    self.display.layout.open(tab);
                                 }
                             }
                         });
                         ribbon_group(ui, text(pt, "Layout", "Layout"), |ui| {
-                            ui.toggle_value(
-                                &mut self.display.layout.left,
-                                text(pt, "Sidebar", "Barra lateral"),
-                            );
                             if ui
                                 .button(text(pt, "Reset layout", "Restaurar layout"))
                                 .clicked()
                             {
                                 self.display.layout = layout::Layout::default();
-                                let id = egui::Id::new(("navigation", &self.display.config));
+                                let id = egui::Id::new(("right-pane", &self.display.config));
                                 ui.ctx().data_mut(|d| {
                                     d.remove::<egui::containers::panel::PanelState>(id)
                                 });
@@ -1124,17 +1173,13 @@ impl Monitoring {
         }
     }
 
-    fn sidebar(&mut self, ui: &mut egui::Ui) {
+    fn right_pane(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         ui.horizontal_wrapped(|ui| {
-            if icon_button(ui, "◀", &text(pt, "Hide sidebar", "Ocultar barra lateral")).clicked()
-            {
-                self.display.layout.left = false;
-            }
             for tab in self.display.layout.tabs.clone() {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut self.display.layout.active, tab, tab.label(pt));
-                    if tab != SideTab::Files
+                    if matches!(tab, SideTab::Interface | SideTab::Form(_))
                         && icon_button(
                             ui,
                             "×",
@@ -1149,7 +1194,29 @@ impl Monitoring {
         });
         ui.separator();
         let tab = self.display.layout.active;
-        ui.push_id(("sidebar-content", tab.label(false)), |ui| match tab {
+        ui.push_id(("right-pane-content", tab.label(false)), |ui| match tab {
+            SideTab::Charts => {
+                self.chart_controls(ui);
+                if self.charts.report.is_some() {
+                    let height = ((ui.available_height() - 65.) / 3.).max(110.);
+                    egui::ScrollArea::vertical()
+                        .id_salt("chart-plots")
+                        .show(ui, |ui| self.charts.show(ui, pt, height));
+                }
+            }
+            SideTab::Data => self.data_page(ui),
+            SideTab::Rainfall => {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    if self.project.is_some()
+                        && ui
+                            .button(text(pt, "Apply map window", "Aplicar período do mapa"))
+                            .clicked()
+                    {
+                        self.request_view();
+                    }
+                    self.rainfall_controls(ui);
+                });
+            }
             SideTab::Files => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.files(ui));
             }
@@ -1325,6 +1392,77 @@ impl Monitoring {
         }
     }
 
+    fn left_panel(&mut self, ui: &mut egui::Ui) {
+        let pt = self.preferences.portuguese;
+        ui.heading(text(pt, "Run", "Execução"));
+        ui.strong("reference_time");
+        ui.label(self.run.as_ref().map_or_else(
+            || "—".into(),
+            |run| {
+                let document = &run.manifest.recipe["document"];
+                let reference = document["reference_time"]
+                    .as_str()
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(&run.reference);
+                let zone = document["time_zone"].as_str().unwrap_or(&run.time_zone);
+                if reference.is_empty() {
+                    "—".into()
+                } else {
+                    format!("{reference} · {zone}")
+                }
+            },
+        ));
+        let horizons = self.run.as_ref().and_then(|run| run.day_horizons);
+        for (label, value) in [
+            (
+                "observed_horizon_days",
+                horizons.map(|(observed, _)| observed),
+            ),
+            (
+                "forecast_horizon_days",
+                horizons.map(|(_, forecast)| forecast),
+            ),
+        ] {
+            ui.horizontal_wrapped(|ui| {
+                ui.strong(label);
+                ui.label(value.map_or_else(|| "—".into(), |days| days.to_string()));
+            });
+        }
+        ui.strong(text(pt, "Available scenarios", "Cenários disponíveis"));
+        egui::ScrollArea::vertical()
+            .id_salt("run-scenarios")
+            .max_height(96.)
+            .show(ui, |ui| {
+                ui.label(
+                    self.run
+                        .as_ref()
+                        .map_or_else(|| "—".into(), |run| run.scenarios.join(", ")),
+                );
+            });
+        ui.separator();
+        ui.heading(text(pt, "Layers", "Camadas"));
+        let selection = self.project.as_ref().and(self.display.selection.as_ref());
+        ui.label(selection.map_or_else(
+            || text(pt, "No feature selected", "Nenhuma feição selecionada"),
+            |location| self.feature_label(location),
+        ));
+        egui::ScrollArea::vertical().show(ui, |ui| self.layer_controls(ui));
+    }
+
+    fn feature_label(&self, location: &Location) -> String {
+        if let Location::Station(id) = location
+            && let Some(station) = self.project.as_ref().and_then(|project| {
+                project
+                    .stations
+                    .iter()
+                    .find(|entry| entry.station.station_id == *id)
+            })
+        {
+            return format!("{} · {id}", station.station.name);
+        }
+        charts::location_label(location, self.preferences.portuguese)
+    }
+
     fn layer_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         egui::ComboBox::from_label(text(pt, "Basemap", "Mapa base"))
@@ -1360,12 +1498,13 @@ impl Monitoring {
             "Green: known model link · Gray: unknown link",
             "Verde: vínculo conhecido · Cinza: vínculo desconhecido",
         ));
+        let mut clear = false;
         let mut reorder = None;
         for (i, layer) in self.display.layers.iter_mut().enumerate() {
             let label = match layer.kind.as_str() {
                 "catchments" => text(pt, "Catchments", "Bacias"),
                 "rainfall" => text(pt, "Rainfall", "Chuva"),
-                "upstream" => text(pt, "Upstream", "Montante"),
+                "upstream" => text(pt, "Upstream basin", "Bacia a montante"),
                 "rivers" => text(pt, "Rivers", "Rios"),
                 _ => text(pt, "Stations", "Estações"),
             };
@@ -1378,11 +1517,33 @@ impl Monitoring {
                     reorder = Some(i);
                 }
             });
+            if layer.kind == "upstream" {
+                ui.horizontal_wrapped(|ui| {
+                    if let Some((mini, _)) = &self.upstream_basin {
+                        ui.label(format!("MINI {mini}"));
+                    }
+                    let loading = self.loading[UPSTREAM_SLOT];
+                    if loading {
+                        ui.spinner();
+                    }
+                    if (loading || self.upstream_basin.is_some())
+                        && ui
+                            .small_button(text(pt, "Clear basin", "Limpar bacia"))
+                            .clicked()
+                    {
+                        clear = true;
+                    }
+                });
+            }
             ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).text(text(
                 pt,
                 "Opacity",
                 "Opacidade",
             )));
+        }
+        if clear {
+            self.clear_upstream();
+            ui.ctx().request_discard("Remove cleared basin controls");
         }
         if let Some(i) = reorder {
             self.display.layers.swap(i, i - 1);
@@ -1526,7 +1687,7 @@ impl Monitoring {
         }
     }
 
-    fn map_controls(&mut self, ui: &mut egui::Ui) {
+    fn rainfall_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         let Some(project) = self.project.clone() else {
             return;
@@ -1642,7 +1803,11 @@ impl Monitoring {
         if ui
             .checkbox(
                 &mut self.display.upstream,
-                text(pt, "Include upstream", "Incluir montante"),
+                text(
+                    pt,
+                    "Include upstream in summary",
+                    "Incluir montante no resumo",
+                ),
             )
             .changed()
         {
@@ -1744,8 +1909,8 @@ impl Monitoring {
         } else if self.charts.report.is_none() {
             ui.small(text(
                 pt,
-                "Enter a MINI and station or select them on the map.",
-                "Informe um MINI e uma estação ou selecione no mapa.",
+                "Enter IDs or choose View time series from the map menu.",
+                "Informe os IDs ou escolha Ver séries temporais no menu do mapa.",
             ));
         }
         if self.chart_retained && self.charts.report.is_some() {
@@ -1808,44 +1973,6 @@ impl Monitoring {
 impl Monitoring {
     fn map_page(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        ui.horizontal_wrapped(|ui| {
-            for (glyph, name, zoom_in) in [
-                ("+", text(pt, "Zoom in", "Aproximar"), true),
-                ("−", text(pt, "Zoom out", "Afastar"), false),
-            ] {
-                if icon_button(ui, glyph, &name).clicked() {
-                    if zoom_in {
-                        let _ = self.display.camera.zoom_in();
-                    } else {
-                        let _ = self.display.camera.zoom_out();
-                    }
-                }
-            }
-            ui.separator();
-            ui.selectable_value(&mut self.map_layers, false, text(pt, "Rainfall", "Chuva"));
-            ui.selectable_value(&mut self.map_layers, true, text(pt, "Layers", "Camadas"));
-            if !self.map_layers
-                && self.project.is_some()
-                && ui
-                    .button(text(pt, "Apply map window", "Aplicar período do mapa"))
-                    .clicked()
-            {
-                self.request_view();
-            }
-        });
-        if let Some(project) = self.project.clone() {
-            self.location_search(ui, &project);
-            egui::ScrollArea::vertical()
-                .id_salt("map-controls")
-                .max_height((ui.available_height() * 0.30).clamp(50., 132.))
-                .show(ui, |ui| {
-                    if self.map_layers {
-                        self.layer_controls(ui);
-                    } else {
-                        self.map_controls(ui);
-                    }
-                });
-        }
         if self.project.is_some()
             && (self.tile_source != self.display.basemap
                 || (self.tiles.is_none() && self.display.basemap != 0))
@@ -1863,12 +1990,31 @@ impl Monitoring {
                 _ => None,
             };
         }
-        if let Some(tiles) = &self.tiles {
-            use walkers::Tiles;
-            let attribution = tiles.attribution();
-            ui.hyperlink_to(attribution.text, attribution.url);
-        }
-        let mut clicked = None;
+        let focus_map =
+            ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num1));
+        ui.horizontal_wrapped(|ui| {
+            for (glyph, name, zoom_in) in [
+                ("+", text(pt, "Zoom in", "Aproximar"), true),
+                ("−", text(pt, "Zoom out", "Afastar"), false),
+            ] {
+                let response = icon_button(ui, glyph, &name);
+                if zoom_in && focus_map {
+                    response.request_focus();
+                }
+                if response.clicked() {
+                    if zoom_in {
+                        let _ = self.display.camera.zoom_in();
+                    } else {
+                        let _ = self.display.camera.zoom_out();
+                    }
+                }
+            }
+            if let Some(tiles) = &self.tiles {
+                use walkers::Tiles;
+                let attribution = tiles.attribution();
+                ui.hyperlink_to(attribution.text, attribution.url);
+            }
+        });
         let frame = egui::Frame::group(ui.style())
             .outer_margin(6)
             .inner_margin(1)
@@ -1877,12 +2023,9 @@ impl Monitoring {
             frame.show(ui, |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                 if let Some(project) = &self.project {
-                    let upstream = self
-                        .view
-                        .as_ref()
-                        .map(|v| v.upstream.as_slice())
-                        .unwrap_or(&[]);
-                    Map::new(
+                    let upstream = self.upstream_basin.as_ref().map_or(&[][..], |(_, ids)| ids);
+                    let mut hit = None;
+                    let response = Map::new(
                         self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles),
                         &mut self.display.camera,
                         lon_lat(-52., -30.),
@@ -1893,13 +2036,24 @@ impl Monitoring {
                         rainfall: self.rainfall.as_ref(),
                         selection: &self.display.selection,
                         upstream,
-                        clicked: &mut clicked,
+                        hit: &mut hit,
                         cache: &mut self.cache,
                         labels: self.display.labels,
                         local: &self.local,
                         local_display: &self.display.local,
                     })
-                    .show(ui, |_, _, _, _| {});
+                    .show(ui, |_, _, _, _| {})
+                    .response;
+                    if response.secondary_clicked() {
+                        self.map_menu = hit;
+                    } else if let Some(location) = hit {
+                        self.select_location(location);
+                        ui.ctx().request_repaint();
+                    }
+                    map::feature_menu(&response, self.map_menu.clone(), |ui, location| {
+                        ui.label(self.feature_label(location));
+                        self.feature_actions(ui, location);
+                    });
                 } else {
                     ui.centered_and_justified(|ui| {
                         ui.heading(text(
@@ -1911,11 +2065,34 @@ impl Monitoring {
                 }
             });
         }
-        if let Some(location) = clicked {
-            self.select_location(location);
+    }
+
+    fn feature_actions(&mut self, ui: &mut egui::Ui, location: &Location) {
+        let pt = self.preferences.portuguese;
+        if ui
+            .button(text(pt, "View time series", "Ver séries temporais"))
+            .clicked()
+        {
+            self.view_time_series(location);
+            ui.close_kind(egui::UiKind::Menu);
+        }
+        if let Some(mini) = self.upstream_outlet(location)
+            && ui
+                .button(text(pt, "Load upstream basin", "Carregar bacia a montante"))
+                .clicked()
+        {
+            self.load_upstream(mini);
+            ui.close_kind(egui::UiKind::Menu);
         }
     }
+
     fn data_page(&mut self, ui: &mut egui::Ui) {
+        if let Some(project) = self.project.clone() {
+            self.location_search(ui, &project);
+            if let Some(location) = self.display.selection.clone() {
+                ui.horizontal_wrapped(|ui| self.feature_actions(ui, &location));
+            }
+        }
         self.location_summary(ui);
         egui::ScrollArea::both().show(ui, |ui| {
             if let Some(report) = self.charts.report.as_ref() {
@@ -2000,6 +2177,8 @@ impl Monitoring {
                 self.rainfall = None;
                 self.local.clear();
                 self.cache.clear();
+                self.clear_upstream();
+                self.map_menu = None;
                 self.tiles = None;
                 self.loading.fill(false);
                 self.runners = runners::Runners::default();
@@ -2243,13 +2422,12 @@ impl eframe::App for Monitoring {
             self.depart(Departure::Quit);
         }
         self.runners.shortcuts(&ctx, self.switching_project);
-        for (key, page) in [
-            (egui::Key::Num1, Page::Map),
-            (egui::Key::Num2, Page::Charts),
-            (egui::Key::Num3, Page::Data),
+        for (key, tab) in [
+            (egui::Key::Num2, SideTab::Charts),
+            (egui::Key::Num3, SideTab::Data),
         ] {
             if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, key)) {
-                self.display.layout.dock.open(page);
+                self.display.layout.open(tab);
             }
         }
         if !self.switching_project
@@ -2274,56 +2452,19 @@ impl eframe::App for Monitoring {
                     .on_hover_text(&self.status);
             });
         });
-        if self.display.layout.left {
-            let response = egui::Panel::left(egui::Id::new(("navigation", &self.display.config)))
-                .resizable(true)
-                .default_size(self.display.layout.left_width)
-                .min_size(180.)
-                .max_size((ui.available_width() * 0.55).max(180.))
-                .show(ui, |ui| self.sidebar(ui));
-            self.display.layout.left_width = response.response.rect.width();
-        } else {
-            egui::Panel::left("navigation-closed")
-                .exact_size(28.)
-                .show(ui, |ui| {
-                    if icon_button(
-                        ui,
-                        "▶",
-                        &text(self.preferences.portuguese, "Navigation", "Navegação"),
-                    )
-                    .clicked()
-                    {
-                        self.display.layout.left = true;
-                    }
-                });
-        }
-        egui::CentralPanel::default().show(ui, |ui| {
-            let mut dock = std::mem::take(&mut self.display.layout.dock);
-            dock.show(
-                ui,
-                self.preferences.portuguese,
-                &mut |ui, page| match page {
-                    Page::Map => self.map_page(ui),
-                    Page::Charts => {
-                        self.chart_controls(ui);
-                        if self.charts.report.is_some() {
-                            let height = ((ui.available_height() - 65.) / 3.).max(110.);
-                            egui::ScrollArea::vertical()
-                                .id_salt("chart-plots")
-                                .show(ui, |ui| {
-                                    self.charts.show(ui, self.preferences.portuguese, height);
-                                });
-                        }
-                    }
-                    Page::Data => self.data_page(ui),
-                    #[cfg(test)]
-                    Page::Fixture => {
-                        ui.label("Fixture");
-                    }
-                },
-            );
-            self.display.layout.dock = dock;
-        });
+        let width = ui.available_width();
+        egui::Panel::left("run-and-layers")
+            .exact_size((width * 0.24).clamp(156., 215.))
+            .show(ui, |ui| self.left_panel(ui));
+        let min = (width * 0.30).clamp(190., 290.);
+        let response = egui::Panel::right(egui::Id::new(("right-pane", &self.display.config)))
+            .resizable(true)
+            .default_size(self.display.layout.width)
+            .min_size(min)
+            .max_size((width * 0.41).max(min))
+            .show(ui, |ui| self.right_pane(ui));
+        self.display.layout.width = response.response.rect.width();
+        egui::CentralPanel::default().show(ui, |ui| self.map_page(ui));
         self.departure_dialog(&ctx);
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2350,7 +2491,7 @@ pub fn run() -> eframe::Result {
 mod interface_tests {
     use super::*;
     #[test]
-    fn location_picks_use_explicit_unique_links_and_keep_unlinked_fields() {
+    fn chart_targets_clear_unrelated_fields_and_use_unique_links() {
         use mgb_ops::store::{Station, StationLocation, StationOffset};
         let entry = |id: &str, mini_id: Option<i64>| StationLocation {
             station: Station {
@@ -2377,11 +2518,11 @@ mod interface_tests {
         fields.select(&Location::Mini(1), &stations);
         assert_eq!((&fields.mini[..], &fields.station[..]), ("1", "001"));
         fields.select(&Location::Mini(2), &stations);
-        assert_eq!((&fields.mini[..], &fields.station[..]), ("2", "001"));
+        assert_eq!((&fields.mini[..], &fields.station[..]), ("2", ""));
         fields.select(&Location::Mini(3), &stations);
-        assert_eq!((&fields.mini[..], &fields.station[..]), ("3", "001"));
+        assert_eq!((&fields.mini[..], &fields.station[..]), ("3", ""));
         fields.select(&Location::Station("d".into()), &stations);
-        assert_eq!((&fields.mini[..], &fields.station[..]), ("3", "d"));
+        assert_eq!((&fields.mini[..], &fields.station[..]), ("", "d"));
         fields.select(&Location::Station("b".into()), &stations);
         assert_eq!((&fields.mini[..], &fields.station[..]), ("2", "b"));
     }
@@ -2399,8 +2540,19 @@ mod interface_tests {
         assert_eq!(display.selected_operation_zone("UTC"), "Asia/Tokyo");
         display.draft = Some("different-stale-file.json".into());
         assert_eq!(display.selected_operation_zone("UTC"), "Asia/Tokyo");
-        let legacy: Display = serde_json::from_str("{}").unwrap();
-        assert_eq!(legacy.selected_operation_zone("UTC"), "UTC");
+        let legacy: Display = serde_json::from_str(
+            r#"{"config":"region/config/workspace.toml","run":"region/data/runs/run-1",
+                 "layout":{"dock":{"Tabs":{"pages":["Map","Data"],"active":1}},
+                           "left":false,"tabs":["Files",{"Form":"Prepare"}]},
+                 "operation_zone":"America/Sao_Paulo","basemap":2}"#,
+        )
+        .unwrap();
+        assert_eq!(legacy.selected_operation_zone("UTC"), "America/Sao_Paulo");
+        assert_eq!(legacy.config, PathBuf::from("region/config/workspace.toml"));
+        assert_eq!(legacy.run, Some(PathBuf::from("region/data/runs/run-1")));
+        assert_eq!(legacy.basemap, 2);
+        assert_eq!(legacy.layout.active, SideTab::Charts);
+        assert!(legacy.layout.tabs.contains(&SideTab::Data));
     }
     #[test]
     fn icon_buttons_publish_accessible_names() {

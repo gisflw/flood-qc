@@ -297,6 +297,7 @@ pub fn open(
 pub struct Run {
     pub root: PathBuf,
     pub manifest: canonical::OperationManifest,
+    pub day_horizons: Option<(u32, u32)>,
     pub scenarios: Vec<String>,
     pub findings: Vec<String>,
     pub reference: String,
@@ -340,6 +341,7 @@ pub fn read_run(root: PathBuf) -> Result<Arc<Run>, String> {
     })?;
     Ok(Arc::new(Run {
         root,
+        day_horizons: mgb_ops::app::retained_day_horizons(&manifest),
         manifest,
         scenarios,
         findings,
@@ -395,7 +397,6 @@ pub struct View {
     pub location: Option<Location>,
     pub rainfall: Option<Arc<Rain>>,
     pub summary: Option<RainSummary>,
-    pub upstream: Vec<i64>,
     pub area_km2: Option<f64>,
     pub findings: Vec<String>,
 }
@@ -444,6 +445,16 @@ fn load_rain(
     *cache = Some((path, metadata.len(), modified, interval, rain.clone()));
     Ok(rain)
 }
+pub fn location_mini(location: &Location, stations: &[StationLocation]) -> Option<i64> {
+    match location {
+        Location::Mini(id) => Some(*id),
+        Location::Station(id) => stations
+            .iter()
+            .find(|s| s.station.station_id == *id)
+            .and_then(|s| s.offset.as_ref().map(|o| o.mini_id)),
+    }
+}
+
 fn view(request: ViewRequest, cache: &mut RainCache) -> Result<View, String> {
     let mut result = View {
         zone: request.zone.clone(),
@@ -452,7 +463,6 @@ fn view(request: ViewRequest, cache: &mut RainCache) -> Result<View, String> {
         location: request.location.clone(),
         rainfall: None,
         summary: None,
-        upstream: vec![],
         area_km2: None,
         findings: vec![],
     };
@@ -463,51 +473,46 @@ fn view(request: ViewRequest, cache: &mut RainCache) -> Result<View, String> {
             Err(error) => result.findings.push(error),
         }
     }
-    if let Some(location) = request.location {
-        let mini = match &location {
-            Location::Mini(id) => Some(*id),
-            Location::Station(id) => request
-                .project
-                .stations
-                .iter()
-                .find(|s| s.station.station_id == *id)
-                .and_then(|s| s.offset.as_ref().map(|o| o.mini_id)),
+    if let Some(location) = request.location
+        && let Some(mini) = location_mini(&location, &request.project.stations)
+    {
+        let ids = match upstream_minis(&request.project.topology, mini) {
+            Ok(ids) if request.upstream => ids,
+            Ok(_) => vec![mini],
+            Err(error) => {
+                result.findings.push(error);
+                vec![]
+            }
         };
-        if let Some(mini) = mini {
-            match upstream_minis(&request.project.topology, mini) {
-                Ok(ids) => result.upstream = if request.upstream { ids } else { vec![mini] },
-                Err(error) => result.findings.push(error),
-            }
-            match mgb_ops::analysis::mini_area(&request.project.topology, &result.upstream) {
-                Ok(area) => result.area_km2 = Some(area),
-                Err(error) => result.findings.push(error),
-            }
-            if let Some(run) = &request.run {
-                match canonical::read_result_series(
-                    &run.root
-                        .join("results")
-                        .join(&request.map_scenario)
-                        .join("basin.nc"),
-                )
-                .map_err(|e| e.to_string())
-                .and_then(|series| {
-                    if series.timeline.time_zone != request.zone {
-                        return Err("result timezone differs from selection".into());
-                    }
-                    accumulated_rain(
-                        &series,
-                        &request.project.topology,
-                        mini,
-                        request.upstream,
-                        &HourlyWindow::Explicit {
-                            start: window.start,
-                            end: window.end,
-                        },
-                    )
-                }) {
-                    Ok(summary) => result.summary = Some(summary),
-                    Err(error) => result.findings.push(error),
+        match mgb_ops::analysis::mini_area(&request.project.topology, &ids) {
+            Ok(area) => result.area_km2 = Some(area),
+            Err(error) => result.findings.push(error),
+        }
+        if let Some(run) = &request.run {
+            match canonical::read_result_series(
+                &run.root
+                    .join("results")
+                    .join(&request.map_scenario)
+                    .join("basin.nc"),
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|series| {
+                if series.timeline.time_zone != request.zone {
+                    return Err("result timezone differs from selection".into());
                 }
+                accumulated_rain(
+                    &series,
+                    &request.project.topology,
+                    mini,
+                    request.upstream,
+                    &HourlyWindow::Explicit {
+                        start: window.start,
+                        end: window.end,
+                    },
+                )
+            }) {
+                Ok(summary) => result.summary = Some(summary),
+                Err(error) => result.findings.push(error),
             }
         }
     }
@@ -597,6 +602,7 @@ pub enum Job {
     View(ViewRequest),
     Local(Vec<PathBuf>),
     Export(SeriesReport, Option<String>, PathBuf),
+    Upstream(Arc<Project>, i64),
     Chart(ChartRequest),
     Png(Box<super::export::Export>, PathBuf),
 }
@@ -608,6 +614,7 @@ impl Job {
             Self::View(..) => 2,
             Self::Local(..) => 3,
             Self::Export(..) | Self::Png(..) => 4,
+            Self::Upstream(..) => UPSTREAM_SLOT,
             Self::Chart(..) => CHART_SLOT,
         }
     }
@@ -618,6 +625,10 @@ pub enum Loaded {
     View(Box<View>),
     Local(Vec<super::map::LocalLayer>, Vec<String>),
     Export(PathBuf),
+    Upstream {
+        mini: i64,
+        ids: Vec<i64>,
+    },
     Chart {
         report: SeriesReport,
         station: Option<String>,
@@ -630,7 +641,8 @@ pub struct Reply {
     pub generation: u64,
     pub result: Result<Loaded, String>,
 }
-pub const CHART_SLOT: usize = 5;
+pub const UPSTREAM_SLOT: usize = 5;
+pub const CHART_SLOT: usize = 6;
 const SLOTS: usize = CHART_SLOT + 1;
 
 pub struct Worker {
@@ -701,6 +713,8 @@ impl Worker {
                     }
                     Job::Png(export, destination) => super::export::write(*export, &destination)
                         .map(|_| Loaded::Export(destination)),
+                    Job::Upstream(project, mini) => upstream_minis(&project.topology, mini)
+                        .map(|ids| Loaded::Upstream { mini, ids }),
                     Job::Chart(request) => request.load(),
                     Job::Export(report, station, destination) => {
                         mgb_ops::app::export_comparison_csv(

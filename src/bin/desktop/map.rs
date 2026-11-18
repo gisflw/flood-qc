@@ -510,7 +510,7 @@ pub struct Overlay<'a> {
     pub rainfall: Option<&'a RainImage>,
     pub selection: &'a Option<Location>,
     pub upstream: &'a [i64],
-    pub clicked: &'a mut Option<Location>,
+    pub hit: &'a mut Option<Location>,
     pub cache: &'a mut StaticCache,
     pub labels: bool,
     pub local: &'a [LocalLayer],
@@ -526,7 +526,17 @@ impl walkers::Plugin for Overlay<'_> {
     ) {
         self.cache
             .update(self.project, projector, response.rect, memory, ui.ctx());
-        let hover = response.hover_pos();
+        let click = response.clicked() || response.secondary_clicked();
+        let hover = response
+            .interact_pointer_pos()
+            .filter(|_| click)
+            .or_else(|| response.hover_pos());
+        let alt = ui.input(|i| i.modifiers.alt);
+        let visible = |kind| {
+            self.layers
+                .iter()
+                .any(|layer| layer.kind == kind && layer.visible && layer.opacity > 0.)
+        };
         let mut hit = None;
         let mut hit_label = String::new();
         // Station hit targets win over all polygon and line hits.
@@ -663,7 +673,9 @@ impl walkers::Plugin for Overlay<'_> {
                                     layer.opacity,
                                 );
                             }
-                            if hover.is_some_and(|pointer| pointer.distance(p) <= 10.) {
+                            if layer.opacity > 0.
+                                && hover.is_some_and(|pointer| pointer.distance(p) <= 10.)
+                            {
                                 hit = Some(Location::Station(station.station_id.clone()));
                                 hit_label = format!("{} · {}", station.name, station.station_id);
                             }
@@ -697,19 +709,29 @@ impl walkers::Plugin for Overlay<'_> {
             }
         }
         if let Some(Location::Mini(id)) = self.selection {
-            for feature in self.project.catchments.iter().filter(|f| f.mini_id == *id) {
-                for path in &feature.paths {
+            if visible("catchments") {
+                for feature in self.project.catchments.iter().filter(|f| f.mini_id == *id) {
+                    for path in &feature.paths {
+                        ui.painter().add(egui::Shape::line(
+                            path.iter().map(|p| screen(projector, *p)).collect(),
+                            Stroke::new(2., Color32::YELLOW),
+                        ));
+                    }
+                }
+            }
+            if visible("rivers") {
+                for feature in self.cache.hits.iter().filter(|f| f.mini_id == *id) {
                     ui.painter().add(egui::Shape::line(
-                        path.iter().map(|p| screen(projector, *p)).collect(),
-                        Stroke::new(2., Color32::YELLOW),
+                        feature.points.clone(),
+                        Stroke::new(2.5, Color32::YELLOW),
                     ));
                 }
             }
         }
         if let Some(pointer) = hover {
             let geographic = projector.unproject(pointer.to_vec2());
-            if hit.is_none() && !ui.input(|i| i.modifiers.alt) {
-                if self.layers.iter().any(|l| l.kind == "rivers" && l.visible) {
+            if hit.is_none() && !alt {
+                if visible("rivers") {
                     hit = self
                         .cache
                         .hits
@@ -723,12 +745,7 @@ impl walkers::Plugin for Overlay<'_> {
                         })
                         .map(|hit| Location::Mini(hit.mini_id));
                 }
-                if hit.is_none()
-                    && self
-                        .layers
-                        .iter()
-                        .any(|l| l.kind == "catchments" && l.visible)
-                {
+                if hit.is_none() && visible("catchments") {
                     let p = (geographic.x(), geographic.y());
                     hit = self
                         .project
@@ -757,7 +774,10 @@ impl walkers::Plugin for Overlay<'_> {
                     hit_label = format!("MINI {id}");
                 }
             }
-            if let Some(Location::Mini(id)) = &hit {
+            if visible("rivers")
+                && let Some(Location::Mini(id)) = &hit
+                && !matches!(self.selection, Some(Location::Mini(selected)) if selected == id)
+            {
                 for feature in self.cache.hits.iter().filter(|f| f.mini_id == *id) {
                     ui.painter().add(egui::Shape::line(
                         feature.points.clone(),
@@ -779,11 +799,28 @@ impl walkers::Plugin for Overlay<'_> {
                     .on_hover_text(format!("[{col}, {row}] · {label} mm"));
             }
         }
-        if response.clicked() && !ui.input(|i| i.modifiers.alt) {
-            *self.clicked = hit;
+        if click && !alt {
+            *self.hit = hit;
         }
     }
 }
+pub fn feature_menu(
+    response: &egui::Response,
+    location: Option<Location>,
+    content: impl FnOnce(&mut egui::Ui, &Location),
+) {
+    let Some(location) = location else {
+        egui::Popup::close_id(&response.ctx, egui::Popup::default_response_id(response));
+        return;
+    };
+    let menu = response.context_menu(|ui| content(ui, &location));
+    if response.secondary_clicked() && menu.is_some() {
+        // The popup's first pass only measures it. Paint it before waiting for input again.
+        response.ctx.request_discard("Measure feature context menu");
+        response.ctx.request_repaint();
+    }
+}
+
 fn distance_to_segment(p: Pos2, a: Pos2, b: Pos2) -> f32 {
     let ab = b - a;
     let length = ab.length_sq();
@@ -810,6 +847,54 @@ fn contains(polygon: &MapPolygon, p: (f64, f64)) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn secondary_click_paints_feature_menu_without_pointer_movement() {
+        let ctx = egui::Context::default();
+        let mut memory = MapMemory::default();
+        let mut target = None;
+        let mut frame = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        Pos2::ZERO,
+                        egui::vec2(500., 500.),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let response = walkers::Map::new(None, &mut memory, lon_lat(0., 0.))
+                        .show(ui, |_, _, _, _| {})
+                        .response;
+                    if response.secondary_clicked() {
+                        target = Some(Location::Mini(7));
+                    }
+                    feature_menu(&response, target.clone(), |ui, location| {
+                        let target_is_mini = matches!(location, Location::Mini(7));
+                        assert!(target_is_mini);
+                        ui.label("View time series");
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        let pos = egui::pos2(200., 200.);
+        let click = |pressed| egui::Event::PointerButton {
+            pos,
+            pressed,
+            button: egui::PointerButton::Secondary,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let _ = frame(vec![egui::Event::PointerMoved(pos)]);
+        let _ = frame(vec![click(true)]);
+        let release = frame(vec![click(false)]);
+        let painted = release.shapes.iter().any(|shape| {
+            matches!(&shape.shape, egui::Shape::Text(text) if text.galley.text() == "View time series")
+        });
+        assert!(painted);
+    }
+
     #[test]
     fn prepared_projection_matches_map_at_overview_and_close_zoom() {
         let rect = egui::Rect::from_min_size(egui::pos2(283., 71.), egui::vec2(900., 500.));

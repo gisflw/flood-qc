@@ -19,7 +19,7 @@ pub use self::operation::{
 };
 pub use self::request::{
     EngineDocument, ForecastsDocument, GeometryDocument, GridDocument, InterpolationDocument,
-    LevelsDocument, ObservedDocument, PreparationDocument, ScenarioDocument,
+    LevelsDocument, ObservedDocument, PreparationDocument, ScenarioDocument, retained_day_horizons,
 };
 mod forecast;
 pub use self::forecast::{
