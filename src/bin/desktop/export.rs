@@ -336,7 +336,10 @@ mod tests {
                 )),
                 ..Default::default()
             },
-            |ui| charts.show(ui, false, 160.),
+            |ui| {
+                let available_height = ui.available_height();
+                charts.show(ui, false, available_height);
+            },
         );
         frame.textures_delta.clear();
         for plot in &charts.plots {
