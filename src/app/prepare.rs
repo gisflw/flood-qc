@@ -141,11 +141,12 @@ pub struct TypedPreparationRequest {
 pub fn prepare_typed(
     request: TypedPreparationRequest,
 ) -> Result<PreparationReport, OperationError> {
-    prepare_typed_checked(request, None, &super::OperationControl::default())
+    prepare_typed_checked(request, None, false, &super::OperationControl::default())
 }
 pub(super) fn prepare_typed_checked(
     mut request: TypedPreparationRequest,
     identities: Option<std::collections::BTreeMap<String, String>>,
+    operational: bool,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
     if request.corrections.len() != request.document.scenarios.len() {
@@ -205,6 +206,7 @@ pub(super) fn prepare_typed_checked(
         request.corrections,
         PathBuf::from("typed request"),
         identities,
+        operational,
         control,
     )
 }
@@ -242,6 +244,7 @@ pub fn prepare_controlled(
         corrections,
         request_path,
         None,
+        false,
         control,
     )
 }
@@ -255,6 +258,7 @@ fn prepare_accepted(
     corrections: Vec<Option<Vec<ForecastCorrection>>>,
     request_path: PathBuf,
     identities: Option<std::collections::BTreeMap<String, String>>,
+    operational: bool,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
     control.set_progress(super::OperationStage::Preparation, None, None);
@@ -715,6 +719,7 @@ fn prepare_accepted(
         );
         let recipe = ExecutionRecipe {
             document,
+            operational_workspace: operational.then(|| workspace.clone()),
             historical_count: accepted.historical.bounds.len(),
             forecast_count: accepted.forecast.bounds.len(),
             selected_station_ids: doc.levels.station_ids.clone(),

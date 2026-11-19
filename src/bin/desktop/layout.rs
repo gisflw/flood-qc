@@ -3,8 +3,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Form {
     Workspace,
-    Prepare,
-    Execute,
+    #[serde(alias = "Execute", alias = "UpdateRainfall")]
+    NewRun,
+    #[serde(alias = "Prepare")]
     RunAll,
     Jobs,
     Intake,
@@ -22,9 +23,8 @@ impl Form {
     pub fn label(self, pt: bool) -> String {
         match self {
             Self::Workspace => super::text(pt, "Workspace Settings", "Configurações"),
-            Self::Prepare => super::text(pt, "Prepare inputs", "Preparar entradas"),
-            Self::Execute => super::text(pt, "Execute MGB", "Executar MGB"),
-            Self::RunAll => super::text(pt, "Run All", "Executar tudo"),
+            Self::NewRun => super::text(pt, "New run", "Nova execução"),
+            Self::RunAll => super::text(pt, "Run experiment", "Executar experimento"),
             Self::Jobs => super::text(pt, "Jobs", "Tarefas"),
             Self::Intake => super::text(pt, "Import data", "Importar dados"),
             Self::Review => super::text(pt, "Observation review", "Revisão de observações"),
@@ -86,6 +86,17 @@ impl Default for Layout {
 }
 
 impl Layout {
+    pub fn deduplicate_tabs(&mut self) {
+        let mut seen = Vec::new();
+        self.tabs.retain(|tab| {
+            if seen.contains(tab) {
+                return false;
+            }
+            seen.push(*tab);
+            true
+        });
+    }
+
     pub fn open(&mut self, tab: SideTab) {
         if !self.tabs.contains(&tab) {
             self.tabs.push(tab);

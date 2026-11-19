@@ -239,7 +239,7 @@ pub fn regenerate_run(
     let workspace = workspace
         .canonicalize()
         .map_err(|error| fail(error.to_string()))?;
-    let base = workspace.join("data/cache/preparations");
+    let base = workspace.join("data");
     fs::create_dir_all(&base).map_err(|error| fail(error.to_string()))?;
     let snapshot = base.join(format!(
         ".regenerate-{}-{}",

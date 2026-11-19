@@ -469,10 +469,10 @@ fn draft_for_slot(
     local: Option<NaiveDateTime>,
 ) -> Result<Draft, String> {
     let path = step.draft.as_deref().ok_or("draft step requires a draft")?;
-    let mut draft = Draft::open(workspace.to_path_buf(), workspace, path)?;
+    let draft = Draft::open(workspace.to_path_buf(), workspace, path)?;
     if step.rolling {
         let local = local.ok_or("rolling draft needs a valid scheduled local time")?;
-        let operation = &mut draft.document.operation;
+        let operation = &draft.document.operation;
         let zone = operation
             .time_zone
             .as_deref()
@@ -483,8 +483,16 @@ fn draft_for_slot(
         {
             return Err("rolling draft needs matching timezone and day-based horizons".into());
         }
-        operation.reference_time = Some(local.format("%Y-%m-%dT%H:%M:%S").to_string());
-        draft.refresh_inputs()?;
+        let reference = local.format("%Y-%m-%dT%H:%M:%S").to_string();
+        let mut slot = draft.for_rolling_slot(
+            &reference,
+            operation
+                .time_zone
+                .as_deref()
+                .ok_or("missing draft timezone")?,
+        )?;
+        slot.refresh_inputs()?;
+        return Ok(slot);
     }
     Ok(draft)
 }

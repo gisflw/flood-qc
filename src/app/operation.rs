@@ -192,6 +192,8 @@ impl std::error::Error for OperationError {}
 #[serde(deny_unknown_fields)]
 pub(super) struct ExecutionRecipe {
     pub document: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_workspace: Option<PathBuf>,
     pub historical_count: usize,
     pub forecast_count: usize,
     pub selected_station_ids: Vec<String>,
@@ -224,7 +226,7 @@ fn store_error(root: &Path, message: impl ToString) -> OperationError {
         message: message.to_string(),
     }
 }
-fn validate_recipe(
+pub(super) fn validate_recipe(
     root: &Path,
     recipe: &ExecutionRecipe,
     scenarios: &[ScenarioRecord],
@@ -606,15 +608,29 @@ pub(super) fn run_draft_locked(
     workspace: &Path,
     lock: &std::fs::File,
 ) -> Result<ExecutionReport, OperationError> {
-    control.check()?;
-    let base = workspace.join("data/cache/preparations");
+    run_preparation_locked(control, workspace, lock, |workspace, prepared, control| {
+        draft.prepare_controlled(workspace.to_path_buf(), prepared, control)
+    })
+}
+
+pub(super) fn new_preparation_path(workspace: &Path) -> Result<PathBuf, OperationError> {
+    let base = workspace.join("data");
     fs::create_dir_all(&base).map_err(|e| store_error(workspace, e))?;
-    let prepared = base.join(format!(
-        "{}-{}",
+    Ok(base.join(format!(
+        ".preparation-{}-{}",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"),
         std::process::id()
-    ));
-    let report = draft.prepare_controlled(workspace.to_path_buf(), prepared, control)?;
+    )))
+}
+
+pub(super) fn run_preparation_locked(
+    control: &OperationControl,
+    workspace: &Path,
+    lock: &std::fs::File,
+    prepare: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
+) -> Result<ExecutionReport, OperationError> {
+    control.check()?;
+    let report = prepare(workspace, new_preparation_path(workspace)?, control)?;
     let result = control
         .check()
         .and_then(|()| execute_locked(workspace, &report.prepared, control, lock, true));
@@ -710,9 +726,6 @@ pub(super) fn execute_locked(
     manifest.state = "running".into();
     manifest.created_at = now(&recipe);
     manifest.finished_at = None;
-    for item in &mut manifest.inputs {
-        item.path = Path::new("snapshot").join(&item.path);
-    }
     let setup = fs::create_dir(run_root.join("scenarios"))
         .and_then(|()| fs::create_dir(run_root.join("results")));
     if let Err(error) = setup {
@@ -746,6 +759,15 @@ pub(super) fn execute_locked(
     if let Err(error) = clean_worker(&history, false) {
         cleanup_errors.push(format!("{}: {error}", history.display()));
     }
+    let rainfall = if temporary_preparation
+        && complete
+        && !control.is_cancelled()
+        && recipe.operational_workspace.as_deref() == Some(workspace)
+    {
+        super::rainfall::stage(workspace, &snapshot, &recipe, &manifest.inputs, control).map(Some)
+    } else {
+        Ok(None)
+    };
     if let Err(error) = remove_if_exists(&snapshot) {
         cleanup_errors.push(format!("{}: {error}", snapshot.display()));
     }
@@ -784,6 +806,14 @@ pub(super) fn execute_locked(
             ));
         }
         return Err(store_error(&run_root, error));
+    }
+    if complete
+        && !cancelled
+        && let Some(rainfall) = rainfall?
+    {
+        rainfall
+            .publish()
+            .map_err(|error| store_error(&run_root, error))?;
     }
     *committed = true;
     drop(committed);

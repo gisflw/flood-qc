@@ -391,6 +391,18 @@ impl<'ast> Visit<'ast> for Gate {
                         .get_ident()
                         .map(ToString::to_string)
                         .unwrap_or_default();
+                    if name == "arg" && key == "requires" {
+                        let literal: syn::LitStr = meta.value()?.parse()?;
+                        let argument = literal.value();
+                        if argument.is_empty()
+                            || !argument.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                            })
+                        {
+                            return Err(meta.error("requires must name another argument"));
+                        }
+                        return Ok(());
+                    }
                     let path_keys = [
                         "default",
                         "default_value",
@@ -406,6 +418,7 @@ impl<'ast> Visit<'ast> for Gate {
                     ];
                     let plain_keys = [
                         "deny_unknown_fields",
+                        "alias",
                         "rename",
                         "rename_all",
                         "skip",
@@ -742,6 +755,31 @@ fn owner_names_as_local_values_do_not_create_import_edges() {
     assert!(!check("store", "use model;").is_empty());
     assert!(!check("store", "fn x() { model::run(); }").is_empty());
     assert!(!check("store", "fn x() { crate::model::run(); }").is_empty());
+}
+
+#[test]
+fn clap_requires_takes_a_literal_argument_name() {
+    assert!(
+        check(
+            "interface",
+            r#"struct Args { #[arg(long, requires = "time_zone")] reference: String }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "interface",
+            r#"struct Args { #[arg(requires = "crate::store::thing")] reference: String }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "interface",
+            r#"struct Args { #[arg(requires = key)] reference: String }"#
+        )
+        .is_empty()
+    );
 }
 
 #[test]

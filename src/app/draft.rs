@@ -169,41 +169,8 @@ impl DraftOperation {
     pub fn coverage(&self) -> Result<String, String> {
         let mut value = serde_json::to_value(self).map_err(|e| e.to_string())?;
         expand_period(&mut value).map_err(|e| e.to_string())?;
-        let zone = self.time_zone.as_deref().ok_or("Timezone required")?;
-        for (first, last) in [
-            ("historical_first_end", "historical_last_end"),
-            ("forecast_first_end", "forecast_last_end"),
-        ] {
-            let first = timestamp(first, value[first].as_str().ok_or("Day horizons required")?)
-                .map_err(|e| e.to_string())?;
-            let end = timestamp(last, value[last].as_str().ok_or("Day horizons required")?)
-                .map_err(|e| e.to_string())?;
-            let start = first
-                .checked_sub_signed(chrono::Duration::hours(1))
-                .ok_or("Coverage start overflow")?;
-            // A contiguous span validates the same hourly labels without allocating every hourly interval.
-            IntervalAxis {
-                time_zone: zone.into(),
-                bounds: vec![crate::store::TimeInterval { start, end }],
-            }
-            .validate()
-            .map_err(|e| e.to_string())?;
-        }
-        Ok(format!(
-            "{} → {} · {} → {} · 1 h",
-            value["historical_first_end"]
-                .as_str()
-                .ok_or("Observed horizon required")?,
-            value["historical_last_end"]
-                .as_str()
-                .ok_or("Reference required")?,
-            value["forecast_first_end"]
-                .as_str()
-                .ok_or("Forecast horizon required")?,
-            value["forecast_last_end"]
-                .as_str()
-                .ok_or("Forecast horizon required")?
-        ))
+        let [hfirst, hlast, ffirst, flast] = super::request::coverage(&value)?;
+        Ok(format!("{hfirst} → {hlast} · {ffirst} → {flast} · 1 h"))
     }
 
     fn validate_period_format(&self, version: u32) -> Result<(), String> {
@@ -381,11 +348,42 @@ fn registration_id(
 pub struct Draft {
     pub document: DraftDocument,
     baseline: DraftDocument,
+    anchor: DraftAnchor,
     pub path: Option<PathBuf>,
     pub workspace: PathBuf,
     invocation_dir: PathBuf,
     pub findings: Vec<String>,
 }
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct DraftAnchor {
+    reference: Option<String>,
+    zone: Option<String>,
+}
+
+impl DraftAnchor {
+    fn from_operation(operation: &DraftOperation) -> Self {
+        Self {
+            reference: operation.reference_time.clone(),
+            zone: operation.time_zone.clone(),
+        }
+    }
+
+    fn check_edit(&self, proposed: &Self) -> Result<(), String> {
+        if self.reference.is_some() && self.reference != proposed.reference
+            || self.zone.is_some() && self.zone != proposed.zone
+        {
+            return Err("Draft reference time and timezone are fixed".into());
+        }
+        Ok(())
+    }
+
+    fn apply(&self, operation: &mut DraftOperation) {
+        operation.reference_time.clone_from(&self.reference);
+        operation.time_zone.clone_from(&self.zone);
+    }
+}
+
 impl Draft {
     pub fn new(workspace: PathBuf, invocation_dir: &Path) -> Self {
         let workspace = super::absolute(invocation_dir, &workspace);
@@ -426,6 +424,7 @@ impl Draft {
         Self {
             baseline: document.clone(),
             document,
+            anchor: DraftAnchor::default(),
             path: None,
             workspace: workspace.clone(),
             invocation_dir: invocation_dir.into(),
@@ -440,16 +439,8 @@ impl Draft {
         reference: &str,
         zone: &str,
     ) -> Result<Self, String> {
-        let time = timestamp("reference_time", reference).map_err(|e| e.to_string())?;
-        let timezone: chrono_tz::Tz = zone.parse().map_err(|_| "expected IANA timezone")?;
-        use chrono::TimeZone;
-        timezone
-            .from_local_datetime(&time)
-            .single()
-            .ok_or("ambiguous or absent local reference")?;
         let mut draft = Self::new_with_workspace_config(workspace, invocation_dir, config);
-        draft.document.operation.reference_time = Some(reference.into());
-        draft.document.operation.time_zone = Some(zone.into());
+        draft.initialize_anchor(reference, zone)?;
         for (path, kind) in [
             (PathBuf::from("data/history.sqlite"), 0),
             (PathBuf::from("data/forecasts.sqlite"), 1),
@@ -485,6 +476,43 @@ impl Draft {
         Ok(draft)
     }
 
+    /// Fill the unset parts of a draft's anchor once. Existing source acceptance
+    /// belongs to the old selection and must be obtained again.
+    pub fn initialize_anchor(&mut self, reference: &str, zone: &str) -> Result<(), String> {
+        let proposed = DraftAnchor {
+            reference: Some(reference.into()),
+            zone: Some(zone.into()),
+        };
+        self.anchor.check_edit(&proposed)?;
+        let time = timestamp("reference_time", reference).map_err(|e| e.to_string())?;
+        let timezone: chrono_tz::Tz = zone.parse().map_err(|_| "expected IANA timezone")?;
+        use chrono::TimeZone;
+        timezone
+            .from_local_datetime(&time)
+            .single()
+            .ok_or("ambiguous or absent local reference")?;
+        if self.anchor != proposed {
+            self.document.sources = DraftSources::default();
+        }
+        proposed.apply(&mut self.document.operation);
+        self.anchor = proposed;
+        Ok(())
+    }
+
+    /// Instantiate a new scheduled selection, leaving the saved draft untouched.
+    pub(super) fn for_rolling_slot(&self, reference: &str, zone: &str) -> Result<Self, String> {
+        self.validate_boundary()?;
+        if !self.workspace_matches() {
+            return Err("saved workspace differs from selected workspace".into());
+        }
+        let mut slot = self.clone();
+        slot.path = None;
+        slot.anchor = DraftAnchor::default();
+        slot.initialize_anchor(reference, zone)?;
+        slot.baseline = slot.document.clone();
+        Ok(slot)
+    }
+
     pub fn from_preparation(
         workspace: PathBuf,
         invocation_dir: &Path,
@@ -517,6 +545,7 @@ impl Draft {
             .remove("schema_version");
         draft.document.schema_version = if compact_period(&mut value) { 2 } else { 1 };
         draft.document.operation = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        draft.anchor = DraftAnchor::from_operation(&draft.document.operation);
         draft.baseline = draft.document.clone();
         Ok(draft)
     }
@@ -615,6 +644,7 @@ impl Draft {
     }
     /// Convert an explicit-boundary recipe only when all inclusive hourly labels are unchanged.
     pub fn use_day_horizons(&mut self) -> Result<(), String> {
+        self.validate_anchor()?;
         if self.document.schema_version == 2 {
             return Ok(());
         }
@@ -715,6 +745,7 @@ impl Draft {
         }
         let mut draft = Self {
             baseline: document.clone(),
+            anchor: DraftAnchor::from_operation(&document.operation),
             document,
             path: Some(path),
             workspace,
@@ -939,7 +970,22 @@ impl Draft {
         }
         Ok(draft)
     }
+    fn validate_anchor(&self) -> Result<(), String> {
+        let proposed = DraftAnchor::from_operation(&self.document.operation);
+        self.anchor.check_edit(&proposed)?;
+        if self.anchor != proposed
+            && (!self.document.sources.accepted.is_empty()
+                || !self.baseline.sources.accepted.is_empty())
+        {
+            return Err(
+                "Initialize the draft anchor explicitly before accepting sources again".into(),
+            );
+        }
+        Ok(())
+    }
+
     fn validate_boundary(&self) -> Result<(), String> {
+        self.validate_anchor()?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1002,6 +1048,7 @@ impl Draft {
                 .push("invalid visualization state was omitted".into());
         }
         self.baseline = saved;
+        self.anchor = DraftAnchor::from_operation(&self.document.operation);
         self.path = Some(path);
         Ok(())
     }
@@ -1132,6 +1179,7 @@ impl Draft {
             .sources
             .accepted
             .insert("observations".into(), identity);
+        self.anchor = DraftAnchor::from_operation(&self.document.operation);
         self.findings
             .retain(|finding| !finding.starts_with("observations "));
         Ok(())
@@ -1246,6 +1294,7 @@ impl Draft {
             .sources
             .accepted
             .insert(format!("forecast:{index}"), identity);
+        self.anchor = DraftAnchor::from_operation(&self.document.operation);
         let prefix = format!("forecast:{index} ");
         self.findings
             .retain(|finding| !finding.starts_with(&prefix));
@@ -1352,6 +1401,10 @@ impl Draft {
         Ok(document)
     }
     pub fn refresh_inputs(&mut self) -> Result<(), String> {
+        self.refresh_all_inputs().map(|_| ())
+    }
+
+    fn refresh_all_inputs(&mut self) -> Result<IntervalAxis, String> {
         let mut refreshed = self.clone();
         refreshed.refresh_observations()?;
         let document = self.effective_document()?;
@@ -1436,14 +1489,16 @@ impl Draft {
             }
         }
         self.document.sources = refreshed.document.sources;
+        self.anchor = refreshed.anchor;
         self.findings.retain(|finding| {
             finding.starts_with("view ")
                 || finding.starts_with("invalid visualization")
                 || finding.starts_with("saved workspace")
         });
-        Ok(())
+        Ok(valid.forecast)
     }
     pub fn materialize_replacements(&mut self) -> Result<(), String> {
+        self.validate_anchor()?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1478,6 +1533,7 @@ impl Draft {
         Ok(())
     }
     pub fn materialize_corrections(&mut self, index: usize) -> Result<(), String> {
+        self.validate_anchor()?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1542,6 +1598,7 @@ impl Draft {
         &mut self,
         mapping: &RegistrationMapping,
     ) -> Result<(), String> {
+        self.validate_anchor()?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1635,6 +1692,7 @@ impl Draft {
             if selection.replacements.is_empty() {
                 return Ok(Vec::new());
             }
+            self.validate_anchor()?;
             if !self.workspace_matches() {
                 return Err("saved workspace differs from selected workspace".into());
             }
@@ -1644,6 +1702,16 @@ impl Draft {
                 .replacements
                 .as_ref()
                 .ok_or("no draft replacements")?;
+            let path = self
+                .document
+                .operation
+                .observed
+                .as_ref()
+                .and_then(|v| v.path.as_deref())
+                .ok_or("select observations")?;
+            let mut store =
+                ObservationStore::open_writable(&super::absolute(&self.workspace, path))
+                    .map_err(|e| e.to_string())?;
             let mut seen = std::collections::HashSet::new();
             let mut values = Vec::new();
             let mut mappings = Vec::new();
@@ -1656,13 +1724,22 @@ impl Draft {
                     return Err(format!("unknown or ambiguous draft replacement {id}"));
                 }
                 let item = matches[0];
-                let catalog_id = registration_id(
+                let mut catalog_id = registration_id(
                     id,
                     &item.registered_origin,
                     &item.value.replacement_id,
                     &item.value,
                 )?;
                 let mut value = item.value.clone();
+                if let Some(origin) = &item.registered_origin {
+                    value.replacement_id.clone_from(origin);
+                    if store
+                        .load_replacements(std::slice::from_ref(origin))
+                        .is_ok_and(|rows| rows.first() == Some(&value))
+                    {
+                        catalog_id.clone_from(origin);
+                    }
+                }
                 value.replacement_id = catalog_id.clone();
                 values.push(value);
                 mappings.push(RegistrationMapping {
@@ -1671,16 +1748,6 @@ impl Draft {
                     catalog_id,
                 });
             }
-            let path = self
-                .document
-                .operation
-                .observed
-                .as_ref()
-                .and_then(|v| v.path.as_deref())
-                .ok_or("select observations")?;
-            let mut store =
-                ObservationStore::open_writable(&super::absolute(&self.workspace, path))
-                    .map_err(|e| e.to_string())?;
             store
                 .register_replacements(values)
                 .map_err(|e| e.to_string())?;
@@ -1693,9 +1760,19 @@ impl Draft {
             if selection.corrections.is_empty() {
                 return Ok(Vec::new());
             }
+            self.validate_anchor()?;
             if !self.workspace_matches() {
                 return Err("saved workspace differs from selected workspace".into());
             }
+            let path = self
+                .document
+                .operation
+                .forecasts
+                .as_ref()
+                .and_then(|v| v.catalog.as_deref())
+                .ok_or("select forecast catalog")?;
+            let store =
+                ForecastCatalog::open_writable(&self.workspace, path).map_err(|e| e.to_string())?;
             let mut seen = std::collections::HashSet::new();
             let mut values = Vec::new();
             let mut mappings = Vec::new();
@@ -1730,13 +1807,22 @@ impl Draft {
                 if scenario.asset_id.as_deref() != Some(&item.value.asset_id) {
                     return Err("correction belongs to another asset".into());
                 }
-                let catalog_id = registration_id(
+                let mut catalog_id = registration_id(
                     &selected.draft_id,
                     &item.registered_origin,
                     &item.value.correction_id,
                     &item.value,
                 )?;
                 let mut value = item.value.clone();
+                if let Some(origin) = &item.registered_origin {
+                    value.correction_id.clone_from(origin);
+                    if store
+                        .load_corrections(&value.asset_id, std::slice::from_ref(origin))
+                        .is_ok_and(|rows| rows.first() == Some(&value))
+                    {
+                        catalog_id.clone_from(origin);
+                    }
+                }
                 value.correction_id = catalog_id.clone();
                 values.push(value);
                 mappings.push(RegistrationMapping {
@@ -1745,15 +1831,6 @@ impl Draft {
                     catalog_id,
                 });
             }
-            let path = self
-                .document
-                .operation
-                .forecasts
-                .as_ref()
-                .and_then(|v| v.catalog.as_deref())
-                .ok_or("select forecast catalog")?;
-            let store =
-                ForecastCatalog::open_writable(&self.workspace, path).map_err(|e| e.to_string())?;
             store
                 .register_corrections(&values)
                 .map_err(|e| e.to_string())?;
@@ -1801,9 +1878,10 @@ impl Draft {
             return vec!["saved workspace differs from selected workspace".into()];
         }
         let mut current = self.clone();
-        if let Err(error) = current.refresh_inputs() {
-            return vec![error];
-        }
+        let forecast = match current.refresh_all_inputs() {
+            Ok(forecast) => forecast,
+            Err(error) => return vec![error],
+        };
         if let Err(error) = current.preview_observations() {
             return vec![error];
         }
@@ -1812,10 +1890,17 @@ impl Draft {
             if scenario.asset_id.is_none() {
                 continue;
             }
-            let (_, registered) = match current.forecast_inputs(index) {
+            let (native, registered) = match current.forecast_inputs(index) {
                 Ok(inputs) => inputs,
                 Err(error) => return vec![error],
             };
+            if let Err(error) =
+                crate::analysis::forecast_interval_selection(&native.timeline, &forecast)
+            {
+                let scenario = scenario.id.as_deref().unwrap_or_default();
+                let finding = format!("Scenario {scenario}: {error}");
+                return vec![finding];
+            }
             let values = current
                 .document
                 .instructions
@@ -1856,6 +1941,16 @@ impl Draft {
         output: PathBuf,
         control: &super::OperationControl,
     ) -> Result<PreparationReport, OperationError> {
+        self.prepare_selected(invocation_dir, output, false, control)
+    }
+
+    pub(super) fn prepare_selected(
+        &self,
+        invocation_dir: PathBuf,
+        output: PathBuf,
+        operational: bool,
+        control: &super::OperationControl,
+    ) -> Result<PreparationReport, OperationError> {
         if !self.workspace_matches() {
             return Err(OperationError::InvalidRequest {
                 field: "workspace".into(),
@@ -1894,6 +1989,7 @@ impl Draft {
                 corrections,
             },
             Some(self.document.sources.accepted.clone()),
+            operational,
             control,
         )
     }
@@ -1913,6 +2009,10 @@ impl Draft {
     }
     pub fn discard(&mut self) {
         self.document = self.baseline.clone();
+        if self.anchor != DraftAnchor::from_operation(&self.document.operation) {
+            self.anchor.apply(&mut self.document.operation);
+            self.document.sources = DraftSources::default();
+        }
     }
     pub fn is_dirty(&self) -> bool {
         self.document.workspace != self.baseline.workspace
@@ -1990,6 +2090,76 @@ mod tests {
             .is_err()
         );
     }
+
+    #[test]
+    fn anchored_actions_reject_changed_reference_or_timezone() {
+        std::fs::create_dir_all("runs").unwrap();
+        let dir = tempfile::tempdir_in("runs").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let path = root.join("draft.json");
+        let mut draft =
+            Draft::new_run(root.clone(), &root, None, "2026-07-20T00:00:00", "UTC").unwrap();
+        draft.save(&path, true).unwrap();
+        let original = std::fs::read(&path).unwrap();
+        for (reference, zone) in [
+            (Some("2026-07-21T00:00:00"), Some("UTC")),
+            (Some("2026-07-20T00:00:00"), Some("Etc/UTC")),
+            (None, Some("UTC")),
+        ] {
+            let mut opened = Draft::open(root.clone(), &root, &path).unwrap();
+            opened.document.operation.reference_time = reference.map(str::to_owned);
+            opened.document.operation.time_zone = zone.map(str::to_owned);
+            assert!(opened.save(&path, true).unwrap_err().contains("fixed"));
+            assert!(opened.refresh_inputs().unwrap_err().contains("fixed"));
+            assert!(opened.preview_observations().unwrap_err().contains("fixed"));
+            assert!(opened.preview_forecast(0).unwrap_err().contains("fixed"));
+            assert!(
+                opened
+                    .prepare(root.clone(), root.join("prep"))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("fixed")
+            );
+            let report = opened.register_selected(&RegistrationSelection {
+                replacements: vec!["obs".into()],
+                corrections: vec![RegistrationCorrectionSelection {
+                    scenario: 0,
+                    draft_id: "fcst".into(),
+                }],
+            });
+            assert!(report.observations.error.unwrap().contains("fixed"));
+            assert!(report.forecasts.error.unwrap().contains("fixed"));
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+    }
+
+    #[test]
+    fn incomplete_draft_can_initialize_explicitly_without_reusing_accepted_sources() {
+        let root = PathBuf::from("/workspace/synthetic");
+        let mut draft = Draft::new(root.clone(), &root);
+        draft
+            .document
+            .sources
+            .accepted
+            .insert("forecast:0".into(), "old".into());
+        draft.document.operation.reference_time = Some("2026-07-20T00:00:00".into());
+        assert!(draft.generation().unwrap_err().contains("explicitly"));
+        draft
+            .initialize_anchor("2026-07-20T00:00:00", "UTC")
+            .unwrap();
+        assert!(draft.document.sources.accepted.is_empty());
+        assert!(
+            draft
+                .initialize_anchor("2026-07-21T00:00:00", "UTC")
+                .is_err()
+        );
+        draft.discard();
+        assert_eq!(
+            draft.document.operation.reference_time.as_deref(),
+            Some("2026-07-20T00:00:00")
+        );
+    }
+
     #[test]
     fn selected_registration_rolls_back_and_retries_independently() {
         use crate::store::{ObservationBatch, ReplacementKind, Station};
@@ -2112,6 +2282,30 @@ mod tests {
             draft.document.instructions.corrections,
             original.corrections
         );
+        let mut scheduled = draft.clone();
+        scheduled
+            .initialize_anchor("2026-01-01T00:00:00", "UTC")
+            .unwrap();
+        scheduled
+            .document
+            .sources
+            .accepted
+            .insert("observations".into(), "old".into());
+        scheduled.save(&path, true).unwrap();
+        let original_bytes = std::fs::read(&path).unwrap();
+        let before = scheduled.document.clone();
+        let slot = scheduled
+            .for_rolling_slot("2026-01-02T00:00:00", "UTC")
+            .unwrap();
+        assert_eq!(slot.document.instructions, before.instructions);
+        assert_eq!(
+            slot.document.operation.reference_time.as_deref(),
+            Some("2026-01-02T00:00:00")
+        );
+        assert!(slot.document.sources.accepted.is_empty());
+        assert!(slot.path.is_none());
+        assert_eq!(scheduled.document, before);
+        assert_eq!(std::fs::read(&path).unwrap(), original_bytes);
         let count: i64 = rusqlite::Connection::open(root.join("observations.sqlite"))
             .unwrap()
             .query_row("SELECT count(*) FROM observation_replacement", [], |r| {
@@ -2130,6 +2324,15 @@ mod tests {
         new_copy
             .copy_registered_for_edit(&retry.forecasts.mappings[0])
             .unwrap();
+        let unchanged_copy = new_copy.register_selected(&select);
+        assert_eq!(
+            unchanged_copy.observations.mappings[0].catalog_id,
+            retry.observations.mappings[0].catalog_id
+        );
+        assert_eq!(
+            unchanged_copy.forecasts.mappings[0].catalog_id,
+            retry.forecasts.mappings[0].catalog_id
+        );
         new_copy
             .document
             .instructions

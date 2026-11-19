@@ -13,7 +13,8 @@ use self::data::{
 };
 use eframe::egui::{self, Color32};
 use mgb_ops::analysis::HourlyWindow;
-use mgb_ops::app::{Location, SeriesQuery, SeriesSelection};
+use mgb_ops::app::{Location, RainfallPeriod, SeriesQuery, SeriesSelection};
+use mgb_ops::store::RainfallCacheInfo;
 use serde::{Deserialize, Serialize};
 use std::{path::PathBuf, sync::Arc};
 use walkers::{HttpTiles, Map, MapMemory, lon_lat};
@@ -94,12 +95,9 @@ struct Display {
     selection: Option<Location>,
     comparison: Option<ComparisonFields>,
     run: Option<PathBuf>,
-    map_scenario: String,
+    rainfall_scenario: String,
     overlays: Vec<String>,
     observations: bool,
-    grid: Option<PathBuf>,
-    reference: String,
-    zone: String,
     hours: i32,
     explicit: bool,
     start: String,
@@ -128,12 +126,9 @@ impl Default for Display {
             selection: None,
             comparison: None,
             run: None,
-            map_scenario: String::new(),
+            rainfall_scenario: String::new(),
             overlays: vec![],
             observations: true,
-            grid: None,
-            reference: String::new(),
-            zone: "America/Sao_Paulo".into(),
             hours: -24,
             explicit: false,
             start: String::new(),
@@ -198,7 +193,7 @@ enum Departure {
     Close,
     Quit,
     New,
-    Draft(PathBuf, String, String),
+    Draft(PathBuf),
 }
 
 struct Monitoring {
@@ -208,6 +203,7 @@ struct Monitoring {
     run: Option<Arc<Run>>,
     view: Option<View>,
     rainfall: Option<map::RainImage>,
+    rainfall_info: Result<Option<RainfallCacheInfo>, String>,
     worker: Worker,
     chart_worker: Worker,
     loading: [bool; CHART_SLOT + 1],
@@ -230,7 +226,6 @@ struct Monitoring {
     leaving_job: bool,
     allow_quit: bool,
     switching_project: bool,
-    open_candidate: Option<(PathBuf, String, String)>,
     ribbon: Ribbon,
     map_menu: Option<Location>,
     upstream_basin: Option<(i64, Vec<i64>)>,
@@ -239,10 +234,13 @@ struct Monitoring {
 }
 impl Monitoring {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let preferences: Preferences = cc
+        let mut preferences: Preferences = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE))
             .unwrap_or_default();
+        for display in &mut preferences.recent {
+            display.layout.deduplicate_tabs();
+        }
         let display = preferences.recent.first().cloned().unwrap_or_default();
         let mut app = Self {
             preferences,
@@ -251,6 +249,7 @@ impl Monitoring {
             run: None,
             view: None,
             rainfall: None,
+            rainfall_info: Ok(None),
             worker: Worker::new(cc.egui_ctx.clone()),
             chart_worker: Worker::new(cc.egui_ctx.clone()),
             loading: [false; CHART_SLOT + 1],
@@ -278,7 +277,6 @@ impl Monitoring {
             leaving_job: false,
             allow_quit: false,
             switching_project: false,
-            open_candidate: None,
             ribbon: Ribbon::Project,
             map_menu: None,
             upstream_basin: None,
@@ -322,8 +320,6 @@ impl Monitoring {
         }
         if slot == 1 {
             self.invalidate_chart();
-            self.worker.invalidate(2);
-            self.loading[2] = false;
         }
         self.loading[slot] = true;
         self.worker.submit(job);
@@ -370,61 +366,77 @@ impl Monitoring {
             self.depart(Departure::Project(config, workspace));
         }
     }
-    fn resolve_window(&mut self) -> Result<HourlyWindow, String> {
+    fn rainfall_period(&self) -> Result<RainfallPeriod, String> {
         if self.display.explicit {
-            let window = HourlyWindow::Explicit {
+            Ok(RainfallPeriod::Explicit {
                 start: data::timestamp(&self.display.start)?,
                 end: data::timestamp(&self.display.end)?,
-            };
-            mgb_ops::analysis::resolve_hourly_window(&self.display.zone, &window)?;
-            Ok(window)
-        } else {
-            let (_, interval) = mgb_ops::analysis::signed_rainfall_window(
-                &self.display.zone,
-                data::timestamp(&self.display.reference)?,
-                self.display.hours,
-            )?;
-            self.display.start = interval.start.format("%Y-%m-%dT%H:%M:%S").to_string();
-            self.display.end = interval.end.format("%Y-%m-%dT%H:%M:%S").to_string();
-            Ok(HourlyWindow::Explicit {
-                start: interval.start,
-                end: interval.end,
             })
+        } else {
+            Ok(RainfallPeriod::SignedHours(self.display.hours))
         }
     }
-    fn run_rainfall(&mut self) {
-        if let Some(run) = &self.run {
-            self.display.grid = Some(if !self.display.explicit && self.display.hours < 0 {
-                run.root.join("checkpoints/observed-grid.nc")
-            } else {
-                run.root
-                    .join("checkpoints/forecast")
-                    .join(&self.display.map_scenario)
-                    .join("working.nc")
-            });
+
+    fn check_rainfall_cache(&mut self) -> bool {
+        let info = self.project.as_ref().map_or(Ok(None), |project| {
+            mgb_ops::app::rainfall_cache_info(&project.workspace)
+        });
+        if self.rainfall_info == info {
+            return false;
         }
+        self.rainfall_info = info;
+        if let Ok(Some(info)) = &self.rainfall_info
+            && !info.scenarios.contains(&self.display.rainfall_scenario)
+        {
+            self.display.rainfall_scenario = info.scenarios[0].clone();
+        }
+        self.rainfall = None;
+        self.view = None;
+        true
     }
+
     fn request_view(&mut self) {
         self.worker.invalidate(2);
         self.loading[2] = false;
-        if self.display.grid.is_none() {
-            self.rainfall = None;
-        }
+        self.view = None;
         let Some(project) = self.project.clone() else {
             return;
         };
-        match self.resolve_window() {
-            Ok(window) => self.submit(Job::View(ViewRequest {
-                project,
-                run: self.run.clone(),
-                location: self.display.selection.clone(),
-                map_scenario: self.display.map_scenario.clone(),
-                grid: self.display.grid.clone(),
-                zone: self.display.zone.clone(),
-                window,
-                upstream: self.display.upstream,
-            })),
-            Err(error) => self.status = error,
+        let mut finding = None;
+        let period = if let Ok(Some(info)) = &self.rainfall_info {
+            match self
+                .rainfall_period()
+                .and_then(|period| Ok((period.resolve(info)?, period)))
+            {
+                Ok((window, period)) => {
+                    if self.rainfall.as_ref().is_some_and(|image| {
+                        image.rain.generation != info.generation
+                            || image.rain.window != window
+                            || image.rain.scenario != self.display.rainfall_scenario
+                    }) {
+                        self.rainfall = None;
+                    }
+                    Some(period)
+                }
+                Err(error) => {
+                    self.rainfall = None;
+                    finding = Some(error);
+                    None
+                }
+            }
+        } else {
+            self.rainfall = None;
+            None
+        };
+        self.submit(Job::View(ViewRequest {
+            project,
+            location: self.display.selection.clone(),
+            scenario: self.display.rainfall_scenario.clone(),
+            period,
+            upstream: self.display.upstream,
+        }));
+        if let Some(error) = finding {
+            self.status = error;
         }
     }
 
@@ -648,26 +660,11 @@ impl Monitoring {
                         );
                     }
                     self.project = Some(project.clone());
+                    self.check_rainfall_cache();
                     if !self.display.local.is_empty() {
                         self.submit(Job::Local(
                             self.display.local.iter().map(|l| l.path.clone()).collect(),
                         ));
-                    }
-                    if self.display.reference.is_empty() {
-                        use chrono::Timelike;
-                        self.display.zone = project.time_zone.clone();
-                        if let Ok(zone) = project.time_zone.parse::<chrono_tz::Tz>() {
-                            let now = chrono::Utc::now()
-                                .with_timezone(&zone)
-                                .naive_local()
-                                .with_minute(0)
-                                .unwrap()
-                                .with_second(0)
-                                .unwrap()
-                                .with_nanosecond(0)
-                                .unwrap();
-                            self.display.reference = now.format("%Y-%m-%dT%H:%M:%S").to_string();
-                        }
                     }
                     if self.display.run.is_none()
                         && (self.display.chart_start.is_empty()
@@ -707,9 +704,6 @@ impl Monitoring {
                     if !same {
                         self.chart_fields = self.display.comparison.clone().unwrap_or_default();
                     }
-                    if self.display.zone.is_empty() {
-                        self.display.zone = project.time_zone.clone();
-                    }
                     if let Some(location) = &self.display.selection {
                         let valid = match location {
                             Location::Station(id) => {
@@ -741,22 +735,15 @@ impl Monitoring {
                     if let Some(root) = self.display.run.clone() {
                         self.submit(Job::Run(root));
                     } else {
-                        if !self.display.reference.is_empty() {
-                            self.request_view();
-                        }
                         self.request_chart();
                     }
+                    self.request_view();
                 }
                 Ok(Loaded::Run(run)) => {
                     let changed = self.run.as_ref().is_some_and(|old| old.root != run.root);
                     if changed {
                         self.display.overlays.clear();
-                        self.display.map_scenario.clear();
-                        self.display.grid = None;
-                        self.rainfall = None;
                     }
-                    self.display.zone = run.time_zone.clone();
-                    self.display.reference = run.reference.clone();
                     let new_window = self.display.run.as_ref() != Some(&run.root);
                     if self.display.chart_start.is_empty() || new_window {
                         self.display.chart_start = run.start.clone();
@@ -764,25 +751,11 @@ impl Monitoring {
                     if self.display.chart_end.is_empty() || new_window {
                         self.display.chart_end = run.end.clone();
                     }
-                    if self.display.map_scenario.is_empty() {
-                        self.display.map_scenario = run.scenarios[0].clone();
-                    }
                     if self.display.overlays.is_empty() {
                         self.display.overlays = run.scenarios.clone();
                     }
-                    if !run.scenarios.contains(&self.display.map_scenario) {
-                        self.status = text(
-                            self.preferences.portuguese,
-                            "Remembered scenario is unavailable; select an available scenario",
-                            "Cenário lembrado indisponível; selecione um cenário disponível",
-                        );
-                    }
                     self.display.run = Some(run.root.clone());
                     self.run = Some(run);
-                    if self.display.grid.is_none() {
-                        self.run_rainfall();
-                    }
-                    self.request_view();
                     self.request_chart();
                 }
                 Ok(Loaded::Chart {
@@ -795,27 +768,28 @@ impl Monitoring {
                 }
                 Ok(Loaded::View(view)) => {
                     let mut view = *view;
-                    if view.rainfall.is_none()
-                        && self.display.grid.is_some()
-                        && let Some(retained) = &self.rainfall
+                    if self.check_rainfall_cache()
+                        || view.rainfall.as_ref().is_some_and(|rain| {
+                            self.rainfall_info
+                                .as_ref()
+                                .ok()
+                                .and_then(Option::as_ref)
+                                .is_none_or(|info| info.generation != rain.generation)
+                        })
                     {
-                        view.findings.push(format!(
-                            "{}: {}",
-                            text(
-                                self.preferences.portuguese,
-                                "Retained rainfall",
-                                "Chuva anterior mantida"
-                            ),
-                            retained.rain.source.display()
-                        ));
+                        self.request_view();
+                        continue;
                     }
-                    if let Some(rain) = view.rainfall.take()
-                        && self
-                            .rainfall
-                            .as_ref()
-                            .is_none_or(|image| !Arc::ptr_eq(&image.rain, &rain))
-                    {
-                        self.rainfall = Some(map::RainImage::new(context, rain));
+                    if let Some(rain) = view.rainfall.take() {
+                        if self.rainfall.as_ref().is_none_or(|image| {
+                            image.rain.generation != rain.generation
+                                || image.rain.scenario != rain.scenario
+                                || image.rain.window != rain.window
+                        }) {
+                            self.rainfall = Some(map::RainImage::new(context, rain));
+                        }
+                    } else {
+                        self.rainfall = None;
                     }
                     self.status = if view.findings.is_empty() {
                         text(self.preferences.portuguese, "Loaded", "Carregado")
@@ -1029,7 +1003,7 @@ impl Monitoring {
                         ribbon_group(ui, text(pt, "Draft files", "Arquivos de rascunho"), |ui| {
                             ui.add_enabled_ui(enabled, |ui| {
                                 if ui
-                                    .button(text(pt, "+ New run", "+ Nova execução"))
+                                    .button(text(pt, "+ New draft", "+ Novo rascunho"))
                                     .clicked()
                                 {
                                     self.depart(Departure::New);
@@ -1039,18 +1013,7 @@ impl Monitoring {
                                         .add_filter("Draft JSON", &["json"])
                                         .pick_file()
                                 {
-                                    let zone = self
-                                        .runners
-                                        .draft
-                                        .as_ref()
-                                        .and_then(|d| d.document.operation.time_zone.clone())
-                                        .unwrap_or_else(|| self.display.zone.clone());
-                                    match runners::reference_now(&zone) {
-                                        Ok(reference) => {
-                                            self.open_candidate = Some((path, reference, zone))
-                                        }
-                                        Err(e) => self.runners.status = e,
-                                    };
+                                    self.depart(Departure::Draft(path));
                                 }
                             });
                         });
@@ -1089,6 +1052,11 @@ impl Monitoring {
                         ribbon_group(ui, text(pt, "Review", "Revisão"), |ui| {
                             if ui.button(Form::Instructions.label(pt)).clicked() {
                                 self.display.layout.form(Form::Instructions);
+                            }
+                        });
+                        ribbon_group(ui, text(pt, "Experiment", "Experimento"), |ui| {
+                            if ui.button(Form::RunAll.label(pt)).clicked() {
+                                self.display.layout.form(Form::RunAll);
                             }
                         });
                     }
@@ -1136,8 +1104,7 @@ impl Monitoring {
                     }
                     Ribbon::Processing => {
                         ribbon_group(ui, text(pt, "Operation", "Operação"), |ui| {
-                            for form in [Form::Prepare, Form::Execute, Form::RunAll, Form::Forcing]
-                            {
+                            for form in [Form::NewRun, Form::Forcing] {
                                 if ui.button(form.label(pt)).clicked() {
                                     self.display.layout.form(form);
                                 }
@@ -1273,16 +1240,7 @@ impl Monitoring {
             }
             SideTab::Data => self.data_page(ui),
             SideTab::Rainfall => {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if self.project.is_some()
-                        && ui
-                            .button(text(pt, "Apply map window", "Aplicar período do mapa"))
-                            .clicked()
-                    {
-                        self.request_view();
-                    }
-                    self.rainfall_controls(ui);
-                });
+                egui::ScrollArea::vertical().show(ui, |ui| self.rainfall_controls(ui));
             }
             SideTab::Files => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.files(ui));
@@ -1302,7 +1260,14 @@ impl Monitoring {
                     | Form::Analysis
                     | Form::Bulletin
                     | Form::Automation => self.workflow_form(ui, form, pt),
-                    _ => self.runners.show(ui, form, pt),
+                    _ => self.runners.show(
+                        ui,
+                        form,
+                        pt,
+                        self.project
+                            .as_ref()
+                            .map(|project| project.workspace.as_path()),
+                    ),
                 });
             }
         });
@@ -1335,6 +1300,12 @@ impl Monitoring {
                         ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
                         return;
                     };
+                    if matches!(
+                        form,
+                        Form::Forcing | Form::Geometry | Form::Soil | Form::Instructions
+                    ) {
+                        runners::draft_anchor(ui, draft, pt);
+                    }
                     let action = match form {
                         Form::Forcing => {
                             self.workflows.forcing(ui, pt, draft);
@@ -1403,6 +1374,9 @@ impl Monitoring {
                                     }
                                     tools::InstructionAction::PreviewForecast(index) => {
                                         runners::Action::PreviewForecast(index)
+                                    }
+                                    tools::InstructionAction::Register(selection) => {
+                                        runners::Action::RegisterInstructions(selection)
                                     }
                                 })
                             }
@@ -1885,35 +1859,51 @@ impl Monitoring {
 
     fn rainfall_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        let Some(project) = self.project.clone() else {
+        if self.project.is_none() {
             return;
-        };
-        if let Some(run) = self.run.clone() {
-            let old = self.display.map_scenario.clone();
-            egui::ComboBox::from_label(text(pt, "Map scenario", "Cenário do mapa"))
-                .selected_text(&self.display.map_scenario)
-                .show_ui(ui, |ui| {
-                    for id in &run.scenarios {
-                        ui.selectable_value(&mut self.display.map_scenario, id.clone(), id);
-                    }
-                });
-            if old != self.display.map_scenario {
-                self.run_rainfall();
-                self.request_view();
-            }
         }
-        ui.horizontal_wrapped(|ui| {
-            let reference = ui.label(text(
-                pt,
-                "Reference · local time",
-                "Referência · hora local",
-            ));
-            ui.add(egui::TextEdit::singleline(&mut self.display.reference).desired_width(145.))
-                .labelled_by(reference.id);
-            let zone = ui.label(text(pt, "Timezone", "Fuso horário"));
-            ui.add(egui::TextEdit::singleline(&mut self.display.zone).desired_width(120.))
-                .labelled_by(zone.id);
-        });
+        let info = match &self.rainfall_info {
+            Ok(Some(info)) => info.clone(),
+            Ok(None) => {
+                ui.label(text(
+                    pt,
+                    "No active rainfall cache. Use Processing → New run.",
+                    "Sem cache ativo de chuva. Use Processamento → Nova execução.",
+                ));
+                return;
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().warn_fg_color, error);
+                ui.small(text(
+                    pt,
+                    "Run the operation again in Processing → New run.",
+                    "Execute novamente em Processamento → Nova execução.",
+                ));
+                return;
+            }
+        };
+        ui.label(format!(
+            "{} · {} · {}",
+            text(pt, "Reference", "Referência"),
+            info.reference.format("%Y-%m-%d %H:%M"),
+            info.time_zone
+        ));
+        ui.small(format!(
+            "{} · {} → {}",
+            text(pt, "Coverage", "Cobertura"),
+            info.coverage.start.format("%Y-%m-%d %H:%M"),
+            info.coverage.end.format("%Y-%m-%d %H:%M")
+        ));
+        let before = self.display.rainfall_scenario.clone();
+        egui::ComboBox::from_label(text(pt, "Scenario", "Cenário"))
+            .selected_text(&self.display.rainfall_scenario)
+            .show_ui(ui, |ui| {
+                for id in &info.scenarios {
+                    ui.selectable_value(&mut self.display.rainfall_scenario, id.clone(), id);
+                }
+            });
+
+        let explicit = self.display.explicit;
         ui.horizontal(|ui| {
             ui.selectable_value(
                 &mut self.display.explicit,
@@ -1926,24 +1916,15 @@ impl Monitoring {
                 text(pt, "Start / end", "Início / fim"),
             );
         });
+        if self.display.explicit
+            && !explicit
+            && let Ok(window) = RainfallPeriod::SignedHours(self.display.hours).resolve(&info)
+        {
+            self.display.start = window.start.format("%Y-%m-%dT%H:%M:%S").to_string();
+            self.display.end = window.end.format("%Y-%m-%dT%H:%M:%S").to_string();
+        }
         ui.horizontal_wrapped(|ui| {
-            if !self.display.explicit {
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut self.display.hours)
-                            .range(-8760..=8760)
-                            .suffix(" h"),
-                    )
-                    .changed()
-                {
-                    self.run_rainfall();
-                }
-                ui.small(text(
-                    pt,
-                    "− Observed · + Forecast",
-                    "− Observado · + Previsto",
-                ));
-            } else {
+            if self.display.explicit {
                 for (name, value) in [
                     (text(pt, "From", "Início"), &mut self.display.start),
                     (text(pt, "To", "Fim"), &mut self.display.end),
@@ -1952,62 +1933,57 @@ impl Monitoring {
                     ui.add(egui::TextEdit::singleline(value).desired_width(145.))
                         .labelled_by(label.id);
                 }
+            } else {
+                ui.add(
+                    egui::DragValue::new(&mut self.display.hours)
+                        .range(-8760..=8760)
+                        .suffix(" h"),
+                );
+                ui.small(text(
+                    pt,
+                    "− Observed · + Forecast",
+                    "− Observado · + Previsto",
+                ));
             }
         });
-        if let Err(error) = self.resolve_window() {
-            ui.small(error);
-        } else {
-            ui.small(format!("{} → {}", self.display.start, self.display.end));
+        let window = self
+            .rainfall_period()
+            .and_then(|period| period.resolve(&info));
+        match &window {
+            Err(error) => {
+                ui.small(error);
+            }
+            Ok(window) if window.start < info.coverage.start || window.end > info.coverage.end => {
+                ui.small(text(
+                    pt,
+                    "Window extends beyond cached coverage",
+                    "Período fora da cobertura do cache",
+                ));
+            }
+            Ok(_) => (),
         }
-        ui.label(text(pt, "Rainfall source", "Fonte de chuva"));
-        egui::ComboBox::from_id_salt("rainfall-source")
-            .width(ui.available_width())
-            .truncate()
-            .selected_text(
-                self.display
-                    .grid
-                    .as_ref()
-                    .map(|p| {
-                        p.strip_prefix(&project.workspace)
-                            .unwrap_or(p)
-                            .display()
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "—".into()),
-            )
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.display.grid, None, "—");
-                for path in &project.grids {
-                    ui.selectable_value(
-                        &mut self.display.grid,
-                        Some(path.clone()),
-                        path.strip_prefix(&project.workspace)
-                            .unwrap_or(path)
-                            .display()
-                            .to_string(),
-                    );
-                }
-            });
-        if let Some(rain) = &self.rainfall {
-            ui.small(format!(
-                "{} · {} → {}",
-                rain.rain.source.display(),
-                rain.rain.window.start,
-                rain.rain.window.end
-            ));
+        if let Some(finding) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.rainfall_finding.as_ref())
+        {
+            ui.colored_label(ui.visuals().warn_fg_color, finding);
         }
         if ui
-            .checkbox(
-                &mut self.display.upstream,
-                text(
-                    pt,
-                    "Include upstream in summary",
-                    "Incluir montante no resumo",
-                ),
+            .add_enabled(
+                window.is_ok(),
+                egui::Button::new(text(pt, "Apply map window", "Aplicar período do mapa")),
             )
-            .changed()
+            .clicked()
+            || before != self.display.rainfall_scenario
         {
             self.request_view();
+        }
+        if let Some(rain) = &self.rainfall {
+            ui.small(format!(
+                "{} → {}",
+                rain.rain.window.start, rain.rain.window.end
+            ));
         }
     }
     fn chart_controls(&mut self, ui: &mut egui::Ui) {
@@ -2135,13 +2111,6 @@ impl Monitoring {
                 text(pt, "Displayed summary", "Resumo exibido"),
                 charts::location_label(location, pt)
             ));
-            if let Some(run) = &view.run {
-                ui.small(format!(
-                    "{} · {}",
-                    run.root.file_name().unwrap_or_default().to_string_lossy(),
-                    view.map_scenario
-                ));
-            }
         }
         if let Some(summary) = self.view.as_ref().and_then(|v| v.summary.as_ref()) {
             let mean = summary
@@ -2153,14 +2122,24 @@ impl Monitoring {
                 "{:.1}/{:.1} km²·h",
                 summary.covered_area_hours, summary.expected_area_hours
             ));
-            if let Some(view) = &self.view {
+            if let Ok(Some(info)) = &self.rainfall_info {
                 ui.small(format!(
-                    "{} → {} · {}",
-                    summary.window.start, summary.window.end, view.zone
+                    "{} → {} · {} · {}",
+                    summary.window.start,
+                    summary.window.end,
+                    info.time_zone,
+                    self.display.rainfall_scenario
                 ));
             }
         } else if let Some(area) = self.view.as_ref().and_then(|view| view.area_km2) {
             ui.label(format!("{area:.1} km²"));
+        }
+        if let Some(finding) = self
+            .view
+            .as_ref()
+            .and_then(|view| view.summary_finding.as_ref())
+        {
+            ui.colored_label(ui.visuals().warn_fg_color, finding);
         }
         ui.separator();
     }
@@ -2289,6 +2268,19 @@ impl Monitoring {
                 ui.horizontal_wrapped(|ui| self.feature_actions(ui, &location));
             }
         }
+        if ui
+            .checkbox(
+                &mut self.display.upstream,
+                text(
+                    self.preferences.portuguese,
+                    "Include upstream in summary",
+                    "Incluir montante no resumo",
+                ),
+            )
+            .changed()
+        {
+            self.request_view();
+        }
         self.location_summary(ui);
         egui::ScrollArea::both().show(ui, |ui| {
             if let Some(report) = self.charts.report.as_ref() {
@@ -2344,15 +2336,13 @@ impl Monitoring {
                 self.switching_project = true;
                 self.submit(Job::Open(config, workspace));
             }
-            Departure::New => self.runners.start(runners::Action::New, ctx),
-            Departure::Draft(path, reference, zone) => self.runners.start(
-                runners::Action::Open {
-                    path,
-                    reference,
-                    zone,
-                },
-                ctx,
-            ),
+            Departure::New => {
+                if let Some(project) = &self.project {
+                    self.runners
+                        .start(runners::Action::New(project.time_zone.clone()), ctx);
+                }
+            }
+            Departure::Draft(path) => self.runners.start(runners::Action::Open(path), ctx),
             Departure::Quit => {
                 self.allow_quit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2371,6 +2361,7 @@ impl Monitoring {
                 self.run = None;
                 self.view = None;
                 self.rainfall = None;
+                self.rainfall_info = Ok(None);
                 self.local.clear();
                 self.cache.clear();
                 self.clear_upstream();
@@ -2386,40 +2377,6 @@ impl Monitoring {
     }
     fn departure_dialog(&mut self, ctx: &egui::Context) {
         let pt = self.preferences.portuguese;
-        if let Some((path, mut reference, mut zone)) = self.open_candidate.clone() {
-            let mut open = false;
-            let mut cancel = false;
-            egui::Modal::new(egui::Id::new("Open reference")).show(ctx, |ui| {
-                ui.heading(text(
-                    pt,
-                    "Open draft for reference",
-                    "Abrir rascunho para referência",
-                ));
-                ui.label(path.display().to_string());
-                ui.label(text(
-                    pt,
-                    "Candidate reference · local time",
-                    "Referência candidata · hora local",
-                ));
-                ui.text_edit_singleline(&mut reference);
-                ui.label(text(pt, "IANA timezone", "Fuso IANA"));
-                ui.text_edit_singleline(&mut zone);
-                ui.horizontal(|ui| {
-                    open = ui
-                        .button(text(pt, "Open exact match", "Abrir correspondência exata"))
-                        .clicked();
-                    cancel = ui.button(text(pt, "Cancel", "Cancelar")).clicked();
-                });
-            });
-            self.open_candidate = Some((path.clone(), reference.clone(), zone.clone()));
-            if open {
-                self.open_candidate = None;
-                self.depart(Departure::Draft(path, reference, zone));
-            } else if cancel {
-                self.open_candidate = None;
-            }
-            return;
-        }
         if let Some(path) = self.runners.overwrite.clone() {
             egui::Modal::new(egui::Id::new("Destination exists")).show(ctx, |ui| {
                 ui.heading(text(pt, "Destination exists", "Destino existente"));
@@ -2578,18 +2535,23 @@ impl eframe::App for Monitoring {
         self.poll(&ctx);
         if let Some(outcome) = self.runners.poll() {
             match outcome {
-                runners::Outcome::Completed(root) => {
+                runners::Outcome::Completed(root)
+                | runners::Outcome::OperationalCompleted(root) => {
                     self.submit(Job::Run(root));
-                }
-                runners::Outcome::Prepared(root) => {
-                    self.runners.prepared = root.clone();
-                    self.display.grid = Some(root.join("checkpoints/observed-grid.nc"));
-                    self.request_view();
+                    if self.check_rainfall_cache() {
+                        self.request_view();
+                    }
                 }
                 runners::Outcome::Workflow(output) => {
                     if let Some(run) = self.workflows.receive(output, &ctx) {
                         self.submit(Job::Run(run));
                     }
+                }
+                runners::Outcome::DraftChanged => {
+                    self.instructions = tools::InstructionTools::default();
+                }
+                runners::Outcome::RegistrationReport(report, origin_errors) => {
+                    self.instructions.registration_report(report, origin_errors);
                 }
                 _ => {}
             }

@@ -304,6 +304,53 @@ fn canonical_forecast_reaches_frozen_preparation_and_execution() {
         );
     fs::write(&request, contents).unwrap();
     fs::remove_file(source).unwrap();
+    let mut operation = mgb_ops::app::OperationalRun::open(
+        root.clone(),
+        &request,
+        time("2026-01-01T03:00:00").and_utc(),
+    )
+    .unwrap();
+    assert!(
+        operation
+            .validate()
+            .iter()
+            .any(|error| error.contains("MissingTimeCoverage"))
+    );
+    assert!(
+        operation
+            .accept_inputs()
+            .unwrap_err()
+            .contains("Scenario other")
+    );
+    assert!(!operation.has_accepted_inputs());
+    operation.set_reference("2026-01-01T02:00:00".into());
+    operation.accept_inputs().unwrap();
+    assert!(mgb_ops::app::rainfall_cache_info(&root).unwrap().is_none());
+    operation
+        .run_all(&mgb_ops::OperationControl::default())
+        .unwrap();
+    let generation = mgb_ops::app::rainfall_cache_info(&root).unwrap().unwrap();
+    let query = |scenario, period| {
+        mgb_ops::app::query_cached_rainfall(&root, scenario, &period, None, false)
+            .unwrap()
+            .unwrap()
+    };
+    use mgb_ops::app::RainfallPeriod::{Explicit, SignedHours};
+    assert_eq!(query("zero", SignedHours(1)).values, vec![Some(0.); cells]);
+    let forecast = query("other", SignedHours(1));
+    assert_eq!(forecast.values[5], Some(2.));
+    assert_eq!(query("other", SignedHours(-1)).values[5], Some(1.));
+    let combined = query(
+        "other",
+        Explicit {
+            start: time("2026-01-01T01:00:00"),
+            end: time("2026-01-01T03:00:00"),
+        },
+    );
+    assert_eq!(combined.info, generation);
+    assert_eq!(combined.values[5], Some(3.));
+    assert_eq!(query("other", SignedHours(2)).values, vec![None; cells]);
+    assert!(!root.join("data/cache/preparations").exists());
     let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
         workspace: root.clone(),
         invocation_dir: root.clone(),
@@ -316,12 +363,16 @@ fn canonical_forecast_reaches_frozen_preparation_and_execution() {
     fs::remove_dir_all(root.join("forecast-assets")).unwrap();
     let trial = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
         workspace: root.clone(),
-        invocation_dir: root,
+        invocation_dir: root.clone(),
         prepared: prepared.prepared,
     })
     .unwrap();
     let basin =
         mgb_ops::store::read_result_series(&trial.run_root.join("results/other/basin.nc")).unwrap();
+    assert_eq!(
+        mgb_ops::app::rainfall_cache_info(&root).unwrap(),
+        Some(generation)
+    );
     assert_eq!(basin.precipitation.last(), Some(&2.0));
 }
 
@@ -927,7 +978,6 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
     );
     let mut unaccepted =
         mgb_ops::Draft::from_preparation(path.clone(), &path, document.clone()).unwrap();
-    unaccepted.document.operation.time_zone = None;
     unaccepted.document.operation.geometry = None;
     unaccepted.document.operation.engine = None;
     unaccepted
@@ -1927,12 +1977,14 @@ fn run_uses_current_draft_and_cleans_temporary_preparation() {
     let control = mgb_ops::OperationControl::default();
     let first = mgb_ops::run_draft(&draft, &control).unwrap();
     let cache = mgb_ops::read_trial(&first.run_root).unwrap();
-    assert_eq!(
-        fs::read_dir(root.join("data/cache/preparations"))
+    assert!(!root.join("data/cache/preparations").exists());
+    assert!(fs::read_dir(root.join("data")).unwrap().all(|entry| {
+        !entry
             .unwrap()
-            .count(),
-        0
-    );
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".preparation-")
+    }));
     assert!(cache.preparation_sha256.is_some());
     let prepared = draft
         .prepare(root.clone(), "separate-prepared".into())
@@ -2235,4 +2287,196 @@ fn legacy_invalid_recipe_remains_importable_for_repair() {
         Some("2026-01-01T01:00:00")
     );
     assert!(!draft.validate_preparation().is_empty());
+}
+
+#[test]
+fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    fixture(&workspace);
+    fs::write(
+        workspace.join("Input/MINI.gtp"),
+        "CatID Mini Xcen Ycen MiniJus Area_(km2)\n1 1 0 0 -1 7\n",
+    )
+    .unwrap();
+    let request = workspace.join("request.toml");
+    let saved = fs::read(&request).unwrap();
+    let now = time("2026-01-02T13:37:00").and_utc();
+    let mut operation =
+        mgb_ops::app::OperationalRun::open(workspace.clone(), &request, now).unwrap();
+    assert_eq!(operation.reference(), "2026-01-02T13:00:00");
+    assert_eq!(
+        operation.coverage().unwrap(),
+        [
+            "2026-01-02T12:00:00",
+            "2026-01-02T13:00:00",
+            "2026-01-02T14:00:00",
+            "2026-01-02T14:00:00"
+        ]
+    );
+    operation.set_reference("2026-01-01T02:00:00".into());
+    let control = mgb_ops::app::OperationControl::default();
+    assert!(operation.run_all(&control).is_err());
+    assert!(
+        operation
+            .validate()
+            .iter()
+            .any(|finding| finding.contains("not been accepted"))
+    );
+    assert!(mgb_ops::discover_trials(&workspace).unwrap().is_empty());
+    operation.accept_inputs().unwrap();
+    assert!(operation.validate().is_empty());
+
+    let report = operation
+        .run_all(&mgb_ops::app::OperationControl::default())
+        .unwrap();
+    assert_eq!(
+        mgb_ops::read_trial(&report.run_root)
+            .unwrap()
+            .scenarios
+            .len(),
+        4
+    );
+    assert!(!workspace.join("data/cache/preparations").exists());
+
+    let active = mgb_ops::app::rainfall_cache_info(&workspace)
+        .unwrap()
+        .unwrap();
+    assert_eq!(active.reference, time("2026-01-01T02:00:00"));
+    let rainfall = mgb_ops::app::query_cached_rainfall(
+        &workspace,
+        "zero",
+        &mgb_ops::app::RainfallPeriod::SignedHours(1),
+        Some(1),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    let summary = rainfall.summary.unwrap();
+    assert_eq!(summary.total_area_km2, 7.);
+    assert_eq!(summary.mean_mm, Some(0.));
+
+    fs::write(workspace.join("Input/control.txt"), "fail:other\n").unwrap();
+    operation.accept_inputs().unwrap();
+    assert!(
+        operation
+            .run_all(&mgb_ops::OperationControl::default())
+            .is_err()
+    );
+    assert_eq!(
+        mgb_ops::app::rainfall_cache_info(&workspace).unwrap(),
+        Some(active.clone())
+    );
+
+    operation.set_reference("2026-01-01T01:00:00".into());
+    assert!(!operation.has_accepted_inputs());
+    assert!(
+        operation
+            .run_all(&mgb_ops::app::OperationControl::default())
+            .is_err()
+    );
+    assert_eq!(fs::read(&request).unwrap(), saved);
+    fs::write(workspace.join("Input/control.txt"), "").unwrap();
+    operation.set_reference("2026-01-01T02:00:00".into());
+    operation.accept_inputs().unwrap();
+    operation
+        .run_all(&mgb_ops::OperationControl::default())
+        .unwrap();
+    let switched = mgb_ops::app::rainfall_cache_info(&workspace)
+        .unwrap()
+        .unwrap();
+    assert_ne!(switched.generation, active.generation);
+    assert_eq!(switched.reference, time("2026-01-01T02:00:00"));
+    fs::remove_dir_all(workspace.join("data/runs")).unwrap();
+    assert!(!workspace.join("data/cache/preparations").exists());
+    let without_run_artifacts = mgb_ops::app::query_cached_rainfall(
+        &workspace,
+        "zero",
+        &mgb_ops::app::RainfallPeriod::SignedHours(1),
+        Some(1),
+        true,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(without_run_artifacts.info, switched);
+    assert_eq!(without_run_artifacts.summary.unwrap().mean_mm, Some(0.));
+
+    let cache = workspace.join("data/cache/rainfall");
+    assert!(!cache.join(active.generation).exists());
+    assert_eq!(
+        fs::read_dir(&cache)
+            .unwrap()
+            .filter(|entry| entry
+                .as_ref()
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with("generation-"))
+            .count(),
+        1
+    );
+    fs::write(
+        cache
+            .join(&switched.generation)
+            .join("checkpoints/observed-grid.nc"),
+        "invalid",
+    )
+    .unwrap();
+    assert!(
+        mgb_ops::app::query_cached_rainfall(
+            &workspace,
+            "zero",
+            &mgb_ops::app::RainfallPeriod::SignedHours(-1),
+            Some(1),
+            true,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn standalone_day_horizons_recalculate_from_local_midnight() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    fixture(&workspace);
+    let request = workspace.join("request.toml");
+    let recipe = fs::read_to_string(&request).unwrap();
+    let settings = recipe.split_once("[observed]").unwrap().1;
+    fs::write(
+        &request,
+        format!(
+            r#"schema_version = 2
+time_zone = "Asia/Tokyo"
+reference_time = "2026-01-01T02:00:00"
+observed_horizon_days = 1
+forecast_horizon_days = 2
+[observed]{settings}"#
+        ),
+    )
+    .unwrap();
+    let mut operation = mgb_ops::app::OperationalRun::open(
+        workspace,
+        &request,
+        time("2026-01-01T17:46:00").and_utc(),
+    )
+    .unwrap();
+    assert_eq!(operation.time_zone(), "Asia/Tokyo");
+    assert_eq!(operation.reference(), "2026-01-02T02:00:00");
+    assert_eq!(
+        operation.coverage().unwrap(),
+        [
+            "2026-01-01T00:00:00",
+            "2026-01-02T02:00:00",
+            "2026-01-02T03:00:00",
+            "2026-01-04T03:00:00"
+        ]
+    );
+    operation.set_reference("2025-12-25T01:30:00".into());
+    assert!(operation.coverage().is_err());
+    operation.set_reference("2025-12-25T01:00:00".into());
+    assert_eq!(operation.coverage().unwrap()[0], "2025-12-24T00:00:00");
 }

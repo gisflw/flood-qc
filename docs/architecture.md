@@ -155,6 +155,10 @@ Saved preparation and execution follow these rules:
   siblings' outputs without modifying other runs. No official-set publication or
   latest-run pointer is maintained. Temporary execution snapshots and private inputs
   are removed after workers stop; independently saved preparations remain reusable.
+- The active rainfall cache is a workspace-scoped product of verified prepared
+  inputs. Its store-owned atomic generation switch is independent of trial
+  retention. App selects when to publish and provides a shared generation to
+  map and basin rainfall queries. See the [operation contract](contracts/operations.md#active-rainfall-cache).
 - Operators may copy the recipe, dependencies, results or cache outputs elsewhere
   for long-term storage. Generation is normal application behavior; no retention
   flags, cleanup policy or archive-management workflow is added.

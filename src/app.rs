@@ -3,8 +3,6 @@ pub use self::observation_review::{
     AvailabilityHour, ObservationReviewReport, ObservationReviewRequest, ReviewWindow,
     SpatialObservationQcReport, StationAvailability, review_observations, spatial_observation_qc,
 };
-mod project;
-pub use self::project::discover_rainfall_grids;
 mod series;
 pub use self::series::{
     ChartSeries, Location, QueryFinding, SeriesPoint, SeriesQuery, SeriesReport, SeriesSelection,
@@ -16,6 +14,12 @@ pub use self::references::{
 };
 mod migration_export;
 mod operation;
+mod operational_run;
+mod rainfall;
+pub use self::operational_run::OperationalRun;
+pub use self::rainfall::{
+    CachedRainfall, RainfallCacheReader, RainfallPeriod, query_cached_rainfall, rainfall_cache_info,
+};
 mod request;
 mod sharing;
 pub use self::migration_export::{

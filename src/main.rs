@@ -410,6 +410,10 @@ enum DraftCommand {
         workspace: PathBuf,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long, requires = "time_zone")]
+        reference: Option<String>,
+        #[arg(long, requires = "reference")]
+        time_zone: Option<String>,
     },
     Open {
         #[arg(long)]
@@ -543,8 +547,16 @@ fn draft_action(
         }
     }
     match command {
-        DraftCommand::New { workspace, output } => {
+        DraftCommand::New {
+            workspace,
+            output,
+            reference,
+            time_zone,
+        } => {
             let mut draft = mgb_ops::Draft::new(workspace, invocation);
+            if let (Some(reference), Some(zone)) = (reference, time_zone) {
+                draft.initialize_anchor(&reference, &zone)?;
+            }
             draft.save(&path(invocation, &output), true)?;
             value(draft.document)
         }
@@ -589,7 +601,7 @@ fn draft_action(
             draft,
             document,
         } => {
-            let replacement = mgb_ops::Draft::open(workspace.clone(), invocation, &document)?;
+            let mut replacement = mgb_ops::Draft::open(workspace.clone(), invocation, &document)?;
             if replacement
                 .findings
                 .iter()
@@ -598,6 +610,15 @@ fn draft_action(
                 return Err("saved workspace differs from selected workspace".into());
             }
             let mut current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
+            let existing = &current.document.operation;
+            let proposed = &replacement.document.operation;
+            if (existing.reference_time.is_none() || existing.time_zone.is_none())
+                && let (Some(reference), Some(zone)) =
+                    (&proposed.reference_time, &proposed.time_zone)
+            {
+                current.initialize_anchor(reference, zone)?;
+                replacement.document.sources = Default::default();
+            }
             current.document = replacement.document;
             current.save(&path(invocation, &draft), true)?;
             value(current.document)

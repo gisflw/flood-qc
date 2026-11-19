@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, Metadata, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
@@ -139,39 +139,55 @@ pub fn collect_inputs(root: &Path) -> Result<Vec<InputReference>, String> {
 pub fn verify_inputs(root: &Path, inputs: &[InputReference]) -> Result<(), String> {
     let mut paths = std::collections::HashSet::new();
     for input in inputs {
-        if !valid_relative(&input.path)
-            || input
-                .path
-                .components()
-                .next()
-                .is_none_or(|component| component.as_os_str() != input.kind.as_str())
-            || !paths.insert(&input.path)
-            || input.sha256.len() != 64
-            || !input
-                .sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
+        if !paths.insert(&input.path) {
             return Err("invalid input reference".into());
         }
-        let mut path = root.to_path_buf();
-        for component in input.path.components() {
-            path.push(component.as_os_str());
-            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if metadata.file_type().is_symlink() {
-                return Err("symlink in input path".into());
-            }
+        let (path, _) = input_file(root, input)?;
+        verify_input_contents(&path, input)?;
+    }
+    Ok(())
+}
+
+pub(super) fn input_file(
+    root: &Path,
+    input: &InputReference,
+) -> Result<(PathBuf, Metadata), String> {
+    if !valid_relative(&input.path)
+        || input
+            .path
+            .components()
+            .next()
+            .is_none_or(|component| component.as_os_str() != input.kind.as_str())
+        || input.sha256.len() != 64
+        || !input
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("invalid input reference".into());
+    }
+    let mut path = root.to_path_buf();
+    let mut components = input.path.components().peekable();
+    while let Some(component) = components.next() {
+        path.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("symlink in input path".into());
         }
-        if !path.is_file() {
-            return Err("input is not a regular file".into());
+        if components.peek().is_none() && metadata.is_file() {
+            return Ok((path, metadata));
         }
-        let (hash, size) = digest_file(&path)?;
-        if hash != input.sha256 || size != input.size {
-            return Err(format!(
-                "input integrity mismatch: {}",
-                input.path.display()
-            ));
-        }
+    }
+    Err("input is not a regular file".into())
+}
+
+pub(super) fn verify_input_contents(path: &Path, input: &InputReference) -> Result<(), String> {
+    let (hash, size) = digest_file(path)?;
+    if hash != input.sha256 || size != input.size {
+        return Err(format!(
+            "input integrity mismatch: {}",
+            input.path.display()
+        ));
     }
     Ok(())
 }

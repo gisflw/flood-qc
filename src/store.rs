@@ -68,3 +68,10 @@ pub use self::calibration::{
 };
 mod automation;
 pub(crate) use self::automation::{automation_documents, write_automation_document};
+
+mod rainfall;
+pub use self::rainfall::RainfallCacheInfo;
+pub(crate) use self::rainfall::{
+    DecodedRainfallFile, RainfallCacheFiles, StagedRainfallCache, rainfall_cache_info,
+    read_rainfall_cache,
+};

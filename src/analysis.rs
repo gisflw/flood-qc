@@ -1,8 +1,10 @@
 mod summary;
 pub use self::summary::{
-    GridAccumulation, HourlyWindow, RainSummary, RainfallSource, accumulated_grid_frame,
-    accumulated_grid_rain, accumulated_rain, resolve_hourly_window, signed_rainfall_window,
+    GridAccumulation, HourlyWindow, RainSummary, RainfallSource, accumulated_basin_forcing,
+    accumulated_grid_frame, accumulated_grid_rain, accumulated_rain, resolve_hourly_window,
+    signed_rainfall_window,
 };
+pub(crate) use self::summary::{accumulated_valid_basin_forcing, accumulated_valid_grid_rain};
 mod topology;
 pub use self::topology::{mini_area, upstream_minis};
 mod forecast;
@@ -21,6 +23,7 @@ pub use self::spatial::{
     interpolate_grid_to_basins, interpolate_stations,
 };
 
+pub(crate) use self::forecast::forecast_interval_selection;
 pub use self::forecast::{
     ForecastPreparationError, ForecastPreparationRequest, corrected_forecast_frames,
     prepare_forecast, prepare_zero_forecast,

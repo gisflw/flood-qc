@@ -80,11 +80,11 @@ cargo run --locked --features desktop --bin mgb-ops-desktop -- /regional/workspa
 Open TOML also opens projects from the interface. Nonstandard configuration
 locations ask for their workspace once; recent projects retain that association.
 The desktop keeps the map visible alongside Layers and tabs for Charts, Data,
-Rainfall, Files and operating forms. Edit workspace settings and operation drafts,
-and prepare or execute operations through explicit runner actions.
-Monitoring Refresh/F5 only reloads displayed data; use Accept/Refresh selected inputs
-to accept operational sources before Prepare or Run All.
-It uses the same spatial, rainfall and series APIs as the CLI. See the
+Rainfall, Files and operating forms. Start operations from Processing → New run
+and experiments from Draft. Accept selected inputs before running the pipeline.
+Monitoring Refresh/F5 reloads displayed data. Rainfall uses the workspace's
+active display cache, published after a successful operational run.
+The desktop uses the shared spatial, rainfall and series APIs. See the
 [desktop contract](docs/contracts/desktop.md) for layout, draft handling, Jobs and current limits.
 GUI dependencies are optional and excluded from ordinary library/CLI builds.
 Linux virtual X11/software rendering has been exercised; operator hardware,

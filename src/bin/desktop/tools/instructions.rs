@@ -1,6 +1,9 @@
 use super::super::{data::timestamp, text};
 use eframe::egui::{self, Ui};
-use mgb_ops::app::{Draft, DraftCorrection, DraftReplacement};
+use mgb_ops::app::{
+    Draft, DraftCorrection, DraftReplacement, RegistrationCorrectionSelection, RegistrationOutcome,
+    RegistrationReport, RegistrationSelection,
+};
 use mgb_ops::store::{
     ForecastCorrection, ObservationReplacement, ReplacementKind, check_correction,
     validate_replacement,
@@ -12,6 +15,7 @@ pub enum InstructionAction {
     MaterializeCorrections(usize),
     PreviewObservations,
     PreviewForecast(usize),
+    Register(RegistrationSelection),
 }
 
 #[derive(Default)]
@@ -21,6 +25,9 @@ pub struct InstructionTools {
     replacement: ReplacementForm,
     correction: CorrectionForm,
     status: String,
+    selected_replacements: HashSet<String>,
+    selected_corrections: HashSet<(usize, String)>,
+    registration: Option<(RegistrationReport, Vec<String>)>,
 }
 
 impl InstructionTools {
@@ -49,7 +56,96 @@ impl InstructionTools {
         if !self.status.is_empty() {
             ui.label(&self.status);
         }
-        action
+        action.or_else(|| self.commit(ui, pt, draft))
+    }
+
+    pub fn registration_report(&mut self, report: RegistrationReport, origin_errors: Vec<String>) {
+        self.registration = Some((report, origin_errors));
+    }
+
+    fn commit(&mut self, ui: &mut Ui, pt: bool, draft: &Draft) -> Option<InstructionAction> {
+        ui.separator();
+        let instructions = &draft.document.instructions;
+        self.selected_replacements.retain(|id| {
+            instructions
+                .replacements
+                .iter()
+                .flatten()
+                .any(|item| &item.draft_id == id)
+        });
+        self.selected_corrections.retain(|(scenario, id)| {
+            draft.document.operation.scenarios.get(*scenario).is_some()
+                && instructions
+                    .corrections
+                    .get(*scenario)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|items| items.iter().any(|item| &item.draft_id == id))
+        });
+        let mut selection = RegistrationSelection::default();
+        for item in instructions.replacements.iter().flatten() {
+            if choose(
+                ui,
+                &mut self.selected_replacements,
+                item.draft_id.clone(),
+                format!("{} · {}", item.draft_id, replacement_summary(&item.value)),
+            ) {
+                selection.replacements.push(item.draft_id.clone());
+            }
+        }
+        for (scenario, items) in instructions.corrections.iter().enumerate() {
+            let Some(settings) = draft.document.operation.scenarios.get(scenario) else {
+                continue;
+            };
+            for item in items.iter().flatten() {
+                if choose(
+                    ui,
+                    &mut self.selected_corrections,
+                    (scenario, item.draft_id.clone()),
+                    format!(
+                        "{} · {} · {}",
+                        settings
+                            .id
+                            .as_deref()
+                            .unwrap_or(item.value.asset_id.as_str()),
+                        item.draft_id,
+                        correction_summary(&item.value),
+                    ),
+                ) {
+                    selection.corrections.push(RegistrationCorrectionSelection {
+                        scenario,
+                        draft_id: item.draft_id.clone(),
+                    });
+                }
+            }
+        }
+        let commit = ui
+            .add_enabled(
+                !selection.replacements.is_empty() || !selection.corrections.is_empty(),
+                egui::Button::new(text(
+                    pt,
+                    "Commit selected corrections",
+                    "Registrar correções selecionadas",
+                )),
+            )
+            .clicked();
+        if let Some((report, origin_errors)) = &self.registration {
+            registration_outcome(
+                ui,
+                pt,
+                text(pt, "Observed catalog", "Catálogo de observações"),
+                &report.observations,
+            );
+            registration_outcome(
+                ui,
+                pt,
+                text(pt, "Forecast catalog", "Catálogo de previsões"),
+                &report.forecasts,
+            );
+            for error in origin_errors {
+                ui.colored_label(ui.visuals().warn_fg_color, error);
+            }
+        }
+        commit.then_some(InstructionAction::Register(selection))
     }
 
     fn observations(
@@ -210,6 +306,36 @@ impl InstructionTools {
         ui.button(text(pt, "Preview forecast", "Pré-visualizar previsão"))
             .clicked()
             .then_some(InstructionAction::PreviewForecast(index))
+    }
+}
+
+fn choose<K: std::hash::Hash + Eq>(
+    ui: &mut Ui,
+    selected: &mut HashSet<K>,
+    key: K,
+    label: String,
+) -> bool {
+    let mut checked = selected.contains(&key);
+    if ui.checkbox(&mut checked, label).changed() {
+        if checked {
+            selected.insert(key);
+        } else {
+            selected.remove(&key);
+        }
+    }
+    checked
+}
+
+fn registration_outcome(ui: &mut Ui, pt: bool, label: String, outcome: &RegistrationOutcome) {
+    ui.strong(label);
+    if let Some(error) = &outcome.error {
+        ui.colored_label(ui.visuals().error_fg_color, error);
+    } else if outcome.mappings.is_empty() {
+        ui.label(text(pt, "No items selected", "Nenhum item selecionado"));
+    } else {
+        for mapping in &outcome.mappings {
+            ui.label(format!("{} → {}", mapping.draft_id, mapping.catalog_id));
+        }
     }
 }
 

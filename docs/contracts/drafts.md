@@ -32,7 +32,8 @@ not select a workspace from that artifact or make its original dependencies
 available. Imported instruction values do not claim a registered origin.
 
 `edit --draft draft.json --document replacement.json` replaces the document with
-another validated draft JSON document. There is no field-patching language.
+another validated draft JSON document, preserving its anchor. An incomplete
+draft can supply its missing reference and timezone through this command.
 `refresh --source observations` accepts the local observation selection;
 `--source forecast --scenario 0` accepts one forecast selection. The default
 `--source all` also checks preparation dependencies and requires a complete
@@ -82,10 +83,14 @@ coverage or rewriting their files. Imports compact compatible version 1 periods
 losslessly; incompatible periods retain version 1 and exact explicit boundaries.
 Complete TOML export likewise uses version 2 only when lossless. New drafts use
 version 2. The [desktop interface](desktop.md#workspace-settings-and-operation-drafts)
-adds exact-reference restoration and anchored filenames; explicit-path backend and
+adds anchored filenames; explicit-path backend and
 CLI save/open APIs retain their existing path behavior.
 `Draft::new_run` establishes a validated fixed-reference baseline without selecting
-operational sources. `DraftOperation::coverage` displays the shared period derivation after validating
+operational sources. The CLI `draft new` accepts `--reference` and `--time-zone`
+together to set the anchor on creation. Opening or saving a draft fixes any
+reference and timezone already present. Library callers can use
+`Draft::initialize_anchor` to fill missing anchor fields and clear prior source
+acceptance. `DraftOperation::coverage` displays the shared period derivation after validating
 the IANA timezone and all hourly labels against the same offset-transition rules,
 and `Draft::use_day_horizons` converts legacy coverage only when every hourly label
 is unchanged.

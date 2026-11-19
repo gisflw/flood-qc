@@ -918,8 +918,8 @@ mod tests {
     fn rainfall_rows_follow_projected_cell_edges_and_original_values() {
         let start = super::super::data::timestamp("2026-01-01T00:00:00").unwrap();
         let rain = Rain {
-            zone: "UTC".into(),
-            source: "grid.nc".into(),
+            generation: "generation-test".into(),
+            scenario: "zero".into(),
             window: mgb_ops::store::TimeInterval {
                 start,
                 end: start + chrono::Duration::hours(1),

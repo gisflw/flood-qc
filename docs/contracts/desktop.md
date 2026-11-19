@@ -29,8 +29,8 @@ remain independent of runner work.
 ## Data and selection
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
-`data/history.sqlite`, `data/forecasts.sqlite`, and backend-discovered rainfall
-checkpoints and run manifests. Run state is displayed, including diagnostics and
+`data/history.sqlite`, `data/forecasts.sqlite`, the [active rainfall
+cache](operations.md#active-rainfall-cache) and retained run manifests. Run state is displayed, including diagnostics and
 successful scenarios from partially failed attempts. Missing/corrupt scenario
 outputs produce findings rather than hiding usable siblings.
 
@@ -55,23 +55,26 @@ levels when the run records the matching MINI and offset. It labels raw MINI
 levels and uses a separate scale when both datums have data. Station thresholds
 use the station scale. An available side can be viewed independently.
 
-Choose the retained run in Files, the map scenario in Rainfall, and the chart
-overlays in Charts. Negative signed map hours select the run's observed
-checkpoint and positive hours select its scenario checkpoint. Rainfall can also
-use a standalone checkpoint. Missing sources are reported independently.
+Choose a scenario and period in Rainfall. Reference, timezone and available
+coverage come from the active cache. Negative signed hours end at the reference
+and use observations. Positive hours start at the reference and use the selected
+forecast. Explicit start/end bounds can span both. Cells with incomplete
+coverage display as NA. A successful **Processing → New run → Run All** supplies
+the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
+the desktop is idle.
 
-Apply the rainfall and chart windows in their respective pages. Both use shared
-hourly-window semantics. Map timestamps use the displayed timezone and chart
-timestamps use the run timezone or the project observation timezone. Without a
-run, the initial display window uses the current project-local hour and the
-preceding week. Chart loading runs independently of map and layer reads. Charts
+Choose the retained run in Files and its overlays in Charts. Chart timestamps use
+the run or project observation timezone. Without a run, the initial chart window
+uses the current project-local hour and the preceding week. Chart loading runs independently of map and layer reads. Charts
 reports loading, data availability, and errors for the requested pair. If a
 replacement fails, a retained comparison keeps its original displayed IDs and
 exports.
 Rainfall inspection returns the accumulated original numeric cell, including NA
 and supplied zero. Display opacity does not alter accumulation or recreate its
-texture. Area/rain summaries use validated upstream topology and local MINI areas.
-Load upstream basin uses the clicked MINI or the station's linked MINI when
+texture. The Data rainfall summary uses the same cache, scenario and window as
+the overlay. Data controls whether it includes upstream MINIs. The summary uses
+frozen MINI topology and local areas. Without frozen topology, Data can still
+show the location's map area. Load upstream basin uses the clicked MINI or the station's linked MINI when
 topology is available. Layers names the loaded basin by its outlet MINI and
 allows it to be hidden or cleared independently of later selections. Replacing
 a basin clears the previous one as loading starts. Project changes release it.
@@ -116,10 +119,10 @@ basin results. Unavailable fields show a dash.
 
 The resizable right pane starts on Charts and also has Data, Rainfall and Files
 tabs. Data offers location search, summaries and the displayed series table.
-Rainfall controls the map's scenario, time window and checkpoint. Files contains
-the retained run selector, provenance, assets and findings. Use the ribbon to
-open Workspace Settings, Interface Settings, Prepare inputs, Execute MGB, Run All
-and Jobs in the same pane. Closing a form tab preserves its inputs. Jobs can
+Rainfall controls the map scenario and period. Files contains the retained run
+selector, provenance, assets and findings. Use the ribbon to open Workspace
+Settings, Interface Settings, New run, experiment
+forms and Jobs in the same pane. Closing a form tab preserves its inputs. Jobs can
 also reopen from the status bar.
 
 Settings offers English/Brazilian Portuguese and System/Light/Dark, applied
@@ -137,37 +140,40 @@ shared typed configuration read/save API. Save validates and atomically replaces
 TOML; Revert restores the loaded/saved baseline. Failed saves retain edits and
 existing destination bytes.
 
-Prepare inputs and Run All edit one shared version 2 [operation draft](drafts.md).
-They expose reference/timezone/day horizons and read-only shared-backend coverage,
+The Draft ribbon’s Run experiment form edits one shared
+[operation draft](drafts.md). They show its fixed reference and timezone,
+editable day horizons for version 2 drafts, and read-only coverage from the shared backend,
 observation paths/provider/station/series selections, ordered existing replacements,
 scenarios/forecast assets/ordered corrections, output stations, geometry/grid,
 interpolation, QC and engine settings. Load existing instructions/assets reads the
 selected catalogs independently without registering anything; an unavailable source
 reports its finding while choices from another available source remain usable.
 Selection toggles distinguish an unset field from an explicitly empty list (for
-example, no replacement instructions or no output stations). Existing imported instruction values
-remain preserved; their editors belong to later work.
+example, no replacement instructions or no output stations).
 
-New run always creates a fresh recipe with a fixed current-hour reference in the
-selected operation timezone. Available workspace paths initialize without selecting
-providers, assets or scenarios. Draft Open establishes a candidate reference and IANA
-timezone before reading the file; it defaults to the current hour and permits an
-explicit reference. Content must match both exactly. Automatic reopening considers
-only the remembered active draft with the independently established current-hour
-candidate in the separately remembered operation timezone; it never derives that
-candidate from the saved file or falls back to older drafts. Legacy day-horizon conversion is
-lossless or fails with the original file preserved for existing CLI workflows.
+New draft fixes the reference and timezone from the selected Processing setup.
+With no Processing setup, it uses the current hour in the workspace timezone.
+Available workspace paths initialize without selecting providers, assets or
+scenarios. Draft Open reads the selected file with its stored reference, timezone
+and coverage. Automatic reopening considers only the remembered active draft with
+the current-hour reference in the separately remembered operation timezone.
+Version 1 drafts retain their explicit coverage when opened.
 
 Draft Save writes under `config/drafts/` using
 `operation-YYYYMMDDTHHMMSS±HHMM.json`. Save As permits a different destination while
-requiring that reference-anchored suffix. Changing the reference chooses a new
-anchored destination and preserves the old file. Existing destinations require
+requiring that reference-anchored suffix. Existing destinations require
 explicit overwrite unless they are the active saved file. Incomplete drafts remain
 saveable; operational edits are never automatically saved. Explicit
 Accept/Refresh selected inputs accepts selected content through the shared backend;
 Check readiness displays backend findings, including changed/unaccepted sources.
 Monitoring F5 never accepts operational inputs. Preparing and running never
 implicitly accept sources or register instructions.
+
+Review → Instructions edits staged observation replacements and forecast
+corrections. Select the items to register and use **Commit selected corrections**.
+The two catalog outcomes report their registered IDs or their individual errors.
+Working selections and their order are preserved. An unchanged retry reuses the
+same IDs. Later edits keep the successful registration as their origin.
 
 Before New/Open replaces a draft, or closing/switching a project or quitting, Save,
 Discard and Cancel cover dirty configuration and draft edits, including hidden
@@ -176,11 +182,19 @@ changes alone do not make operational work dirty.
 
 ## Controlled jobs
 
-Prepare validates/freezes current accepted draft values and retains rainfall inputs
-without launching MGB; generated rainfall becomes available on the map. Execute
-MGB selects a retained preparation independently of the draft and can display its
-frozen recipe, period, scenarios and provenance. Run All uses the shared controlled
-draft preparation/execution workflow.
+Processing → New run opens a standalone form. Select an existing [operation
+TOML](operations.md#request). The reference defaults to the current hour in the
+recipe timezone and can be edited for a historical run. The form recalculates
+the two hourly periods as you edit. Check readiness validates the saved selections,
+including forecast coverage of the requested period. Select a recipe with matching
+forecast assets and corrections for the reference you intend to run.
+
+Accept/Refresh selected inputs explicitly accepts those inputs for the current
+reference. Changing the reference or selecting a recipe requires fresh acceptance.
+Run All prepares and executes with the shared controlled pipeline and publishes
+the active rainfall cache on success. Preparation is temporary. The operation
+keeps any open draft and its unsaved edits independent. The Draft ribbon’s
+experiment action uses the accepted draft values.
 
 Operational file work and processing run on a dedicated worker, separately from
 monitoring loading. One operational job runs at a time per workspace, with backend

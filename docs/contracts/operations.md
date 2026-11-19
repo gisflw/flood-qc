@@ -28,6 +28,37 @@ can execute after the original sources are removed.
 [Editable drafts](drafts.md) provide incomplete JSON recipes, explicit source
 acceptance and unregistered previews over this same typed preparation workflow.
 
+The desktop's [standalone run form](desktop.md#controlled-jobs) uses
+`app::OperationalRun` to load an explicitly selected TOML recipe, substitute
+the selected local reference and require acceptance before preparing or running.
+Version 2 recalculates the day horizons. Version 1 shifts the explicit boundary
+labels by the same number of local hours as the reference. Other selections,
+including asset and correction IDs and any explicit state-capture timestamp,
+retain their saved values and are validated against the chosen reference.
+
+## Active rainfall cache
+
+One generation per workspace supplies rainfall views. Its reference, timezone,
+coverage and scenario list describe the latest successful operational Run All.
+The pipeline stages its inputs temporarily and removes them after execution.
+Experiment runs and explicit execution of existing preparations leave the active
+display cache alone.
+
+The active generation is selected atomically by `data/cache/rainfall/active.json`.
+It retains the observed and selected scenario working grids, prepared basin
+forcing, and frozen MINI.gtp. Zero scenarios use the working grid geometry and
+verified zero forecast intervals. Successful replacement retires the previous
+generation. A failed or cancelled update before the switch preserves the active
+generation. A cache publication error after successful model execution leaves
+the completed trial and surfaces a job error.
+
+`app::rainfall_cache_info` reads the active metadata, and
+`app::query_cached_rainfall` returns an overlay and optional basin summary from
+the same generation. Missing caches return no rainfall. Selected artifacts are
+checked on read and missing or corrupt inputs surface as findings. Read-only
+queries create no artifacts. Trial and preparation discovery do not participate
+in rainfall display.
+
 ## Request
 
 The separate UTF-8 TOML request is strict at every table: unknown keys fail.
