@@ -38,14 +38,15 @@ remain distinct from supplied zero. These APIs perform no new interpolation.
 explicit timezone/window, and ordered `SeriesSelection` values. Model selections
 identify a trial directory, scenario and rain/level/flow variable. Observation
 selections identify a canonical database, explicit series and variable, whether
-to use effective rainfall, and ordered replacement IDs. Optional supplied
+to use effective values, and ordered replacement IDs. Optional supplied
 `replacements` replace those IDs with actual draft values without catalog writes.
-Effective edits apply only to rain; raw level and flow use recorded values.
+Rain and flow support effective values. Level uses recorded observations.
 
 Rain selects complete canonical intervals within the window, excluding its start
-label and including its end. Instantaneous level/flow include both visible
-endpoints. Effective rainfall uses the existing ordered replacement calculation.
-A missing sample remains missing. Coordinates are needed for interpolation, not
+label and including its end. Instantaneous level and flow include both visible
+endpoints. Effective flow applies ordered replacements at exact hourly labels
+and includes recorded off-hour samples. See the [observation contract](observations.md#selection-reviews-and-preparation)
+for replacement semantics. Coordinates are needed for interpolation, not
 station-identity selection or a data-only chart.
 
 Model mini levels are explicitly raw; station levels use retained `StationResults`

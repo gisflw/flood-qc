@@ -1,7 +1,18 @@
 # Saved preparation and execution
 
-The shared library exposes `prepare(PreparationRequest)` and
-`execute_prepared(ExecutionRequest)`, also available through the CLI:
+## Choose an execution path
+
+| Action | Start with | Retains after success | Publishes active rainfall |
+| --- | --- | --- | --- |
+| `operation prepare` | Complete operation TOML | Reusable preparation. Stops before engine execution. | No |
+| `operation execute` | Retained preparation | Isolated trial | No |
+| `draft run` or **Run experiment** | Draft with accepted inputs | Isolated trial. Removes the temporary preparation. | No |
+| **Processing → New run → Run All** | Operation TOML with inputs accepted for the chosen local reference | Isolated trial. Removes the temporary preparation. | Yes |
+
+Use [operation drafts](drafts.md) to edit and preview a recipe, or the
+[desktop run form](desktop.md#controlled-jobs) to run a saved recipe for a selected
+reference. The shared library exposes `prepare(PreparationRequest)` and
+`execute_prepared(ExecutionRequest)`, also available through the CLI.
 
 ```sh
 mgb-ops operation prepare --workspace /regional/workspace --request request.toml --output prepared --json
@@ -129,8 +140,23 @@ plus one hour through reference plus forecast days plus one hour, inclusively.
 Thus the example has 241 historical and 121 forecast labels; a non-midnight
 reference adds historical labels since midnight. These are interval-end labels,
 so covered rainfall begins one hour before the first label.
-Historical and forecast axes are contiguous. Explicit boundary datetimes and
-`step_seconds` cannot be combined with version 2 day horizons.
+Historical and forecast axes are contiguous. In the example, the first history
+interval starts at July 9, 23:00 and ends at the first history label, July 10,
+00:00. July 20, 00:00 is both the final historical label and the reference.
+The forecast labels run from July 20, 01:00 through July 25, 01:00.
+
+```mermaid
+flowchart TD
+    accTitle: Interval endpoints in the example operation
+    accDescr: Rainfall coverage starts at July 9 23:00. The first history label is July 10 00:00, the reference and final history label is July 20 00:00, and forecast labels run from July 20 01:00 through July 25 01:00.
+    start["July 9, 23:00 · coverage starts"] --> history["July 10, 00:00 · first history label"]
+    history --> reference["July 20, 00:00 · reference and last history label"]
+    reference --> forecast["July 20, 01:00 · first forecast label"]
+    forecast --> endLabel["July 25, 01:00 · last forecast label"]
+```
+
+Explicit boundary datetimes and `step_seconds` cannot be combined with version 2
+day horizons.
 
 Version 1 requests with `step_seconds = 3600` and explicit
 `historical_first_end`, `historical_last_end`, `forecast_first_end`, and
@@ -161,6 +187,42 @@ and correction semantics. Baseline Input must contain compatible geometry,
 metadata, calibration and initial-state dependencies. See the [additional inputs
 and state contract](saved-data.md#forcing-state-and-calibration) for optional
 forcing, calibration selection and state capture.
+
+## Execution lifecycle
+
+Under the workspace lock, execution verifies a snapshot of the preparation and
+runs a history-only worker before launching isolated scenario workers. It then
+joins workers, cleans up temporary inputs, and commits the trial outcome. Failed
+or cancelled trials keep diagnostics and any validated results. When there are
+no successful scenarios, execution retains logs without a result manifest.
+
+```mermaid
+flowchart TD
+    accTitle: Execution from a prepared snapshot to a retained trial
+    accDescr: Execution locks the workspace, verifies a snapshot, and runs isolated scenarios after shared history succeeds. Cancellation stops owned engines before cleanup. Failures retain diagnostics and validated results. A completed operational trial attempts active rainfall publication and remains available if publication fails.
+    lock["Lock workspace"] --> snapshot["Copy and verify prepared snapshot"]
+    snapshot --> history{"Shared history succeeds?"}
+    history -->|Yes| scenarios["Run isolated scenarios and validate outputs"]
+    history -->|No| cleanup["Join workers and clean up temporary inputs"]
+    scenarios --> cleanup
+    history -. Cancellation .-> stop["Stop and reap owned engines"]
+    scenarios -. Cancellation .-> stop
+    stop --> cleanup
+    cleanup --> commit{"All scenarios valid and trial committed successfully?"}
+    commit -->|No| incomplete["Keep diagnostics and any validated scenario results"]
+    commit -->|Yes| completed["Retain completed trial"]
+    completed --> operational{"Operational Run All?"}
+    operational -->|Yes| rainfall{"Active rainfall publication succeeds?"}
+    operational -->|No| success["Report success"]
+    rainfall -->|Published| success
+    rainfall -->|Publication failed| failure["Report job error and keep completed trial"]
+```
+
+A cancellation before the final commit stops and reaps owned engines and
+prevents a successful outcome. If active rainfall publication fails after the
+trial completes, the completed trial remains available and the job reports an
+error. See [controlled actions and cancellation](#controlled-actions-and-cancellation)
+and [active rainfall cache](#active-rainfall-cache).
 
 ## Prepared dependencies and run files
 
