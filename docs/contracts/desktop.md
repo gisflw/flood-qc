@@ -95,7 +95,9 @@ Rainfall, flow and level panels share time navigation and cursor position. Bars
 use actual hourly interval edges. History and forecast are visually distinct;
 masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
-checkboxes control chart sources; legends identify those sources. Charts exports the displayed snapshot. CSV keeps model and observation location
+checkboxes control chart sources. Plots, legends, and cursor readouts share the
+same source colors, which stay stable when toggling scenarios within a run.
+Charts exports the displayed snapshot. CSV keeps model and observation location
 IDs on each row using the [shared series export](series.md) format. Complete PNG
 export identifies the pair and combines all three panels,
 localized titles, local-time axes, units, reference/threshold annotations and

@@ -929,6 +929,11 @@ impl Monitoring {
             })
             .unwrap_or_default();
         self.charts.source_labels = labels;
+        self.charts.scenario_order = self
+            .run
+            .as_ref()
+            .map(|run| run.scenarios.clone())
+            .unwrap_or_default();
         match self.charts.load(report, &references, pt) {
             Ok(()) => self.charts.comparison_station = station,
             Err(error) => {
@@ -1866,6 +1871,7 @@ impl Monitoring {
                 state: self.charts.state.clone(),
                 report,
                 source_labels: self.charts.source_labels.clone(),
+                scenario_order: self.charts.scenario_order.clone(),
                 references,
                 portuguese: pt,
                 scale: self.export_scale,

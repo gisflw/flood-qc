@@ -10,6 +10,7 @@ pub struct Charts {
     pub report: Option<SeriesReport>,
     pub comparison_station: Option<String>,
     pub source_labels: Vec<String>,
+    pub scenario_order: Vec<String>,
     pub references: Vec<LevelReference>,
     pub labels: Vec<(String, Color32)>,
     portuguese: bool,
@@ -47,13 +48,17 @@ pub fn seconds(timestamp: chrono::NaiveDateTime) -> f64 {
     timestamp.and_utc().timestamp() as f64
         + f64::from(timestamp.and_utc().timestamp_subsec_nanos()) / 1e9
 }
-fn palette(index: usize) -> Color32 {
-    [
+fn source_color(scenario_order: &[String], scenario_id: Option<&str>) -> Color32 {
+    let colors = [
         Color32::from_rgb(25, 145, 205),
-        Color32::from_rgb(235, 145, 35),
-        Color32::from_rgb(55, 175, 95),
         Color32::from_rgb(190, 85, 190),
-    ][index % 4]
+        Color32::from_rgb(55, 175, 95),
+        Color32::from_rgb(235, 145, 35),
+    ];
+    scenario_id.map_or(Color32::from_rgb(135, 145, 155), |id| {
+        let index = scenario_order.iter().position(|scenario| scenario == id);
+        colors[index.unwrap_or(0) % colors.len()]
+    })
 }
 /// Split on masks and history/forecast boundaries; never bridge absent measurements.
 fn chunks(points: &[SeriesPoint]) -> Vec<&[SeriesPoint]> {
@@ -91,6 +96,7 @@ impl Charts {
             report: None,
             comparison_station: None,
             source_labels: vec![],
+            scenario_order: vec![],
             references: vec![],
             labels: vec![],
             portuguese: false,
@@ -106,6 +112,7 @@ impl Charts {
         self.report = None;
         self.comparison_station = None;
         self.source_labels.clear();
+        self.scenario_order.clear();
         self.references.clear();
         self.labels.clear();
     }
@@ -192,23 +199,13 @@ impl Charts {
             self.plots[2].clear_graph_y_label(YAxis::Right);
             self.plots[2].plot_mut().y2 = None;
         }
-        let scenarios: Vec<_> = report
-            .series
-            .iter()
-            .filter_map(|s| s.scenario_id.clone())
-            .collect();
         for series in &report.series {
             let index = match series.variable.as_str() {
                 "rain" => 0,
                 "flow" => 1,
                 _ => 2,
             };
-            let color = series
-                .scenario_id
-                .as_ref()
-                .map_or(Color32::from_rgb(135, 145, 155), |id| {
-                    palette(scenarios.iter().position(|s| s == id).unwrap_or(0))
-                });
+            let color = source_color(&self.scenario_order, series.scenario_id.as_deref());
             let name = series
                 .scenario_id
                 .clone()
@@ -375,7 +372,7 @@ impl Charts {
                                 .map(|v| format!("{v:.2}"))
                                 .unwrap_or_else(|| "NA".into());
                             ui.colored_label(
-                                palette(series.selection_index),
+                                source_color(&self.scenario_order, series.scenario_id.as_deref()),
                                 format!(
                                     "{} {}: {} {} @ {}",
                                     series.scenario_id.as_deref().unwrap_or("OBS"),
@@ -402,6 +399,23 @@ impl Drop for Charts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scenario_colors_follow_the_run_order() {
+        let scenario_order = ["zero", "ecmwf-raw", "noaa-raw", "ecmwf-corrected"].map(String::from);
+        let raw = Color32::from_rgb(190, 85, 190);
+        let corrected = Color32::from_rgb(235, 145, 35);
+        assert_eq!(
+            ["ecmwf-corrected", "ecmwf-raw", "ecmwf-corrected"]
+                .map(|id| source_color(&scenario_order, Some(id))),
+            [corrected, raw, corrected]
+        );
+        assert_eq!(
+            source_color(&scenario_order, None),
+            Color32::from_rgb(135, 145, 155)
+        );
+    }
+
     #[test]
     fn masks_and_segment_boundaries_break_lines() {
         let time = super::super::data::timestamp("2026-01-01T00:00:00").unwrap();
