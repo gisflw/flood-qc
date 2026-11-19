@@ -57,6 +57,7 @@ outputs produce findings rather than hiding usable siblings.
 | Left-click a station or MINI | Highlight it on the map and identify it in Layers. The active tab and chart comparison stay as they were. |
 | Search by ID or station name in **Data** | Select the matching location, including stations without coordinates. A positive numeric ID can select a MINI without local topology. The active tab and chart comparison stay as they were. |
 | Right-click a feature and choose **View time series** | Open Charts and fill the feature ID and its unique linked counterpart. The counterpart field is cleared if there is no unique link. |
+| Choose **Chart selected feature** in an empty Charts pane | Plot the currently selected feature using the same ID rules as **View time series**. |
 | Alt-click on the map | Inspect accumulated rainfall at that point independently of the current selection. |
 | Enter or choose **Apply** after editing chart IDs | Submit an explicit MINI and station pairing. |
 
@@ -98,9 +99,11 @@ a basin clears the previous one as loading starts. Project changes release it.
 ## Display and exports
 
 The map includes attributed raster basemaps, river segments, catchments, stations,
-upstream fill, accumulated rainfall and a numeric legend. Operational layers have
-visibility/order/opacity controls. Local vector files add display-only layers
-with visibility, ordering, color and opacity controls; they do not alter inputs.
+upstream fill and accumulated rainfall. The map shows the rainfall scale when a
+loaded overlay is visible, with numeric ranges and an NA swatch for incomplete
+coverage. Use the checkbox in a layer row to toggle visibility. Expand the row
+with **+** for order and opacity controls. Expanded local vector rows also offer
+color and removal controls. Local vector layers affect only the display.
 Polygon parts retain their holes. Overview river simplification is display-only;
 close zoom uses original paths. Rainfall uses projected latitude strips to keep
 pixel edges aligned in Web Mercator, rather than stretching four image corners.
@@ -116,6 +119,8 @@ masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
 checkboxes control chart sources. Plots, legends, and cursor readouts share the
 same source colors, which stay stable when toggling scenarios within a run.
+Hover over a plot to update the readings below the charts. They are grouped by
+variable and remain visible after the pointer leaves the plot.
 Charts exports the displayed snapshot. CSV keeps model and observation location
 IDs on each row using the [shared series export](series.md) format. Complete PNG
 export identifies the pair and combines all three panels,
@@ -127,11 +132,11 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 The ribbon has Project, Draft, View, Processing and Settings tabs with labeled
 groups of actions. The map stays visible in the center with zoom controls and
 basemap attribution. The fixed left column shows the selected retained run's
-`reference_time`, `observed_horizon_days`, `forecast_horizon_days` and available
-scenario IDs, with scrollable Layers below. The summary comes from the loaded
-run and its frozen recipe. Day horizons appear only when the saved hourly
-boundaries convert losslessly. Available scenarios have successful, readable
-basin results. Unavailable fields show a dash.
+reference time and timezone, observed and forecast horizons, and available
+scenarios, with scrollable Layers below. The summary comes from the loaded run
+and its frozen recipe. Day horizons appear only when the saved hourly boundaries
+convert losslessly. Available scenarios have successful, readable basin results.
+Unavailable fields in a loaded run show a dash.
 
 The resizable right pane starts on Charts and also has Data, Rainfall and Files
 tabs. Data offers location search, summaries and the displayed series table.
