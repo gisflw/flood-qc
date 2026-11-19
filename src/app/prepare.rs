@@ -299,18 +299,40 @@ fn prepare_accepted(
         fs::write(stage.join("request.toml"), &accepted.request_bytes)
             .map_err(|e| source_error(&stage, e))?;
         let doc = &accepted.document;
+        super::additional::check_engine(doc, &doc.engine.executable)
+            .map_err(|e| source_error(&doc.engine.executable, e))?;
         let geometry = crate::model::read_basin_geometry(&doc.geometry.mini_gtp)
             .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
-        if let Some(identities) = &identities {
-            let actual = super::draft::identity(
-                &digest_file(&doc.geometry.mini_gtp)
+        let edited_geometry = doc
+            .calibration
+            .as_ref()
+            .is_some_and(|selection| selection.use_edited_geometry);
+        let geometry_digest = if edited_geometry || identities.is_some() {
+            Some(
+                digest_file(&doc.geometry.mini_gtp)
                     .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?,
             )
-            .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
+        } else {
+            None
+        };
+        let soil_identity = super::additional::soil_identity(doc.calibration.as_ref())
+            .map_err(|e| source_error(&request_path, e))?;
+        if let Some(identities) = &identities {
+            let actual = super::draft::identity(geometry_digest.as_ref().unwrap())
+                .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
             if identities.get("geometry") != Some(&actual) {
                 return Err(source_error(
                     &doc.geometry.mini_gtp,
                     "geometry changed or has not been accepted; refresh inputs",
+                ));
+            }
+            if soil_identity
+                .as_ref()
+                .is_some_and(|value| identities.get("soil") != Some(value))
+            {
+                return Err(source_error(
+                    &request_path,
+                    "soil calibration changed or has not been accepted; refresh inputs",
                 ));
             }
         }
@@ -321,6 +343,8 @@ fn prepare_accepted(
         };
         let store = ObservationStore::open_read_only(&doc.observed.path)
             .map_err(|e| source_error(&doc.observed.path, e))?;
+        let extra_stations = super::additional::extra_stations(&store, doc)
+            .map_err(|e| source_error(&doc.observed.path, e))?;
         let (mut inputs, offsets) = store
             .read_selection_with_stations(
                 &selection,
@@ -330,7 +354,7 @@ fn prepare_accepted(
                 } else {
                     &doc.observed.replacement_ids
                 },
-                &doc.levels.station_ids,
+                &extra_stations,
             )
             .map_err(|e| source_error(&doc.observed.path, e))?;
         if let Some(identities) = &identities {
@@ -383,7 +407,7 @@ fn prepare_accepted(
         });
         if let Some(identities) = &identities {
             let mut source = inputs.clone();
-            source.replacements = source_replacements;
+            source.replacements = source_replacements.clone();
             let actual =
                 super::draft::observation_identity(&source, &accepted.historical, &selection)
                     .map_err(|e| source_error(&doc.observed.path, e))?;
@@ -393,6 +417,24 @@ fn prepare_accepted(
                     "observation source changed or has not been accepted; refresh inputs",
                 ));
             }
+        }
+        if let Some(additional) =
+            super::additional::capture(&accepted, &inputs, &source_replacements)
+                .map_err(|e| source_error(&request_path, e))?
+        {
+            if identities.as_ref().is_some_and(|values| {
+                values.get("additional_forcing") != Some(&additional.accepted)
+            }) {
+                return Err(source_error(
+                    &request_path,
+                    "additional forcing changed or has not been accepted; refresh inputs",
+                ));
+            }
+            for (name, bytes) in additional.raw_files {
+                let path = stage.join("sources").join(name);
+                fs::write(&path, bytes).map_err(|e| source_error(&path, e))?;
+            }
+            write_json(&stage.join("forcing/additional.json"), &additional.prepared)?;
         }
         for offset in &offsets {
             if !geometry.mini_ids.contains(&offset.mini_id) {
@@ -405,6 +447,15 @@ fn prepare_accepted(
         let obs_path = stage.join("sources/observations.sqlite");
         let mut subset = ObservationStore::create(&obs_path, &doc.time_zone)
             .map_err(|e| source_error(&obs_path, e))?;
+        if inputs
+            .replacements
+            .iter()
+            .any(|item| item.variable == "flow")
+        {
+            subset
+                .upgrade_replacements()
+                .map_err(|e| source_error(&obs_path, e))?;
+        }
         subset
             .write_batch(&ObservationBatch {
                 stations: inputs.stations.clone(),
@@ -496,9 +547,7 @@ fn prepare_accepted(
                     ),
                     (
                         &asset.retained_source,
-                        stage
-                            .join("sources/original")
-                            .join(format!("{}.grib2", asset.asset_id)),
+                        stage.join(asset.snapshot_source_path()),
                     ),
                 ] {
                     if !target.exists() {
@@ -568,10 +617,13 @@ fn prepare_accepted(
         }
         copy_tree(&doc.engine.input_dir, &stage.join("baseline/Input"))
             .map_err(|e| source_error(&doc.engine.input_dir, e))?;
-        copy_tree(&doc.engine.executable, &stage.join("baseline/engine"))
-            .map_err(|e| source_error(&doc.engine.executable, e))?;
+        copy_tree(
+            &doc.engine.executable,
+            &stage.join(crate::store::PREPARED_ENGINE),
+        )
+        .map_err(|e| source_error(&doc.engine.executable, e))?;
         if let Some(identities) = &identities {
-            let engine = stage.join("baseline/engine");
+            let engine = stage.join(crate::store::PREPARED_ENGINE);
             let inputs = stage.join("baseline/Input");
             let actual_engine = super::draft::identity(
                 &digest_file(&engine).map_err(|e| source_error(&engine, e))?,
@@ -590,6 +642,43 @@ fn prepare_accepted(
                 ));
             }
         }
+        let stage_input = stage.join("baseline/Input");
+        let soil = doc
+            .calibration
+            .as_ref()
+            .and_then(|selection| selection.soil.as_deref());
+        if edited_geometry || soil.is_some() {
+            crate::model::install_calibration(
+                &stage_input,
+                edited_geometry.then_some(doc.geometry.mini_gtp.as_path()),
+                soil,
+            )
+            .map_err(|e| source_error(&stage_input, e))?;
+            if edited_geometry
+                && Some(
+                    digest_file(&stage_input.join("Cell.hig"))
+                        .map_err(|e| source_error(&stage_input, e))?,
+                ) != geometry_digest
+            {
+                return Err(source_error(
+                    &doc.geometry.mini_gtp,
+                    "geometry changed while freezing",
+                ));
+            }
+            if let Some(expected) = soil_identity {
+                let actual = digest_file(&stage_input.join("paruso.hig"))
+                    .and_then(|value| super::draft::identity(&value))
+                    .map_err(|e| source_error(&stage_input, e))?;
+                if actual != expected {
+                    return Err(source_error(
+                        &stage_input,
+                        "soil calibration changed while freezing",
+                    ));
+                }
+            }
+        }
+        super::additional::check_engine(doc, &stage.join(crate::store::PREPARED_ENGINE))
+            .map_err(|e| source_error(&doc.engine.executable, e))?;
         control.check()?;
         let baseline_geometry =
             crate::model::read_basin_geometry(&stage.join("baseline/Input/MINI.gtp"))

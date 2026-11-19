@@ -21,6 +21,12 @@ cargo test --locked --test architecture
 cargo build
 ```
 
+Build optimized CLI and desktop binaries in `target/release/`:
+
+```sh
+cargo build --locked --release --features desktop --bins
+```
+
 Routine checks use synthetic fixtures and require neither Python, regional data,
 providers, nor MGB. The architecture gate also runs under `cargo test`. GitHub
 Actions runs formatting, Clippy, the full test suite, and the independent
@@ -56,7 +62,8 @@ See the [forecast request](docs/contracts/forecasts.md) and
 [operation request and retained artifacts](docs/contracts/operations.md).
 Preparation does not launch MGB; execution creates a disposable trial with logs,
 validated successful results and a recipe manifest. SIGINT cancels controlled
-execution and reaps owned engines. Live acquisition and new hot starts remain deferred.
+execution and reaps owned engines. The supplied RS build supports state capture.
+Warm restart and alternate routing require a qualified engine build.
 
 Use [operation drafts](docs/contracts/drafts.md) to save incomplete settings and
 ordered edits, explicitly refresh selected inputs, and preview changes before
@@ -93,6 +100,7 @@ Wayland and Windows remain unverified.
 - [Canonical observations](docs/contracts/observations.md): SQLite, review selection, and observed forcing APIs.
 - [Saved operations](docs/contracts/operations.md): preparation/execution commands, snapshots and results.
 - [Operation drafts](docs/contracts/drafts.md): JSON recipes, source acceptance, previews and save behavior.
+- [Saved-data workflows](docs/contracts/saved-data.md): canonical intake, review, calibration, analysis, bulletins, sharing, and automation.
 - [Migration summary](.dev/migration/summary.md): temporary capability tracking, validation status, and next work.
 - [Agent guidance](AGENTS.md): change and documentation rules.
 - [Legacy worktree record](references/retirement_record.md), [Python map](references/python_map.md),

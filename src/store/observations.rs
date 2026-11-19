@@ -2,10 +2,14 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{Datelike, NaiveDateTime, TimeZone, Timelike};
-use rusqlite::{Connection, OpenFlags, OptionalExtension, params, types::ValueRef};
+use rusqlite::{
+    Connection, OpenFlags, OptionalExtension, TransactionBehavior, params, types::ValueRef,
+};
 use serde::{Deserialize, Serialize};
 
 const SCHEMA: &str = include_str!("sql/observations_v1.sql");
+const REFERENCES_SCHEMA: &str = include_str!("sql/observations_v2.sql");
+const REPLACEMENTS_SCHEMA: &str = include_str!("sql/observations_v3.sql");
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +195,7 @@ pub fn validate_replacement(r: &ObservationReplacement) -> Result<(), Observatio
     }
     nonempty(&r.replacement_id, "replacement ID")?;
     nonempty(&r.station_id, "replacement station")?;
-    if r.variable != "rain"
+    if !matches!(r.variable.as_str(), "rain" | "flow")
         || (r.kind == ReplacementKind::Point && r.end_at.is_some())
         || r.end_at.is_some_and(|end| end <= r.start_at)
     {
@@ -259,12 +263,12 @@ impl ObservationStore {
     }
     fn verify(connection: &Connection) -> Result<String, ObservationError> {
         let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != 1 && version != 2 {
+        if !matches!(version, 1..=3) {
             return Err(error(format!(
                 "unsupported observation schema version {version}"
             )));
         }
-        if version == 2 {
+        if version >= 2 {
             let table_exists: bool = connection.query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='level_reference')",
                 [],
@@ -275,9 +279,9 @@ impl ObservationStore {
                     .prepare("SELECT station_id,kind,date,level_cm FROM level_reference LIMIT 0")
                     .is_err()
             {
-                return Err(error(
-                    "invalid observation schema version 2: missing reference table or columns",
-                ));
+                return Err(error(format!(
+                    "invalid observation schema version {version}: missing reference table or columns"
+                )));
             }
         }
         let format: String =
@@ -302,6 +306,40 @@ impl ObservationStore {
     pub fn write_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
         self.write_batch_inner(batch, false)
     }
+    /// Insert canonical records or accept complete equality with existing records.
+    pub fn ingest_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
+        self.write_batch_inner(batch, true)
+    }
+
+    /// Update station names and coordinates without modifying canonical identities.
+    pub fn update_station_inventory(
+        &mut self,
+        stations: &[Station],
+    ) -> Result<(), ObservationError> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let mut seen = HashSet::new();
+        for station in stations {
+            validate_station(station)?;
+            if !seen.insert(&station.station_id) {
+                return Err(error(format!("duplicate station {}", station.station_id)));
+            }
+            let updated = tx.execute(
+                "UPDATE station SET name=?4,latitude=?5,longitude=?6 WHERE station_id=?1 AND provider_code=?2 AND station_code=?3",
+                params![station.station_id, station.provider_code, station.station_code, station.name, station.latitude, station.longitude],
+            )?;
+            if updated != 1 {
+                return Err(error(format!(
+                    "unknown or changed station identity {}",
+                    station.station_id
+                )));
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn register_replacements(
         &mut self,
         replacements: Vec<ObservationReplacement>,
@@ -319,7 +357,10 @@ impl ObservationStore {
         batch: &ObservationBatch,
         idempotent: bool,
     ) -> Result<(), ObservationError> {
-        let tx = self.connection.transaction()?;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
         let zone: chrono_tz::Tz = Self::verify(&tx)?
             .parse()
             .map_err(|_| error("invalid time zone"))?;
@@ -334,6 +375,23 @@ impl ObservationStore {
         };
         for s in &batch.stations {
             validate_station(s)?;
+            if idempotent
+                && existing_matches(
+                    &tx,
+                    "SELECT provider_code IS ?2 AND station_code IS ?3 AND name IS ?4 AND latitude IS ?5 AND longitude IS ?6 FROM station WHERE station_id=?1",
+                    params![
+                        s.station_id,
+                        s.provider_code,
+                        s.station_code,
+                        s.name,
+                        s.latitude,
+                        s.longitude
+                    ],
+                    &format!("station {}", s.station_id),
+                )?
+            {
+                continue;
+            }
             tx.execute(
                 "INSERT INTO station VALUES (?1,?2,?3,?4,?5,?6)",
                 params![
@@ -349,6 +407,24 @@ impl ObservationStore {
         }
         for s in &batch.series {
             validate_series(s)?;
+            if idempotent
+                && existing_matches(
+                    &tx,
+                    "SELECT station_id IS ?2 AND variable IS ?3 AND state IS ?4 AND unit IS ?5 AND interval_seconds IS ?6 AND created_at IS ?7 FROM observation_series WHERE series_id=?1",
+                    params![
+                        s.series_id,
+                        s.station_id,
+                        s.variable,
+                        s.state,
+                        s.unit,
+                        s.interval_seconds,
+                        label(s.created_at)
+                    ],
+                    &format!("series {}", s.series_id),
+                )?
+            {
+                continue;
+            }
             tx.execute(
                 "INSERT INTO observation_series VALUES (?1,?2,?3,?4,?5,?6,?7)",
                 params![
@@ -380,6 +456,16 @@ impl ObservationStore {
                     rusqlite::types::Value::Real(v)
                 }
             };
+            if idempotent
+                && existing_matches(
+                    &tx,
+                    "SELECT value IS ?3 AND (?4 != 'level' OR value IS NULL OR typeof(value)='integer') FROM observation WHERE series_id=?1 AND observed_at=?2",
+                    params![s.series_id, label(s.observed_at), value, variable],
+                    &format!("sample {} {}", s.series_id, s.observed_at),
+                )?
+            {
+                continue;
+            }
             tx.execute(
                 "INSERT INTO observation VALUES (?1,?2,?3)",
                 params![s.series_id, label(s.observed_at), value],
@@ -401,24 +487,37 @@ impl ObservationStore {
         }
         for r in &batch.replacements {
             validate_replacement(r)?;
+            if r.variable == "flow" && version < 3 {
+                return Err(error(
+                    "flow replacements require the observation replacement schema upgrade",
+                ));
+            }
             unique(r.start_at, &r.replacement_id)?;
             if let Some(end) = r.end_at {
                 unique(end, &r.replacement_id)?;
             }
-            if idempotent {
-                let existing: Option<bool> = tx.query_row(
+            if idempotent
+                && existing_matches(
+                    &tx,
                     "SELECT station_id IS ?2 AND variable IS ?3 AND kind IS ?4 AND start_at IS ?5 AND end_at IS ?6 AND value IS ?7 AND reason IS ?8 FROM observation_replacement WHERE replacement_id=?1",
-                    params![r.replacement_id, r.station_id, r.variable, if r.kind == ReplacementKind::Point { "point" } else { "period" }, label(r.start_at), r.end_at.map(label), r.value, r.reason], |row| row.get(0)
-                ).optional()?;
-                if let Some(matches) = existing {
-                    if !matches {
-                        return Err(error(format!(
-                            "conflicting replacement {}",
-                            r.replacement_id
-                        )));
-                    }
-                    continue;
-                }
+                    params![
+                        r.replacement_id,
+                        r.station_id,
+                        r.variable,
+                        if r.kind == ReplacementKind::Point {
+                            "point"
+                        } else {
+                            "period"
+                        },
+                        label(r.start_at),
+                        r.end_at.map(label),
+                        r.value,
+                        r.reason
+                    ],
+                    &format!("replacement {}", r.replacement_id),
+                )?
+            {
+                continue;
             }
             tx.execute(
                 "INSERT INTO observation_replacement VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
@@ -441,6 +540,16 @@ impl ObservationStore {
         }
         for o in &batch.offsets {
             validate_offset(o)?;
+            if idempotent
+                && existing_matches(
+                    &tx,
+                    "SELECT mini_id IS ?2 AND offset_m IS ?3 FROM station_offset WHERE station_id=?1",
+                    params![o.station_id, o.mini_id, o.offset_m],
+                    &format!("offset {}", o.station_id),
+                )?
+            {
+                continue;
+            }
             tx.execute(
                 "INSERT INTO station_offset VALUES (?1,?2,?3)",
                 params![o.station_id, o.mini_id, o.offset_m],
@@ -612,6 +721,20 @@ impl ObservationStore {
         Ok((inputs, offsets))
     }
 }
+fn existing_matches(
+    connection: &Connection,
+    sql: &str,
+    params: impl rusqlite::Params,
+    identity: &str,
+) -> Result<bool, ObservationError> {
+    match connection
+        .query_row(sql, params, |row| row.get(0))
+        .optional()?
+    {
+        Some(false) => Err(error(format!("conflicting {identity}"))),
+        existing => Ok(existing.unwrap_or(false)),
+    }
+}
 fn read_replacements(
     connection: &Connection,
     ids: &[String],
@@ -710,11 +833,25 @@ fn validate_level_references(references: &[LevelReference]) -> Result<(), Observ
 impl ObservationStore {
     /// Explicitly upgrade an existing writable database to reference schema v2.
     pub fn upgrade_references(&mut self) -> Result<(), ObservationError> {
-        let tx = self.connection.transaction()?;
+        self.upgrade_schema(2)
+    }
+
+    /// Explicitly add flow replacement support, preserving existing observations and references.
+    pub fn upgrade_replacements(&mut self) -> Result<(), ObservationError> {
+        self.upgrade_schema(3)
+    }
+
+    fn upgrade_schema(&mut self, target: i64) -> Result<(), ObservationError> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
         Self::verify(&tx)?;
-        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version == 1 {
-            tx.execute_batch("CREATE TABLE level_reference(station_id TEXT NOT NULL REFERENCES station(station_id), kind TEXT NOT NULL, date TEXT NOT NULL, level_cm REAL NOT NULL, PRIMARY KEY(station_id,kind,date,level_cm)); CREATE UNIQUE INDEX level_threshold_key ON level_reference(station_id,kind) WHERE date=''; PRAGMA user_version=2;")?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if version < 2 {
+            tx.execute_batch(REFERENCES_SCHEMA)?;
+        }
+        if version < 3 && target == 3 {
+            tx.execute_batch(REPLACEMENTS_SCHEMA)?;
         }
         tx.commit()?;
         Ok(())
@@ -817,7 +954,7 @@ impl ObservationStore {
         validate_level_references(references)?;
         let tx = self.connection.transaction()?;
         let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version != 2 {
+        if version < 2 {
             return Err(error("reference schema upgrade required"));
         }
         tx.execute("DELETE FROM level_reference", [])?;

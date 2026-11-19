@@ -127,8 +127,9 @@ IDs resolve through the explicitly selected forecast catalog. Duplicate/unknown
 instructions and cross-asset corrections fail. Zero scenarios need no forecast
 asset or catalog file. See the [forecast contract](forecasts.md) for normalization
 and correction semantics. Baseline Input must contain compatible geometry,
-metadata, calibration and initial-state dependencies; preparation does not infer
-state compatibility or generate a new hot start.
+metadata, calibration and initial-state dependencies. See the [additional inputs
+and state contract](saved-data.md#forcing-state-and-calibration) for optional
+forcing, calibration selection and state capture.
 
 ## Prepared dependencies and run files
 
@@ -223,7 +224,8 @@ normal cancellation guarantee; automatic recovery is not provided.
 CHUVABIN is little-endian f32, time outermost and basin innermost, without headers
 or record markers. MINI.gtp supplies actual mini IDs, order and centroids.
 Metadata edits preserve unrelated baseline content and calibration. Every private
-Input carries the retained baseline state; engine-written state is not copied back.
+Input carries the retained baseline state. An explicit qualified state request
+retains state under the successful scenario.
 
 The qualified decoder keeps four original streams separate. A history-only run
 recovers levels overwritten by the engine's forecast prefix; historical flow and
@@ -251,7 +253,7 @@ exits 0, operational failure exits 1 and argument errors exit 2. Library errors
 identify invalid requests/preparations, busy workspaces, source/storage failures
 or model failures without embedding binary or full observation contents.
 
-Linux is the qualification platform. Windows, live providers, automatic retries,
-new hot starts and hydrological validity remain unqualified. Scientific evidence
+Linux is the qualification platform. Windows, live providers, warm-state
+consumption and hydrological validity remain unqualified. Scientific evidence
 and the saved case's state caveat live with the
 [regression reference](../../references/regression/rs-hourly/README.md).

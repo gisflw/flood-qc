@@ -65,10 +65,57 @@ pub struct PrecipitationQcFinding {
     pub sequence_id: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewVariable {
+    Rain,
+    Flow,
+    Level,
+}
+impl ReviewVariable {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Rain => "rain",
+            Self::Flow => "flow",
+            Self::Level => "level",
+        }
+    }
+
+    fn unit_and_interval(self) -> (&'static str, Option<i64>) {
+        match self {
+            Self::Rain => ("mm", Some(3600)),
+            Self::Flow => ("m3/s", None),
+            Self::Level => ("cm", None),
+        }
+    }
+
+    fn sample(self, value: ObservationValue) -> Option<f64> {
+        match (self, value) {
+            (Self::Rain, ObservationValue::RainMm(v))
+            | (Self::Flow, ObservationValue::FlowM3s(v))
+                if v.is_finite() =>
+            {
+                Some(v)
+            }
+            (Self::Level, ObservationValue::LevelCm(v)) => Some(f64::from(v)),
+            _ => None,
+        }
+    }
+}
+
 pub fn select_observation_series(
     candidates: &[ObservationSeries],
     explicit_series_ids: &[String],
 ) -> Result<Vec<ObservationSeries>, ObservationError> {
+    select_series(candidates, explicit_series_ids, ReviewVariable::Rain)
+}
+
+fn select_series(
+    candidates: &[ObservationSeries],
+    explicit_series_ids: &[String],
+    variable: ReviewVariable,
+) -> Result<Vec<ObservationSeries>, ObservationError> {
+    let name = variable.name();
     let mut explicit = HashSet::new();
     for id in explicit_series_ids {
         if !explicit.insert(id.as_str()) {
@@ -76,19 +123,18 @@ pub fn select_observation_series(
         }
         if !candidates
             .iter()
-            .any(|s| &s.series_id == id && s.variable == "rain")
+            .any(|s| &s.series_id == id && s.variable == name)
         {
-            return Err(error(format!("unknown rain series {id}")));
+            return Err(error(format!("unknown {name} series {id}")));
         }
     }
     let mut grouped: BTreeMap<&str, Vec<&ObservationSeries>> = BTreeMap::new();
-    for s in candidates.iter().filter(|s| s.variable == "rain") {
-        if !matches!(
-            (s.state.as_str(), s.unit.as_str(), s.interval_seconds),
-            ("approved" | "curated" | "raw", "mm", Some(3600))
-        ) {
+    for s in candidates.iter().filter(|s| s.variable == name) {
+        if !matches!(s.state.as_str(), "approved" | "curated" | "raw")
+            || (s.unit.as_str(), s.interval_seconds) != variable.unit_and_interval()
+        {
             return Err(error(format!(
-                "series {}: invalid rainfall metadata",
+                "series {}: invalid {name} metadata",
                 s.series_id
             )));
         }
@@ -250,6 +296,22 @@ pub fn effective_observations(
     inputs: &ObservationInputs,
     timeline: &IntervalAxis,
 ) -> Result<Vec<EffectiveObservation>, ObservationError> {
+    effective_review_observations(inputs, timeline, ReviewVariable::Rain, &[])
+}
+
+pub fn effective_flow_observations(
+    inputs: &ObservationInputs,
+    timeline: &IntervalAxis,
+) -> Result<Vec<EffectiveObservation>, ObservationError> {
+    effective_review_observations(inputs, timeline, ReviewVariable::Flow, &[])
+}
+
+pub fn effective_review_observations(
+    inputs: &ObservationInputs,
+    timeline: &IntervalAxis,
+    variable: ReviewVariable,
+    explicit_series_ids: &[String],
+) -> Result<Vec<EffectiveObservation>, ObservationError> {
     timeline.validate().map_err(|e| error(e.to_string()))?;
     let mut stations = HashMap::new();
     for station in &inputs.stations {
@@ -305,7 +367,7 @@ pub fn effective_observations(
             }
         }
     }
-    let selected = select_observation_series(&inputs.series, &[])?;
+    let selected = select_series(&inputs.series, explicit_series_ids, variable)?;
     let mut times = HashSet::new();
     let mut previous = None;
     for interval in &timeline.bounds {
@@ -327,12 +389,15 @@ pub fn effective_observations(
         if !replacements.insert(&r.replacement_id) {
             return Err(error(format!("duplicate replacement {}", r.replacement_id)));
         }
-        if r.variable != "rain"
+        if !matches!(r.variable.as_str(), "rain" | "flow")
             || (r.kind == ReplacementKind::Point && r.end_at.is_some())
             || r.end_at.is_some_and(|end| end <= r.start_at)
             || r.value.is_some_and(|v| !v.is_finite())
         {
             return Err(error(format!("invalid replacement {}", r.replacement_id)));
+        }
+        if r.variable != variable.name() {
+            continue;
         }
         let applicable = timeline
             .bounds
@@ -352,6 +417,9 @@ pub fn effective_observations(
             continue;
         }
         if !times.contains(&s.observed_at) {
+            if variable != ReviewVariable::Rain {
+                continue;
+            }
             return Err(error(format!(
                 "series {}: off-grid sample {}",
                 s.series_id, s.observed_at
@@ -359,13 +427,13 @@ pub fn effective_observations(
         }
         let value = match s.value {
             None => None,
-            Some(ObservationValue::RainMm(v)) if v.is_finite() => Some(v),
-            _ => {
-                return Err(error(format!(
-                    "series {}: invalid rainfall value",
-                    s.series_id
-                )));
-            }
+            Some(v) => Some(variable.sample(v).ok_or_else(|| {
+                error(format!(
+                    "series {}: invalid {} value",
+                    s.series_id,
+                    variable.name()
+                ))
+            })?),
         };
         if samples
             .insert((s.series_id.as_str(), s.observed_at), value)
@@ -414,7 +482,10 @@ pub fn effective_observations(
                 applied_instruction_ids: Vec::new(),
             };
             for r in &inputs.replacements {
-                if r.station_id == s.station_id && matches_replacement(r, interval.end) {
+                if r.variable == variable.name()
+                    && r.station_id == s.station_id
+                    && matches_replacement(r, interval.end)
+                {
                     row.effective_value = r.value;
                     row.replacement = r
                         .value
@@ -600,4 +671,145 @@ pub fn prepare_observed_forcing(
         provenance,
         replacement_diagnostics: diagnostics,
     })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AvailabilityState {
+    Absent,
+    Null,
+    Excluded,
+    Valid,
+}
+
+impl EffectiveObservation {
+    pub fn availability(&self) -> AvailabilityState {
+        match (self.effective_value, &self.replacement, self.raw_present) {
+            (Some(_), _, _) => AvailabilityState::Valid,
+            (None, AppliedReplacement::Null, _) => AvailabilityState::Excluded,
+            (None, _, true) => AvailabilityState::Null,
+            (None, _, false) => AvailabilityState::Absent,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SpatialQcHour {
+    pub observed_at: NaiveDateTime,
+    pub raw_mm: f64,
+    pub predicted_mm: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SpatialQcStation {
+    pub station_id: String,
+    pub expected_hours: usize,
+    pub raw_hours: usize,
+    pub matched_hours: usize,
+    pub raw_total_mm: Option<f64>,
+    pub predicted_total_mm: Option<f64>,
+    pub residual_mm: Option<f64>,
+    pub hours: Vec<SpatialQcHour>,
+}
+
+/// Compare raw target rain with IDW from other stations' effective rain at the same hour.
+pub fn spatial_precipitation_qc(
+    rows: &[EffectiveObservation],
+    target: Option<&str>,
+    settings: &crate::store::IdwSettings,
+) -> Result<Vec<SpatialQcStation>, ObservationError> {
+    settings.validate().map_err(|e| error(e.to_string()))?;
+    let mut stations = BTreeMap::<&str, Vec<&EffectiveObservation>>::new();
+    let mut neighbors = BTreeMap::<NaiveDateTime, Vec<_>>::new();
+    for row in rows {
+        stations
+            .entry(row.station_id.as_str())
+            .or_default()
+            .push(row);
+        if let (Some(lon), Some(lat), Some(value)) =
+            (row.longitude, row.latitude, row.effective_value)
+        {
+            neighbors
+                .entry(row.observed_at)
+                .or_default()
+                .push((&row.station_id, lon, lat, value));
+        }
+    }
+    if let Some(target) = target
+        && !stations.contains_key(target)
+    {
+        return Err(error(format!(
+            "no selected rainfall series for station {target}"
+        )));
+    }
+    let mut result = Vec::new();
+    for (station, rows) in stations {
+        if target.is_some_and(|id| id != station) {
+            continue;
+        }
+        let mut report = SpatialQcStation {
+            station_id: station.into(),
+            expected_hours: rows.len(),
+            raw_hours: rows.iter().filter(|row| row.raw_value.is_some()).count(),
+            matched_hours: 0,
+            raw_total_mm: None,
+            predicted_total_mm: None,
+            residual_mm: None,
+            hours: Vec::new(),
+        };
+        for row in rows {
+            let (Some(raw), Some(lon), Some(lat), Some(candidates)) = (
+                row.raw_value,
+                row.longitude,
+                row.latitude,
+                neighbors.get(&row.observed_at),
+            ) else {
+                continue;
+            };
+            let (mut ids, mut lons, mut lats, mut values) =
+                (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+            for &(id, x, y, rain) in candidates {
+                if id != station {
+                    ids.push(id.clone());
+                    lons.push(x);
+                    lats.push(y);
+                    values.push(rain);
+                }
+            }
+            if ids.is_empty() {
+                continue;
+            }
+            let predicted = crate::analysis::interpolate_stations(
+                &ids,
+                &lons,
+                &lats,
+                &values,
+                &[lon],
+                &[lat],
+                settings,
+            )
+            .map_err(|e| error(format!("station {station} {}: {e}", row.observed_at)))?[0];
+            report.hours.push(SpatialQcHour {
+                observed_at: row.observed_at,
+                raw_mm: raw,
+                predicted_mm: predicted,
+            });
+        }
+        report.matched_hours = report.hours.len();
+        if !report.hours.is_empty() {
+            let raw = report.hours.iter().map(|row| row.raw_mm).sum::<f64>();
+            let predicted = report.hours.iter().map(|row| row.predicted_mm).sum::<f64>();
+            let residual = predicted - raw;
+            if [raw, predicted, residual].iter().any(|v| !v.is_finite()) {
+                return Err(error(format!(
+                    "station {station}: spatial rainfall QC overflow"
+                )));
+            }
+            report.raw_total_mm = Some(raw);
+            report.predicted_total_mm = Some(predicted);
+            report.residual_mm = Some(residual);
+        }
+        result.push(report);
+    }
+    Ok(result)
 }

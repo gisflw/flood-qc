@@ -17,7 +17,7 @@ remains the numerical engine; `rs_hydro_forecast` is the target runtime workspac
 
 ## Current migration state
 
-Updated November 18, 2026 for the map-first desktop layout.
+Updated November 18, 2026 for the canonical saved-data migration.
 The Linux saved-data operational path is complete:
 workspace inspection, canonical observations/QC/replacements, saved forecast
 normalization/corrections, reusable prepared inputs, isolated real MGB execution,
@@ -36,9 +36,8 @@ grids, and resolve signed rainfall hours through shared interval validation.
 Operation TOML and JSON drafts support reference/horizon authoring while preserving
 exact explicit-boundary recipes and unchanged retained artifacts. Focused checks
 cover period compatibility and the draft-to-preparation/execution workflow.
-The last explicit frozen-case release RS acceptance
-passed in 82.76 seconds after coordinate-independent review was separated from
-interpolation requirements. Failure checks cover OS
+The explicit frozen-case release RS acceptance passed after the saved-data changes.
+The qualification record retains the exact comparison and engine evidence. Failure checks cover OS
 lock contention, nonzero/spawn/malformed output, surviving siblings, unavailable
 original sources, altered prepared inputs and failed final manifest persistence.
 Linux is qualified for this saved case; Windows and hosted CI remain unverified.
@@ -48,8 +47,8 @@ Current usage lives in the [workspace](../../docs/contracts/workspace.md),
 [observation](../../docs/contracts/observations.md),
 [forecast](../../docs/contracts/forecasts.md) and
 [operation](../../docs/contracts/operations.md) contracts. The accepted operational
-specifications are retired. Live acquisition, broader review/analysis and new hot
-starts follow their migration rows below.
+specifications are retired. The [saved-data contract](../../docs/contracts/saved-data.md) records the new operator paths.
+Provider adapters and the engine-dependent restart gaps follow their rows below.
 
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
@@ -63,16 +62,18 @@ record unverified platforms and remaining gaps explicitly.
 | [History, assets, and persisted operation data](core_and_cli.md) | 3 onward: grow store with each operational capability | Complete for the saved path: canonical observation and forecast/correction SQLite, forcing/result NetCDF, frozen prepared dependencies and per-run JSON. Legacy conversion remains regression-only; broader imports follow acquisition. |
 | [Canonical observations, QC, and observed forcing](../../docs/contracts/observations.md) | 3, step 2a: observed forcing | Complete: canonical SQLite, explicit ordered replacements, ranking/QC and pure interpolation; full saved arrays, selected rows and findings exact. Timestamp fixture conversion and numerical provenance retained in the qualification record. |
 | [Saved forecast normalization and forecast forcing](../../docs/contracts/forecasts.md) | 3, step 2b: forecast forcing | Complete: qualified driver and metadata/grid validation, immutable catalog, ordered corrections and library/CLI workflow. Full native, working, basin and transformed-frame comparisons exact; masks, coordinates and decoded local times/bounds verified. |
-| [Saved RS integration, execution, and decoded results](../../docs/contracts/operations.md) | 3, integration and step 3: first operational Rust path | Complete on Linux: reusable frozen preparation, OS lock, isolated scenarios, history-only level recovery, raw/station integer centimetres and per-trial manifests. Two saved executions match full arrays and raw streams exactly after original sources are removed; lifecycle/failure and integrity checks pass. State generation, Windows and hydrological validity remain unqualified. |
-| [Acquisition and imports, including inventory updates](acquisition.md) | 5: add sources incrementally | Not started in Rust. Cover Python, VB.NET/plugins, and runtime scripts; exclude ONS meteorological forecasts. |
-| [Broader QC, review, corrections, and availability](review_and_corrections.md) | 5: extend analysis beyond the saved path | Not started beyond the saved-case capabilities implemented above. Analysis operates on canonical data; store persists explicit review instructions and preserved sources. |
-| [Additional forcing inputs and hot-start lifecycle](model_and_hotstarts.md) | 5: extend model support | Not started in Rust. State generation, consumption, and chaining still require qualification. |
-| [Geometry and calibration editors](calibration_editors.md) | 6: functional acceptance | Not started in Rust. No editor regression or baseline replacement required. |
-| [Numerical analysis and post-processing](analysis_and_reports.md) | Grow analysis with operational increments; complete in 7 | Saved-path forcing is implemented above; broader analysis remains not started. Observation-based AR(1) belongs to analysis for dataviz and is deferred. No model-internal dependencies. |
-| [Bulletins and document/data exports](analysis_and_reports.md) | Exercise useful exports early; complete in 7 | Not started in Rust. Both bulletin families and runtime report scripts remain references. |
-| [Completed-run regeneration and sharing](completed_runs.md) | 7: completed-run sharing | Not started in Rust. Operators may copy generated files; regeneration requires referenced dependencies and a compatible engine. No retention/archive manager in the saved-run increment. |
-| [Desktop interface](desktop_and_automation.md) | 4, then alongside subsequent capabilities | In progress: optional egui/rsplot/walkers monitoring target, asynchronous project/run/rainfall loading, linked selection and series, polygon holes, display preferences and CSV/complete PNG exports. Headless and desktop tests, regional virtual X11 inspection and 1×/2×/3× software-Vulkan PNG checks pass locally. The [desktop contract](../../docs/contracts/desktop.md) records current qualification limits; no operator-hardware benchmark or Wayland/Windows qualification. Broader functionality remains under the [GUI plan](../plans/desktop_gui.md). The [layout and runners increment](../changes/desktop_layout_and_runners.md) is implemented for acceptance: Ribbon actions, a persistent center map, a retained-run summary and Layers on the left, and a resizable right pane for Charts, Data, Rainfall, Files and operating forms. Map picks highlight features independently of Charts, and feature actions open time series or load a clearable upstream layer. Shared drafts retain anchored saves and exact-reference restoration, alongside controlled Jobs, language/theme controls and per-project preferences. Focused worker tests exercise explicit source acceptance and preparation/execution over the same synthetic fixture as the CLI. The earlier Linux virtual X11 check covered manual chart pairing, partial results during map errors, removal of old plot data, form access and narrow-window layout. A Linux X11 inspection with Vulkan llvmpipe verified the map and right-pane forms at 840×650, retained-run horizons and available scenarios, independent left-click selection, and the time-series and upstream actions. Layers remained visible while scrolling a 48-scenario run. QC/correction pages and assistant remain later work. |
-| [Scheduling and email](desktop_and_automation.md) | 7: automate established operations | Not started in Rust. Follow the capabilities they automate. |
+| [Saved RS integration, execution, and decoded results](../../docs/contracts/operations.md) | 3, integration and step 3: first operational Rust path | Complete on Linux: reusable frozen preparation, OS lock, isolated scenarios, history-only level recovery, raw/station integer centimetres and per-trial manifests. Two saved executions match full arrays and raw streams exactly after original sources are removed; lifecycle/failure and integrity checks pass. The separate state row records new capture evidence. Windows and hydrological validity remain unqualified. |
+| [Canonical saved input intake](../../docs/contracts/saved-data.md#canonical-data-and-review) | 5 | Complete for canonical inputs. Transactional observation and inventory updates, immutable forecast NetCDF registration, and validated wind and reservoir JSON import. Repeat, collision, and rollback checks pass. |
+| [Acquisition and legacy-source imports](acquisition.md) | Later adapter phase | Not started for live acquisition or new provider/legacy-source conversion. ONS meteorological forecasts remain excluded. |
+| [Broader QC, review, corrections, and availability](review_and_corrections.md) | 5 | Complete for canonical data. Explicit v3 flow instruction upgrade with v1/v2 reads, effective series, 72-hour and monthly availability, leave-one-out and all-station rainfall QC, and desktop instruction previews. |
+| [Additional forcing and state capture](model_and_hotstarts.md) | 5 | Complete for the supplied Linux RS build. Qualified QOBS, QSUBST and wind formats, captured six state files through an isolated operation after original inputs were moved, and verified retained file digests. |
+| [Hot-start consumption and alternate routing](model_and_hotstarts.md) | 5 | Blocked on a compatible executable. The supplied inertial build ignored both the flag and the state bytes. Explicit unsupported requests fail during preparation. |
+| [Geometry and calibration editors](calibration_editors.md) | 6 | Complete for the selected engine formats on Linux. Representative byte and validation checks pass. A real RS operation opened the selected private Cell.hig and paruso.hig and decoded results after the original selections were moved. |
+| [Numerical analysis and post-processing](analysis_and_reports.md) | 7 | Complete for retained Rust data. AR(1), recent bias, manual offsets, bands, peaks and thresholds, rating tables, cross-run comparisons, CSV/PNG batches, and return-period GeoJSON use shared series. |
+| [Bulletins and document/data exports](analysis_and_reports.md) | 7 | Complete for configured retained Rust runs. PDF, HTML, Markdown, CSV, and PNG checks pass. Independent NetCDF and SQLite reads reproduced selected regional rainfall and stage values. |
+| [Completed-run regeneration and sharing](completed_runs.md) | 7 | Complete for terminal retained trials with available results. A second workspace opened a verified bundle and regenerated identical synthetic engine output from an explicit matched preparation and local engine. Tests cover digest mismatch and collisions. |
+| [Desktop interface](desktop_and_automation.md) | 4, then throughout | In progress for full platform qualification. The existing map and runners expose canonical intake, review, calibration, analysis, bulletins, sharing, and scheduling. Linux Xvfb and software Vulkan smoke checks opened all new panes together and exercised geometry and scheduler settings while the map stayed visible. Assistant and acquisition remain later work. Windows, Wayland and operator hardware remain unverified. |
+| [Scheduling and email](desktop_and_automation.md) | 7 | Complete for local saved-data jobs. Injected-clock and controlled SMTP tests cover due slots, restart and overlap, and delivery failures. External relay delivery remains unverified. |
 
 Split these broad rows as individual capabilities are implemented, preserving
 their reference links, delivery responsibility, actual state, evidence, and next

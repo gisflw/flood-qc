@@ -41,6 +41,48 @@ pub struct PreparationDocument {
     pub engine: EngineDocument,
     pub forecasts: ForecastsDocument,
     pub scenarios: Vec<ScenarioDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forcing: Option<ForcingDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<CalibrationDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hot_start: Option<HotStartDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingMode>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ForcingDocument {
+    pub mappings: crate::store::ForcingSelections,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reservoir_schedules: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wind_observations: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CalibrationDocument {
+    pub use_edited_geometry: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soil: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HotStartDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_bundle: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_at: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    Inertial,
+    MuskingumCunge,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -381,6 +423,36 @@ pub(super) fn validate_document(
             "reference must end history and forecast must immediately follow",
         ));
     }
+    if let Some(state) = &document.hot_start
+        && let Some(value) = &state.save_at
+    {
+        let at = timestamp("hot_start.save_at", value)?;
+        if at.date() <= hfirst.date() || at > hlast || at.hour() < hfirst.hour() {
+            return Err(invalid(
+                "hot_start.save_at",
+                "RS state save requires a later history date and an hour at or after the first simulation hour",
+            ));
+        }
+    }
+    if let Some(forcing) = &document.forcing {
+        forcing
+            .mappings
+            .validate()
+            .map_err(|e| invalid("forcing.mappings", e.to_string()))?;
+        if forcing
+            .mappings
+            .reservoirs
+            .iter()
+            .any(|item| item.schedule_id.is_some())
+            != forcing.reservoir_schedules.is_some()
+            || forcing.mappings.wind.is_empty() == forcing.wind_observations.is_some()
+        {
+            return Err(invalid(
+                "forcing",
+                "select a canonical data file and matching mappings together",
+            ));
+        }
+    }
     let historical = axis(hfirst, hlast, &document.time_zone, "historical")?;
     let forecast = axis(ffirst, flast, &document.time_zone, "forecast")?;
     let mut combined = historical.clone();
@@ -526,6 +598,33 @@ pub(super) fn resolve_request(
         &mut document.engine.input_dir,
         true,
     )?;
+    if let Some(forcing) = &mut document.forcing {
+        for (field, path) in [
+            (
+                "forcing.reservoir_schedules",
+                &mut forcing.reservoir_schedules,
+            ),
+            ("forcing.wind_observations", &mut forcing.wind_observations),
+        ] {
+            if let Some(path) = path {
+                resolve_file(workspace, field, path, false)?;
+            }
+        }
+    }
+    if let Some(soil) = document
+        .calibration
+        .as_mut()
+        .and_then(|value| value.soil.as_mut())
+    {
+        resolve_file(workspace, "calibration.soil", soil, false)?;
+    }
+    if let Some(state) = document
+        .hot_start
+        .as_mut()
+        .and_then(|value| value.use_bundle.as_mut())
+    {
+        resolve_file(workspace, "hot_start.use_bundle", state, true)?;
+    }
     if document
         .scenarios
         .iter()

@@ -4,6 +4,8 @@ mod export;
 mod layout;
 mod map;
 mod runners;
+mod tools;
+mod workflows;
 use self::layout::{Form, SideTab};
 
 use self::data::{
@@ -220,6 +222,9 @@ struct Monitoring {
     cache: map::StaticCache,
     local: Vec<map::LocalLayer>,
     runners: runners::Runners,
+    workflows: workflows::Forms,
+    calibration: tools::CalibrationTools,
+    instructions: tools::InstructionTools,
     pending: Option<Departure>,
     saving_departure: bool,
     leaving_job: bool,
@@ -265,6 +270,9 @@ impl Monitoring {
             cache: map::StaticCache::default(),
             local: vec![],
             runners: runners::Runners::default(),
+            workflows: workflows::Forms::default(),
+            calibration: tools::CalibrationTools::default(),
+            instructions: tools::InstructionTools::default(),
             pending: None,
             saving_departure: false,
             leaving_job: false,
@@ -623,6 +631,9 @@ impl Monitoring {
                     }
                     if !same {
                         self.runners = runners::Runners::default();
+                        self.workflows = workflows::Forms::default();
+                        self.calibration = tools::CalibrationTools::default();
+                        self.instructions = tools::InstructionTools::default();
                         self.runners.start(
                             runners::Action::Initialize {
                                 workspace: project.workspace.clone(),
@@ -984,6 +995,9 @@ impl Monitoring {
                             }
                         });
                         ribbon_group(ui, text(pt, "Monitoring", "Monitoramento"), |ui| {
+                            if ui.button(Form::Intake.label(pt)).clicked() {
+                                self.display.layout.form(Form::Intake);
+                            }
                             if ui
                                 .add_enabled(
                                     !self.switching_project && self.project.is_some(),
@@ -1067,6 +1081,11 @@ impl Monitoring {
                                 }
                             });
                         });
+                        ribbon_group(ui, text(pt, "Review", "Revisão"), |ui| {
+                            if ui.button(Form::Instructions.label(pt)).clicked() {
+                                self.display.layout.form(Form::Instructions);
+                            }
+                        });
                     }
                     Ribbon::View => {
                         ribbon_group(ui, text(pt, "Pages", "Páginas"), |ui| {
@@ -1081,6 +1100,22 @@ impl Monitoring {
                                 }
                             }
                         });
+                        ribbon_group(
+                            ui,
+                            text(pt, "Review and runs", "Revisão e execuções"),
+                            |ui| {
+                                for form in [
+                                    Form::Review,
+                                    Form::Analysis,
+                                    Form::Bulletin,
+                                    Form::RunBundle,
+                                ] {
+                                    if ui.button(form.label(pt)).clicked() {
+                                        self.display.layout.form(form);
+                                    }
+                                }
+                            },
+                        );
                         ribbon_group(ui, text(pt, "Layout", "Layout"), |ui| {
                             if ui
                                 .button(text(pt, "Reset layout", "Restaurar layout"))
@@ -1096,13 +1131,17 @@ impl Monitoring {
                     }
                     Ribbon::Processing => {
                         ribbon_group(ui, text(pt, "Operation", "Operação"), |ui| {
-                            for form in [Form::Prepare, Form::Execute, Form::RunAll] {
+                            for form in [Form::Prepare, Form::Execute, Form::RunAll, Form::Forcing]
+                            {
                                 if ui.button(form.label(pt)).clicked() {
                                     self.display.layout.form(form);
                                 }
                             }
                         });
                         ribbon_group(ui, text(pt, "Activity", "Atividade"), |ui| {
+                            if ui.button(Form::Automation.label(pt)).clicked() {
+                                self.display.layout.form(Form::Automation);
+                            }
                             if ui.button(Form::Jobs.label(pt)).clicked() {
                                 self.display.layout.form(Form::Jobs);
                             }
@@ -1113,6 +1152,13 @@ impl Monitoring {
                             for tab in [SideTab::Interface, SideTab::Form(Form::Workspace)] {
                                 if ui.button(tab.label(pt)).clicked() {
                                     self.display.layout.open(tab);
+                                }
+                            }
+                        });
+                        ribbon_group(ui, text(pt, "Calibration", "Calibração"), |ui| {
+                            for form in [Form::Geometry, Form::Soil] {
+                                if ui.button(form.label(pt)).clicked() {
+                                    self.display.layout.form(form);
                                 }
                             }
                         });
@@ -1175,23 +1221,39 @@ impl Monitoring {
 
     fn right_pane(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        ui.horizontal_wrapped(|ui| {
-            for tab in self.display.layout.tabs.clone() {
+        let active = self.display.layout.active;
+        let active_id = ui.id().with("active-tab");
+        let changed = ui.data_mut(|data| {
+            let previous = data.get_temp::<SideTab>(active_id);
+            data.insert_temp(active_id, active);
+            previous != Some(active)
+        });
+        egui::ScrollArea::horizontal()
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.display.layout.active, tab, tab.label(pt));
-                    if matches!(tab, SideTab::Interface | SideTab::Form(_))
-                        && icon_button(
-                            ui,
-                            "×",
-                            &format!("{} {}", text(pt, "Close", "Fechar"), tab.label(pt)),
-                        )
-                        .clicked()
-                    {
-                        self.display.layout.close(tab);
+                    for tab in self.display.layout.tabs.clone() {
+                        let selection = ui.selectable_value(
+                            &mut self.display.layout.active,
+                            tab,
+                            tab.label(pt),
+                        );
+                        if changed && tab == active {
+                            selection.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        if matches!(tab, SideTab::Interface | SideTab::Form(_))
+                            && icon_button(
+                                ui,
+                                "×",
+                                &format!("{} {}", text(pt, "Close", "Fechar"), tab.label(pt)),
+                            )
+                            .clicked()
+                        {
+                            self.display.layout.close(tab);
+                        }
                     }
                 });
-            }
-        });
+            });
         ui.separator();
         let tab = self.display.layout.active;
         ui.push_id(("right-pane-content", tab.label(false)), |ui| match tab {
@@ -1224,11 +1286,139 @@ impl Monitoring {
                 egui::ScrollArea::vertical().show(ui, |ui| self.interface_settings(ui));
             }
             SideTab::Form(form) => {
-                ui.add_enabled_ui(!self.switching_project, |ui| {
-                    self.runners.show(ui, form, pt)
+                ui.add_enabled_ui(!self.switching_project, |ui| match form {
+                    Form::Intake
+                    | Form::Review
+                    | Form::RunBundle
+                    | Form::Forcing
+                    | Form::Instructions
+                    | Form::Geometry
+                    | Form::Soil
+                    | Form::Analysis
+                    | Form::Bulletin
+                    | Form::Automation => self.workflow_form(ui, form, pt),
+                    _ => self.runners.show(ui, form, pt),
                 });
             }
         });
+    }
+
+    fn workflow_form(&mut self, ui: &mut egui::Ui, form: Form, pt: bool) {
+        let busy = self.runners.busy();
+        let width = ui.available_width();
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(width);
+                if form == Form::Automation
+                    && let Some(active) = self
+                        .runners
+                        .active
+                        .as_ref()
+                        .filter(|active| active.automation.is_some())
+                {
+                    if ui
+                        .button(text(pt, "Stop scheduling", "Parar agendamento"))
+                        .clicked()
+                    {
+                        active.cancel();
+                    }
+                    self.runners.jobs(ui, pt);
+                }
+                ui.add_enabled_ui(!busy, |ui| {
+                    let Some(draft) = self.runners.draft.as_mut() else {
+                        ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
+                        return;
+                    };
+                    let action = match form {
+                        Form::Forcing => {
+                            self.workflows.forcing(ui, pt, draft);
+                            None
+                        }
+                        Form::Geometry | Form::Soil => {
+                            let operation = &mut draft.document.operation;
+                            let geometry = operation
+                                .geometry
+                                .as_ref()
+                                .and_then(|value| value.mini_gtp.as_ref())
+                                .map(|path| draft.workspace.join(path));
+                            if form == Form::Geometry {
+                                if let Some(path) =
+                                    self.calibration.geometry(ui, pt, geometry.as_deref())
+                                {
+                                    operation.geometry.get_or_insert_default().mini_gtp =
+                                        Some(path);
+                                    operation
+                                        .calibration
+                                        .get_or_insert_default()
+                                        .use_edited_geometry = true;
+                                    draft.document.sources.accepted.remove("geometry");
+                                }
+                            } else {
+                                let soil = operation
+                                    .calibration
+                                    .as_ref()
+                                    .and_then(|value| value.soil.as_ref())
+                                    .map(|path| draft.workspace.join(path));
+                                if let Some(path) = self.calibration.soil(
+                                    ui,
+                                    pt,
+                                    geometry.as_deref(),
+                                    soil.as_deref(),
+                                ) {
+                                    operation.calibration.get_or_insert_default().soil = Some(path);
+                                    draft.document.sources.accepted.remove("soil");
+                                }
+                            }
+                            None
+                        }
+                        Form::Instructions => {
+                            ui.heading(form.label(pt));
+                            let accept = ui
+                                .button(text(
+                                    pt,
+                                    "Accept selected inputs",
+                                    "Aceitar entradas selecionadas",
+                                ))
+                                .clicked();
+                            let instruction = self.instructions.show(ui, pt, draft);
+                            self.workflows.show_preview(ui, pt, draft);
+                            if accept {
+                                Some(runners::Action::Accept)
+                            } else {
+                                instruction.map(|request| match request {
+                                    tools::InstructionAction::MaterializeReplacements => {
+                                        runners::Action::MaterializeReplacements
+                                    }
+                                    tools::InstructionAction::MaterializeCorrections(index) => {
+                                        runners::Action::MaterializeCorrections(index)
+                                    }
+                                    tools::InstructionAction::PreviewObservations => {
+                                        runners::Action::PreviewObservations
+                                    }
+                                    tools::InstructionAction::PreviewForecast(index) => {
+                                        runners::Action::PreviewForecast(index)
+                                    }
+                                })
+                            }
+                        }
+                        _ => match self
+                            .workflows
+                            .show(ui, form, pt, draft, self.run.as_deref())
+                        {
+                            Ok(task) => task.map(runners::Action::Workflow),
+                            Err(error) => {
+                                self.runners.status = error;
+                                None
+                            }
+                        },
+                    };
+                    if let Some(action) = action {
+                        self.runners.start(action, ui.ctx());
+                    }
+                });
+                ui.label(self.runners.localized_status(pt));
+            });
     }
 
     fn files(&mut self, ui: &mut egui::Ui) {
@@ -2182,6 +2372,9 @@ impl Monitoring {
                 self.tiles = None;
                 self.loading.fill(false);
                 self.runners = runners::Runners::default();
+                self.workflows = workflows::Forms::default();
+                self.calibration = tools::CalibrationTools::default();
+                self.instructions = tools::InstructionTools::default();
             }
         }
     }
@@ -2295,7 +2488,7 @@ impl Monitoring {
                             .clicked()
                         {
                             if let Some(active) = &self.runners.active {
-                                active.control.cancel();
+                                active.cancel();
                             }
                             self.leaving_job = true;
                             self.display.layout.form(Form::Jobs);
@@ -2386,6 +2579,11 @@ impl eframe::App for Monitoring {
                     self.runners.prepared = root.clone();
                     self.display.grid = Some(root.join("checkpoints/observed-grid.nc"));
                     self.request_view();
+                }
+                runners::Outcome::Workflow(output) => {
+                    if let Some(run) = self.workflows.receive(output, &ctx) {
+                        self.submit(Job::Run(run));
+                    }
                 }
                 _ => {}
             }

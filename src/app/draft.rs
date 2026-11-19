@@ -154,6 +154,14 @@ pub struct DraftOperation {
     pub engine: Option<DraftEngine>,
     pub forecasts: Option<DraftForecasts>,
     pub scenarios: Vec<DraftScenario>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forcing: Option<super::ForcingDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<super::CalibrationDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hot_start: Option<super::HotStartDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing: Option<super::RoutingMode>,
 }
 
 impl DraftOperation {
@@ -1355,7 +1363,8 @@ impl Draft {
         };
         let store = ObservationStore::open_read_only(&valid.document.observed.path)
             .map_err(|e| e.to_string())?;
-        let (_, offsets) = store
+        let stations = super::additional::extra_stations(&store, &valid.document)?;
+        let (mut inputs, offsets) = store
             .read_selection_with_stations(
                 &selection,
                 &valid.historical,
@@ -1364,9 +1373,44 @@ impl Draft {
                 } else {
                     &document.observed.replacement_ids
                 },
-                &document.levels.station_ids,
+                &stations,
             )
             .map_err(|e| e.to_string())?;
+        let registered = inputs.replacements.clone();
+        if let Some(values) = &self.document.instructions.replacements {
+            inputs.replacements = values.iter().map(|item| item.value.clone()).collect();
+        }
+        if let Some(inputs) = super::additional::capture(&valid, &inputs, &registered)? {
+            refreshed
+                .document
+                .sources
+                .accepted
+                .insert("additional_forcing".into(), inputs.accepted);
+        } else {
+            refreshed
+                .document
+                .sources
+                .accepted
+                .remove("additional_forcing");
+        }
+        super::additional::check_engine(&valid.document, &valid.document.engine.executable)?;
+        if let Some(calibration) = &valid.document.calibration {
+            let geometry = calibration
+                .use_edited_geometry
+                .then_some(valid.document.geometry.mini_gtp.as_path());
+            let soil = calibration.soil.as_deref();
+            crate::model::validate_calibration(&valid.document.engine.input_dir, geometry, soil)?;
+        }
+        if let Some(value) = super::additional::soil_identity(valid.document.calibration.as_ref())?
+        {
+            refreshed
+                .document
+                .sources
+                .accepted
+                .insert("soil".into(), value);
+        } else {
+            refreshed.document.sources.accepted.remove("soil");
+        }
         refreshed
             .document
             .sources

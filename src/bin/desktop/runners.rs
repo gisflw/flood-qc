@@ -86,6 +86,11 @@ pub enum Action {
     Inspect(PathBuf),
     Choices,
     Readiness,
+    Workflow(super::workflows::Task),
+    MaterializeReplacements,
+    MaterializeCorrections(usize),
+    PreviewObservations,
+    PreviewForecast(usize),
 }
 pub enum Outcome {
     Initialized(Box<Draft>, WorkspaceConfig),
@@ -99,6 +104,7 @@ pub enum Outcome {
     Choices(Choices),
     Collision(PathBuf),
     Readiness(Vec<String>),
+    Workflow(super::workflows::Output),
 }
 #[derive(Default)]
 pub struct Choices {
@@ -113,13 +119,29 @@ struct Reply {
 }
 pub struct Active {
     pub control: mgb_ops::app::OperationControl,
+    pub automation: Option<mgb_ops::app::AutomationControl>,
     receiver: mpsc::Receiver<Reply>,
     thread: Option<JoinHandle<()>>,
     logs: Arc<Mutex<String>>,
 }
+impl Active {
+    pub fn cancel(&self) {
+        self.control.cancel();
+        if let Some(automation) = &self.automation {
+            automation.stop();
+        }
+    }
+
+    fn progress(&self) -> Option<mgb_ops::app::OperationProgress> {
+        self.automation
+            .as_ref()
+            .and_then(|control| control.progress())
+            .or_else(|| self.control.progress())
+    }
+}
 impl Drop for Active {
     fn drop(&mut self) {
-        self.control.cancel();
+        self.cancel();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -187,6 +209,13 @@ impl Runners {
         }
         let control = mgb_ops::app::OperationControl::default();
         let operation_control = control.clone();
+        let automation = match &action {
+            Action::Workflow(task) if task.needs_automation_control() => {
+                Some(mgb_ops::app::AutomationControl::default())
+            }
+            _ => None,
+        };
+        let automation_control = automation.clone();
         let live_logs = Arc::new(Mutex::new(String::new()));
         let worker_logs = live_logs.clone();
         let (sender, receiver) = mpsc::channel();
@@ -200,6 +229,36 @@ impl Runners {
             let mut logs = String::new();
             let result = (|| -> Result<Outcome, String> {
                 match action {
+                    Action::Workflow(task) => {
+                        let draft = draft.ok_or("Open a workspace first")?;
+                        task.run(
+                            &draft.workspace,
+                            &operation_control,
+                            automation_control.as_ref(),
+                        )
+                        .map(Outcome::Workflow)
+                    }
+                    Action::MaterializeReplacements | Action::MaterializeCorrections(_) => {
+                        let mut draft = draft.ok_or("Open a draft first")?;
+                        if let Action::MaterializeCorrections(index) = action {
+                            draft.materialize_corrections(index)?;
+                        } else {
+                            draft.materialize_replacements()?;
+                        }
+                        Ok(Outcome::Draft(Box::new(draft)))
+                    }
+                    Action::PreviewObservations => {
+                        let draft = draft.ok_or("Open a draft first")?;
+                        draft.preview_observations().map(|value| {
+                            Outcome::Workflow(super::workflows::Output::Observations(value))
+                        })
+                    }
+                    Action::PreviewForecast(index) => {
+                        let draft = draft.ok_or("Open a draft first")?;
+                        draft.preview_forecast(index).map(|value| {
+                            Outcome::Workflow(super::workflows::Output::Forecast(value))
+                        })
+                    }
                     Action::Initialize {
                         workspace,
                         config,
@@ -368,6 +427,7 @@ impl Runners {
         });
         self.active = Some(Active {
             control,
+            automation,
             receiver,
             thread: Some(worker),
             logs: live_logs,
@@ -375,7 +435,7 @@ impl Runners {
     }
     pub fn poll(&mut self) -> Option<Outcome> {
         if let Some(active) = &self.active {
-            if let Some(progress) = active.control.progress() {
+            if let Some(progress) = active.progress() {
                 self.progress = Some(progress);
             }
             self.logs = active
@@ -619,7 +679,7 @@ impl Runners {
                             }
                         }
                     }
-                    Form::Jobs => {}
+                    _ => {}
                 });
         });
         ui.separator();
@@ -633,7 +693,7 @@ impl Runners {
         if let Some(progress) = self
             .active
             .as_ref()
-            .and_then(|a| a.control.progress())
+            .and_then(Active::progress)
             .or_else(|| self.progress.clone())
         {
             ui.label(match progress.stage {
@@ -660,7 +720,7 @@ impl Runners {
         if let Some(active) = &self.active
             && ui.button(text(pt, "Cancel", "Cancelar")).clicked()
         {
-            active.control.cancel();
+            active.cancel();
         }
         ui.label(self.localized_status(pt));
         super::section(ui, text(pt, "Logs", "Registros"), |ui| {

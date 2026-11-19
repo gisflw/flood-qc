@@ -174,6 +174,158 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
 }
 
 #[test]
+fn run_bundle_round_trips_and_regenerates_without_original_sources() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let source = dir.path().canonicalize().unwrap();
+    fixture(&source);
+    let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
+        workspace: source.clone(),
+        invocation_dir: source.clone(),
+        request_file: "request.toml".into(),
+        output: "prepared".into(),
+    })
+    .unwrap();
+    let trial = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
+        workspace: source.clone(),
+        invocation_dir: source.clone(),
+        prepared: prepared.prepared.clone(),
+    })
+    .unwrap();
+    let bundle = source.join("bundle");
+    mgb_ops::export_run(&trial.run_root, Some(&prepared.prepared), &bundle).unwrap();
+    assert!(!bundle.join("preparation/baseline/engine").exists());
+    assert!(mgb_ops::export_run(&trial.run_root, None, &bundle).is_err());
+    for path in ["Input", "prepared", "data/runs"] {
+        fs::remove_dir_all(source.join(path)).unwrap();
+    }
+    fs::remove_file(source.join("observations.sqlite")).unwrap();
+    let target = source.join("receiver");
+    fs::create_dir(&target).unwrap();
+    let imported = mgb_ops::import_run(&target, &bundle).unwrap();
+    assert!(imported.has_preparation);
+    assert!(mgb_ops::import_run(&target, &bundle).is_err());
+    assert_eq!(
+        mgb_ops::discover_trials(&target).unwrap(),
+        std::slice::from_ref(&imported.root)
+    );
+    fs::write(source.join("wrong-engine"), b"different").unwrap();
+    assert!(
+        mgb_ops::regenerate_run(
+            &target,
+            &imported.root,
+            &source.join("wrong-engine"),
+            &Default::default()
+        )
+        .is_err()
+    );
+    let repeated = mgb_ops::regenerate_run(
+        &target,
+        &imported.root,
+        &source.join("engine"),
+        &Default::default(),
+    )
+    .unwrap();
+    assert_ne!(repeated.run_root, imported.root);
+    let raw = "scenarios/zero/Output/YTUDO.MGB";
+    assert_eq!(
+        fs::read(repeated.run_root.join(raw)).unwrap(),
+        fs::read(imported.root.join(raw)).unwrap()
+    );
+    fs::write(bundle.join(raw), b"corrupt").unwrap();
+    let other = source.join("other-receiver");
+    fs::create_dir(&other).unwrap();
+    assert!(mgb_ops::import_run(&other, &bundle).is_err());
+    assert!(mgb_ops::discover_trials(&other).unwrap().is_empty());
+}
+
+#[test]
+fn canonical_forecast_reaches_frozen_preparation_and_execution() {
+    use mgb_ops::app::{CanonicalForecastDocument, import_canonical_forecast};
+    use mgb_ops::store::{
+        CanonicalForecastMetadata, GridSeries, IntervalAxis, Provenance, RegularGridSpec,
+        TimeInterval, write_grid_series,
+    };
+
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let root = dir.path().canonicalize().unwrap();
+    fixture(&root);
+    let grid = RegularGridSpec::new([-1.0, -1.0, 1.0, 1.0], 1.0).unwrap();
+    let cells = grid.latitudes.len() * grid.longitudes.len();
+    let source = root.join("forecast.nc");
+    write_grid_series(
+        &source,
+        &GridSeries {
+            timeline: IntervalAxis {
+                time_zone: "UTC".into(),
+                bounds: vec![TimeInterval {
+                    start: time("2026-01-01T02:00:00"),
+                    end: time("2026-01-01T03:00:00"),
+                }],
+            },
+            grid,
+            values: vec![2.0; cells],
+            valid: vec![true; cells],
+            provenance: Provenance {
+                source_ids: vec!["canonical-forecast".into()],
+                processing: serde_json::Value::Object(serde_json::Map::new()),
+            },
+        },
+    )
+    .unwrap();
+    let asset = import_canonical_forecast(
+        &root,
+        CanonicalForecastDocument {
+            catalog: "forecast.sqlite".into(),
+            artifact_root: "forecast-assets".into(),
+            source: source.clone(),
+            metadata: CanonicalForecastMetadata {
+                provider: "fixture".into(),
+                model: "saved".into(),
+                product: "hourly".into(),
+                cycle_utc: "2026-01-01T02:00:00Z".parse().unwrap(),
+            },
+        },
+    )
+    .unwrap();
+    let request = root.join("request.toml");
+    let contents = fs::read_to_string(&request)
+        .unwrap()
+        .replace("unused.sqlite", "forecast.sqlite")
+        .replace(
+            "id = \"other\"\nkind = \"zero\"",
+            &format!(
+                "id = \"other\"\nkind = \"raw\"\nasset_id = \"{}\"",
+                asset.asset_id
+            ),
+        );
+    fs::write(&request, contents).unwrap();
+    fs::remove_file(source).unwrap();
+    let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
+        workspace: root.clone(),
+        invocation_dir: root.clone(),
+        request_file: request,
+        output: "prepared".into(),
+    })
+    .unwrap();
+    let assets = prepared.prepared.join("sources/original");
+    assert!(assets.join(format!("{}.nc", asset.asset_id)).is_file());
+    fs::remove_dir_all(root.join("forecast-assets")).unwrap();
+    let trial = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
+        workspace: root.clone(),
+        invocation_dir: root,
+        prepared: prepared.prepared,
+    })
+    .unwrap();
+    let basin =
+        mgb_ops::store::read_result_series(&trial.run_root.join("results/other/basin.nc")).unwrap();
+    assert_eq!(basin.precipitation.last(), Some(&2.0));
+}
+
+#[test]
 fn failed_scenario_preserves_sibling_and_lock_rejects_overlap() {
     let _guard = TEST_LOCK.lock().unwrap();
     use std::fs::OpenOptions;
@@ -1338,7 +1490,7 @@ fn draft_preparation_requires_refresh_and_freezes_current_inputs() {
         value: mgb_ops::ObservationReplacement {
             replacement_id: "bad".into(),
             station_id: "s".into(),
-            variable: "flow".into(),
+            variable: "level".into(),
             kind: mgb_ops::ReplacementKind::Point,
             start_at: time("2026-01-01T01:00:00"),
             end_at: None,

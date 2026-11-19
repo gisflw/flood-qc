@@ -1,4 +1,5 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
@@ -10,6 +11,30 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    Automation {
+        #[command(subcommand)]
+        command: AutomationCommand,
+    },
+    Report {
+        #[command(subcommand)]
+        command: ReportCommand,
+    },
+    Observation {
+        #[command(subcommand)]
+        command: ObservationCommand,
+    },
+    Forcing {
+        #[command(subcommand)]
+        command: ForcingCommand,
+    },
+    Calibration {
+        #[command(subcommand)]
+        command: CalibrationCommand,
+    },
+    Run {
+        #[command(subcommand)]
+        command: RunCommand,
+    },
     Series {
         #[command(subcommand)]
         command: SeriesCommand,
@@ -56,6 +81,309 @@ enum SeriesCommand {
         request: PathBuf,
         #[arg(long)]
         output: PathBuf,
+    },
+    Analyze {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    ExportBatch {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReportCommand {
+    Generate {
+        #[arg(long)]
+        request: PathBuf,
+    },
+    ReturnPeriod {
+        #[arg(long)]
+        request: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum AutomationCommand {
+    Validate {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+    },
+    Status {
+        #[arg(long)]
+        workspace: PathBuf,
+    },
+    Serve {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+    },
+    RunNow {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        job: String,
+    },
+    Send {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        config: PathBuf,
+        #[arg(long)]
+        subject: String,
+        #[arg(long)]
+        body_file: PathBuf,
+        #[arg(long)]
+        attachment: Vec<PathBuf>,
+    },
+}
+
+fn automation_action(
+    command: AutomationCommand,
+    out: &mut impl Write,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    use mgb_ops::app::{
+        AutomationControl, AutomationState, automation_status, publish_automation_artifacts,
+        read_automation_config, run_automation, run_automation_now, send_automation_email,
+    };
+    let control = AutomationControl::default();
+    if matches!(
+        command,
+        AutomationCommand::Serve { .. } | AutomationCommand::RunNow { .. }
+    ) {
+        let signal = control.clone();
+        ctrlc::set_handler(move || signal.stop())?;
+    }
+    let successful = match command {
+        AutomationCommand::Validate { workspace, config } => {
+            let config = read_automation_config(&workspace, &config)?;
+            serde_json::to_writer(&mut *out, &BTreeMap::from([("jobs", config.jobs.len())]))?;
+            true
+        }
+        AutomationCommand::Status { workspace } => {
+            serde_json::to_writer(&mut *out, &automation_status(&workspace)?)?;
+            true
+        }
+        AutomationCommand::Serve { workspace, config } => {
+            let config = read_automation_config(&workspace, &config)?;
+            writeln!(out, "Scheduler running")?;
+            out.flush()?;
+            run_automation(&workspace, &config, &control, publish_automation_artifacts)?;
+            return Ok(true);
+        }
+        AutomationCommand::RunNow {
+            workspace,
+            config,
+            job,
+        } => {
+            let config = read_automation_config(&workspace, &config)?;
+            let status = run_automation_now(
+                &workspace,
+                &config,
+                &job,
+                &control,
+                publish_automation_artifacts,
+            )?;
+            serde_json::to_writer(&mut *out, &status)?;
+            status.state == AutomationState::Completed
+        }
+        AutomationCommand::Send {
+            workspace,
+            config,
+            subject,
+            body_file,
+            attachment,
+        } => {
+            let config = read_automation_config(&workspace, &config)?;
+            let smtp = config
+                .smtp
+                .as_ref()
+                .ok_or("automation config requires [smtp]")?;
+            let body = std::fs::read_to_string(workspace.join(body_file))?;
+            send_automation_email(&workspace, smtp, &subject, &body, &attachment)?;
+            writeln!(out, "Delivery accepted")?;
+            return Ok(true);
+        }
+    };
+    writeln!(out)?;
+    Ok(successful)
+}
+
+#[derive(Subcommand)]
+enum ObservationCommand {
+    Init {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        time_zone: String,
+    },
+    Upgrade {
+        #[arg(long)]
+        database: PathBuf,
+    },
+    Import {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
+    Inventory {
+        #[arg(long)]
+        database: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
+    Availability {
+        #[arg(long)]
+        request: PathBuf,
+    },
+    SpatialQc {
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        station: Option<String>,
+        #[arg(long)]
+        interpolation: PathBuf,
+    },
+}
+
+#[derive(ValueEnum, Clone, Copy)]
+enum ForcingKind {
+    Reservoirs,
+    Wind,
+}
+
+#[derive(Subcommand)]
+enum ForcingCommand {
+    Import {
+        #[arg(long)]
+        kind: ForcingKind,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum CalibrationCommand {
+    Geometry {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        edits: Option<PathBuf>,
+        #[arg(long)]
+        channel_table: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    Soil {
+        #[arg(long)]
+        input: Option<PathBuf>,
+        #[arg(long)]
+        geometry: PathBuf,
+        #[arg(long)]
+        hrc: PathBuf,
+        #[arg(long)]
+        edits: Option<PathBuf>,
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+}
+
+fn read_json<T: serde::de::DeserializeOwned>(
+    path: &std::path::Path,
+) -> Result<T, Box<dyn std::error::Error>> {
+    Ok(serde_json::from_reader(std::fs::File::open(path)?)?)
+}
+
+fn calibration_action(
+    command: CalibrationCommand,
+    out: &mut impl Write,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use mgb_ops::app::{CalibrationGeometry, GeometryEdit, SoilCalibration, SoilEdit};
+    match command {
+        CalibrationCommand::Geometry {
+            input,
+            edits,
+            channel_table,
+            output,
+        } => {
+            let mut geometry = CalibrationGeometry::read(&input)?;
+            if let Some(path) = edits {
+                for edit in read_json::<Vec<GeometryEdit>>(&path)? {
+                    geometry.edit(edit)?;
+                }
+            }
+            if let Some(path) = channel_table {
+                geometry.apply_channel_table(&path)?;
+            }
+            if let Some(path) = output {
+                geometry.save(&path)?;
+            }
+            serde_json::to_writer(&mut *out, geometry.rows())?;
+        }
+        CalibrationCommand::Soil {
+            input,
+            geometry,
+            hrc,
+            edits,
+            output,
+        } => {
+            let geometry = CalibrationGeometry::read(&geometry)?;
+            let mut soil = match input {
+                Some(path) => SoilCalibration::read(&path, &geometry, &hrc)?,
+                None => SoilCalibration::create(&geometry, &hrc)?,
+            };
+            if let Some(path) = edits {
+                for edit in read_json::<Vec<SoilEdit>>(&path)? {
+                    soil.edit(edit)?;
+                }
+            }
+            if let Some(path) = output {
+                soil.save(&path)?;
+            }
+            serde_json::to_writer(&mut *out, &(soil.classes(), soil.watersheds()))?;
+        }
+    }
+    writeln!(out)?;
+    Ok(())
+}
+#[derive(Subcommand)]
+enum RunCommand {
+    Export {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        prepared: Option<PathBuf>,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    Import {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+    },
+    Regenerate {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        bundle: PathBuf,
+        #[arg(long)]
+        engine: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
 }
 #[derive(Subcommand)]
@@ -400,6 +728,12 @@ enum OperationCommand {
 }
 #[derive(Subcommand)]
 enum ForecastCommand {
+    ImportCanonical {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+    },
     Normalize {
         #[arg(long)]
         workspace: PathBuf,
@@ -456,6 +790,8 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         } | Command::Draft {
             command: DraftCommand::Prepare { .. } | DraftCommand::Run { .. },
             ..
+        } | Command::Run {
+            command: RunCommand::Regenerate { .. },
         }
     ) {
         let signal_control = control.clone();
@@ -464,11 +800,139 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     match cli.command {
+        Command::Automation { command } => automation_action(command, &mut out),
+        Command::Report { command } => {
+            match command {
+                ReportCommand::Generate { request } => serde_json::to_writer(
+                    &mut out,
+                    &mgb_ops::app::generate_bulletin(&read_json(&request)?)?,
+                )?,
+                ReportCommand::ReturnPeriod { request } => serde_json::to_writer(
+                    &mut out,
+                    &mgb_ops::app::export_return_period(&read_json(&request)?)?,
+                )?,
+            }
+            writeln!(out)?;
+            Ok(true)
+        }
+        Command::Observation { command } => {
+            use mgb_ops::store::ObservationStore;
+            let result = match command {
+                ObservationCommand::Init {
+                    database,
+                    time_zone,
+                } => {
+                    ObservationStore::create(&database, &time_zone)?;
+                    serde_json::to_value(BTreeMap::from([("database", database)]))?
+                }
+                ObservationCommand::Upgrade { database } => {
+                    ObservationStore::open_writable(&database)?.upgrade_replacements()?;
+                    serde_json::to_value(BTreeMap::from([("database", database)]))?
+                }
+                ObservationCommand::Import { database, input } => {
+                    let batch: mgb_ops::store::ObservationBatch = read_json(&input)?;
+                    ObservationStore::open_writable(&database)?.ingest_batch(&batch)?;
+                    serde_json::to_value(BTreeMap::from([
+                        ("stations", batch.stations.len()),
+                        ("samples", batch.samples.len()),
+                    ]))?
+                }
+                ObservationCommand::Inventory { database, input } => {
+                    let stations: Vec<mgb_ops::store::Station> = read_json(&input)?;
+                    ObservationStore::open_writable(&database)?
+                        .update_station_inventory(&stations)?;
+                    serde_json::to_value(BTreeMap::from([("stations", stations.len())]))?
+                }
+                ObservationCommand::Availability { request } => {
+                    serde_json::to_value(mgb_ops::app::review_observations(&read_json(&request)?)?)?
+                }
+                ObservationCommand::SpatialQc {
+                    request,
+                    station,
+                    interpolation,
+                } => serde_json::to_value(mgb_ops::app::spatial_observation_qc(
+                    &read_json(&request)?,
+                    station.as_deref(),
+                    &read_json(&interpolation)?,
+                )?)?,
+            };
+            serde_json::to_writer(&mut out, &result)?;
+            writeln!(out)?;
+            Ok(true)
+        }
+        Command::Forcing {
+            command:
+                ForcingCommand::Import {
+                    kind,
+                    input,
+                    output,
+                },
+        } => {
+            let kind = match kind {
+                ForcingKind::Reservoirs => mgb_ops::app::CanonicalForcingKind::Reservoirs,
+                ForcingKind::Wind => mgb_ops::app::CanonicalForcingKind::Wind,
+            };
+            mgb_ops::app::save_canonical_forcing(&input, &output, kind)?;
+            serde_json::to_writer(&mut out, &output)?;
+            writeln!(out)?;
+            Ok(true)
+        }
+        Command::Calibration { command } => {
+            calibration_action(command, &mut out)?;
+            Ok(true)
+        }
+        Command::Run { command } => {
+            match command {
+                RunCommand::Export {
+                    run,
+                    prepared,
+                    output,
+                } => {
+                    let report = mgb_ops::app::export_run(&run, prepared.as_deref(), &output)?;
+                    serde_json::to_writer(&mut out, &report)?;
+                }
+                RunCommand::Import { workspace, bundle } => {
+                    let report = mgb_ops::app::import_run(&workspace, &bundle)?;
+                    serde_json::to_writer(&mut out, &report)?;
+                }
+                RunCommand::Regenerate {
+                    workspace,
+                    bundle,
+                    engine,
+                    json,
+                } => {
+                    let result =
+                        mgb_ops::app::regenerate_run(&workspace, &bundle, &engine, &control);
+                    let Some(report) = operation_result(result, json, &mut out)? else {
+                        return Ok(false);
+                    };
+                    serde_json::to_writer(&mut out, &report)?;
+                }
+            }
+            writeln!(out)?;
+            Ok(true)
+        }
         Command::Series { command, json } => {
             let result: Result<serde_json::Value, String> = (|| {
                 let (path, destination) = match command {
                     SeriesCommand::Query { request } => (request, None),
                     SeriesCommand::Export { request, output } => (request, Some(output)),
+                    SeriesCommand::Analyze { request, output } => {
+                        let request = mgb_ops::store::read_draft(&request)?;
+                        let report = mgb_ops::app::analyze_hydrograph(&request)?;
+                        if let Some(path) = output {
+                            mgb_ops::app::export_hydrograph(&report, &path)?;
+                        }
+                        return serde_json::to_value(report).map_err(|e| e.to_string());
+                    }
+                    SeriesCommand::ExportBatch { request, output } => {
+                        let requests: Vec<mgb_ops::app::HydrographBatchItem> =
+                            mgb_ops::store::read_draft(&request)?;
+                        return serde_json::to_value(mgb_ops::app::export_hydrograph_batch(
+                            &requests, &output,
+                        )?)
+                        .map_err(|e| e.to_string());
+                    }
                 };
                 let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
                 let request: mgb_ops::SeriesQuery =
@@ -627,6 +1091,14 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             }
             out.flush()?;
             Ok(matches!(report.status, mgb_ops::BatchStatus::Completed))
+        }
+        Command::Forecast {
+            command: ForecastCommand::ImportCanonical { workspace, request },
+        } => {
+            let report = mgb_ops::app::import_canonical_forecast(&workspace, read_json(&request)?)?;
+            serde_json::to_writer(&mut out, &report)?;
+            writeln!(out)?;
+            Ok(true)
         }
         Command::Forecast {
             command:

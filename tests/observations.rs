@@ -438,3 +438,155 @@ fn replacement_ids_must_exist_and_be_unique() {
             .is_err()
     );
 }
+
+#[test]
+fn canonical_ingest_retries_and_inventory_changes_preserve_identity() {
+    use mgb_ops::{ObservationReplacement, ReplacementKind, StationOffset};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("observations.sqlite");
+    let mut store = ObservationStore::create(&path, "UTC").unwrap();
+    let at = time("2026-01-01T01:00:00");
+    let batch = ObservationBatch {
+        stations: vec![station()],
+        series: vec![series("r", "rain", "mm", Some(3600))],
+        samples: vec![ObservationSample {
+            series_id: "r".into(),
+            observed_at: at,
+            value: None,
+        }],
+        replacements: vec![ObservationReplacement {
+            replacement_id: "rain-edit".into(),
+            station_id: "s".into(),
+            variable: "rain".into(),
+            kind: ReplacementKind::Point,
+            start_at: at,
+            end_at: None,
+            value: Some(0.0),
+            reason: "review".into(),
+        }],
+        offsets: vec![StationOffset {
+            station_id: "s".into(),
+            mini_id: 2,
+            offset_m: -1.5,
+        }],
+    };
+    store.ingest_batch(&batch).unwrap();
+    store.ingest_batch(&batch).unwrap();
+
+    let mut bad = batch.clone();
+    bad.stations.push(Station {
+        station_id: "new".into(),
+        station_code: "2".into(),
+        ..station()
+    });
+    bad.samples[0].value = Some(ObservationValue::RainMm(0.0));
+    assert!(store.ingest_batch(&bad).is_err());
+    assert_eq!(store.station_locations().unwrap().len(), 1);
+
+    let changed = Station {
+        name: "New name".into(),
+        latitude: Some(10.0),
+        ..station()
+    };
+    let bad_identity = Station {
+        provider_code: "other".into(),
+        ..station()
+    };
+    assert!(
+        store
+            .update_station_inventory(&[changed.clone(), bad_identity.clone()])
+            .is_err()
+    );
+    assert_eq!(store.station_locations().unwrap()[0].station, station());
+    assert!(store.update_station_inventory(&[bad_identity]).is_err());
+    store
+        .update_station_inventory(std::slice::from_ref(&changed))
+        .unwrap();
+    store
+        .update_station_inventory(std::slice::from_ref(&changed))
+        .unwrap();
+    assert_eq!(store.station_locations().unwrap()[0].station, changed);
+    assert_eq!(
+        store.read_station_offsets(&["s".into()]).unwrap(),
+        batch.offsets
+    );
+    assert_eq!(
+        store.load_replacements(&["rain-edit".into()]).unwrap(),
+        batch.replacements
+    );
+    assert_eq!(store.series_choices().unwrap()[0].0, "r");
+}
+
+#[test]
+fn explicit_flow_upgrade_preserves_v1_and_v2_records() {
+    use mgb_ops::store::LevelReference;
+    use mgb_ops::{ObservationReplacement, ReplacementKind};
+    for upgrade_references_first in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.sqlite");
+        let mut store = ObservationStore::create(&path, "UTC").unwrap();
+        let at = time("2026-01-01T01:00:00");
+        let rain = ObservationReplacement {
+            replacement_id: "rain-edit".into(),
+            station_id: "s".into(),
+            variable: "rain".into(),
+            kind: ReplacementKind::Point,
+            start_at: at,
+            end_at: None,
+            value: Some(0.0),
+            reason: "review".into(),
+        };
+        let flow = ObservationReplacement {
+            replacement_id: "flow-edit".into(),
+            variable: "flow".into(),
+            ..rain.clone()
+        };
+        store
+            .ingest_batch(&ObservationBatch {
+                stations: vec![station()],
+                replacements: vec![rain.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+        let references = if upgrade_references_first {
+            store.upgrade_references().unwrap();
+            let references = vec![LevelReference {
+                station_id: "s".into(),
+                kind: "flood".into(),
+                date: None,
+                level_cm: 30.0,
+            }];
+            store.replace_level_references(&references).unwrap();
+            references
+        } else {
+            Vec::new()
+        };
+        assert!(store.register_replacements(vec![flow.clone()]).is_err());
+        assert_eq!(
+            ObservationStore::open_read_only(&path)
+                .unwrap()
+                .read_level_references()
+                .unwrap(),
+            references
+        );
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        let version = || {
+            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+        assert_eq!(version(), if upgrade_references_first { 2 } else { 1 });
+        store.upgrade_replacements().unwrap();
+        store.upgrade_replacements().unwrap();
+        store.upgrade_references().unwrap();
+        assert_eq!(version(), 3);
+        store.register_replacements(vec![flow.clone()]).unwrap();
+        let read = ObservationStore::open_read_only(&path).unwrap();
+        assert_eq!(
+            read.load_replacements(&["flow-edit".into(), "rain-edit".into()])
+                .unwrap(),
+            vec![flow, rain]
+        );
+        assert_eq!(read.read_level_references().unwrap(), references);
+        store.replace_level_references(&references).unwrap();
+    }
+}

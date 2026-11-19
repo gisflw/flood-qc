@@ -46,6 +46,7 @@ pub use app::{
 };
 
 pub use app::{ReferenceImportReport, import_level_references, upgrade_level_references};
+pub use app::{RunBundleReport, export_run, import_run, regenerate_run};
 
 pub use analysis::{
     GridAccumulation, HourlyWindow, RainSummary, RainfallSource, accumulated_grid_frame,

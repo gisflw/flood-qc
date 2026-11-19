@@ -200,7 +200,12 @@ Functional tests and a regional virtual X11 inspection pass on Linux. PNG checks
 use Vulkan llvmpipe software rendering. These do not establish operator-hardware
 performance, long-session memory behavior, HiDPI/input packaging, Wayland or
 Windows compatibility. Performance/memory thresholds and hardware acceptance
-remain open in the
-[GUI plan](../../.dev/plans/desktop_gui.md#remaining-monitoring-qualification).
-Basemap equivalence to the legacy Carto style is not qualified. The assistant,
-acquisition and instruction editors remain outside the current interface.
+remain open. Basemap equivalence to the legacy Carto style is unqualified.
+
+The saved-data ribbon actions add canonical import, observation review,
+instruction previews, forcing and state settings, geometry and soil editors,
+run comparison and sharing, bulletins, and automation. Use **Project** for import,
+**Draft** for instructions, **View** for review and outputs, **Settings** for
+calibration, and **Processing** for forcing and Jobs. Task forms use the same
+validated workflows as the CLI. See [saved-data workflows](saved-data.md) for
+inputs and configuration. Live acquisition and the assistant are later capabilities.

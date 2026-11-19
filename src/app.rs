@@ -1,3 +1,8 @@
+mod observation_review;
+pub use self::observation_review::{
+    AvailabilityHour, ObservationReviewReport, ObservationReviewRequest, ReviewWindow,
+    SpatialObservationQcReport, StationAvailability, review_observations, spatial_observation_qc,
+};
 mod project;
 pub use self::project::discover_rainfall_grids;
 mod series;
@@ -9,8 +14,13 @@ mod references;
 pub use self::references::{
     ReferenceImportReport, import_level_references, upgrade_level_references,
 };
+mod migration_export;
 mod operation;
 mod request;
+mod sharing;
+pub use self::migration_export::{
+    HydrographBatchItem, export_hydrograph_batch, publish_automation_artifacts,
+};
 pub use self::operation::{
     BatchStatus, ExecutionReport, ExecutionRequest, OperationControl, OperationError,
     OperationProgress, OperationStage, PreparationReport, PreparationRequest, ScenarioExecution,
@@ -18,16 +28,21 @@ pub use self::operation::{
     read_trial, run_draft, tail_log,
 };
 pub use self::request::{
-    EngineDocument, ForecastsDocument, GeometryDocument, GridDocument, InterpolationDocument,
-    LevelsDocument, ObservedDocument, PreparationDocument, ScenarioDocument, retained_day_horizons,
+    CalibrationDocument, EngineDocument, ForcingDocument, ForecastsDocument, GeometryDocument,
+    GridDocument, HotStartDocument, InterpolationDocument, LevelsDocument, ObservedDocument,
+    PreparationDocument, RoutingMode, ScenarioDocument, retained_day_horizons,
 };
+pub use self::sharing::{RunBundleReport, export_run, import_run, regenerate_run};
 mod forecast;
 pub use self::forecast::{
-    NormalizeForecastDocument, NormalizeForecastError, NormalizeForecastReport,
-    NormalizeForecastRequest, normalize_forecast, normalize_forecast_document,
+    CanonicalForecastDocument, NormalizeForecastDocument, NormalizeForecastError,
+    NormalizeForecastReport, NormalizeForecastRequest, import_canonical_forecast,
+    normalize_forecast, normalize_forecast_document,
 };
 
+mod additional;
 mod prepare;
+pub use self::additional::{CanonicalForcingKind, save_canonical_forcing};
 pub use self::prepare::{
     ObservedInputs, ObservedRequest, TypedPreparationRequest, prepare, prepare_controlled,
     prepare_observations, prepare_typed,
@@ -507,4 +522,28 @@ pub use self::draft::{
     DraftOperation, DraftQc, DraftReplacement, DraftScenario, DraftSources, DraftVisualization,
     ForecastPreview, ObservationPreview, RegistrationCorrectionSelection, RegistrationMapping,
     RegistrationOutcome, RegistrationReport, RegistrationSelection,
+};
+mod calibration;
+pub use self::calibration::{
+    CalibrationGeometry, CalibrationGeometryRow, ChannelDimension, GeometryEdit, GeometryField,
+    HydrologicClass, SoilCalibration, SoilEdit, SoilWatershed, validate_selected_calibration,
+};
+mod automation;
+pub use self::automation::{
+    AutomationConfig, AutomationControl, AutomationJob, AutomationJobStatus, AutomationPostAction,
+    AutomationReportConfiguration, AutomationStage, AutomationStageStatus, AutomationState,
+    AutomationStep, AutomationStepKind, SmtpConfiguration, SmtpTls, automation_status,
+    read_automation_config, run_automation, run_automation_due, run_automation_now,
+    save_automation_config, send_automation_email,
+};
+mod return_period;
+pub use self::return_period::{ReturnPeriodExport, ReturnPeriodRequest, export_return_period};
+mod bulletin;
+pub use self::bulletin::{
+    BulletinExport, BulletinPreview, BulletinProfile, BulletinRequest, BulletinStation,
+    generate_bulletin, preview_bulletin,
+};
+mod hydrograph;
+pub use self::hydrograph::{
+    HydrographCurve, HydrographReport, HydrographRequest, analyze_hydrograph, export_hydrograph,
 };

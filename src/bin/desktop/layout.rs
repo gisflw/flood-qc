@@ -7,6 +7,16 @@ pub enum Form {
     Execute,
     RunAll,
     Jobs,
+    Intake,
+    Review,
+    Forcing,
+    RunBundle,
+    Instructions,
+    Geometry,
+    Soil,
+    Analysis,
+    Bulletin,
+    Automation,
 }
 impl Form {
     pub fn label(self, pt: bool) -> String {
@@ -16,6 +26,16 @@ impl Form {
             Self::Execute => super::text(pt, "Execute MGB", "Executar MGB"),
             Self::RunAll => super::text(pt, "Run All", "Executar tudo"),
             Self::Jobs => super::text(pt, "Jobs", "Tarefas"),
+            Self::Intake => super::text(pt, "Import data", "Importar dados"),
+            Self::Review => super::text(pt, "Observation review", "Revisão de observações"),
+            Self::Forcing => super::text(pt, "Forcing and state", "Entradas e estado"),
+            Self::RunBundle => super::text(pt, "Share runs", "Compartilhar execuções"),
+            Self::Instructions => super::text(pt, "Review instructions", "Instruções de revisão"),
+            Self::Geometry => super::text(pt, "Geometry editor", "Editor de geometria"),
+            Self::Soil => super::text(pt, "Soil editor", "Editor de solo"),
+            Self::Analysis => super::text(pt, "Run comparison", "Comparar execuções"),
+            Self::Bulletin => super::text(pt, "Bulletins", "Boletins"),
+            Self::Automation => super::text(pt, "Automation", "Automação"),
         }
     }
 }

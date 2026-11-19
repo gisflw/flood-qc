@@ -263,11 +263,22 @@ fn validate_recipe(
     retained.engine.executable = document.engine.executable.clone();
     retained.engine.input_dir = document.engine.input_dir.clone();
     retained.forecasts.catalog = document.forecasts.catalog.clone();
+    if let (Some(requested), Some(resolved)) = (&mut retained.forcing, &document.forcing) {
+        requested.reservoir_schedules = resolved.reservoir_schedules.clone();
+        requested.wind_observations = resolved.wind_observations.clone();
+    }
+    if let (Some(requested), Some(resolved)) = (&mut retained.calibration, &document.calibration) {
+        requested.soil = resolved.soil.clone();
+    }
+    if let (Some(requested), Some(resolved)) = (&mut retained.hot_start, &document.hot_start) {
+        requested.use_bundle = resolved.use_bundle.clone();
+    }
     if serde_json::to_value(&retained).map_err(|error| error.to_string())?
         != serde_json::to_value(&document).map_err(|error| error.to_string())?
     {
         return Err("recipe differs from retained request".into());
     }
+    super::additional::check_engine(&document, &root.join(crate::store::PREPARED_ENGINE))?;
     if document.schema_version != 1
         || document.step_seconds != 3600
         || document.engine.omp_threads != recipe.omp_threads
@@ -294,17 +305,6 @@ fn validate_recipe(
         ) {
             ("zero", None, true) => continue,
             ("raw", Some(asset), true) | ("corrected", Some(asset), false) if !asset.is_empty() => {
-                if !root
-                    .join("sources/native")
-                    .join(format!("{asset}.nc"))
-                    .is_file()
-                    || !root
-                        .join("sources/original")
-                        .join(format!("{asset}.grib2"))
-                        .is_file()
-                {
-                    return Err("missing retained forecast asset".into());
-                }
                 if catalog.is_none() {
                     catalog = Some(
                         crate::store::ForecastCatalog::open_read_only(
@@ -314,10 +314,16 @@ fn validate_recipe(
                         .map_err(|error| error.to_string())?,
                     );
                 }
+                let catalog = catalog.as_ref().unwrap();
+                let (selected, _) = catalog.load_native(asset).map_err(|e| e.to_string())?;
+                if selected.retained_source != selected.snapshot_source_path()
+                    || selected.native_artifact
+                        != Path::new("sources/native").join(format!("{asset}.nc"))
+                {
+                    return Err("invalid retained forecast paths".into());
+                }
                 actual_corrections.extend(
                     catalog
-                        .as_ref()
-                        .unwrap()
                         .load_corrections(asset, corrections)
                         .map_err(|error| error.to_string())?,
                 );
@@ -340,6 +346,20 @@ fn validate_recipe(
         .map_err(|e| e.to_string())?;
     if first.timeline.bounds.len() != count || first.timeline.time_zone != document.time_zone {
         return Err("forcing timeline differs from recipe".into());
+    }
+    let path = root.join("forcing/additional.json");
+    if document
+        .forcing
+        .as_ref()
+        .is_some_and(|doc| !doc.mappings.is_empty())
+    {
+        let prepared: crate::store::PreparedAdditionalForcing = crate::store::read_draft(&path)?;
+        prepared.validate().map_err(|e| e.to_string())?;
+        if prepared.timeline != first.timeline {
+            return Err("additional forcing timeline differs from rainfall".into());
+        }
+    } else if path.exists() {
+        return Err("additional forcing has no recipe selection".into());
     }
     let parse = |value: &str| {
         chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").map_err(|e| e.to_string())
@@ -387,17 +407,18 @@ fn validate_recipe(
     let mut historical = first.timeline.clone();
     historical.bounds.truncate(recipe.historical_count);
     let selection = ObservationSelection {
-        provider_codes: document.observed.provider_codes,
-        station_ids: document.observed.station_ids,
+        provider_codes: document.observed.provider_codes.clone(),
+        station_ids: document.observed.station_ids.clone(),
     };
     let observations = ObservationStore::open_read_only(&root.join("sources/observations.sqlite"))
         .map_err(|e| e.to_string())?;
+    let extra_stations = super::additional::extra_stations(&observations, &document)?;
     let (inputs, offsets) = observations
         .read_selection_with_stations(
             &selection,
             &historical,
             &document.observed.replacement_ids,
-            &recipe.selected_station_ids,
+            &extra_stations,
         )
         .map_err(|e| e.to_string())?;
     if serde_json::to_value(&inputs.series).map_err(|e| e.to_string())? != selected_series
@@ -463,8 +484,24 @@ fn prepare_worker(
         horizon,
         &forcing.basins,
     )?;
+    let additional = snapshot.join("forcing/additional.json");
+    if additional.is_file() {
+        let values: crate::store::PreparedAdditionalForcing =
+            crate::store::read_draft(&additional)?;
+        let selected = if history {
+            values
+                .prefix(recipe.historical_count)
+                .map_err(|e| e.to_string())?
+        } else {
+            values
+        };
+        crate::model::write_additional_forcing(&input, &selected)?;
+    }
+    if !history && let Some(at) = hot_save_time(&recipe.document)? {
+        crate::model::write_hot_save_request(&input, at)?;
+    }
     Ok(EnginePlan {
-        executable: snapshot.join("baseline/engine"),
+        executable: snapshot.join(crate::store::PREPARED_ENGINE),
         cwd: worker.clone(),
         input,
         output: worker.join("Output"),
@@ -477,6 +514,15 @@ fn prepare_worker(
             .ok_or("missing timezone")?
             .to_string(),
     })
+}
+
+fn hot_save_time(document: &serde_json::Value) -> Result<Option<chrono::NaiveDateTime>, String> {
+    document
+        .get("hot_start")
+        .and_then(|selection| selection.get("save_at"))
+        .and_then(serde_json::Value::as_str)
+        .map(|at| super::request::timestamp("hot_start.save_at", at).map_err(|e| e.to_string()))
+        .transpose()
 }
 
 fn scenario_record(id: String) -> ScenarioRecord {
@@ -521,7 +567,7 @@ pub fn execute_prepared_controlled(
     execute_locked(&workspace, &prepared, control, &lock, false)
 }
 
-fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
+pub(super) fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -551,17 +597,27 @@ pub fn run_draft(
             message: e.to_string(),
         })?;
     let lock = lock_workspace(&workspace)?;
+    run_draft_locked(draft, control, &workspace, &lock)
+}
+
+pub(super) fn run_draft_locked(
+    draft: &super::Draft,
+    control: &OperationControl,
+    workspace: &Path,
+    lock: &std::fs::File,
+) -> Result<ExecutionReport, OperationError> {
+    control.check()?;
     let base = workspace.join("data/cache/preparations");
-    fs::create_dir_all(&base).map_err(|e| store_error(&workspace, e))?;
+    fs::create_dir_all(&base).map_err(|e| store_error(workspace, e))?;
     let prepared = base.join(format!(
         "{}-{}",
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"),
         std::process::id()
     ));
-    let report = draft.prepare_controlled(workspace.clone(), prepared, control)?;
+    let report = draft.prepare_controlled(workspace.to_path_buf(), prepared, control)?;
     let result = control
         .check()
-        .and_then(|()| execute_locked(&workspace, &report.prepared, control, &lock, true));
+        .and_then(|()| execute_locked(workspace, &report.prepared, control, lock, true));
     if let Err(error) = remove_if_exists(&report.prepared) {
         return Err(store_error(
             &report.prepared,
@@ -578,7 +634,7 @@ pub fn run_draft(
     result
 }
 
-fn execute_locked(
+pub(super) fn execute_locked(
     workspace: &Path,
     prepared: &Path,
     control: &OperationControl,
@@ -752,6 +808,11 @@ fn execute_locked(
                 .into_iter()
                 .flatten()
                 .map(|p| run_root.join(p))
+                .chain(
+                    (record.state == "completed")
+                        .then(|| run_root.join("scenarios").join(&record.id).join("state"))
+                        .filter(|path| path.is_dir()),
+                )
                 .collect(),
             error: record.error.clone(),
         })
@@ -783,7 +844,7 @@ fn clean_worker(path: &Path, success: bool) -> std::io::Result<()> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if name == "logs" || (success && name == "Output") {
+        if name == "logs" || (success && (name == "Output" || name == "state")) {
             continue;
         }
         if entry.file_type()?.is_dir() {
@@ -947,13 +1008,35 @@ fn run_scenario(
         control.check().map_err(|e| e.to_string())?;
         let mut forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{id}.nc")))
             .map_err(|e| e.to_string())?;
+        if let Some(at) = hot_save_time(&recipe.document)? {
+            let state = plan.cwd.join("state");
+            crate::model::package_hot_start(
+                &plan.output,
+                &state,
+                at,
+                forcing.basins.mini_ids.len(),
+            )?;
+            crate::store::write_draft(
+                &state.join("state.json"),
+                &crate::store::HotStartManifest {
+                    schema_version: 1,
+                    saved_at: at,
+                    time_zone: forcing.timeline.time_zone.clone(),
+                    scenario: id.into(),
+                    engine_sha256: digest_file(&plan.executable)?.0,
+                    geometry_sha256: digest_file(&plan.input.join("Cell.hig"))?.0,
+                    soil_sha256: digest_file(&plan.input.join("paruso.hig"))?.0,
+                    files: crate::store::collect_inputs(&state)?,
+                },
+            )?;
+        }
         let mut hashes = String::new();
         for path in [
             plan.input.join("PARHIG.hig"),
             plan.input.join("Previsao.meta"),
             plan.input.join("CHUVABIN.hig"),
             plan.input.join("MINI.gtp"),
-            snapshot.join("baseline/engine"),
+            snapshot.join(crate::store::PREPARED_ENGINE),
         ] {
             hashes.push_str(&digest_file(&path)?.0);
         }
@@ -970,9 +1053,29 @@ fn run_scenario(
         );
         processing.insert(
             "engine_sha256".into(),
-            digest_file(&snapshot.join("baseline/engine"))?.0.into(),
+            digest_file(&snapshot.join(crate::store::PREPARED_ENGINE))?
+                .0
+                .into(),
         );
         processing.insert("snapshot_sha256".into(), snapshot_hash.into());
+        if snapshot.join("forcing/additional.json").is_file()
+            || recipe.document.get("calibration").is_some()
+        {
+            let mut selected = serde_json::Map::new();
+            for name in [
+                "QOBS_hora.PRN",
+                "QSUBST_hora.PRN",
+                "vento.txt",
+                "Cell.hig",
+                "paruso.hig",
+            ] {
+                let path = plan.input.join(name);
+                if path.is_file() {
+                    selected.insert(name.into(), digest_file(&path)?.0.into());
+                }
+            }
+            processing.insert("engine_input_sha256".into(), selected.into());
+        }
         forcing.provenance.processing = processing.into();
         let raw = decode_outputs(
             &plan.output,
@@ -1070,7 +1173,7 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
         }
         let basin = root.join("results").join(id).join("basin.nc");
         let station = root.join("results").join(id).join("station.nc");
-        crate::store::read_result_series(&basin).map_err(|e| store_error(root, e))?;
+        let values = crate::store::read_result_series(&basin).map_err(|e| store_error(root, e))?;
         crate::store::read_station_results(&station).map_err(|e| store_error(root, e))?;
         if manifest.preparation_sha256.is_some() {
             for name in [
@@ -1093,6 +1196,41 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
                 }
             }
         }
+        let mut results = vec![basin, station];
+        if let Some(at) =
+            hot_save_time(&manifest.recipe["document"]).map_err(|e| store_error(root, e))?
+        {
+            let state = root.join("scenarios").join(id).join("state");
+            let record: crate::store::HotStartManifest =
+                crate::store::read_draft(&state.join("state.json"))
+                    .map_err(|e| store_error(root, e))?;
+            if record.schema_version != 1
+                || record.saved_at != at
+                || record.scenario != *id
+                || record.time_zone != values.timeline.time_zone
+                || values.provenance.processing["engine_sha256"].as_str()
+                    != Some(&record.engine_sha256)
+            {
+                return Err(store_error(
+                    root,
+                    "state provenance differs from its completed scenario",
+                ));
+            }
+            let actual = crate::store::collect_inputs(&state).map_err(|e| store_error(root, e))?;
+            let actual: Vec<_> = actual
+                .into_iter()
+                .filter(|file| file.path != Path::new("state.json"))
+                .collect();
+            if actual != record.files || actual.len() != 6 {
+                return Err(store_error(
+                    root,
+                    "retained state differs from its integrity index",
+                ));
+            }
+            crate::model::validate_hot_start(&state, at, values.basins.mini_ids.len())
+                .map_err(|e| store_error(root, e))?;
+            results.push(state);
+        }
         scenarios.push(ScenarioExecution {
             id: id.clone(),
             status: BatchStatus::Completed,
@@ -1102,7 +1240,7 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
                 .iter()
                 .map(|name| root.join("scenarios").join(id).join("logs").join(name))
                 .collect(),
-            results: vec![basin, station],
+            results,
             error: None,
         });
     }
