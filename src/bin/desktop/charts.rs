@@ -1,5 +1,5 @@
 use eframe::egui::{self, Color32};
-use mgb_ops::app::{Location, SeriesPoint, SeriesReport};
+use mgb_ops::app::{ChartSeries, Location, SeriesPoint, SeriesReport};
 use mgb_ops::store::LevelReference;
 use rsplot::{CurveSpec, ItemHandle, LineStyle, Plot1D, TickMode, YAxis};
 
@@ -7,6 +7,7 @@ pub struct Charts {
     pub state: eframe::egui_wgpu::RenderState,
     pub plots: [Plot1D; 3],
     cursors: [ItemHandle; 3],
+    cursor_time: Option<f64>,
     pub report: Option<SeriesReport>,
     pub comparison_station: Option<String>,
     pub source_labels: Vec<String>,
@@ -93,6 +94,7 @@ impl Charts {
             state: state.clone(),
             plots,
             cursors,
+            cursor_time: None,
             report: None,
             comparison_station: None,
             source_labels: vec![],
@@ -110,6 +112,7 @@ impl Charts {
             plot.backend().flush_scene();
         }
         self.report = None;
+        self.cursor_time = None;
         self.comparison_station = None;
         self.source_labels.clear();
         self.scenario_order.clear();
@@ -135,6 +138,7 @@ impl Charts {
         portuguese: bool,
     ) -> Result<(), String> {
         self.labels.clear();
+        self.cursor_time = None;
         self.portuguese = portuguese;
         self.origin = seconds(report.window.start);
         for plot in &mut self.plots {
@@ -142,11 +146,7 @@ impl Charts {
         }
         for (i, plot) in self.plots.iter_mut().enumerate() {
             plot.clear();
-            plot.set_graph_title(if portuguese {
-                ["Chuva", "Vazão", "Nível"][i]
-            } else {
-                ["Rainfall", "Flow", "Level"][i]
-            });
+            plot.set_graph_title(plot_title(i, portuguese));
             if i == 2 {
                 plot.set_graph_x_label(format!(
                     "{} · {}",
@@ -206,36 +206,8 @@ impl Charts {
                 _ => 2,
             };
             let color = source_color(&self.scenario_order, series.scenario_id.as_deref());
-            let name = series
-                .scenario_id
-                .clone()
-                .unwrap_or_else(|| if portuguese { "Observado" } else { "Observed" }.into());
             let raw_level = series.series_kind == "model_raw_level";
-            let label = if raw_level {
-                format!(
-                    "{name} · {}",
-                    if portuguese {
-                        "nível bruto da MINI"
-                    } else {
-                        "raw MINI level"
-                    }
-                )
-            } else if series.series_kind == "model_station_level" {
-                format!(
-                    "{name} · {}",
-                    if portuguese {
-                        "datum da estação"
-                    } else {
-                        "station datum"
-                    }
-                )
-            } else if series.scenario_id.is_none() {
-                self.source_labels
-                    .get(series.selection_index)
-                    .map_or(name.clone(), |source| format!("{name} · {source}"))
-            } else {
-                name
-            };
+            let label = series_label(series, &self.source_labels, portuguese);
             if !self.labels.iter().any(|(s, _)| s == &label) {
                 self.labels.push((label.clone(), color));
             }
@@ -296,7 +268,10 @@ impl Charts {
         self.report = Some(report);
         Ok(())
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, portuguese: bool, height: f32) {
+    pub fn show(&mut self, ui: &mut egui::Ui, portuguese: bool, available_height: f32) {
+        let Some(report) = &self.report else {
+            return;
+        };
         for plot in &mut self.plots {
             plot.set_background_colors(ui.visuals().panel_fill, ui.visuals().extreme_bg_color);
             plot.set_foreground_colors(
@@ -305,29 +280,54 @@ impl Charts {
             );
         }
 
-        let Some(report) = &self.report else {
-            return;
-        };
-        let source = report
-            .series
-            .iter()
-            .find_map(|s| s.run_id.as_deref())
-            .unwrap_or("OBS");
-        ui.small(format!(
-            "{} · {} · {source}",
-            self.location_caption(report, portuguese),
-            report.time_zone
-        ));
+        let top = ui.cursor().min.y;
+        ui.heading(self.location_caption(report, portuguese));
+        ui.horizontal_wrapped(|ui| {
+            ui.weak(&report.time_zone);
+            if let Some(run) = report
+                .series
+                .iter()
+                .find_map(|series| series.run_id.as_deref())
+            {
+                ui.weak(run);
+            }
+        });
         ui.horizontal_wrapped(|ui| {
             for (label, color) in &self.labels {
-                ui.colored_label(*color, label);
+                super::theme::color_key(ui, *color, label);
             }
-            ui.small(if self.portuguese {
-                "— histórico · --- previsão · vermelho: referência"
-            } else {
-                "— history · --- forecast · red: reference"
-            });
         });
+        ui.horizontal_wrapped(|ui| {
+            let ink = ui.visuals().text_color();
+            legend_key(
+                ui,
+                ink,
+                LegendMark::Solid,
+                super::text(portuguese, "History", "Histórico"),
+            );
+            legend_key(
+                ui,
+                ink,
+                LegendMark::Dashed,
+                super::text(portuguese, "Forecast", "Previsão"),
+            );
+            if report
+                .series
+                .iter()
+                .any(|series| series.forecast_reference_time.is_some())
+            {
+                legend_key(
+                    ui,
+                    Color32::RED,
+                    LegendMark::Reference,
+                    super::text(portuguese, "Forecast reference", "Referência da previsão"),
+                );
+            }
+        });
+
+        let header_height = ui.cursor().min.y - top;
+        let gap = ui.spacing().item_spacing.y;
+        let height = ((available_height - header_height - 3. * gap) / 3.).max(110.);
         let mut limits = None;
         let mut cursor = None;
         for plot in &mut self.plots {
@@ -354,40 +354,127 @@ impl Charts {
             for (plot, handle) in self.plots.iter_mut().zip(self.cursors) {
                 plot.set_marker_position(handle, x, 0.);
             }
-            if let Some(report) = &self.report {
-                let x = x + self.origin;
-                let label = chrono::DateTime::from_timestamp(x as i64, 0)
-                    .map(|t| t.format("%Y-%m-%d %H:%M:%S").to_string())
-                    .unwrap_or_default();
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(format!("{label} · {}", report.time_zone));
-                    for series in &report.series {
-                        if let Some(point) = series.points.iter().min_by(|a, b| {
-                            (seconds(a.timestamp) - x)
-                                .abs()
-                                .total_cmp(&(seconds(b.timestamp) - x).abs())
-                        }) {
-                            let value = point
-                                .value
-                                .map(|v| format!("{v:.2}"))
-                                .unwrap_or_else(|| "NA".into());
-                            ui.colored_label(
-                                source_color(&self.scenario_order, series.scenario_id.as_deref()),
-                                format!(
-                                    "{} {}: {} {} @ {}",
-                                    series.scenario_id.as_deref().unwrap_or("OBS"),
-                                    series.variable,
-                                    value,
-                                    series.unit,
-                                    point.timestamp.format("%m-%d %H:%M:%S")
-                                ),
-                            );
-                        }
-                    }
-                });
-            }
+            self.cursor_time = Some(x + self.origin);
+        }
+        if let Some(x) = self.cursor_time {
+            self.cursor_readings(ui, report, x, portuguese);
         }
     }
+
+    fn cursor_readings(
+        &self,
+        ui: &mut egui::Ui,
+        report: &SeriesReport,
+        cursor: f64,
+        portuguese: bool,
+    ) {
+        let time = chrono::DateTime::from_timestamp(cursor as i64, 0)
+            .map(|time| time.format("%Y-%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default();
+        super::theme::inset(ui.style()).show(ui, |ui| {
+            ui.strong(super::text(
+                portuguese,
+                "Cursor readings",
+                "Leituras do cursor",
+            ));
+            ui.weak(format!("{time} · {}", report.time_zone));
+            for (index, variable) in ["rain", "flow", "level"].into_iter().enumerate() {
+                if !report
+                    .series
+                    .iter()
+                    .any(|series| series.variable == variable)
+                {
+                    continue;
+                }
+                ui.add_space(4.);
+                ui.strong(plot_title(index, portuguese));
+                for series in report
+                    .series
+                    .iter()
+                    .filter(|series| series.variable == variable)
+                {
+                    let Some(point) = series.points.iter().min_by(|a, b| {
+                        (seconds(a.timestamp) - cursor)
+                            .abs()
+                            .total_cmp(&(seconds(b.timestamp) - cursor).abs())
+                    }) else {
+                        continue;
+                    };
+                    let value = point
+                        .value
+                        .map_or_else(|| "NA".into(), |value| format!("{value:.2}"));
+                    ui.horizontal_wrapped(|ui| {
+                        super::theme::color_key(
+                            ui,
+                            source_color(&self.scenario_order, series.scenario_id.as_deref()),
+                            &series_label(series, &self.source_labels, portuguese),
+                        );
+                        ui.strong(format!("{value} {}", series.unit));
+                        ui.weak(point.timestamp.format("%m-%d %H:%M:%S").to_string());
+                    });
+                }
+            }
+        });
+    }
+}
+
+fn plot_title(index: usize, portuguese: bool) -> &'static str {
+    if portuguese {
+        ["Chuva", "Vazão", "Nível"][index]
+    } else {
+        ["Rainfall", "Flow", "Level"][index]
+    }
+}
+
+fn series_label(series: &ChartSeries, sources: &[String], portuguese: bool) -> String {
+    let name = series
+        .scenario_id
+        .clone()
+        .unwrap_or_else(|| super::text(portuguese, "Observed", "Observado"));
+    match series.series_kind.as_str() {
+        "model_raw_level" => format!(
+            "{name} · {}",
+            super::text(portuguese, "raw MINI level", "nível bruto da MINI")
+        ),
+        "model_station_level" => format!(
+            "{name} · {}",
+            super::text(portuguese, "station datum", "datum da estação")
+        ),
+        _ if series.scenario_id.is_none() => sources
+            .get(series.selection_index)
+            .map_or(name.clone(), |source| format!("{name} · {source}")),
+        _ => name,
+    }
+}
+
+enum LegendMark {
+    Solid,
+    Dashed,
+    Reference,
+}
+
+fn legend_key(ui: &mut egui::Ui, color: Color32, mark: LegendMark, label: String) {
+    super::theme::legend_key(ui, egui::vec2(17., 12.), &label, |ui, rect| {
+        let start = rect.left_center();
+        let stop = rect.right_center();
+        let stroke = egui::Stroke::new(1.5, color);
+        match mark {
+            LegendMark::Solid => {
+                ui.painter().line_segment([start, stop], stroke);
+            }
+            LegendMark::Dashed => {
+                for offset in [0., 6., 12.] {
+                    let dash = start + egui::vec2(offset, 0.);
+                    ui.painter()
+                        .line_segment([dash, dash + egui::vec2(4., 0.)], stroke);
+                }
+            }
+            LegendMark::Reference => {
+                ui.painter()
+                    .line_segment([rect.center_top(), rect.center_bottom()], stroke);
+            }
+        }
+    });
 }
 
 impl Drop for Charts {

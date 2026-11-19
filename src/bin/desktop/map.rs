@@ -214,7 +214,7 @@ fn color(kind: &str) -> Color32 {
     match kind {
         "catchments" => Color32::from_rgb(105, 150, 110),
         "upstream" => Color32::from_rgb(255, 185, 30),
-        "rivers" => Color32::from_rgb(40, 145, 230),
+        "rivers" => Color32::from_rgb(58, 136, 180),
         _ => Color32::LIGHT_GREEN,
     }
 }
@@ -229,6 +229,42 @@ pub fn rain_color(value: Option<f64>) -> Color32 {
         Some(_) => Color32::from_rgb(190, 40, 130),
     }
 }
+pub fn layer_swatch(kind: &str) -> Color32 {
+    if kind == "rainfall" {
+        rain_color(Some(10.))
+    } else {
+        color(kind)
+    }
+}
+
+pub fn rain_legend(ui: &mut egui::Ui, pt: bool) {
+    ui.horizontal_wrapped(|ui| {
+        ui.strong(super::text(
+            pt,
+            "Accumulated rainfall (mm)",
+            "Chuva acumulada (mm)",
+        ));
+        for (value, label) in [
+            (Some(0.), "0–<1"),
+            (Some(1.), "1–<10"),
+            (Some(10.), "10–<25"),
+            (Some(25.), "25–<50"),
+            (Some(50.), "50–<100"),
+            (Some(100.), "≥100"),
+            (None, "NA"),
+        ] {
+            let response = super::theme::color_key(ui, rain_color(value), label);
+            if value.is_none() {
+                response.on_hover_text(super::text(
+                    pt,
+                    "Incomplete coverage",
+                    "Cobertura incompleta",
+                ));
+            }
+        }
+    });
+}
+
 fn screen(projector: &Projector, p: (f64, f64)) -> Pos2 {
     projector.project(lon_lat(p.0, p.1)).to_pos2()
 }
@@ -428,12 +464,18 @@ impl StaticCache {
             })
         })
         .collect();
+        let river_width = if memory.zoom() < 10. { 0.8 } else { 1.2 };
         self.rivers = line_meshes(
             context,
             rect,
             self.hits
                 .iter()
-                .map(|hit| egui::Shape::line(hit.points.clone(), Stroke::new(1.2, color("rivers"))))
+                .map(|hit| {
+                    egui::Shape::line(
+                        hit.points.clone(),
+                        Stroke::new(river_width, color("rivers")),
+                    )
+                })
                 .collect(),
         );
         let mut combined = egui::Mesh::default();
@@ -651,9 +693,22 @@ impl walkers::Plugin for Overlay<'_> {
                                 continue;
                             }
                             let selected = matches!(self.selection, Some(Location::Station(id)) if *id == station.station_id);
+                            if selected {
+                                ui.painter().circle_stroke(
+                                    p,
+                                    8.,
+                                    Stroke::new(2., Color32::WHITE.gamma_multiply(layer.opacity)),
+                                );
+                            }
                             ui.painter().circle(
                                 p,
-                                if selected { 6. } else { 4.5 },
+                                if selected {
+                                    6.
+                                } else if memory.zoom() < 10. {
+                                    3.
+                                } else {
+                                    4.5
+                                },
                                 if selected {
                                     Color32::YELLOW
                                 } else if entry.offset.is_some() {
@@ -662,7 +717,7 @@ impl walkers::Plugin for Overlay<'_> {
                                     Color32::GRAY
                                 }
                                 .gamma_multiply(layer.opacity),
-                                Stroke::new(1.5, Color32::BLACK.gamma_multiply(layer.opacity)),
+                                Stroke::new(1., Color32::BLACK.gamma_multiply(layer.opacity)),
                             );
                             if self.labels && memory.zoom() >= 10.0 {
                                 map_label(
@@ -712,19 +767,13 @@ impl walkers::Plugin for Overlay<'_> {
             if visible("catchments") {
                 for feature in self.project.catchments.iter().filter(|f| f.mini_id == *id) {
                     for path in &feature.paths {
-                        ui.painter().add(egui::Shape::line(
-                            path.iter().map(|p| screen(projector, *p)).collect(),
-                            Stroke::new(2., Color32::YELLOW),
-                        ));
+                        selected_line(ui, path.iter().map(|p| screen(projector, *p)).collect());
                     }
                 }
             }
             if visible("rivers") {
                 for feature in self.cache.hits.iter().filter(|f| f.mini_id == *id) {
-                    ui.painter().add(egui::Shape::line(
-                        feature.points.clone(),
-                        Stroke::new(2.5, Color32::YELLOW),
-                    ));
+                    selected_line(ui, feature.points.clone());
                 }
             }
         }
@@ -804,6 +853,15 @@ impl walkers::Plugin for Overlay<'_> {
         }
     }
 }
+fn selected_line(ui: &egui::Ui, points: Vec<Pos2>) {
+    ui.painter().add(egui::Shape::line(
+        points.clone(),
+        Stroke::new(4., Color32::from_rgb(37, 48, 57)),
+    ));
+    ui.painter()
+        .add(egui::Shape::line(points, Stroke::new(2., Color32::YELLOW)));
+}
+
 pub fn feature_menu(
     response: &egui::Response,
     location: Option<Location>,

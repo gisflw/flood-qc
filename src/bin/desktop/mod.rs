@@ -4,6 +4,7 @@ mod export;
 mod layout;
 mod map;
 mod runners;
+mod theme;
 mod tools;
 mod workflows;
 use self::layout::{Form, SideTab};
@@ -44,6 +45,37 @@ fn ribbon_group(ui: &mut egui::Ui, title: String, actions: impl FnOnce(&mut egui
         ui.small(title);
     });
     ui.separator();
+}
+
+fn layer_row(ui: &mut egui::Ui, pt: bool, label: &str, color: Color32, visible: &mut bool) -> bool {
+    let id = ui.id().with("layer-settings-open");
+    let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    ui.horizontal(|ui| {
+        let action = if open {
+            text(pt, "Hide settings", "Ocultar configurações")
+        } else {
+            text(pt, "Show settings", "Mostrar configurações")
+        };
+        if icon_button(
+            ui,
+            if open { "-" } else { "+" },
+            &format!("{action} · {label}"),
+        )
+        .clicked()
+        {
+            open = !open;
+            ui.data_mut(|data| data.insert_temp(id, open));
+        }
+        theme::swatch(ui, color);
+        ui.checkbox(visible, label);
+    });
+    open
+}
+
+fn layer_opacity(ui: &mut egui::Ui, pt: bool, opacity: &mut f32) {
+    let label = ui.label(text(pt, "Opacity", "Opacidade"));
+    ui.add(egui::Slider::new(opacity, 0.0..=1.0))
+        .labelled_by(label.id);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -234,6 +266,7 @@ struct Monitoring {
 }
 impl Monitoring {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        theme::install(&cc.egui_ctx);
         let mut preferences: Preferences = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE))
@@ -349,6 +382,15 @@ impl Monitoring {
         self.preferences.recent.insert(0, self.display.clone());
         self.preferences.recent.truncate(10);
     }
+    fn choose_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("TOML", &["toml"])
+            .pick_file()
+        {
+            self.open_path(path);
+        }
+    }
+
     fn open_path(&mut self, config: PathBuf) {
         let workspace = self
             .preferences
@@ -921,7 +963,7 @@ impl Monitoring {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         ui.horizontal_wrapped(|ui| {
-            ui.strong("MGB Ops");
+            ui.label(egui::RichText::new("MGB Ops").heading().strong());
             ui.separator();
             for tab in [
                 Ribbon::Project,
@@ -930,7 +972,11 @@ impl Monitoring {
                 Ribbon::Processing,
                 Ribbon::Settings,
             ] {
-                ui.selectable_value(&mut self.ribbon, tab, tab.label(pt));
+                ui.selectable_value(
+                    &mut self.ribbon,
+                    tab,
+                    egui::RichText::new(tab.label(pt)).strong(),
+                );
             }
         });
         ui.separator();
@@ -940,14 +986,14 @@ impl Monitoring {
                 ui.horizontal(|ui| match self.ribbon {
                     Ribbon::Project => {
                         ribbon_group(ui, text(pt, "Workspace", "Área de trabalho"), |ui| {
-                            if ui
-                                .button(text(pt, "↗ Open TOML…", "↗ Abrir TOML…"))
-                                .clicked()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("TOML", &["toml"])
-                                    .pick_file()
-                            {
-                                self.open_path(path);
+                            let label = text(pt, "Open TOML…", "Abrir TOML…");
+                            let open = if self.project.is_none() {
+                                ui.add(theme::primary(ui, label))
+                            } else {
+                                ui.button(label)
+                            };
+                            if open.clicked() {
+                                self.choose_project();
                             }
                             if !self.preferences.recent.is_empty() {
                                 ui.menu_button(text(pt, "Recent", "Recentes"), |ui| {
@@ -1104,10 +1150,11 @@ impl Monitoring {
                     }
                     Ribbon::Processing => {
                         ribbon_group(ui, text(pt, "Operation", "Operação"), |ui| {
-                            for form in [Form::NewRun, Form::Forcing] {
-                                if ui.button(form.label(pt)).clicked() {
-                                    self.display.layout.form(form);
-                                }
+                            if ui.add(theme::primary(ui, Form::NewRun.label(pt))).clicked() {
+                                self.display.layout.form(Form::NewRun);
+                            }
+                            if ui.button(Form::Forcing.label(pt)).clicked() {
+                                self.display.layout.form(Form::Forcing);
                             }
                         });
                         ribbon_group(ui, text(pt, "Activity", "Atividade"), |ui| {
@@ -1232,10 +1279,10 @@ impl Monitoring {
             SideTab::Charts => {
                 self.chart_controls(ui);
                 if self.charts.report.is_some() {
-                    let height = ((ui.available_height() - 65.) / 3.).max(110.);
+                    let available_height = ui.available_height();
                     egui::ScrollArea::vertical()
                         .id_salt("chart-plots")
-                        .show(ui, |ui| self.charts.show(ui, pt, height));
+                        .show(ui, |ui| self.charts.show(ui, pt, available_height));
                 }
             }
             SideTab::Data => self.data_page(ui),
@@ -1409,7 +1456,7 @@ impl Monitoring {
         ui.label(project.workspace.display().to_string());
         for path in &project.retained_sources {
             ui.colored_label(
-                Color32::YELLOW,
+                ui.visuals().warn_fg_color,
                 format!(
                     "{}: {}",
                     text(pt, "Retained source", "Fonte anterior mantida"),
@@ -1465,10 +1512,10 @@ impl Monitoring {
                     ));
                     ui.label(run.root.display().to_string());
                     for finding in &run.findings {
-                        ui.colored_label(Color32::LIGHT_RED, finding);
+                        ui.colored_label(ui.visuals().warn_fg_color, finding);
                     }
                     if let Some(error) = &run.manifest.error {
-                        ui.colored_label(Color32::LIGHT_RED, error);
+                        ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                     for scenario in &run.manifest.scenarios {
                         ui.label(format!(
@@ -1477,7 +1524,7 @@ impl Monitoring {
                             status_label(&scenario.state, pt)
                         ));
                         if let Some(error) = &scenario.error {
-                            ui.colored_label(Color32::LIGHT_RED, &error.message);
+                            ui.colored_label(ui.visuals().error_fg_color, &error.message);
                         }
                     }
                     ui.label(
@@ -1498,7 +1545,7 @@ impl Monitoring {
                     ui.label(asset);
                 }
                 for finding in &project.findings {
-                    ui.colored_label(Color32::LIGHT_RED, finding);
+                    ui.colored_label(ui.visuals().warn_fg_color, finding);
                 }
             },
         );
@@ -1564,58 +1611,81 @@ impl Monitoring {
     fn left_panel(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         ui.heading(text(pt, "Run", "Execução"));
-        ui.strong("reference_time");
-        ui.label(self.run.as_ref().map_or_else(
-            || "—".into(),
-            |run| {
-                let document = &run.manifest.recipe["document"];
-                let reference = document["reference_time"]
-                    .as_str()
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(&run.reference);
-                let zone = document["time_zone"].as_str().unwrap_or(&run.time_zone);
-                if reference.is_empty() {
-                    "—".into()
-                } else {
-                    format!("{reference} · {zone}")
-                }
-            },
-        ));
-        let horizons = self.run.as_ref().and_then(|run| run.day_horizons);
+        if let Some(run) = &self.run {
+            theme::inset(ui.style()).show(ui, |ui| Self::run_summary(ui, run, pt));
+        } else {
+            ui.weak(text(
+                pt,
+                "No retained run selected",
+                "Nenhuma execução retida selecionada",
+            ));
+        }
+        ui.add_space(6.);
+        ui.separator();
+        ui.heading(text(pt, "Layers", "Camadas"));
+        let selection = self.project.as_ref().and(self.display.selection.as_ref());
+        if let Some(location) = selection {
+            ui.strong(self.feature_label(location));
+        } else {
+            ui.weak(text(
+                pt,
+                "No feature selected",
+                "Nenhuma feição selecionada",
+            ));
+        }
+        egui::ScrollArea::vertical().show(ui, |ui| self.layer_controls(ui));
+    }
+
+    fn run_summary(ui: &mut egui::Ui, run: &Run, pt: bool) {
+        ui.weak(text(pt, "Reference time", "Hora de referência"));
+        let document = &run.manifest.recipe["document"];
+        let reference = document["reference_time"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .unwrap_or(&run.reference);
+        let zone = document["time_zone"].as_str().unwrap_or(&run.time_zone);
+        if reference.is_empty() {
+            ui.label("—");
+        } else {
+            ui.label(format!("{reference}\n{zone}"));
+        }
+        let horizons = run.day_horizons;
         for (label, value) in [
             (
-                "observed_horizon_days",
+                text(pt, "Observed horizon", "Horizonte observado"),
                 horizons.map(|(observed, _)| observed),
             ),
             (
-                "forecast_horizon_days",
+                text(pt, "Forecast horizon", "Horizonte previsto"),
                 horizons.map(|(_, forecast)| forecast),
             ),
         ] {
             ui.horizontal_wrapped(|ui| {
-                ui.strong(label);
-                ui.label(value.map_or_else(|| "—".into(), |days| days.to_string()));
+                ui.weak(label);
+                ui.strong(value.map_or_else(
+                    || "—".into(),
+                    |days| {
+                        let unit = if days == 1 {
+                            text(pt, "day", "dia")
+                        } else {
+                            text(pt, "days", "dias")
+                        };
+                        format!("{days} {unit}")
+                    },
+                ));
             });
         }
-        ui.strong(text(pt, "Available scenarios", "Cenários disponíveis"));
+        ui.weak(text(pt, "Available scenarios", "Cenários disponíveis"));
         egui::ScrollArea::vertical()
             .id_salt("run-scenarios")
             .max_height(96.)
             .show(ui, |ui| {
-                ui.label(
-                    self.run
-                        .as_ref()
-                        .map_or_else(|| "—".into(), |run| run.scenarios.join(", ")),
-                );
+                ui.label(if run.scenarios.is_empty() {
+                    "—".into()
+                } else {
+                    run.scenarios.join(", ")
+                });
             });
-        ui.separator();
-        ui.heading(text(pt, "Layers", "Camadas"));
-        let selection = self.project.as_ref().and(self.display.selection.as_ref());
-        ui.label(selection.map_or_else(
-            || text(pt, "No feature selected", "Nenhuma feição selecionada"),
-            |location| self.feature_label(location),
-        ));
-        egui::ScrollArea::vertical().show(ui, |ui| self.layer_controls(ui));
     }
 
     fn feature_label(&self, location: &Location) -> String {
@@ -1677,38 +1747,46 @@ impl Monitoring {
                 "rivers" => text(pt, "Rivers", "Rios"),
                 _ => text(pt, "Stations", "Estações"),
             };
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut layer.visible, label);
-                if i > 0
-                    && icon_button(ui, "↑", &text(pt, "Move layer up", "Mover camada acima"))
-                        .clicked()
-                {
-                    reorder = Some(i);
+            ui.push_id(&layer.kind, |ui| {
+                let expanded = layer_row(
+                    ui,
+                    pt,
+                    &label,
+                    map::layer_swatch(&layer.kind),
+                    &mut layer.visible,
+                );
+                if expanded {
+                    ui.indent("layer-settings", |ui| {
+                        layer_opacity(ui, pt, &mut layer.opacity);
+                        if ui
+                            .add_enabled(
+                                i > 0,
+                                egui::Button::new(text(pt, "Move up", "Mover acima")),
+                            )
+                            .clicked()
+                        {
+                            reorder = Some(i);
+                        }
+                    });
                 }
-            });
-            if layer.kind == "upstream" {
-                ui.horizontal_wrapped(|ui| {
-                    if let Some((mini, _)) = &self.upstream_basin {
-                        ui.label(format!("MINI {mini}"));
-                    }
-                    let loading = self.loading[UPSTREAM_SLOT];
-                    if loading {
-                        ui.spinner();
-                    }
-                    if (loading || self.upstream_basin.is_some())
-                        && ui
+                let loading = self.loading[UPSTREAM_SLOT];
+                if layer.kind == "upstream" && (loading || self.upstream_basin.is_some()) {
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some((mini, _)) = &self.upstream_basin {
+                            ui.strong(format!("MINI {mini}"));
+                        }
+                        if loading {
+                            ui.spinner();
+                        }
+                        if ui
                             .small_button(text(pt, "Clear basin", "Limpar bacia"))
                             .clicked()
-                    {
-                        clear = true;
-                    }
-                });
-            }
-            ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).text(text(
-                pt,
-                "Opacity",
-                "Opacidade",
-            )));
+                        {
+                            clear = true;
+                        }
+                    });
+                }
+            });
         }
         if clear {
             self.clear_upstream();
@@ -1717,19 +1795,7 @@ impl Monitoring {
         if let Some(i) = reorder {
             self.display.layers.swap(i, i - 1);
         }
-        ui.horizontal_wrapped(|ui| {
-            for (value, label) in [
-                (0., "0–1"),
-                (1., "1–10"),
-                (10., "10–25"),
-                (25., "25–50"),
-                (50., "50–100"),
-                (100., "100+"),
-            ] {
-                ui.colored_label(map::rain_color(Some(value)), format!("■ {label}"));
-            }
-            ui.label("mm");
-        });
+        ui.separator();
         if ui
             .button(text(pt, "Add local GIS…", "Adicionar GIS local…"))
             .clicked()
@@ -1750,36 +1816,51 @@ impl Monitoring {
         let mut remove = None;
         let mut reorder = None;
         for (i, style) in self.display.local.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.checkbox(
-                    &mut style.visible,
-                    style.path.file_name().unwrap_or_default().to_string_lossy(),
-                );
-                if i > 0
-                    && icon_button(ui, "↑", &text(pt, "Move layer up", "Mover camada acima"))
-                        .clicked()
-                {
-                    reorder = Some(i);
-                }
-                if icon_button(
+            let name = style
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            ui.push_id((&style.path, i), |ui| {
+                let expanded = layer_row(
                     ui,
-                    "×",
-                    &text(pt, "Remove local layer", "Remover camada local"),
-                )
-                .clicked()
-                {
-                    remove = Some(i);
+                    pt,
+                    &name,
+                    Color32::from_rgba_unmultiplied(
+                        style.color[0],
+                        style.color[1],
+                        style.color[2],
+                        style.color[3],
+                    ),
+                    &mut style.visible,
+                );
+                if expanded {
+                    ui.indent("local-layer-settings", |ui| {
+                        layer_opacity(ui, pt, &mut style.opacity);
+                        ui.horizontal(|ui| {
+                            let label = ui.label(text(pt, "Color", "Cor"));
+                            ui.color_edit_button_srgba_unmultiplied(&mut style.color)
+                                .labelled_by(label.id);
+                        });
+                        if ui
+                            .add_enabled(
+                                i > 0,
+                                egui::Button::new(text(pt, "Move up", "Mover acima")),
+                            )
+                            .clicked()
+                        {
+                            reorder = Some(i);
+                        }
+                        if ui.button(text(pt, "Remove", "Remover")).clicked() {
+                            remove = Some(i);
+                        }
+                        for layer in self.local.iter().filter(|l| l.path == style.path) {
+                            ui.small(&layer.name);
+                        }
+                    });
                 }
             });
-            ui.add(egui::Slider::new(&mut style.opacity, 0.0..=1.0).text(text(
-                pt,
-                "Opacity",
-                "Opacidade",
-            )));
-            ui.color_edit_button_srgba_unmultiplied(&mut style.color);
-            for layer in self.local.iter().filter(|l| l.path == style.path) {
-                ui.small(&layer.name);
-            }
         }
         if let Some(i) = reorder {
             self.display.local.swap(i, i - 1);
@@ -1988,6 +2069,18 @@ impl Monitoring {
     }
     fn chart_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
+        if self.project.is_none() {
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.strong(text(pt, "Time series", "Séries temporais"));
+                ui.label(text(
+                    pt,
+                    "Open a regional project to compare rainfall, flow, and level.",
+                    "Abra um projeto regional para comparar chuva, vazão e nível.",
+                ));
+            });
+            return;
+        }
+
         let mut apply = false;
         ui.horizontal_wrapped(|ui| {
             for (name, value) in [
@@ -1997,17 +2090,16 @@ impl Monitoring {
                     &mut self.chart_fields.station,
                 ),
             ] {
-                let label = ui.label(name);
-                let input = ui
-                    .add(egui::TextEdit::singleline(value).desired_width(90.))
-                    .labelled_by(label.id);
-                apply |= input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.horizontal(|ui| {
+                    let label = ui.label(name);
+                    let input = ui
+                        .add(egui::TextEdit::singleline(value).desired_width(80.))
+                        .labelled_by(label.id);
+                    apply |= input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                });
             }
             apply |= ui
-                .add_enabled(
-                    self.project.is_some(),
-                    egui::Button::new(text(pt, "Apply", "Aplicar")),
-                )
+                .add(theme::primary(ui, text(pt, "Apply", "Aplicar")))
                 .clicked();
         });
         ui.horizontal_wrapped(|ui| {
@@ -2034,12 +2126,14 @@ impl Monitoring {
                             (text(pt, "From", "Início"), &mut self.display.chart_start),
                             (text(pt, "To", "Fim"), &mut self.display.chart_end),
                         ] {
-                            let label = ui.label(name);
-                            let input = ui
-                                .add(egui::TextEdit::singleline(value).desired_width(145.))
-                                .labelled_by(label.id);
-                            apply |=
-                                input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            ui.horizontal(|ui| {
+                                let label = ui.label(name);
+                                let input = ui
+                                    .add(egui::TextEdit::singleline(value).desired_width(145.))
+                                    .labelled_by(label.id);
+                                apply |= input.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            });
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -2066,33 +2160,48 @@ impl Monitoring {
                     });
                 }
             });
-        if apply && self.project.is_some() {
+        if apply {
             self.display.comparison = Some(self.chart_fields.clone());
             self.request_chart();
         }
+        ui.separator();
         if self.loading[CHART_SLOT] {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.small(text(pt, "Loading comparison…", "Carregando comparação…"));
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(text(pt, "Loading comparison…", "Carregando comparação…"));
+                });
             });
         } else if !self.chart_message.is_empty() {
-            ui.add(egui::Label::new(&self.chart_message).truncate())
-                .on_hover_text(&self.chart_message);
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.add(egui::Label::new(&self.chart_message).truncate())
+                    .on_hover_text(&self.chart_message);
+            });
         } else if self.charts.report.is_none() {
-            ui.small(text(
-                pt,
-                "Enter IDs or choose View time series from the map menu.",
-                "Informe os IDs ou escolha Ver séries temporais no menu do mapa.",
-            ));
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.strong(text(pt, "Choose a location", "Escolha uma localização"));
+                ui.label(text(
+                    pt,
+                    "Enter an ID above or right-click a station or MINI on the map and choose View time series.",
+                    "Informe um ID acima ou clique com o botão direito em uma estação ou MINI no mapa e escolha Ver séries temporais.",
+                ));
+                if let Some(location) = self.display.selection.clone()
+                    && ui.button(text(pt, "Chart selected feature", "Mostrar séries da feição selecionada")).clicked()
+                {
+                    self.view_time_series(&location);
+                }
+            });
         }
         if self.chart_retained && self.charts.report.is_some() {
-            ui.small(text(
-                pt,
-                "Showing previous comparison",
-                "Exibindo comparação anterior",
-            ));
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                text(
+                    pt,
+                    "Showing previous comparison",
+                    "Exibindo comparação anterior",
+                ),
+            );
         }
-        ui.separator();
     }
 
     fn location_summary(&mut self, ui: &mut egui::Ui) {
@@ -2168,6 +2277,7 @@ impl Monitoring {
         let focus_map =
             ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num1));
         ui.horizontal_wrapped(|ui| {
+            ui.strong(text(pt, "Map", "Mapa"));
             for (glyph, name, zoom_in) in [
                 ("+", text(pt, "Zoom in", "Aproximar"), true),
                 ("−", text(pt, "Zoom out", "Afastar"), false),
@@ -2190,10 +2300,18 @@ impl Monitoring {
                 ui.hyperlink_to(attribution.text, attribution.url);
             }
         });
+        if self.rainfall.is_some()
+            && self
+                .display
+                .layers
+                .iter()
+                .any(|layer| layer.kind == "rainfall" && layer.visible && layer.opacity > 0.)
+        {
+            theme::inset(ui.style()).show(ui, |ui| map::rain_legend(ui, pt));
+        }
         let frame = egui::Frame::group(ui.style())
-            .outer_margin(6)
             .inner_margin(1)
-            .fill(ui.visuals().extreme_bg_color);
+            .fill(ui.visuals().faint_bg_color);
         if ui.available_height() > 16. && ui.available_width() > 16. {
             frame.show(ui, |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
@@ -2230,12 +2348,24 @@ impl Monitoring {
                         self.feature_actions(ui, location);
                     });
                 } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.heading(text(
-                            self.preferences.portuguese,
-                            "Open a regional project to monitor available data",
-                            "Abra um projeto regional para visualizar os dados",
-                        ));
+                    ui.vertical_centered(|ui| {
+                        ui.add_space((ui.available_height() * 0.3).min(140.));
+                        if self.loading[0] {
+                            ui.spinner();
+                            ui.heading(text(pt, "Opening project…", "Abrindo projeto…"));
+                        } else {
+                            ui.heading(text(
+                                pt,
+                                "Open a regional project",
+                                "Abra um projeto regional",
+                            ));
+                            if ui
+                                .add(theme::primary(ui, text(pt, "Open TOML…", "Abrir TOML…")))
+                                .clicked()
+                            {
+                                self.choose_project();
+                            }
+                        }
                     });
                 }
             });
@@ -2602,22 +2732,27 @@ impl eframe::App for Monitoring {
         {
             self.submit(Job::Open(p.config.clone(), p.workspace.clone()));
         }
-        egui::Panel::top("ribbon").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .button(Form::Jobs.label(self.preferences.portuguese))
-                    .clicked()
-                {
-                    self.display.layout.form(Form::Jobs);
-                }
-                if self.runners.busy() {
-                    ui.spinner();
-                }
-                ui.add(egui::Label::new(&self.status).truncate())
-                    .on_hover_text(&self.status);
+        let toolbar_frame = theme::toolbar(ui.style());
+        egui::Panel::top("ribbon")
+            .frame(toolbar_frame)
+            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .frame(toolbar_frame)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(Form::Jobs.label(self.preferences.portuguese))
+                        .clicked()
+                    {
+                        self.display.layout.form(Form::Jobs);
+                    }
+                    if self.runners.busy() {
+                        ui.spinner();
+                    }
+                    ui.add(egui::Label::new(egui::RichText::new(&self.status).weak()).truncate())
+                        .on_hover_text(&self.status);
+                });
             });
-        });
         let width = ui.available_width();
         egui::Panel::left("run-and-layers")
             .exact_size((width * 0.24).clamp(156., 215.))
