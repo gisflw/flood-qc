@@ -2,6 +2,13 @@
 
 These workflows are available in the shared Rust library, the CLI, and the optional desktop. The desktop keeps the map open while its workers run. Each command that accepts `--request` reads an explicit JSON file unless its existing contract specifies TOML. New destinations are explicit.
 
+| To work with | Go to |
+| --- | --- |
+| Observation and forecast intake, availability, or spatial QC | [Canonical data and review](#canonical-data-and-review) |
+| Reservoir releases, wind, state capture, or geometry and soil edits | [Forcing, state, and calibration](#forcing-state-and-calibration) |
+| Hydrographs, bulletin exports, or return-period maps | [Analysis and bulletins](#analysis-and-bulletins) |
+| Run bundles, scheduled jobs, or email delivery | [Sharing and automation](#sharing-and-automation) |
+
 ## Canonical data and review
 
 - `mgb-ops observation init --database history.sqlite --time-zone America/Sao_Paulo` creates a canonical observation store. `observation import --database ... --input batch.json` accepts the serialized `ObservationBatch`. An identical row is a safe retry. Conflicting raw series or samples reject the batch. `observation inventory` accepts an array of `Station` records and updates metadata for existing provider and station identities.

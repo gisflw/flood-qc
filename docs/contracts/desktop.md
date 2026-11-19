@@ -26,6 +26,24 @@ project switch blocks operational edits and saves until its loader succeeds or
 fails. Failure retains the old project and edits; ordinary F5 monitoring refreshes
 remain independent of runner work.
 
+## Common tasks
+
+| Task | Control |
+| --- | --- |
+| Open a workspace or import saved data | **Project → Open TOML** or **Import data** |
+| Inspect the map, location data, or a retained run | **View → Charts**, **Data**, **Rainfall**, or **Files** |
+| Review observation availability and QC | **View → Observation review** |
+| Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
+| Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |
+| Run an editable draft | **Draft → Run experiment** |
+| Run a saved operation TOML at a selected reference | **Processing → New run** |
+| Set forcing and state options | **Processing → Forcing and state** |
+| Start scheduling or monitor and cancel a job | **Processing → Automation** or **Jobs** |
+| Edit workspace settings, geometry, or soil | **Settings → Workspace Settings**, **Geometry editor**, or **Soil editor** |
+
+See [saved-data workflows](saved-data.md) for request formats and outputs and
+[controlled jobs](#controlled-jobs) for execution and cancellation.
+
 ## Data and selection
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
@@ -34,21 +52,19 @@ cache](operations.md#active-rainfall-cache) and retained run manifests. Run stat
 successful scenarios from partially failed attempts. Missing/corrupt scenario
 outputs produce findings rather than hiding usable siblings.
 
-Left-click a station or MINI on the map to highlight it and identify it in Layers.
-Use Data search to select locations by ID or station name, including stations
-without coordinates. Entering a positive numeric search selects that MINI even
-without local topology. Visible station targets precede rivers and catchments.
-River hit tolerance is wider than its stroke, and catchment containment excludes
-holes. Alt-click inspects rainfall independently of selection. Station colors
-identify explicit model links and unknown associations.
+| Interaction | Effect |
+| --- | --- |
+| Left-click a station or MINI | Highlight it on the map and identify it in Layers. The active tab and chart comparison stay as they were. |
+| Search by ID or station name in **Data** | Select the matching location, including stations without coordinates. A positive numeric ID can select a MINI without local topology. The active tab and chart comparison stay as they were. |
+| Right-click a feature and choose **View time series** | Open Charts and fill the feature ID and its unique linked counterpart. The counterpart field is cleared if there is no unique link. |
+| Alt-click on the map | Inspect accumulated rainfall at that point independently of the current selection. |
+| Enter or choose **Apply** after editing chart IDs | Submit an explicit MINI and station pairing. |
 
-Right-click a feature for its actions. View time series opens Charts for that
-feature, fills its ID and the explicitly linked counterpart when unique, and
-clears the counterpart field when the link is unavailable or ambiguous. Left-click
-and search selections leave the chart comparison and the active tab unchanged.
-Charts has editable MINI ID and Station ID fields for manual pairing. Enter or
-Apply submits those IDs. Data also offers the feature actions for its selected
-location, including through keyboard navigation.
+Visible station targets take precedence over rivers and catchments. River hit
+tolerance is wider than the stroke, and catchment containment excludes holes.
+Station colors distinguish explicit model links from unknown associations. The
+**Data** tab also offers feature actions for the selected location through
+keyboard navigation.
 Model series use the selected MINI and
 observations use the selected station. The level chart uses retained station
 levels when the run records the matching MINI and offset. It labels raw MINI
@@ -169,8 +185,8 @@ Check readiness displays backend findings, including changed/unaccepted sources.
 Monitoring F5 never accepts operational inputs. Preparing and running never
 implicitly accept sources or register instructions.
 
-Review → Instructions edits staged observation replacements and forecast
-corrections. Select the items to register and use **Commit selected corrections**.
+**Draft → Review instructions** edits staged observation replacements and
+forecast corrections. Select the items to register and use **Commit selected corrections**.
 The two catalog outcomes report their registered IDs or their individual errors.
 Working selections and their order are preserved. An unchanged retry reuses the
 same IDs. Later edits keep the successful registration as their origin.
@@ -218,10 +234,5 @@ performance, long-session memory behavior, HiDPI/input packaging, Wayland or
 Windows compatibility. Performance/memory thresholds and hardware acceptance
 remain open. Basemap equivalence to the legacy Carto style is unqualified.
 
-The saved-data ribbon actions add canonical import, observation review,
-instruction previews, forcing and state settings, geometry and soil editors,
-run comparison and sharing, bulletins, and automation. Use **Project** for import,
-**Draft** for instructions, **View** for review and outputs, **Settings** for
-calibration, and **Processing** for forcing and Jobs. Task forms use the same
-validated workflows as the CLI. See [saved-data workflows](saved-data.md) for
-inputs and configuration. Live acquisition and the assistant are later capabilities.
+The saved-data forms use the same validated workflows as the CLI.
+Live acquisition and the assistant are later capabilities.

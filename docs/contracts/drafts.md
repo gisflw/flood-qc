@@ -124,6 +124,27 @@ replacements or making the operation dirty.
 
 ## Editing, source acceptance and previews
 
+Edit the draft, then explicitly accept the inputs for the intended action.
+Preview is optional and can use a local selection. Prepare and Run require a
+complete operation with current accepted inputs. If a selected source changes,
+accept it again before taking an action that uses it.
+
+```mermaid
+flowchart TD
+    accTitle: Accepting sources and using an operation draft
+    accDescr: After editing, accept selected sources. Preview can use a local selection. Complete operations with current accepted inputs can produce a reusable preparation or execute an experiment. Changes to selected inputs require fresh acceptance.
+    draft["Edit draft"] --> accept["Accept selected inputs"]
+    accept --> preview["Preview observations or a forecast, if useful"]
+    accept --> ready{"Complete operation and inputs current?"}
+    preview --> ready
+    ready -->|Yes| prepare["Prepare · retain a reusable snapshot"]
+    ready -->|Yes| run["Run · prepare and execute an experiment"]
+    ready -->|No| draft
+```
+
+[Save](#json-authoring-versions) can retain an incomplete draft.
+[Registration](#explicit-registration) is a separate action for selected edits.
+
 The public `Draft` API provides new/open/import/save/discard, typed mutable
 `document` values, refresh, action validation, previews and preparation. Library
 callers supply the invocation directory at the interface boundary.
