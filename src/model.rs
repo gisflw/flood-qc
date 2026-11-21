@@ -179,3 +179,6 @@ pub(crate) use self::calibration::{
     GeometryFile, SoilFile, install_calibration, parse_classes, validate_calibration,
     watershed_count,
 };
+
+mod flood_source;
+pub(crate) use self::flood_source::{FloodHistory, capture_flood_history, capture_flood_source};

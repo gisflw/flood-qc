@@ -75,3 +75,8 @@ pub(crate) use self::rainfall::{
     DecodedRainfallFile, RainfallCacheFiles, StagedRainfallCache, rainfall_cache_info,
     read_rainfall_cache,
 };
+
+mod flood_source;
+pub(crate) use self::flood_source::{
+    FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource, read_flood_source, write_flood_source,
+};
