@@ -44,7 +44,7 @@ pub fn migrate_cache(
     if current.as_ref().is_some_and(|path| *path != destination) {
         return Err("workspace already has a different active run".into());
     }
-    let inventory = inventory(&base)?;
+    let inventory = inventory(&base, inundation_donor)?;
     let mut report = CacheMigrationReport {
         active_run: destination.clone(),
         legacy_runs: inventory.iter().map(|(path, _)| path.clone()).collect(),
@@ -70,7 +70,8 @@ pub fn migrate_cache(
         return Ok(report);
     }
     let _lock = lock_workspace(&workspace).map_err(|error| error.to_string())?;
-    if active_run(&workspace)? != current || self::inventory(&base)? != inventory {
+    if active_run(&workspace)? != current || self::inventory(&base, inundation_donor)? != inventory
+    {
         return Err("cache changed during migration inspection; retry".into());
     }
     recover_run_cache(&workspace)?;
@@ -180,7 +181,9 @@ fn valid_legacy_id(id: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn inventory(base: &Path) -> Result<Vec<(PathBuf, (String, u64))>, String> {
+type LegacyInventory = Vec<(PathBuf, (String, u64))>;
+
+fn inventory(base: &Path, donor: Option<&str>) -> Result<LegacyInventory, String> {
     let entries = match fs::symlink_metadata(base) {
         Ok(metadata) if metadata.is_dir() => {
             fs::read_dir(base).map_err(|error| error.to_string())?
@@ -198,8 +201,9 @@ fn inventory(base: &Path) -> Result<Vec<(PathBuf, (String, u64))>, String> {
                 .file_name()
                 .to_str()
                 .is_some_and(|id| valid_legacy_id(id).is_ok())
-            && fs::symlink_metadata(path.join("bundle.json"))
-                .is_err_and(|error| error.kind() == io::ErrorKind::NotFound)
+            && (donor.is_some_and(|id| entry.file_name() == id)
+                || fs::symlink_metadata(path.join("bundle.json"))
+                    .is_err_and(|error| error.kind() == io::ErrorKind::NotFound))
             && fs::symlink_metadata(path.join("manifest.json"))
                 .is_ok_and(|metadata| metadata.is_file())
             && read_retained_manifest(&path).is_ok_and(|manifest| manifest.state != "prepared");
@@ -275,6 +279,7 @@ fn legacy_attempt(path: &Path, id: &str) -> Result<RunAttemptManifest, String> {
     attempt.finished_at = manifest.finished_at.clone();
     attempt.error = manifest.error.clone();
     attempt.operation = Some(manifest);
+    attempt.diagnostics = crate::store::collect_run_diagnostics(path);
     Ok(attempt)
 }
 

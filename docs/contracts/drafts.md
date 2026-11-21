@@ -25,11 +25,11 @@ mgb-ops draft run --workspace /regional/workspace --draft draft.json --json
 mgb-ops draft save --workspace /regional/workspace --draft draft.json --output copy.json --omit-visualization --json
 ```
 
-`import-manifest --manifest DIRECTORY --output draft.json` copies the recipe and
-actual instruction values from a retained preparation or a trial with validated
-successful scenarios, including a partially failed trial. It does
-not select a workspace from that artifact or make its original dependencies
-available. Imported instruction values do not claim a registered origin.
+`import-manifest --manifest PATH --output draft.json` copies the recipe and
+actual instruction values from a standalone attempt manifest, an active or
+explicitly saved run directory, or a saved preparation. Select the workspace
+explicitly and confirm the sources before running the draft. Imported instruction
+values have no registered origin.
 
 `edit --draft draft.json --document replacement.json` replaces the document with
 another validated draft JSON document, preserving its anchor. An incomplete

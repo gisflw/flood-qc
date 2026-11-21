@@ -70,6 +70,9 @@ execution from the same prepared input after the disposable original observation
 and forecast catalogs, forecast artifacts, baseline Input and executable were
 removed. Both executions completed all four scenarios. Each run used a shared
 history-only execution to recover the overwritten historical level prefix.
+The workspace keeps one active execution. To inspect both repeats after the
+second execution, save the first active result in a user-owned location before
+starting the second.
 
 An independent comparison checked every joined f64 forcing value, full basin
 results `362×8649`, station results `362×101`, all variable masks, mini IDs,

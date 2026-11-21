@@ -84,6 +84,12 @@ legacy manifests, and remove the legacy payloads. Legacy rainfall is adopted
 when its forcing agrees with the selected run. A migrated run without matching
 rainfall has no rainfall overlay until a successful execution supplies it.
 
+Use `--inundation-donor <run-id>` to transfer existing products from a legacy
+copy with matching model outputs. The migration validates provenance against
+the workspace TIFFs at `data/source/HAND_Flood.tif` and
+`data/source/catchments.tif`. Applying the migration also retires that donor's
+legacy entry.
+
 ## Request
 
 The separate UTF-8 TOML request is strict at every table: unknown keys fail.
@@ -262,6 +268,8 @@ for each successful scenario. See [inundation processing](inundation.md).
 at an active or explicitly saved root. A manifest can replay a recipe using its
 referenced inputs. An independently saved preparation or a bundle with a
 preparation can reproduce an execution after the original sources are removed.
+Execution reports expose `run_root` for current results and `attempt_manifest`
+for the durable recipe. Automation job status keeps the durable reference.
 
 Scenarios run concurrently in isolated directories with direct executable
 invocation, an explicit working directory, and only `MGB_INPUT_DIR`,

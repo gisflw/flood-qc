@@ -247,7 +247,7 @@ forecast assets and corrections for the reference you intend to run.
 Accept/Refresh selected inputs explicitly accepts those inputs for the current
 reference. Changing the reference or selecting a recipe requires fresh acceptance.
 Run All prepares and executes with the shared controlled pipeline and publishes
-the active rainfall cache on success. Preparation is temporary. The operation
+the new active run and its rainfall cache on success. Preparation is temporary. The operation
 keeps any open draft and its unsaved edits independent. The Draft ribbon’s
 experiment action uses the accepted draft values.
 
