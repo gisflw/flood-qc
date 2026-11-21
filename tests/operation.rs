@@ -161,7 +161,7 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
     assert_ne!(one.run_root, two.run_root);
     assert_eq!(
         mgb_ops::discover_trials(&path).unwrap(),
-        [two.run_root.clone()]
+        std::slice::from_ref(&two.run_root)
     );
     assert!(!one.run_root.exists());
     assert_eq!(
@@ -499,10 +499,14 @@ fn canonical_forecast_reaches_frozen_preparation_and_execution() {
     .unwrap();
     let basin =
         mgb_ops::store::read_result_series(&trial.run_root.join("results/other/basin.nc")).unwrap();
+    let updated = mgb_ops::app::rainfall_cache_info(&root).unwrap().unwrap();
+    assert_ne!(updated.generation, generation.generation);
     assert_eq!(
-        mgb_ops::app::rainfall_cache_info(&root).unwrap(),
-        Some(generation)
+        updated.generation,
+        trial.run_root.file_name().unwrap().to_str().unwrap()
     );
+    assert_eq!(updated.reference, generation.reference);
+    assert_eq!(updated.scenarios, generation.scenarios);
     assert_eq!(basin.precipitation.last(), Some(&2.0));
 }
 
@@ -2216,7 +2220,7 @@ fn cancellation_during_finalization_preserves_the_publication_boundary() {
                 assert!(!control.is_cancelled());
                 assert_eq!(
                     mgb_ops::discover_trials(&root).unwrap(),
-                    [report.run_root.clone()]
+                    std::slice::from_ref(&report.run_root)
                 );
                 assert_eq!(
                     mgb_ops::read_trial(&report.run_root)

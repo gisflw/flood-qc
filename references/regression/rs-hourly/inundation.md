@@ -73,3 +73,11 @@ overview series matched the earlier output exactly. The file size was unchanged.
 Independent reads matched the original HAND depths, all valid times, and three
 complete native frames per scenario across the four-scenario RS Hydro run. All
 four masks opened through the desktop scenario selector on Linux software Vulkan.
+
+The saved target workspace uses the original July 20 run as its single active
+generation. The later copy supplied the four flood sources and masks after the
+canonical results and all 16 engine streams matched byte for byte. Migration
+preserved the original run manifest and each mask's embedded provenance. The
+desktop opened the active rainfall and charts and displayed all four masks.
+Dragging the inundation slider reached July 25 01:00 local time on Linux Xvfb
+with software Vulkan.

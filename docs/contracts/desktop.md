@@ -54,9 +54,9 @@ The interface reads configured regional mini segments/catchments and MINI.gtp,
 cache](operations.md#active-run-and-rainfall-cache), and the workspace's active run.
 Charts, Files and Map open the active generation automatically. While viewing
 the active run, a newly published generation updates all three views and clears
-the previous scenario, inundation frame, and tiles. Files shows run status and diagnostics, including successful
-scenarios from partially failed attempts. Missing or corrupt scenario outputs
-produce findings and available siblings remain usable.
+the previous scenario, inundation frame, and tiles. Files shows the displayed
+run's status and provenance. Missing or corrupt scenario outputs produce
+findings. For previous attempts, read the diagnostics in `data/run-manifests/`.
 
 Use **Files → Open comparison run** to open a retained run or exported bundle.
 The Files selector keeps explicitly opened runs available until the workspace

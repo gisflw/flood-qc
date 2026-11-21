@@ -406,14 +406,17 @@ mod tests {
         fs::write(&abandoned_pointer, "incomplete pointer").unwrap();
         recover_run_cache(workspace).unwrap();
         recover_run_cache(workspace).unwrap();
-        assert!(!abandoned_pointer.exists());
+        let pointer_clean = !abandoned_pointer.exists();
+        assert!(pointer_clean);
         assert_eq!(
             active_run(workspace).unwrap().as_deref(),
             Some(active.as_path())
         );
         assert!(active.join("manifest.json").is_file());
-        assert!(!active.join(JOURNAL).exists());
-        assert!(!interrupted.exists());
+        let active_journal_clean = !active.join(JOURNAL).exists();
+        let interrupted_stage_clean = !interrupted.exists();
+        assert!(active_journal_clean);
+        assert!(interrupted_stage_clean);
         for (id, state) in [("active", "completed"), ("interrupted", "interrupted")] {
             let archive = workspace
                 .join("data/run-manifests")

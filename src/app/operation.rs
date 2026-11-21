@@ -159,7 +159,7 @@ pub enum OperationError {
         message: String,
     },
     BatchFailed {
-        report: ExecutionReport,
+        report: Box<ExecutionReport>,
     },
     InvalidRequest {
         field: String,
@@ -926,7 +926,9 @@ fn execute_in_stage(
         error: manifest.error.clone(),
     };
     if cancelled || !complete {
-        Err(OperationError::BatchFailed { report })
+        Err(OperationError::BatchFailed {
+            report: Box::new(report),
+        })
     } else {
         Ok(report)
     }
