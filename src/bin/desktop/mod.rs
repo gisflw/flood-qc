@@ -1,6 +1,7 @@
 mod charts;
 mod data;
 mod export;
+mod inundation;
 mod layout;
 mod map;
 mod runners;
@@ -194,6 +195,7 @@ struct Display {
     comparison: Option<ComparisonFields>,
     run: Option<PathBuf>,
     rainfall_scenario: String,
+    inundation_scenario: String,
     overlays: Vec<String>,
     observations: bool,
     hours: i32,
@@ -228,6 +230,7 @@ impl Default for Display {
             comparison: None,
             run: None,
             rainfall_scenario: String::new(),
+            inundation_scenario: String::new(),
             overlays: vec![],
             observations: true,
             hours: -24,
@@ -246,6 +249,20 @@ impl Default for Display {
     }
 }
 impl Display {
+    fn restore_layers(&mut self) {
+        if !self
+            .layers
+            .iter()
+            .any(|layer| layer.kind == inundation::KIND)
+            && let Some((position, layer)) = map::default_layers()
+                .into_iter()
+                .enumerate()
+                .find(|(_, layer)| layer.kind == inundation::KIND)
+        {
+            self.layers.insert(position.min(self.layers.len()), layer);
+        }
+    }
+
     fn selected_operation_zone<'a>(&'a self, fallback: &'a str) -> &'a str {
         self.operation_zone.as_deref().unwrap_or(fallback)
     }
@@ -379,6 +396,7 @@ struct Monitoring {
     run: Option<Arc<Run>>,
     rainfall: [RainfallView; 2],
     rainfall_info: Result<Option<RainfallCacheInfo>, String>,
+    inundation: inundation::Inundation,
     worker: Worker,
     chart_worker: Worker,
     loading: [bool; SLOTS],
@@ -423,6 +441,7 @@ impl Monitoring {
                 display.basemap = 1;
             }
             display.layout.restore_tabs();
+            display.restore_layers();
             display.set_map_mode(display.map_mode);
             display.swipe = if display.swipe.is_finite() {
                 display.swipe.clamp(0., 1.)
@@ -438,6 +457,7 @@ impl Monitoring {
             run: None,
             rainfall: Default::default(),
             rainfall_info: Ok(None),
+            inundation: inundation::Inundation::new(cc.egui_ctx.clone()),
             worker: Worker::new(cc.egui_ctx.clone()),
             chart_worker: Worker::new(cc.egui_ctx.clone()),
             loading: [false; SLOTS],
@@ -500,6 +520,7 @@ impl Monitoring {
             return;
         }
         if slot == 0 {
+            self.inundation.refresh();
             self.invalidate_chart();
             for dependent in 1..4 {
                 self.worker.invalidate(dependent);
@@ -1878,7 +1899,64 @@ impl Monitoring {
             self.map_cards(ui, pt);
             ui.heading(text(pt, "Layers", "Camadas"));
             self.layer_controls(ui);
+            self.inundation_controls(ui, pt);
             self.rainfall_controls(ui);
+        });
+    }
+
+    fn inundation_visible(&self) -> bool {
+        self.display
+            .layers
+            .iter()
+            .any(|layer| layer.kind == inundation::KIND && layer.visible)
+    }
+
+    fn sync_inundation(&mut self) {
+        let source = self
+            .run
+            .as_deref()
+            .filter(|_| !self.switching_project)
+            .and_then(|run| {
+                let scenario = &mut self.display.inundation_scenario;
+                if !run.scenarios.contains(scenario) {
+                    scenario.clone_from(run.scenarios.first()?);
+                }
+                Some(inundation::Source {
+                    root: run.root.clone(),
+                    scenario: scenario.clone(),
+                })
+            });
+        self.inundation.select(source);
+    }
+
+    fn inundation_controls(&mut self, ui: &mut egui::Ui, pt: bool) {
+        if !self.inundation_visible() {
+            return;
+        }
+        self.sync_inundation();
+        section(ui, text(pt, "Inundation", "Inundação"), |ui| {
+            let Some(run) = self.run.as_ref().filter(|_| !self.switching_project) else {
+                ui.label(text(
+                    pt,
+                    "Select a retained run in Files.",
+                    "Selecione uma execução retida em Arquivos.",
+                ));
+                return;
+            };
+            if let Some(name) = run.root.file_name() {
+                ui.small(name.to_string_lossy());
+            }
+            let scenario = &mut self.display.inundation_scenario;
+            egui::ComboBox::from_label(text(pt, "Inundation scenario", "Cenário de inundação"))
+                .selected_text(scenario.as_str())
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for id in &run.scenarios {
+                        ui.selectable_value(scenario, id.clone(), id);
+                    }
+                });
+            self.sync_inundation();
+            self.inundation.controls(ui, pt);
         });
     }
 
@@ -2004,6 +2082,7 @@ impl Monitoring {
             let label = match layer.kind.as_str() {
                 "catchments" => text(pt, "Catchments", "Bacias"),
                 "rainfall" => text(pt, "Rainfall", "Chuva"),
+                inundation::KIND => text(pt, "Modeled inundation", "Inundação modelada"),
                 "upstream" => text(pt, "Upstream basin", "Bacia a montante"),
                 "rivers" => text(pt, "Rivers", "Rios"),
                 _ => text(pt, "Stations", "Estações"),
@@ -2574,6 +2653,7 @@ impl Monitoring {
         if mode != self.display.map_mode {
             self.set_map_mode(mode);
         }
+        self.sync_inundation();
         let mut map_hover = None;
         let frame = egui::Frame::group(ui.style())
             .inner_margin(1)
@@ -2595,6 +2675,7 @@ impl Monitoring {
                             project,
                             layers: &self.display.layers,
                             rainfall: images,
+                            inundation: &mut self.inundation,
                             side: (mode == map::Mode::Double).then_some(side),
                             selection: &self.display.selection,
                             upstream,
@@ -2657,6 +2738,8 @@ impl Monitoring {
                 }
             });
         }
+        self.inundation
+            .finish_view(ui.ctx(), self.inundation_visible());
         map_hover
     }
 
@@ -3224,6 +3307,34 @@ mod interface_tests {
         }
         let display: Display = serde_json::from_str("{}").unwrap();
         assert_eq!(display.rain_maximum, 100.);
+    }
+
+    #[test]
+    fn saved_layer_settings_gain_inundation_without_changing_existing_order() {
+        let mut display = Display::default();
+        display.layers.remove(2);
+        display.layers.reverse();
+        let previous: Vec<_> = display
+            .layers
+            .iter()
+            .map(|layer| layer.kind.clone())
+            .collect();
+        display.restore_layers();
+        display.restore_layers();
+        let added: Vec<_> = display
+            .layers
+            .iter()
+            .filter(|layer| layer.kind == inundation::KIND)
+            .collect();
+        assert_eq!(added.len(), 1);
+        assert!(!added[0].visible);
+        let remaining: Vec<_> = display
+            .layers
+            .into_iter()
+            .filter(|layer| layer.kind != inundation::KIND)
+            .map(|layer| layer.kind)
+            .collect();
+        assert_eq!(remaining, previous);
     }
 
     #[test]
