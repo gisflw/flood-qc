@@ -3318,6 +3318,7 @@ dependencies = [
  "csv",
  "ctrlc",
  "eframe",
+ "geo",
  "krilla",
  "lettre",
  "lyon_tessellation",

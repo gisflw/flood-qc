@@ -31,7 +31,8 @@ remain independent of runner work.
 | Task | Control |
 | --- | --- |
 | Open a workspace or import saved data | **Project → Open TOML** or **Import data** |
-| Inspect the map, location data, or a retained run | **View → Charts**, **Data**, **Rainfall**, or **Files** |
+| Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
+| Inspect location data or a retained run | **View → Charts**, **Data**, or **Files** |
 | Review observation availability and QC | **View → Observation review** |
 | Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
 | Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |
@@ -39,7 +40,8 @@ remain independent of runner work.
 | Run a saved operation TOML at a selected reference | **Processing → New run** |
 | Set forcing and state options | **Processing → Forcing and state** |
 | Start scheduling or monitor and cancel a job | **Processing → Automation** or **Jobs** |
-| Edit workspace settings, geometry, or soil | **Settings → Workspace Settings**, **Geometry editor**, or **Soil editor** |
+| Edit workspace settings | **Settings → Workspace Settings** |
+| Edit geometry or soil | **Processing → Calibration** |
 
 See [saved-data workflows](saved-data.md) for request formats and outputs and
 [controlled jobs](#controlled-jobs) for execution and cancellation.
@@ -54,11 +56,11 @@ outputs produce findings rather than hiding usable siblings.
 
 | Interaction | Effect |
 | --- | --- |
-| Left-click a station or MINI | Highlight it on the map and identify it in Layers. The active tab and chart comparison stay as they were. |
+| Left-click a station or MINI | Highlight it on the map and show its ID and available metadata in the map pane. The active tab and chart comparison stay as they were. |
 | Search by ID or station name in **Data** | Select the matching location, including stations without coordinates. A positive numeric ID can select a MINI without local topology. The active tab and chart comparison stay as they were. |
 | Right-click a feature and choose **View time series** | Open Charts and fill the feature ID and its unique linked counterpart. The counterpart field is cleared if there is no unique link. |
 | Choose **Chart selected feature** in an empty Charts pane | Plot the currently selected feature using the same ID rules as **View time series**. |
-| Alt-click on the map | Inspect accumulated rainfall at that point independently of the current selection. |
+| Hover over the map | See the feature label and accumulated rainfall for the cell under the pointer in the bottom stripe. Double and Swipe identify the hovered side and scenario. |
 | Enter or choose **Apply** after editing chart IDs | Submit an explicit MINI and station pairing. |
 
 Visible station targets take precedence over rivers and catchments. River hit
@@ -72,11 +74,12 @@ levels when the run records the matching MINI and offset. It labels raw MINI
 levels and uses a separate scale when both datums have data. Station thresholds
 use the station scale. An available side can be viewed independently.
 
-Choose a scenario and period in Rainfall. Reference, timezone and available
+Choose a scenario and period in **Rainfall** on the **Map** tab. Reference, timezone and available
 coverage come from the active cache. Negative signed hours end at the reference
 and use observations. Positive hours start at the reference and use the selected
 forecast. Explicit start/end bounds can span both. Cells with incomplete
-coverage display as NA. A successful **Processing → New run → Run All** supplies
+coverage display as NA. Scenario changes apply immediately to the current period.
+Use **Apply** to commit a period edit. A successful **Processing → New run → Run All** supplies
 the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
 the desktop is idle.
 
@@ -88,10 +91,12 @@ replacement fails, a retained comparison keeps its original displayed IDs and
 exports.
 Rainfall inspection returns the accumulated original numeric cell, including NA
 and supplied zero. Display opacity does not alter accumulation or recreate its
-texture. The Data rainfall summary uses the same cache, scenario and window as
-the overlay. Data controls whether it includes upstream MINIs. The summary uses
-frozen MINI topology and local areas. Without frozen topology, Data can still
-show the location's map area. Load upstream basin uses the clicked MINI or the station's linked MINI when
+texture. The map's **Upstream basin rainfall over period** shows the area-weighted
+mean accumulation in mm, coverage, and period for each displayed side. The
+rainfall total and selected basin area include the outlet catchment and all its
+upstream catchments. The totals use frozen MINI topology and local areas.
+Project topology supplies the area when a frozen summary is unavailable. Load
+upstream basin uses the clicked MINI or the station's linked MINI when
 topology is available. Layers names the loaded basin by its outlet MINI and
 allows it to be hidden or cleared independently of later selections. Replacing
 a basin clears the previous one as loading starts. Project changes release it.
@@ -99,13 +104,15 @@ a basin clears the previous one as loading starts. Project changes release it.
 ## Display and exports
 
 The map includes attributed raster basemaps, river segments, catchments, stations,
-upstream fill and accumulated rainfall. The map shows the rainfall scale when a
-loaded overlay is visible, with numeric ranges and an NA swatch for incomplete
+an upstream basin outline and accumulated rainfall. The map shows the rainfall scale when a
+loaded overlay is visible. The Map tab shows a linear blue bar from 1 mm to the configured maximum, which defaults to 100 mm. Colors at the
+endpoints also cover values outside that range. An NA swatch marks incomplete
 coverage. Use the checkbox in a layer row to toggle visibility. Expand the row
 with **+** for order and opacity controls. Expanded local vector rows also offer
 color and removal controls. Local vector layers affect only the display.
-Polygon parts retain their holes. Overview river simplification is display-only;
-close zoom uses original paths. Rainfall uses projected latitude strips to keep
+Polygon parts retain their holes. At regional zoom, river paths are simplified
+with at most half a display pixel of error. Close zoom and river hit testing use
+the original paths. Rainfall uses projected latitude strips to keep
 pixel edges aligned in Web Mercator, rather than stretching four image corners.
 Labels appear only at suitable zoom/spacing and do not intercept selection.
 
@@ -113,7 +120,9 @@ The ribbon, left column and right pane use English or Brazilian Portuguese. Auto
 camera, layers, local files, selection, run/scenarios and time controls without a
 new project-file schema. Source errors identify the retained view separately.
 
-Rainfall, flow and level panels share time navigation and cursor position. Bars
+Rainfall, flow and level panels share time navigation and cursor position. The
+interactive charts scroll vertically on short windows and open with padding
+around the Y ranges. Bars
 use actual hourly interval edges. History and forecast are visually distinct;
 masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
@@ -130,28 +139,34 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 ## Layout and settings
 
 The ribbon has Project, Draft, View, Processing and Settings tabs with labeled
-groups of actions. The map stays visible in the center with zoom controls and
-basemap attribution. The fixed left column shows the selected retained run's
-reference time and timezone, observed and forecast horizons, and available
-scenarios, with scrollable Layers below. The summary comes from the loaded run
-and its frozen recipe. Day horizons appear only when the saved hourly boundaries
-convert losslessly. Available scenarios have successful, readable basin results.
-Unavailable fields in a loaded run show a dash.
+groups of actions. The map stays visible in the center with linked basemap
+attribution in the bottom stripe when tiles are enabled. NASA Blue Marble provides a satellite basemap at regional scale.
+**Map view** offers **Single**, **Double**, and **Swipe**. Double synchronizes the
+center and zoom of two side-by-side maps. Swipe compares the overlays at the same
+scale and location using a draggable divider. Focus the divider and use the arrow
+keys to move it. Both comparison modes show left and right scenario and period
+controls in Rainfall. The views share the basemap, layers, and selected feature.
+The one-line bottom stripe shows map hover coordinates and rainfall, along with the selected retained run's reference time and timezone,
+observed and forecast horizons, and available scenarios. The summary comes from
+the loaded run and its frozen recipe. Day horizons appear only when the saved
+hourly boundaries convert losslessly. Available scenarios have successful,
+readable basin results. Unavailable fields in a loaded run show a dash.
 
-The resizable right pane starts on Charts and also has Data, Rainfall and Files
-tabs. Data offers location search, summaries and the displayed series table.
-Rainfall controls the map scenario and period. Files contains the retained run
-selector, provenance, assets and findings. Use the ribbon to open Workspace
-Settings, Interface Settings, New run, experiment
-forms and Jobs in the same pane. Closing a form tab preserves its inputs. Jobs can
-also reopen from the status bar.
+The resizable right pane defaults to Map. Its permanent Map tab contains Layers
+and Rainfall. Charts, Data, and Files are also available. Data
+offers location search, feature actions and the displayed series table. Files
+contains the retained run selector, provenance, assets and findings. Use the
+ribbon to open New run, experiment forms and Jobs in the same pane. Closing a form
+tab preserves its inputs. Jobs opens from the View ribbon.
 
-Settings offers English/Brazilian Portuguese and System/Light/Dark, applied
-immediately and remembered app-wide. Preferences remember each project's right
-pane width and tabs. Projects saved with the previous docking layout open with
-the default pane. Reset layout restores the default pane and keeps results,
-selections and unfinished edits. Tab navigation and ribbon actions are keyboard
-accessible. Ctrl+1 focuses the map zoom controls, Ctrl+2/3 opens Charts/Data,
+The **Settings** ribbon contains the interface and workspace controls. English or
+Brazilian Portuguese and Light or Dark apply immediately and are remembered
+app-wide. Light is the default. Preferences remember each project's right pane, map view, divider position,
+and applied rainfall settings. Projects saved before map comparisons open in Single
+with their previous rainfall settings. Projects saved with the previous docking
+layout open with the default right pane. Reset layout restores the default right
+pane and keeps results, selections and unfinished edits. Tab navigation and ribbon
+actions are keyboard accessible. Ctrl+1 focuses **Map view**, Ctrl+2/3 opens Charts/Data,
 Ctrl+S saves the draft, Ctrl+Q requests exit, and F5 refreshes monitoring.
 
 ## Workspace settings and operation drafts

@@ -80,6 +80,20 @@ fn chunks(points: &[SeriesPoint]) -> Vec<&[SeriesPoint]> {
     }
     chunks
 }
+fn padded_y_bounds(values: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
+    let mut values = values.filter(|value| value.is_finite());
+    let first = values.next()?;
+    let (min, max) = values.fold((first, first), |(min, max), value| {
+        (min.min(value), max.max(value))
+    });
+    let pad = if min == max {
+        (min.abs() * 0.1).max(1.)
+    } else {
+        (max - min) * 0.1
+    };
+    Some((min - pad, max + pad))
+}
+
 impl Charts {
     pub fn new(state: &eframe::egui_wgpu::RenderState, base: u64) -> Self {
         let mut plots = std::array::from_fn(|i| Plot1D::new(state, base + i as u64));
@@ -148,15 +162,7 @@ impl Charts {
             plot.clear();
             plot.set_graph_title(plot_title(i, portuguese));
             if i == 2 {
-                plot.set_graph_x_label(format!(
-                    "{} · {}",
-                    if portuguese {
-                        "Hora local"
-                    } else {
-                        "Local time"
-                    },
-                    report.time_zone
-                ));
+                plot.set_graph_x_label(super::text(portuguese, "Local time", "Hora local"));
             } else {
                 plot.clear_graph_x_label();
             }
@@ -260,9 +266,37 @@ impl Charts {
             self.plots[2].set_item_legend(handle, &label);
             self.labels.push((label, Color32::from_rgb(200, 70, 50)));
         }
-        for plot in &mut self.plots {
+        for (index, plot) in self.plots.iter_mut().enumerate() {
             plot.reset_zoom();
             plot.set_graph_x_limits(0., seconds(report.window.end) - self.origin);
+            let variable = ["rain", "flow", "level"][index];
+            let values = |right| {
+                report
+                    .series
+                    .iter()
+                    .filter(move |series| {
+                        series.variable == variable
+                            && (separate_raw && series.series_kind == "model_raw_level") == right
+                    })
+                    .flat_map(|series| series.points.iter().filter_map(|point| point.value))
+            };
+            let baseline = (index == 0 && values(false).next().is_some()).then_some(0.);
+            let thresholds = self
+                .references
+                .iter()
+                .filter(|_| index == 2)
+                .map(|reference| reference.level_cm);
+            if let Some((min, max)) =
+                padded_y_bounds(values(false).chain(baseline).chain(thresholds))
+            {
+                plot.set_graph_y_limits(min, max, YAxis::Left);
+            }
+            if index == 2
+                && separate_raw
+                && let Some((min, max)) = padded_y_bounds(values(true))
+            {
+                plot.set_graph_y_limits(min, max, YAxis::Right);
+            }
         }
         self.cursors = std::array::from_fn(|i| self.plots[i].add_x_marker(0., Color32::GRAY));
         self.report = Some(report);
@@ -283,7 +317,6 @@ impl Charts {
         let top = ui.cursor().min.y;
         ui.heading(self.location_caption(report, portuguese));
         ui.horizontal_wrapped(|ui| {
-            ui.weak(&report.time_zone);
             if let Some(run) = report
                 .series
                 .iter()
@@ -327,7 +360,7 @@ impl Charts {
 
         let header_height = ui.cursor().min.y - top;
         let gap = ui.spacing().item_spacing.y;
-        let height = ((available_height - header_height - 3. * gap) / 3.).max(110.);
+        let height = ((available_height - header_height - 3. * gap) / 3.).max(210.);
         let mut limits = None;
         let mut cursor = None;
         for plot in &mut self.plots {
@@ -377,7 +410,7 @@ impl Charts {
                 "Cursor readings",
                 "Leituras do cursor",
             ));
-            ui.weak(format!("{time} · {}", report.time_zone));
+            ui.weak(time);
             for (index, variable) in ["rain", "flow", "level"].into_iter().enumerate() {
                 if !report
                     .series
@@ -486,6 +519,14 @@ impl Drop for Charts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_y_bounds_pad_signed_and_constant_data() {
+        assert_eq!(padded_y_bounds([-10., 20.].into_iter()), Some((-13., 23.)));
+        assert_eq!(padded_y_bounds([0., 0.].into_iter()), Some((-1., 1.)));
+        assert_eq!(padded_y_bounds([50.].into_iter()), Some((45., 55.)));
+        assert!(padded_y_bounds(std::iter::empty()).is_none());
+    }
 
     #[test]
     fn scenario_colors_follow_the_run_order() {

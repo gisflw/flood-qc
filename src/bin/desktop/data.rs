@@ -23,7 +23,7 @@ pub struct Project {
     pub workspace: PathBuf,
     pub topology: Vec<MiniTopology>,
     pub segments: Arc<Vec<super::map::RiverPaths>>,
-    pub overview_segments: Arc<Vec<super::map::RiverPaths>>,
+    pub overview_segments: Arc<super::map::RiverOverviews>,
     pub catchments: Arc<Vec<MiniMapFeature>>,
     pub stations: Vec<StationLocation>,
     pub references: Vec<LevelReference>,
@@ -97,7 +97,7 @@ pub fn open(
         workspace,
         topology: vec![],
         segments: Arc::new(vec![]),
-        overview_segments: Arc::new(vec![]),
+        overview_segments: Arc::default(),
         catchments: Arc::new(vec![]),
         stations: vec![],
         references: vec![],
@@ -140,9 +140,9 @@ pub fn open(
             for name in ["mini_segments", "mini_catchments"] {
                 match canonical::read_mini_map_layer(path, name, &project.topology) {
                     Ok(features) if name == "mini_segments" => {
-                        project.overview_segments =
-                            Arc::new(super::map::overview_segments(&features));
                         project.segments = Arc::new(super::map::river_segments(&features));
+                        project.overview_segments =
+                            Arc::new(super::map::overview_segments(&project.segments));
                     }
                     Ok(features) => project.catchments = Arc::new(features),
                     Err(error) => project.findings.push(format!("{name}: {error}")),
@@ -367,7 +367,6 @@ pub struct ViewRequest {
     pub location: Option<Location>,
     pub scenario: String,
     pub period: Option<RainfallPeriod>,
-    pub upstream: bool,
 }
 pub struct Rain {
     pub grid: canonical::RegularGridSpec,
@@ -377,7 +376,6 @@ pub struct Rain {
     pub window: canonical::TimeInterval,
 }
 pub struct View {
-    pub location: Option<Location>,
     pub rainfall: Option<Arc<Rain>>,
     pub summary: Option<RainSummary>,
     pub rainfall_finding: Option<String>,
@@ -402,7 +400,6 @@ fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View
         .as_ref()
         .and_then(|location| location_mini(location, &request.project.stations));
     let mut result = View {
-        location: request.location,
         rainfall: None,
         summary: None,
         rainfall_finding: None,
@@ -416,7 +413,7 @@ fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View
             &request.scenario,
             &period,
             mini,
-            request.upstream,
+            true,
         ) {
             Ok(Some(rainfall)) => {
                 result.rainfall = Some(Arc::new(Rain {
@@ -433,15 +430,11 @@ fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View
             Err(error) => result.rainfall_finding = Some(error),
         }
     }
-    if result.summary.is_none()
-        && let Some(mini) = mini
-    {
-        let area = if request.upstream {
-            upstream_minis(&request.project.topology, mini)
-                .and_then(|ids| mgb_ops::analysis::mini_area(&request.project.topology, &ids))
-        } else {
-            mgb_ops::analysis::mini_area(&request.project.topology, &[mini])
-        };
+    if let Some(summary) = &result.summary {
+        result.area_km2 = Some(summary.total_area_km2);
+    } else if let Some(mini) = mini {
+        let area = upstream_minis(&request.project.topology, mini)
+            .and_then(|ids| mgb_ops::analysis::mini_area(&request.project.topology, &ids));
         match area {
             Ok(area) => result.area_km2 = Some(area),
             Err(error) => result.findings.push(error),
@@ -530,7 +523,7 @@ pub fn timestamp(value: &str) -> Result<NaiveDateTime, String> {
 pub enum Job {
     Open(PathBuf, PathBuf),
     Run(PathBuf),
-    View(ViewRequest),
+    View(RainSide, ViewRequest),
     Local(Vec<PathBuf>),
     Export(SeriesReport, Option<String>, PathBuf),
     Upstream(Arc<Project>, i64),
@@ -542,7 +535,7 @@ impl Job {
         match self {
             Self::Open(..) => 0,
             Self::Run(..) => 1,
-            Self::View(..) => 2,
+            Self::View(side, _) => side.slot(),
             Self::Local(..) => 3,
             Self::Export(..) | Self::Png(..) => 4,
             Self::Upstream(..) => UPSTREAM_SLOT,
@@ -558,7 +551,7 @@ pub enum Loaded {
     Export(PathBuf),
     Upstream {
         mini: i64,
-        ids: Vec<i64>,
+        paths: super::map::BasinPaths,
     },
     Chart {
         report: SeriesReport,
@@ -574,7 +567,35 @@ pub struct Reply {
 }
 pub const UPSTREAM_SLOT: usize = 5;
 pub const CHART_SLOT: usize = 6;
-const SLOTS: usize = CHART_SLOT + 1;
+pub const SLOTS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RainSide {
+    Left,
+    Right,
+}
+
+impl RainSide {
+    pub const BOTH: [Self; 2] = [Self::Left, Self::Right];
+
+    pub fn slot(self) -> usize {
+        match self {
+            Self::Left => 2,
+            Self::Right => 7,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => 1,
+        }
+    }
+
+    pub fn from_slot(slot: usize) -> Option<Self> {
+        Self::BOTH.into_iter().find(|side| side.slot() == slot)
+    }
+}
 
 pub struct Worker {
     sender: Option<mpsc::Sender<(u64, Job)>>,
@@ -608,7 +629,7 @@ impl Worker {
                         })
                     }
                     Job::Run(root) => read_run(root).map(Loaded::Run),
-                    Job::View(request) => {
+                    Job::View(_, request) => {
                         Ok(Loaded::View(Box::new(view(request, &mut rainfall_reader))))
                     }
                     Job::Local(paths) => {
@@ -640,7 +661,16 @@ impl Worker {
                     Job::Png(export, destination) => super::export::write(*export, &destination)
                         .map(|_| Loaded::Export(destination)),
                     Job::Upstream(project, mini) => upstream_minis(&project.topology, mini)
-                        .map(|ids| Loaded::Upstream { mini, ids }),
+                        .and_then(|ids| {
+                            let paths = super::map::upstream_boundary(&project, &ids);
+                            if paths.is_empty() {
+                                return Err("No catchment geometry for upstream basin".into());
+                            }
+                            Ok(Loaded::Upstream {
+                                mini,
+                                paths: super::map::prepare_basin(paths),
+                            })
+                        }),
                     Job::Chart(request) => request.load(),
                     Job::Export(report, station, destination) => {
                         mgb_ops::app::export_comparison_csv(
@@ -1049,24 +1079,30 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         let config = root.join("workspace.toml");
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
         let mut project = open(config, root.into(), None).unwrap();
-        Arc::get_mut(&mut project).unwrap().topology = vec![MiniTopology {
-            mini_id: 1,
-            downstream: None,
-            area_km2: 1.,
-        }];
+        Arc::get_mut(&mut project).unwrap().topology = vec![
+            MiniTopology {
+                mini_id: 1,
+                downstream: None,
+                area_km2: 1.,
+            },
+            MiniTopology {
+                mini_id: 2,
+                downstream: Some(1),
+                area_km2: 3.,
+            },
+        ];
         let result = view(
             ViewRequest {
                 project,
                 location: Some(Location::Mini(1)),
                 scenario: "good".into(),
                 period: Some(RainfallPeriod::SignedHours(-1)),
-                upstream: false,
             },
             &mut RainfallCacheReader::default(),
         );
         assert!(result.rainfall.is_none());
         assert!(result.summary.is_none());
-        assert_eq!(result.area_km2, Some(1.));
+        assert_eq!(result.area_km2, Some(4.));
         let cache_missing = !root.join("data/cache/rainfall").exists();
         assert!(cache_missing);
     }
@@ -1083,9 +1119,10 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             downstream: None,
             area_km2: 1.,
         }];
+        let path = super::super::map::ProjectedPath::new(vec![(0., 0.), (1., 1.)]);
         old.segments = Arc::new(Vec::from([super::super::map::RiverPaths {
             mini_id: 1,
-            paths: vec![Vec::from([(0., 0.), (1., 1.)])],
+            paths: vec![path],
         }]));
         std::fs::create_dir_all(root.join("data")).unwrap();
         let mut database =
@@ -1183,6 +1220,27 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         );
         assert_eq!(infer_workspace(Path::new("/region/custom.toml")), None);
     }
+    #[test]
+    fn rainfall_request_invalidation_is_independent_by_side() {
+        let mut worker = Worker::new(eframe::egui::Context::default());
+        let (sender, receiver) = mpsc::channel();
+        worker.receiver = receiver;
+        for side in RainSide::BOTH {
+            assert_eq!(RainSide::from_slot(side.slot()), Some(side));
+            sender
+                .send(Reply {
+                    slot: side.slot(),
+                    generation: 0,
+                    result: Err("synthetic reply".into()),
+                })
+                .unwrap();
+        }
+        worker.invalidate(RainSide::Left.slot());
+        let replies = worker.poll();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].slot, RainSide::Right.slot());
+    }
+
     #[test]
     fn newer_requests_replace_pending_work_and_old_replies() {
         let mut worker = Worker::new(eframe::egui::Context::default());

@@ -573,6 +573,57 @@ impl Runners {
     pub fn save(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.start(Action::Save(path, false), ctx);
     }
+
+    pub fn workspace_settings(&mut self, ui: &mut egui::Ui, pt: bool) {
+        let status = self.localized_status(pt);
+        let busy = self.busy();
+        let Some(config) = &mut self.config else {
+            ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
+            return;
+        };
+        let original = config.clone();
+        ui.vertical(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    let mut field = |label: String, value: &mut Option<String>| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().text_edit_width = 145.;
+                            string(ui, &label, value);
+                        });
+                    };
+                    field(
+                        text(pt, "Geometry file", "Arquivo de geometria"),
+                        &mut config.spatial.get_or_insert_default().gpkg_path,
+                    );
+                    field(
+                        text(pt, "Engine executable", "Executável MGB"),
+                        &mut config.engine.get_or_insert_default().executable,
+                    );
+                    field(
+                        text(pt, "Baseline Input directory", "Diretório Input base"),
+                        &mut config.engine.get_or_insert_default().input_dir,
+                    );
+                });
+                restore_empty(&original.spatial, &mut config.spatial);
+                restore_empty(&original.engine, &mut config.engine);
+            });
+            if !status.is_empty() {
+                ui.allocate_ui(egui::vec2(435., 0.), |ui| {
+                    ui.add(egui::Label::new(&status).truncate())
+                        .on_hover_text(&status);
+                });
+            }
+        });
+        ui.add_enabled_ui(!busy, |ui| {
+            if super::ribbon_button(ui, "💾", text(pt, "Save", "Salvar")).clicked() {
+                self.start(Action::SaveConfig, ui.ctx());
+            }
+            if super::ribbon_button(ui, "⏪", text(pt, "Revert", "Reverter")).clicked() {
+                self.config = self.baseline.clone();
+            }
+        });
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, form: Form, pt: bool, workspace: Option<&Path>) {
         let ctx = ui.ctx().clone();
         if form == Form::Jobs {
@@ -583,37 +634,6 @@ impl Runners {
             egui::ScrollArea::vertical()
                 .id_salt("runner-scroll")
                 .show(ui, |ui| match form {
-                    Form::Workspace => {
-                        if let Some(config) = &mut self.config {
-                            let original=config.clone();
-                            ui.heading(form.label(pt));
-                            string(
-                                ui,
-                                &text(pt, "Geometry file", "Arquivo de geometria"),
-                                &mut config.spatial.get_or_insert_default().gpkg_path,
-                            );
-                            string(
-                                ui,
-                                &text(pt, "Engine executable", "Executável MGB"),
-                                &mut config.engine.get_or_insert_default().executable,
-                            );
-                            string(
-                                ui,
-                                &text(pt, "Baseline Input directory", "Diretório Input base"),
-                                &mut config.engine.get_or_insert_default().input_dir,
-                            );
-                            restore_empty(&original.spatial,&mut config.spatial);
-                            restore_empty(&original.engine,&mut config.engine);
-                            ui.horizontal(|ui| {
-                                if ui.button(text(pt, "Save", "Salvar")).clicked() {
-                                    self.start(Action::SaveConfig, &ctx)
-                                }
-                                if ui.button(text(pt, "Revert", "Reverter")).clicked() {
-                                    self.config = self.baseline.clone();
-                                }
-                            });
-                        }
-                    }
                     Form::NewRun => self.show_operation(ui, pt, workspace),
                     Form::RunAll => {
                         ui.heading(form.label(pt));
@@ -877,9 +897,13 @@ fn read_logs(root: &Path, depth: usize, out: &mut String) {
     }
 }
 fn string(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) {
-    ui.label(label);
+    let label = ui.label(label);
     let mut input = value.clone().unwrap_or_default();
-    if ui.text_edit_singleline(&mut input).changed() {
+    if ui
+        .text_edit_singleline(&mut input)
+        .labelled_by(label.id)
+        .changed()
+    {
         *value = (!input.is_empty()).then_some(input);
     }
 }

@@ -46,7 +46,7 @@ version = "=0.1.6"
 
 [features]
 default = []
-desktop = ["dep:eframe", "dep:rsplot", "dep:walkers", "dep:rfd", "dep:lyon_tessellation", "dep:ab_glyph", "dep:png"]
+desktop = ["dep:eframe", "dep:rsplot", "dep:walkers", "dep:rfd", "dep:lyon_tessellation", "dep:ab_glyph", "dep:png", "dep:geo"]
 
 [[bin]]
 name = "mgb-ops-desktop"
@@ -79,6 +79,11 @@ optional = true
 
 [dependencies.ab_glyph]
 version = "0.2"
+optional = true
+
+[dependencies.geo]
+default-features = false
+version = "=0.33.1"
 optional = true
 
 [dependencies.png]
