@@ -3327,7 +3327,8 @@ mod interface_tests {
             .filter(|layer| layer.kind == inundation::KIND)
             .collect();
         assert_eq!(added.len(), 1);
-        assert!(!added[0].visible);
+        let hidden = !added[0].visible;
+        assert!(hidden);
         let remaining: Vec<_> = display
             .layers
             .into_iter()

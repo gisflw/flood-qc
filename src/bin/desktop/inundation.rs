@@ -6,6 +6,7 @@ use mgb_ops::store::{
     digest_file,
 };
 use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::{
     Arc,
@@ -55,11 +56,17 @@ impl Source {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tile {
     level: InundationLevel,
     x: usize,
     y: usize,
+}
+
+impl Hash for Tile {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self.level.factor(), self.x, self.y).hash(state);
+    }
 }
 
 impl Tile {
@@ -786,7 +793,8 @@ mod tests {
             let view = grid
                 .visible_tiles(&projector, rect, 256. * 2f64.powf(zoom))
                 .unwrap();
-            assert!(!view.truncated);
+            let complete = !view.truncated;
+            assert!(complete);
             assert!(view.tiles.iter().all(|(tile, _)| tile.level == expected));
             for &(tile, _) in &view.tiles {
                 let (x, y, width, height) = tile.window(&grid.meta);
@@ -908,11 +916,10 @@ mod tests {
             repeat: false,
             modifiers: egui::Modifiers::NONE,
         };
-        assert_eq!(
-            pass(vec![arrow(egui::Key::ArrowRight)], false),
-            boundary + 1
-        );
-        assert_eq!(pass(vec![arrow(egui::Key::ArrowLeft)], false), boundary);
+        let forward = pass(vec![arrow(egui::Key::ArrowRight)], false);
+        let backward = pass(vec![arrow(egui::Key::ArrowLeft)], false);
+        assert_eq!(forward, boundary + 1);
+        assert_eq!(backward, boundary);
     }
 
     #[test]
@@ -933,15 +940,18 @@ mod tests {
                 thread::sleep(Wait::from_millis(5));
                 state.finish_view(&context, true);
             }
-            assert!(!state.worker.in_flight);
+            let done = !state.worker.in_flight;
+            assert!(done);
         };
         wait_for_open(&mut state);
-        assert!(matches!(state.finding, Some(Finding::Missing)));
+        let missing = matches!(state.finding, Some(Finding::Missing));
+        assert!(missing);
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"not NetCDF").unwrap();
         state.refresh();
         wait_for_open(&mut state);
-        assert!(matches!(state.finding, Some(Finding::Invalid(_))));
+        let invalid = matches!(state.finding, Some(Finding::Invalid(_)));
+        assert!(invalid);
         assert!(state.grid.is_none());
     }
 
@@ -984,14 +994,16 @@ mod tests {
         };
         state.select(Some(source.clone()));
         state.finish_view(&context, true);
-        assert!(matches!(pending.try_recv().unwrap().1, Job::Close));
+        let closing = matches!(pending.try_recv().unwrap().1, Job::Close);
+        assert!(closing);
         let (opening, _) = pending.try_recv().unwrap();
         state.select(Some(Source {
             root: PathBuf::from("run-b"),
             ..source
         }));
         state.finish_view(&context, true);
-        assert!(matches!(pending.try_recv().unwrap().1, Job::Close));
+        let closing = matches!(pending.try_recv().unwrap().1, Job::Close);
+        assert!(closing);
         assert!(pending.try_recv().is_err());
         ready
             .send((opening, Loaded::Open(Ok(Box::new(grid(4326))))))
@@ -1012,7 +1024,8 @@ mod tests {
         state.demand.insert(tile, 0.);
         state.finish_view(&context, true);
         let (reading, job) = pending.try_recv().unwrap();
-        assert!(matches!(job, Job::Tiles { frame: 3, .. }));
+        let old_frame = matches!(job, Job::Tiles { frame: 3, .. });
+        assert!(old_frame);
         state.change_frame(4);
         state.demand.insert(tile, 0.);
         ready
@@ -1021,7 +1034,8 @@ mod tests {
         state.finish_view(&context, true);
         assert!(state.cache.is_empty());
         let (reading, job) = pending.try_recv().unwrap();
-        assert!(matches!(job, Job::Tiles { frame: 4, .. }));
+        let new_frame = matches!(job, Job::Tiles { frame: 4, .. });
+        assert!(new_frame);
         ready
             .send((reading, Loaded::Tiles(vec![(tile, Ok(None))])))
             .unwrap();
