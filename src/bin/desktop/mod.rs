@@ -892,7 +892,10 @@ impl Monitoring {
             .into_iter()
             .chain(self.chart_worker.poll());
         for reply in replies {
-            if matches!(reply.slot, RUN_SLOT | CHART_SLOT) && !self.loading[0] {
+            let rain_side = RainSide::from_slot(reply.slot);
+            if (matches!(reply.slot, RUN_SLOT | CHART_SLOT) || rain_side.is_some())
+                && !self.loading[0]
+            {
                 self.check_active_run(false);
             }
             let worker = if reply.slot == CHART_SLOT {
@@ -907,7 +910,6 @@ impl Monitoring {
             if reply.slot == 0 {
                 self.switching_project = false;
             }
-            let rain_side = RainSide::from_slot(reply.slot);
             if rain_side.is_some() && self.check_rainfall_cache() {
                 self.request_view();
                 continue;

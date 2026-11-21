@@ -352,7 +352,8 @@ fn adopt_inundation(
 ) -> Result<std::collections::BTreeMap<String, crate::store::InundationRecipe>, String> {
     use crate::store::{
         FLOOD_MASK_FILE, FLOOD_SOURCE_FILE, INUNDATION_ADOPTION, InundationAdoption,
-        InundationMask, InundationRasters, InundationRecipe, read_flood_source, write_draft,
+        InundationLevel, InundationMask, InundationRasters, InundationRecipe, read_flood_source,
+        write_draft,
     };
     let donor_manifest = read_retained_manifest(donor)?;
     let keep_manifest = read_retained_manifest(keep)?;
@@ -450,6 +451,19 @@ fn adopt_inundation(
             || source_metadata.mini_ids != values.basins.mini_ids
         {
             return Err(format!("inundation donor provenance differs for {id}"));
+        }
+        let level = InundationLevel::Overview16;
+        let (width, height) = metadata.dimensions(level);
+        for step in [
+            0,
+            metadata.historical_count,
+            metadata.timeline.bounds.len() - 1,
+        ] {
+            mask_reader
+                .read_window(level, step, 0, 0, width, height)
+                .map_err(|error| {
+                    format!("inundation donor overview for {id} at step {step}: {error}")
+                })?;
         }
         let destination = stage.join(results);
         for (path, name) in [(source, FLOOD_SOURCE_FILE), (mask, FLOOD_MASK_FILE)] {
