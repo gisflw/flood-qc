@@ -151,7 +151,7 @@ impl InundationRasters {
         let hand_nodata = self.hand.raster.nodata();
         let catchment_nodata = self.catchments.raster.nodata();
         let mut cells = Vec::with_capacity(window.width * window.height);
-        let mut push = |i: usize, id: i128| -> Result<(), StoreError> {
+        let push = |i: usize, id: i128| -> Result<(), StoreError> {
             if id == 0
                 || catchment_mask.as_ref().is_some_and(|mask| mask[i] == 0)
                 || catchment_nodata.is_some_and(|n| id == n as i128 && n.fract() == 0.)
@@ -179,26 +179,29 @@ impl InundationRasters {
             );
             Ok(())
         };
-        macro_rules! read_ids {
-            ($values:expr) => {
-                for (i, id) in $values.into_iter().enumerate() {
-                    push(i, i128::from(id))?;
-                }
-            };
-        }
         match catchments {
-            RasterData::U8(v) => read_ids!(v),
-            RasterData::I8(v) => read_ids!(v),
-            RasterData::U16(v) => read_ids!(v),
-            RasterData::I16(v) => read_ids!(v),
-            RasterData::U32(v) => read_ids!(v),
-            RasterData::I32(v) => read_ids!(v),
-            RasterData::U64(v) => read_ids!(v),
-            RasterData::I64(v) => read_ids!(v),
+            RasterData::U8(v) => visit_ids(v, push)?,
+            RasterData::I8(v) => visit_ids(v, push)?,
+            RasterData::U16(v) => visit_ids(v, push)?,
+            RasterData::I16(v) => visit_ids(v, push)?,
+            RasterData::U32(v) => visit_ids(v, push)?,
+            RasterData::I32(v) => visit_ids(v, push)?,
+            RasterData::U64(v) => visit_ids(v, push)?,
+            RasterData::I64(v) => visit_ids(v, push)?,
             RasterData::F32(_) | RasterData::F64(_) => {
                 return Err(schema("catchments must be stored in an integer band"));
             }
         }
         Ok(cells)
     }
+}
+
+fn visit_ids(
+    values: Vec<impl Into<i128>>,
+    mut visit: impl FnMut(usize, i128) -> Result<(), StoreError>,
+) -> Result<(), StoreError> {
+    for (index, id) in values.into_iter().enumerate() {
+        visit(index, id.into())?;
+    }
+    Ok(())
 }

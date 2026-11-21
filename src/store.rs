@@ -82,7 +82,7 @@ pub use self::inundation::{
 };
 #[cfg(feature = "inundation-write")]
 pub(crate) use self::inundation::{
-    INUNDATION_CHUNK, InundationRasters, InundationStage, InundationWriter,
+    INUNDATION_TILE, InundationRasters, InundationStage, InundationWriter,
 };
 
 mod flood_source;

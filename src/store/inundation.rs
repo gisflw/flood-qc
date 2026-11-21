@@ -16,7 +16,7 @@ pub(crate) use self::raster::InundationRasters;
 #[cfg(feature = "inundation-write")]
 pub(crate) use self::write::{InundationStage, InundationWriter};
 #[cfg(feature = "inundation-write")]
-pub(crate) const INUNDATION_CHUNK: usize = CHUNK;
+pub(crate) const INUNDATION_TILE: usize = 1024;
 
 pub const FLOOD_MASK_FILE: &str = "flood_mask.nc";
 const SCHEMA_VERSION: i32 = 1;
@@ -25,11 +25,17 @@ const CHUNK: usize = 256;
 const TIME_UNITS: &str = "seconds since 1970-01-01 00:00:00 +00:00";
 const CALENDAR: &str = "proleptic_gregorian";
 
-#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InundationLevel {
     Full,
     Overview4,
     Overview16,
+}
+
+impl std::hash::Hash for InundationLevel {
+    fn hash<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        hasher.write_usize(self.factor());
+    }
 }
 
 impl InundationLevel {
@@ -57,7 +63,10 @@ impl InundationLevel {
     }
 
     fn chunk(self, width: usize, height: usize) -> [usize; 3] {
-        let span = CHUNK / self.factor();
+        let span = match self {
+            Self::Full | Self::Overview4 => CHUNK,
+            Self::Overview16 => CHUNK / 4,
+        };
         [1, height.min(span), width.min(span)]
     }
 }
@@ -257,6 +266,7 @@ impl InundationMask {
             .map_err(format_error)?,
         };
         metadata.validate()?;
+        check_forecast_reference(&dataset, &metadata)?;
         for level in LEVELS {
             let (name, y, x) = level.names();
             let (width, height) = metadata.dimensions(level);
@@ -398,6 +408,39 @@ fn read_timeline(dataset: &Dataset) -> Result<IntervalAxis, StoreError> {
         time_zone: time_zone.into(),
         bounds,
     })
+}
+
+fn check_forecast_reference(
+    dataset: &Dataset,
+    metadata: &InundationMetadata,
+) -> Result<(), StoreError> {
+    use chrono::TimeZone;
+
+    let time = checked_array(dataset, "forecast_reference_time", DataType::I64, &[])?;
+    if time.info.attributes["units"].as_str() != Some(TIME_UNITS)
+        || time.info.attributes["calendar"].as_str() != Some(CALENDAR)
+        || time.info.attributes["standard_name"].as_str() != Some("forecast_reference_time")
+    {
+        return Err(schema("invalid flood-mask forecast reference metadata"));
+    }
+    let bytes = time.read().map_err(format_error)?.bytes;
+    let reference = i64::from_le_bytes(
+        bytes
+            .try_into()
+            .map_err(|_| schema("invalid forecast reference size"))?,
+    );
+    let zone: chrono_tz::Tz = metadata.timeline.time_zone.parse().map_err(format_error)?;
+    let expected = zone
+        .from_local_datetime(&metadata.timeline.bounds[metadata.historical_count - 1].end)
+        .single()
+        .ok_or_else(|| schema("invalid forecast reference local time"))?
+        .timestamp();
+    if reference != expected {
+        return Err(schema(
+            "flood-mask forecast reference differs from the last historical interval",
+        ));
+    }
+    Ok(())
 }
 
 fn checked_array(

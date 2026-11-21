@@ -1,6 +1,6 @@
 use super::{
-    CALENDAR, CHUNK, FILL, InundationLevel, InundationMask, InundationMetadata, LEVELS,
-    SCHEMA_VERSION, TIME_UNITS, format_error, schema,
+    CALENDAR, CHUNK, FILL, INUNDATION_TILE, InundationLevel, InundationMask, InundationMetadata,
+    LEVELS, SCHEMA_VERSION, TIME_UNITS, format_error, schema,
 };
 use crate::store::{StoreError, sync_directory};
 use chrono::TimeZone;
@@ -119,20 +119,23 @@ impl InundationMask {
         &self,
         mut cancelled: impl FnMut() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        for level in LEVELS {
-            let (width, height) = self.metadata.dimensions(level);
-            let span = CHUNK / level.factor();
-            for time in 0..self.metadata.timeline.bounds.len() {
-                for y in (0..height).step_by(span) {
-                    for x in (0..width).step_by(span) {
-                        cancelled()?;
+        let times = self.metadata.timeline.bounds.len();
+        let (width, height) = self.metadata.dimensions(InundationLevel::Full);
+        for y in (0..height).step_by(INUNDATION_TILE) {
+            let rows = INUNDATION_TILE.min(height - y);
+            for x in (0..width).step_by(INUNDATION_TILE) {
+                let columns = INUNDATION_TILE.min(width - x);
+                for time in 0..times {
+                    cancelled()?;
+                    for level in LEVELS {
+                        let factor = level.factor();
                         self.read_window(
                             level,
                             time,
-                            x,
-                            y,
-                            span.min(width - x),
-                            span.min(height - y),
+                            x / factor,
+                            y / factor,
+                            columns.div_ceil(factor),
+                            rows.div_ceil(factor),
                         )?;
                     }
                 }
@@ -245,5 +248,10 @@ fn write_time(
     time.put_values(&values, ..)?;
     let mut time_bounds = file.add_variable::<i64>("time_bounds", &["time", "bounds"])?;
     time_bounds.put_values(&bounds, ..)?;
+    let mut reference = file.add_variable::<i64>("forecast_reference_time", &[])?;
+    reference.put_attribute("standard_name", "forecast_reference_time")?;
+    reference.put_attribute("units", TIME_UNITS)?;
+    reference.put_attribute("calendar", CALENDAR)?;
+    reference.put_value(values[meta.historical_count - 1], ())?;
     Ok(())
 }

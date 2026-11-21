@@ -957,7 +957,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 Err(error) if json => {
                     serde_json::to_writer(
                         &mut out,
-                        &serde_json::json!({ "error": error.to_string() }),
+                        &BTreeMap::from([("error", error.to_string())]),
                     )?;
                     writeln!(out)?;
                     return Ok(false);

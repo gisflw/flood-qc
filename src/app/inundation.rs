@@ -60,7 +60,7 @@ mod enabled {
         analysis::{classify, wet_fraction},
         store::{
             FLOOD_MASK_FILE, FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource,
-            INUNDATION_CHUNK, InundationLevel, InundationMask, InundationMetadata,
+            INUNDATION_TILE, InundationLevel, InundationMask, InundationMetadata,
             InundationProvenance, InundationRasters, InundationStage, InundationWriter, StoreError,
             digest_file, read_flood_source, read_retained_manifest,
         },
@@ -121,8 +121,9 @@ mod enabled {
         }
         let flood_source_sha256 = digest(&source_path)?;
         let source = read_flood_source(&source_path)?;
-        if source.provenance.processing["flood_source"]["scenario"].as_str()
-            != Some(&request.scenario)
+        let flood_source = &source.provenance.processing["flood_source"];
+        if flood_source["scenario"].as_str() != Some(&request.scenario)
+            || flood_source["depth_datum"].as_str() != Some("model_channel_bed")
         {
             return Err(StoreError::Integrity(
                 "flood source provenance does not match the selected scenario".into(),
@@ -242,7 +243,7 @@ mod enabled {
             .collect();
         let mut mask = Vec::new();
         let mut overview = Vec::new();
-        let chunk = INUNDATION_CHUNK;
+        let chunk = INUNDATION_TILE;
         for y in (0..rasters.height).step_by(chunk) {
             let h = chunk.min(rasters.height - y);
             for x in (0..rasters.width).step_by(chunk) {
@@ -300,3 +301,6 @@ mod enabled {
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "inundation-write"))]
+mod tests;
