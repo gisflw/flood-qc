@@ -91,6 +91,72 @@ pub(super) fn read_recipe_manifest(path: &Path) -> Result<OperationManifest, Str
     Ok(manifest)
 }
 
+pub(super) struct ManifestRecipe {
+    pub preparation: PreparationDocument,
+    pub replacements: Vec<ObservationReplacement>,
+    pub corrections: Vec<Option<Vec<ForecastCorrection>>>,
+}
+
+impl ManifestRecipe {
+    pub(super) fn decode(manifest: &OperationManifest) -> Result<Self, String> {
+        let mut document = manifest
+            .recipe
+            .get("document")
+            .cloned()
+            .ok_or("manifest has no recipe document")?;
+        let object = document.as_object_mut().ok_or("invalid manifest recipe")?;
+        let replacements: Vec<ObservationReplacement> = serde_json::from_value(
+            object
+                .remove("replacement_values")
+                .ok_or("missing replacement values")?,
+        )
+        .map_err(|e| e.to_string())?;
+        let corrections: Vec<ForecastCorrection> = serde_json::from_value(
+            object
+                .remove("correction_values")
+                .ok_or("missing correction values")?,
+        )
+        .map_err(|e| e.to_string())?;
+        object.remove("selected_series");
+        object.remove("selected_stations");
+        let preparation: PreparationDocument =
+            serde_json::from_value(document).map_err(|e| e.to_string())?;
+        let corrections = preparation
+            .scenarios
+            .iter()
+            .map(|scenario| {
+                scenario
+                    .asset_id
+                    .as_ref()
+                    .map(|asset| {
+                        scenario
+                            .correction_ids
+                            .as_deref()
+                            .unwrap_or(&[])
+                            .iter()
+                            .map(|id| {
+                                let value = corrections
+                                    .iter()
+                                    .find(|value| {
+                                        &value.correction_id == id && &value.asset_id == asset
+                                    })
+                                    .ok_or("manifest missing selected correction")?
+                                    .clone();
+                                Ok(value)
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    })
+                    .transpose()
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        Ok(Self {
+            preparation,
+            replacements,
+            corrections,
+        })
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct DraftObserved {
@@ -594,34 +660,17 @@ impl Draft {
         Self::from_manifest(workspace, invocation_dir, &manifest)
     }
 
-    pub(super) fn from_manifest(
+    fn from_manifest(
         workspace: PathBuf,
         invocation_dir: &Path,
         manifest: &OperationManifest,
     ) -> Result<Self, String> {
-        let mut document = manifest
-            .recipe
-            .get("document")
-            .cloned()
-            .ok_or("manifest has no recipe document")?;
-        let object = document.as_object_mut().ok_or("invalid manifest recipe")?;
-        let replacements: Vec<ObservationReplacement> = serde_json::from_value(
-            object
-                .remove("replacement_values")
-                .ok_or("missing replacement values")?,
-        )
-        .map_err(|e| e.to_string())?;
-        let corrections: Vec<ForecastCorrection> = serde_json::from_value(
-            object
-                .remove("correction_values")
-                .ok_or("missing correction values")?,
-        )
-        .map_err(|e| e.to_string())?;
-        object.remove("selected_series");
-        object.remove("selected_stations");
-        let preparation: PreparationDocument =
-            serde_json::from_value(document).map_err(|e| e.to_string())?;
-        let mut draft = Self::from_preparation(workspace, invocation_dir, preparation.clone())?;
+        let ManifestRecipe {
+            preparation,
+            replacements,
+            corrections,
+        } = ManifestRecipe::decode(manifest)?;
+        let mut draft = Self::from_preparation(workspace, invocation_dir, preparation)?;
         draft.document.instructions.replacements = Some(
             replacements
                 .into_iter()
@@ -632,38 +681,21 @@ impl Draft {
                 })
                 .collect(),
         );
-        draft.document.instructions.corrections = preparation
-            .scenarios
-            .iter()
-            .map(|scenario| {
-                scenario
-                    .asset_id
-                    .as_ref()
-                    .map(|asset| {
-                        scenario
-                            .correction_ids
-                            .as_deref()
-                            .unwrap_or(&[])
-                            .iter()
-                            .map(|id| {
-                                let value = corrections
-                                    .iter()
-                                    .find(|value| {
-                                        &value.correction_id == id && &value.asset_id == asset
-                                    })
-                                    .ok_or("manifest missing selected correction")?
-                                    .clone();
-                                Ok(DraftCorrection {
-                                    draft_id: value.correction_id.clone(),
-                                    registered_origin: None,
-                                    value,
-                                })
-                            })
-                            .collect::<Result<Vec<_>, String>>()
-                    })
-                    .transpose()
+        draft.document.instructions.corrections = corrections
+            .into_iter()
+            .map(|values| {
+                values.map(|values| {
+                    values
+                        .into_iter()
+                        .map(|value| DraftCorrection {
+                            draft_id: value.correction_id.clone(),
+                            registered_origin: None,
+                            value,
+                        })
+                        .collect()
+                })
             })
-            .collect::<Result<Vec<_>, String>>()?;
+            .collect();
         draft.baseline = draft.document.clone();
         Ok(draft)
     }

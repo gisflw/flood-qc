@@ -239,10 +239,13 @@ fn import_checked_run(
             .file_name()
             .ok_or("destination needs a filename")?,
     );
-    for managed in ["data/cache", "data/run-manifests", "data/runs"] {
-        let managed = workspace.join(managed);
-        if resolved_destination.starts_with(&managed)
-            || managed
+    let data = workspace.join("data");
+    let resolved_data = data.canonicalize().unwrap_or_else(|_| data.clone());
+    for managed in ["cache", "run-manifests", "runs"] {
+        let managed_path = data.join(managed);
+        if resolved_destination.starts_with(resolved_data.join(managed))
+            || resolved_destination.starts_with(&managed_path)
+            || managed_path
                 .canonicalize()
                 .is_ok_and(|path| resolved_destination.starts_with(path))
         {
@@ -280,7 +283,7 @@ pub fn replay_run(
     manifest_path: &Path,
     control: &OperationControl,
 ) -> Result<ExecutionReport, OperationError> {
-    use super::draft::read_recipe_manifest;
+    use super::draft::{ManifestRecipe, read_recipe_manifest};
     use super::operation::{ExecutionRecipe, lock_workspace, run_preparation_locked};
     use super::prepare::{TypedPreparationRequest, prepare_replay};
 
@@ -310,30 +313,21 @@ pub fn replay_run(
             "manifest belongs to a different operational workspace".into(),
         ));
     }
-    let draft =
-        super::Draft::from_manifest(workspace.clone(), &workspace, &manifest).map_err(invalid)?;
-    let document = draft.preparation_document().map_err(invalid)?;
-    let replacements = recipe.inline_replacements.then(|| {
-        draft
-            .document
-            .instructions
-            .replacements
-            .unwrap_or_default()
-            .into_iter()
-            .map(|entry| entry.value)
-            .collect()
-    });
-    let corrections = draft
-        .document
-        .instructions
-        .corrections
+    if manifest.inputs.is_empty() {
+        return Err(invalid(
+            "manifest has no retained preparation identities".into(),
+        ));
+    }
+    let ManifestRecipe {
+        preparation: document,
+        replacements,
+        corrections,
+    } = ManifestRecipe::decode(&manifest).map_err(invalid)?;
+    let replacements = recipe.inline_replacements.then_some(replacements);
+    let corrections = corrections
         .into_iter()
         .enumerate()
-        .map(|(index, entries)| {
-            entries
-                .filter(|_| recipe.inline_corrections.contains(&index))
-                .map(|entries| entries.into_iter().map(|entry| entry.value).collect())
-        })
+        .map(|(index, entries)| entries.filter(|_| recipe.inline_corrections.contains(&index)))
         .collect();
 
     let lock = lock_workspace(&workspace)?;

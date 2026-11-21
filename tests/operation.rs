@@ -310,7 +310,7 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
     mgb_ops::export_run(&trial.run_root, Some(&prepared.prepared), &bundle).unwrap();
     assert!(!bundle.join("preparation/baseline/engine").exists());
     assert!(mgb_ops::export_run(&trial.run_root, None, &bundle).is_err());
-    for path in ["Input", "prepared", "data/runs"] {
+    for path in ["Input", "prepared", "data/cache/run"] {
         fs::remove_dir_all(source.join(path)).unwrap();
     }
     fs::remove_file(source.join("observations.sqlite")).unwrap();
@@ -2625,12 +2625,27 @@ fn replay_from_standalone_recipe_requires_identical_sources() {
     let first = mgb_ops::replay_run(&workspace, &manifest, &control).unwrap();
     assert!(matches!(first.status, mgb_ops::BatchStatus::Completed));
     assert!(first.run_root.join("results/zero/basin.nc").is_file());
+    let id = first
+        .run_root
+        .file_name()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .strip_prefix("generation-")
+        .unwrap();
+    let archived = workspace
+        .join("data/run-manifests")
+        .join(format!("{id}.json"));
+    assert!(mgb_ops::Draft::import_manifest(workspace.clone(), &workspace, &archived).is_ok());
+    let replayed = mgb_ops::replay_run(&workspace, &archived, &control).unwrap();
+    assert_ne!(first.run_root, replayed.run_root);
+    assert!(!first.run_root.exists());
 
     fs::write(workspace.join("Input/control.txt"), "fail").unwrap();
-    let error = mgb_ops::replay_run(&workspace, &manifest, &control).unwrap_err();
+    let error = mgb_ops::replay_run(&workspace, &archived, &control).unwrap_err();
     assert!(
         format!("{error}").contains("recorded operation recipe or source identities changed"),
         "{error}"
     );
-    assert!(first.run_root.exists());
+    assert!(replayed.run_root.exists());
 }
