@@ -204,12 +204,16 @@ pub(crate) struct RunDiagnostic {
 
 pub(crate) fn collect_run_diagnostics(root: &Path) -> Vec<RunDiagnostic> {
     let mut paths = Vec::new();
+    let mut log_streams = Vec::new();
     if let Ok(scenarios) = fs::read_dir(root.join("scenarios")) {
         for entry in scenarios.flatten() {
             if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 let prefix = Path::new("scenarios").join(entry.file_name()).join("logs");
-                for name in ["stderr.log", "stdout.log"] {
-                    paths.push(prefix.join(name));
+                if fs::symlink_metadata(root.join(&prefix)).is_ok_and(|entry| entry.is_dir()) {
+                    paths.push(prefix.join("execution.json"));
+                    for name in ["stderr.log", "stdout.log"] {
+                        log_streams.push(prefix.join(name));
+                    }
                 }
             }
         }
@@ -226,6 +230,8 @@ pub(crate) fn collect_run_diagnostics(root: &Path) -> Vec<RunDiagnostic> {
         }
     }
     paths.sort();
+    log_streams.sort();
+    paths.extend(log_streams);
     let mut remaining: usize = 64 * 1024;
     let mut diagnostics = Vec::new();
     for path in paths {
@@ -293,6 +299,12 @@ pub(crate) fn recover_run_cache(workspace: &Path) -> Result<(), String> {
     let lock = access_lock(&root, true)?;
     lock.lock().map_err(|error| error.to_string())?;
     let active = active_run(workspace)?;
+    if active.as_ref().is_some_and(|path| {
+        !fs::symlink_metadata(path).is_ok_and(|entry| entry.is_dir())
+            || !path.join("manifest.json").is_file()
+    }) {
+        return Err("Active run generation is missing or invalid".into());
+    }
     sync_directory(&root)?;
     recover_locked(workspace, &root, active.as_deref())
 }
@@ -305,6 +317,9 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
             .map_err(|error| error.to_string())?
     {
         let journal = read_run_attempt(&path.join(JOURNAL))?;
+        if journal.attempt_id != run_stage_id(path)? || journal.state != "completed" {
+            return Err("Published run journal does not match its generation".into());
+        }
         write_run_attempt(workspace, &journal)?;
         fs::remove_file(path.join(JOURNAL)).map_err(|error| error.to_string())?;
         sync_directory(path)?;
@@ -312,6 +327,10 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
     for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
+        if is_pointer_temporary(&path) && entry.file_type().map_err(|e| e.to_string())?.is_file() {
+            fs::remove_file(&path).map_err(|error| error.to_string())?;
+            continue;
+        }
         let Ok(id) = run_stage_id(&path) else {
             continue;
         };
@@ -347,6 +366,15 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
     sync_directory(root)
 }
 
+fn is_pointer_temporary(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .and_then(|name| name.strip_prefix(".active.json."))
+        .and_then(|name| name.strip_suffix(".tmp"))
+        .and_then(|name| name.split_once('.'))
+        .is_some_and(|(pid, nonce)| pid.parse::<u32>().is_ok() && nonce.parse::<u64>().is_ok())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,8 +402,11 @@ mod tests {
         )
         .unwrap();
 
+        let abandoned_pointer = run_cache_root(workspace).join(".active.json.1.1.tmp");
+        fs::write(&abandoned_pointer, "incomplete pointer").unwrap();
         recover_run_cache(workspace).unwrap();
         recover_run_cache(workspace).unwrap();
+        assert!(!abandoned_pointer.exists());
         assert_eq!(
             active_run(workspace).unwrap().as_deref(),
             Some(active.as_path())
