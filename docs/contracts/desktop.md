@@ -51,7 +51,7 @@ See [saved-data workflows](saved-data.md) for request formats and outputs and
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
 `data/history.sqlite`, `data/forecasts.sqlite`, the [active rainfall
-cache](operations.md#active-rainfall-cache), and the workspace's active run.
+cache](operations.md#active-run-and-rainfall-cache), and the workspace's active run.
 Charts, Files and Map open the active generation automatically. While viewing
 the active run, a newly published generation updates all three views and clears
 the previous scenario, inundation frame, and tiles. Files shows run status and diagnostics, including successful
@@ -94,8 +94,8 @@ Use **Apply** to commit a period edit. A successful **Processing → New run →
 the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
 the desktop is idle.
 
-**Map → Inundation** opens the displayed run's scenario mask. Choose the
-scenario and step through model hours with the slider or arrow keys while it has
+Enable **Inundation** under **Map → Layers** to see the displayed run's scenario
+mask and controls. Choose the scenario and step through model hours with the slider or arrow keys while it has
 focus. The control starts at the first forecast hour and displays the model's
 local time. Double and Swipe use the same inundation frame on both sides. Use
 Refresh/F5 after generating a mask for an open run. Refresh resets the scenario
