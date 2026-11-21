@@ -60,3 +60,16 @@ state, loaded the published result after refresh, and drew the layer in Single,
 Double, and Swipe. Dragging reached the last forecast hour. The Left key then
 stepped back one hour with the new time shown in the run timezone. This
 graphics check used software rendering.
+
+## Reusing unchanged tiles
+
+The raw ECMWF run had 39,180 eligible cells that changed state at least once.
+Only 350 of 395,295 adjacent hours across eligible 256 × 256 tiles changed a
+cell. The processor now computes stages once per MINI and hour, classifies
+static cells once, and recalculates tile overviews when a cell changes. The
+same saved case took 137 seconds including full readback, down from 232
+seconds in the earlier RS Hydro workspace run. All 362 native masks and both
+overview series matched the earlier output exactly. The file size was unchanged.
+Independent reads matched the original HAND depths, all valid times, and three
+complete native frames per scenario across the four-scenario RS Hydro run. All
+four masks opened through the desktop scenario selector on Linux software Vulkan.
