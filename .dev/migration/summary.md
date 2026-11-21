@@ -49,6 +49,10 @@ Current usage lives in the [workspace](../../docs/contracts/workspace.md),
 specifications are retired. The [saved-data contract](../../docs/contracts/saved-data.md) records the new operator paths.
 Provider adapters and the engine-dependent restart gaps follow their rows below.
 
+The November 21 migration review at `b6ae27a` passed the Linux saved RS regression
+and found a desktop build blocker in the inundation date labels. Restore the build
+and repeat the desktop smoke checks. See the [diagnosis](../reports/migration-diagnosis.md).
+
 Use `not started`, `planned`, `in progress`, `blocked`, and `complete` for the
 scope stated in each row. `Planned` means an agreed delivery plan exists, not
 that code works. Completion requires acceptance evidence for that stated scope;
