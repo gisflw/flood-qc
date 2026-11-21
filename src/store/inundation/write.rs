@@ -135,26 +135,35 @@ impl InundationWriter {
 impl InundationMask {
     pub(crate) fn validate_payload(
         &self,
+        path: &Path,
         mut cancelled: impl FnMut() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
+        let file = netcdf::open(path).map_err(format_error)?;
         let times = self.metadata.timeline.bounds.len();
-        let (width, height) = self.metadata.dimensions(InundationLevel::Full);
-        for y in (0..height).step_by(INUNDATION_TILE) {
-            let rows = INUNDATION_TILE.min(height - y);
-            for x in (0..width).step_by(INUNDATION_TILE) {
-                let columns = INUNDATION_TILE.min(width - x);
-                for time in 0..times {
-                    cancelled()?;
-                    for level in LEVELS {
-                        let factor = level.factor();
-                        self.read_window(
-                            level,
-                            time,
-                            x / factor,
-                            y / factor,
-                            columns.div_ceil(factor),
-                            rows.div_ceil(factor),
-                        )?;
+        let mut pixels = Vec::new();
+        for level in LEVELS {
+            let (name, _, _) = level.names();
+            let variable = file
+                .variable(name)
+                .ok_or_else(|| schema(format!("missing {name}")))?;
+            let (width, height) = self.metadata.dimensions(level);
+            let span = INUNDATION_TILE / level.factor();
+            for time in 0..times {
+                for y in (0..height).step_by(span) {
+                    let rows = span.min(height - y);
+                    for x in (0..width).step_by(span) {
+                        cancelled()?;
+                        let columns = span.min(width - x);
+                        pixels.resize(rows * columns, 0_u8);
+                        variable
+                            .get_values_into(&mut pixels, ([time, y, x], [1, rows, columns]))
+                            .map_err(format_error)?;
+                        if pixels
+                            .iter()
+                            .any(|&value| value != FILL && value > level.maximum())
+                        {
+                            return Err(schema(format!("invalid values in {name}")));
+                        }
                     }
                 }
             }
@@ -204,7 +213,7 @@ fn build_file(
         let mut mask = file.add_variable::<u8>(name, &["time", y, x])?;
         mask.set_fill_value(FILL)?;
         mask.set_chunking(&level.chunk(width, height))?;
-        mask.set_compression(4, false)?;
+        mask.set_compression(1, false)?;
         mask.put_attribute("grid_mapping", "crs")?;
         mask.put_attribute("coordinates", "forecast_reference_time")?;
         mask.put_attribute("valid_range", vec![0_u8, level.maximum()])?;

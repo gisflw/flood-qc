@@ -117,8 +117,19 @@ impl InundationRasters {
                 "HAND and catchments must share the same pixel grid and assigned CRS",
             ));
         }
-        if matches!(catchments.raster.data_type(), DataType::F32 | DataType::F64) {
+        let catchment_type = catchments.raster.data_type();
+        if matches!(catchment_type, DataType::F32 | DataType::F64) {
             return Err(schema("catchments must be stored in an integer band"));
+        }
+        if matches!(catchment_type, DataType::I64 | DataType::U64)
+            && catchments
+                .raster
+                .nodata()
+                .is_some_and(|value| value.abs() >= 9_007_199_254_740_992.0)
+        {
+            return Err(schema(
+                "catchment NoData exceeds the exact TIFF metadata range",
+            ));
         }
         Ok(Self {
             hand,

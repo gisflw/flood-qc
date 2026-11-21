@@ -179,10 +179,25 @@ fn processes_and_reuses_a_compressed_scenario_mask() {
     );
     let original = digest_file(&report.path).unwrap();
     assert_eq!(
-        process_inundation(request, &control).unwrap().status,
+        process_inundation(request.clone(), &control)
+            .unwrap()
+            .status,
         InundationProcessStatus::Reused
     );
     assert_eq!(digest_file(&report.path).unwrap(), original);
+
+    drop(mask_variable);
+    drop(file);
+    drop(mask);
+    let mut corrupted = netcdf::append(&report.path).unwrap();
+    corrupted
+        .variable_mut("inundation_mask")
+        .unwrap()
+        .put_value(2_u8, [1, 0, 1])
+        .unwrap();
+    corrupted.close().unwrap();
+    let refused = process_inundation(request, &control).unwrap_err();
+    assert!(refused.to_string().contains("--replace"));
 }
 
 #[test]

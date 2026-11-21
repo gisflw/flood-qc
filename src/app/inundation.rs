@@ -181,7 +181,7 @@ mod enabled {
                     if mask.metadata() != &metadata {
                         return Ok(false);
                     }
-                    mask.validate_payload(|| cancelled(control))?;
+                    mask.validate_payload(&report.path, || cancelled(control))?;
                     Ok(true)
                 });
                 if matches!(same, Ok(true)) {
@@ -217,7 +217,7 @@ mod enabled {
                 "reopened flood mask metadata differs from the processed inputs".into(),
             ));
         }
-        mask.validate_payload(|| cancelled(control))?;
+        mask.validate_payload(&staged, || cancelled(control))?;
         drop(mask);
         verify_inputs(&rasters)?;
         stage.publish(&staged, &report.path, replace, || cancelled(control))?;
