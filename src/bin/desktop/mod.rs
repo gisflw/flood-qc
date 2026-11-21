@@ -1888,11 +1888,7 @@ impl Monitoring {
                     "Estado e proveniência da execução",
                 ),
                 |ui| {
-                    ui.small(format!(
-                        "{} · {}",
-                        status_label(&run.manifest.state, pt),
-                        run.manifest.created_at
-                    ));
+                    ui.small(status_label(&run.manifest.state, pt));
                     ui.small(format!(
                         "{}: {}",
                         text(pt, "Reference", "Referência"),
@@ -2050,9 +2046,6 @@ impl Monitoring {
                 ));
                 return;
             };
-            if let Some(name) = run.root.file_name() {
-                ui.small(name.to_string_lossy());
-            }
             let scenario = &mut self.display.inundation_scenario;
             egui::ComboBox::from_label(text(pt, "Inundation scenario", "Cenário de inundação"))
                 .selected_text(scenario.as_str())

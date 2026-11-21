@@ -6,6 +6,11 @@ supported behavior, and, while migration is active,
 [the migration summary](.dev/migration/summary.md) for current status and next work.
 The external MGB executable remains the numerical engine.
 
+## Desktop conventions
+
+Show timezone names and UTC offsets only in the bottom status strip.
+Display local times without timezone information in the other desktop controls.
+
 ## Documentation rules
 
 Keep permanent documentation focused on current usage, lasting product scope,

@@ -1,5 +1,4 @@
 use super::{map, text};
-use chrono::TimeZone as _;
 use eframe::egui::{self, Color32};
 #[cfg(test)]
 use mgb_ops::store::digest_file;
@@ -422,6 +421,8 @@ pub struct Inundation {
     grid: Option<Box<Grid>>,
     finding: Option<Finding>,
     frame: Option<usize>,
+    hour_input: String,
+    invalid_hour: bool,
     cache: HashMap<(usize, Tile), CachedTile>,
     demand: HashMap<Tile, f64>,
     pass: u64,
@@ -437,6 +438,8 @@ impl Inundation {
             grid: None,
             finding: None,
             frame: None,
+            hour_input: String::new(),
+            invalid_hour: false,
             cache: HashMap::new(),
             demand: HashMap::new(),
             pass: 0,
@@ -455,6 +458,8 @@ impl Inundation {
 
     pub fn refresh(&mut self) {
         self.worker.close();
+        self.hour_input.clear();
+        self.invalid_hour = false;
         self.grid = None;
         self.finding = None;
         self.cache.clear();
@@ -477,29 +482,78 @@ impl Inundation {
         if let (Some(grid), Some(mut frame)) = (&self.grid, self.frame) {
             let meta = &grid.meta;
             let last = meta.timeline.bounds.len() - 1;
-            hour_slider(ui, &mut frame, last, pt);
-            let selected = &meta.timeline.bounds[frame];
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(frame > 0, egui::Button::new("←"))
+                    .on_hover_text(text(pt, "Previous hour", "Hora anterior"))
+                    .clicked()
+                {
+                    frame -= 1;
+                }
+                hour_slider(ui, &mut frame, last, pt);
+                if ui
+                    .add_enabled(frame < last, egui::Button::new("→"))
+                    .on_hover_text(text(pt, "Next hour", "Próxima hora"))
+                    .clicked()
+                {
+                    frame += 1;
+                }
+            });
+            if self.frame != Some(frame) {
+                self.hour_input = timestamp(meta.timeline.bounds[frame].end);
+                self.invalid_hour = false;
+            }
+            let apply = ui
+                .horizontal(|ui| {
+                    ui.label(text(pt, "Jump to", "Ir para"));
+                    let input = ui.add(
+                        egui::TextEdit::singleline(&mut self.hour_input)
+                            .desired_width(100.0)
+                            .hint_text("YYYYMMDD-HH"),
+                    );
+                    let enter = (input.has_focus() || input.lost_focus())
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    ui.button(text(pt, "Go", "Ir")).clicked() || enter
+                })
+                .inner;
+            if apply {
+                if let Some(index) = frame_at_hour(&meta.timeline.bounds, &self.hour_input) {
+                    frame = index;
+                    self.invalid_hour = false;
+                } else {
+                    self.invalid_hour = true;
+                }
+            }
+            if self.invalid_hour {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    text(
+                        pt,
+                        "Enter an available hour as YYYYMMDD-HH.",
+                        "Digite uma hora disponível no formato AAAAMMDD-HH.",
+                    ),
+                );
+            }
             let forecast = meta.timeline.bounds.get(meta.historical_count);
             let current = if frame < meta.historical_count {
                 text(pt, "Historical", "Histórico")
             } else {
                 text(pt, "Forecast", "Previsão")
             };
+            let display_format = text(pt, "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M");
             ui.label(format!(
-                "{} · {} · {current}",
-                text(pt, "Valid at", "Válido em"),
-                timestamp(meta, selected.end),
+                "{} · {current}",
+                meta.timeline.bounds[frame].end.format(display_format),
             ));
             if let Some(forecast) = forecast {
                 ui.small(format!(
                     "{} · {}",
                     text(pt, "Forecast starts", "Início da previsão"),
-                    timestamp(meta, forecast.start),
+                    forecast.start.format(display_format),
                 ));
             } else {
                 ui.small(text(pt, "No forecast hours", "Sem horas de previsão"));
             }
-            ui.small(&meta.timeline.time_zone);
             if self.previous_truncated {
                 ui.small(text(
                     pt,
@@ -653,7 +707,9 @@ impl Inundation {
         match loaded {
             Loaded::Open(Ok(grid)) => {
                 let last = grid.meta.timeline.bounds.len() - 1;
-                self.frame = Some(self.frame.unwrap_or(grid.meta.historical_count).min(last));
+                let frame = self.frame.unwrap_or(grid.meta.historical_count).min(last);
+                self.frame = Some(frame);
+                self.hour_input = timestamp(grid.meta.timeline.bounds[frame].end);
                 self.grid = Some(grid);
             }
             Loaded::Open(Err(error)) => self.finding = Some(error),
@@ -701,16 +757,14 @@ impl Inundation {
     }
 }
 
-fn timestamp(meta: &InundationMetadata, value: chrono::NaiveDateTime) -> String {
-    meta.timeline
-        .time_zone
-        .parse::<chrono_tz::Tz>()
-        .ok()
-        .and_then(|zone| zone.from_local_datetime(&value).single())
-        .map_or_else(
-            || value.to_string(),
-            |time| time.format("%Y-%m-%d %H:%M:%S %:z").to_string(),
-        )
+fn timestamp(value: chrono::NaiveDateTime) -> String {
+    value.format("%Y%m%d-%H").to_string()
+}
+
+fn frame_at_hour(bounds: &[mgb_ops::store::TimeInterval], input: &str) -> Option<usize> {
+    bounds
+        .iter()
+        .position(|bound| timestamp(bound.end) == input)
 }
 
 fn hour_slider(ui: &mut egui::Ui, frame: &mut usize, last: usize, pt: bool) -> egui::Response {
@@ -886,12 +940,21 @@ mod tests {
         let boundary = grid.meta.historical_count;
         assert_eq!(state.frame, Some(boundary));
         assert_eq!(
-            timestamp(&grid.meta, grid.meta.timeline.bounds[boundary].start),
-            "2026-11-21 12:00:00 -03:00"
+            timestamp(grid.meta.timeline.bounds[boundary].start),
+            "20261121-12"
         );
         assert_eq!(
-            timestamp(&grid.meta, grid.meta.timeline.bounds[boundary].end),
-            "2026-11-21 13:00:00 -03:00"
+            timestamp(grid.meta.timeline.bounds[boundary].end),
+            "20261121-13"
+        );
+
+        assert_eq!(
+            frame_at_hour(&grid.meta.timeline.bounds, "20261121-13"),
+            Some(boundary)
+        );
+        assert_eq!(
+            frame_at_hour(&grid.meta.timeline.bounds, "20262111-13"),
+            None
         );
 
         let mut frame = boundary;

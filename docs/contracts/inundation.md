@@ -51,13 +51,15 @@ Wet cells must have `HAND > 0`, valid coverage, and a modeled stage strictly
 above their HAND height. On the RS layout the stage in this comparison is
 `HANDTUDO − channel_depth`. Cells with HAND equal to zero remain excluded at
 every hour. Time coordinates use
-the run's valid times with its operation timezone retained for display. The
+the run's local valid times. The desktop shows the timezone in the bottom strip. The
 product records the input identities and threshold method. Coarser display
 overviews represent wet area as a fraction of each block.
 
 Open **Map → Modeled inundation** in the desktop and choose a scenario from
-the active run. The slider steps through the saved model times and marks
-the forecast boundary. The display reads the mask independently of the source
-rasters. Both NetCDF files are included in a shared bundle when present at export.
+the active run. Use the arrows to step one hour, drag the slider, or enter a local
+valid hour as `YYYYMMDD-HH` and press Enter or **Go**. The controls show the
+selected hour and the forecast boundary. The display reads the mask independently
+of the source rasters. Both NetCDF files are included in a shared bundle when
+present at export.
 When the workspace replaces the active run, it retires its old masks and flood
 sources. The attempt manifest retains the input paths and digests for reprocessing.
