@@ -1,7 +1,10 @@
 use super::{map, text};
 use chrono::TimeZone as _;
 use eframe::egui::{self, Color32};
-use mgb_ops::store::{FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata};
+use mgb_ops::store::{
+    FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
+    digest_file,
+};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{
@@ -33,6 +36,22 @@ impl Source {
             .join("results")
             .join(&self.scenario)
             .join(FLOOD_MASK_FILE)
+    }
+
+    fn verify_provenance(&self, provenance: &InundationProvenance) -> Result<(), String> {
+        if provenance.scenario != self.scenario {
+            return Err(format!(
+                "mask scenario {} does not match {}",
+                provenance.scenario, self.scenario
+            ));
+        }
+        let manifest = self.root.join("manifest.json");
+        let (sha256, _) =
+            digest_file(&manifest).map_err(|error| format!("{}: {error}", manifest.display()))?;
+        if provenance.run_manifest_sha256 != sha256 {
+            return Err("mask was generated for a different run manifest".into());
+        }
+        Ok(())
     }
 }
 
@@ -200,18 +219,19 @@ fn tile_geometry(
 ) -> Result<TileGeometry, String> {
     let (x, y, width, height) = tile.window(meta);
     let factor = tile.level.factor();
-    let cuts = |offset: usize, length: usize, native: usize| {
+    let cuts = |offset: usize, length: usize, native: usize, angular_step: f64| {
         // Densify the texture mesh so Web Mercator scale and the datum shift
         // vary across the tile. Preserve a short final overview cell exactly.
-        let mut edges: Vec<_> = (0..length).step_by(16).collect();
+        let step = (0.125 / (angular_step * factor as f64)).clamp(1., 16.) as usize;
+        let mut edges: Vec<_> = (0..length).step_by(step).collect();
         if (offset + length) * factor > native && edges.last() != Some(&(length - 1)) {
             edges.push(length - 1);
         }
         edges.push(length);
         edges
     };
-    let xs = cuts(x, width, meta.width);
-    let ys = cuts(y, height, meta.height);
+    let xs = cuts(x, width, meta.width, meta.pixel_width);
+    let ys = cuts(y, height, meta.height, meta.pixel_height.abs());
     let mut vertices = Vec::with_capacity(xs.len() * ys.len());
     for row in &ys {
         let lat = meta.origin_y + ((y + row) * factor).min(meta.height) as f64 * meta.pixel_height;
@@ -251,14 +271,9 @@ impl OpenMask {
         let reader = InundationMask::open(&path)
             .map_err(|e| Finding::Invalid(format!("{}: {e}", path.display())))?;
         let meta = reader.metadata().clone();
-        if meta.provenance.scenario != source.scenario {
-            return Err(Finding::Invalid(format!(
-                "{}: mask scenario {} does not match {}",
-                path.display(),
-                meta.provenance.scenario,
-                source.scenario
-            )));
-        }
+        source
+            .verify_provenance(&meta.provenance)
+            .map_err(|e| Finding::Invalid(format!("{}: {e}", path.display())))?;
         let transform = |from, to| {
             SpatialRef::from_epsg(from)
                 .and_then(|from| Transformer::new(&from, &SpatialRef::from_epsg(to)?))
@@ -304,7 +319,7 @@ enum Job {
 type TileResult = (Tile, Result<Option<TileImage>, String>);
 
 enum Loaded {
-    Open(Result<Grid, Finding>),
+    Open(Result<Box<Grid>, Finding>),
     Tiles(Vec<TileResult>),
 }
 
@@ -333,7 +348,7 @@ impl Worker {
                         open = None;
                         Loaded::Open(OpenMask::load(&source).map(|(mask, grid)| {
                             open = Some(mask);
-                            grid
+                            Box::new(grid)
                         }))
                     }
                     Job::Tiles { frame, tiles } => {
@@ -396,7 +411,7 @@ struct CachedTile {
 pub struct Inundation {
     worker: Worker,
     source: Option<Source>,
-    grid: Option<Grid>,
+    grid: Option<Box<Grid>>,
     finding: Option<Finding>,
     frame: Option<usize>,
     cache: HashMap<(usize, Tile), CachedTile>,
@@ -703,7 +718,7 @@ fn hour_slider(ui: &mut egui::Ui, frame: &mut usize, last: usize, pt: bool) -> e
 mod tests {
     use super::*;
     use chrono::{Duration, NaiveDate};
-    use mgb_ops::store::{IntervalAxis, InundationProvenance, TimeInterval};
+    use mgb_ops::store::{IntervalAxis, TimeInterval};
     use std::time::{Duration as Wait, Instant};
     use walkers::{MapMemory, lon_lat};
 
@@ -853,7 +868,7 @@ mod tests {
     fn forecast_starts_at_retained_boundary_and_slider_steps_hourly() {
         let context = egui::Context::default();
         let mut state = Inundation::new(context.clone());
-        state.receive(Loaded::Open(Ok(grid(4326))), &context);
+        state.receive(Loaded::Open(Ok(Box::new(grid(4326)))), &context);
         let grid = state.grid.as_ref().unwrap();
         let boundary = grid.meta.historical_count;
         assert_eq!(state.frame, Some(boundary));
@@ -931,6 +946,27 @@ mod tests {
     }
 
     #[test]
+    fn a_same_named_scenario_requires_the_selected_manifest_digest() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = Source {
+            root: directory.path().into(),
+            scenario: "test".into(),
+        };
+        let manifest = source.root.join("manifest.json");
+        std::fs::write(&manifest, b"first manifest").unwrap();
+        let mut provenance = grid(4326).meta.provenance;
+        provenance.run_manifest_sha256 = digest_file(&manifest).unwrap().0;
+        assert!(source.verify_provenance(&provenance).is_ok());
+        std::fs::write(manifest, b"other manifest").unwrap();
+        assert!(
+            source
+                .verify_provenance(&provenance)
+                .unwrap_err()
+                .contains("different run manifest")
+        );
+    }
+
+    #[test]
     fn frame_source_and_viewport_changes_discard_stale_work() {
         let context = egui::Context::default();
         let mut state = Inundation::new(context.clone());
@@ -957,11 +993,15 @@ mod tests {
         state.finish_view(&context, true);
         assert!(matches!(pending.try_recv().unwrap().1, Job::Close));
         assert!(pending.try_recv().is_err());
-        ready.send((opening, Loaded::Open(Ok(grid(4326))))).unwrap();
+        ready
+            .send((opening, Loaded::Open(Ok(Box::new(grid(4326))))))
+            .unwrap();
         state.finish_view(&context, true);
         assert!(state.grid.is_none());
         let (opening, _) = pending.try_recv().unwrap();
-        ready.send((opening, Loaded::Open(Ok(grid(4618))))).unwrap();
+        ready
+            .send((opening, Loaded::Open(Ok(Box::new(grid(4618))))))
+            .unwrap();
         state.finish_view(&context, true);
         assert_eq!(state.grid.as_ref().map(|grid| grid.meta.epsg), Some(4618));
         let tile = Tile {
