@@ -154,6 +154,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "aho-corasick"
+version = "1.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c982642fa9e8606056828ee9a8505737230110bb1099153c79efe865c59d12ba"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "alloc-no-stdlib"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2217,6 +2226,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "hdf5-metno-sys"
+version = "0.12.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c25498a6b2db388939b973be69d09516ab5f198944dbe8487bfaf37def8c371"
+dependencies = [
+ "libc",
+ "libloading",
+ "parking_lot",
+ "pkg-config",
+ "regex",
+ "serde",
+ "serde_derive",
+ "winreg",
+]
+
+[[package]]
 name = "hdf5-reader"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3130,6 +3155,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "libz-sys"
+version = "1.1.33"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fee3f59f4321dab0c78d828942e7aa09d0bd8ad6e78a501977e6bf3d02938045"
+dependencies = [
+ "cc",
+ "libc",
+ "pkg-config",
+ "vcpkg",
+]
+
+[[package]]
 name = "linebender_resource_handle"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3322,6 +3359,7 @@ dependencies = [
  "krilla",
  "lettre",
  "lyon_tessellation",
+ "netcdf",
  "png 0.18.1",
  "pollster 0.4.0",
  "proc-macro2",
@@ -3513,6 +3551,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "netcdf"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "db1b055d2ad9d2e845876173c99ac9d8874a56413d5579618da22df35abe342c"
+dependencies = [
+ "bitflags 2.13.2",
+ "libc",
+ "netcdf-sys",
+ "semver",
+]
+
+[[package]]
 name = "netcdf-core"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3532,6 +3582,18 @@ dependencies = [
  "ndarray",
  "netcdf-core",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "netcdf-sys"
+version = "0.9.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0e415a9513a707eda0d14294c1dbefb19b87a8ff37511a36e969e71f0aa05f4"
+dependencies = [
+ "hdf5-metno-sys",
+ "libz-sys",
+ "parking_lot",
+ "semver",
 ]
 
 [[package]]
@@ -4607,6 +4669,35 @@ dependencies = [
  "rustix 1.1.6",
  "windows-sys 0.61.2",
 ]
+
+[[package]]
+name = "regex"
+version = "1.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9807af0e638c12e753aa1b4e601791bf2a8f71274023c8bbeec12fc149950857"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-automata",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-automata"
+version = "0.4.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "41d60ef07df457506a0a1a2073112eb4aae5733dbd2813c3da77d1b0fd441158"
+dependencies = [
+ "aho-corasick",
+ "memchr",
+ "regex-syntax",
+]
+
+[[package]]
+name = "regex-syntax"
+version = "0.8.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d902046e6a28a1e4c3cab97258a0ce11e994903f01c2d97a9447a0b3df85f4f6"
 
 [[package]]
 name = "renderdoc-sys"
@@ -7203,6 +7294,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8c3b93199df0ab874cdf0c6a94f0a0dc3423fe41f1cafb62b8bd7b1deb277aef"
 dependencies = [
  "memchr",
+]
+
+[[package]]
+name = "winreg"
+version = "0.56.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d6f32a0ff4a9f6f01231eb2059cc85479330739333e0e58cadf03b6af2cca10"
+dependencies = [
+ "cfg-if",
+ "serde",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

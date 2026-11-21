@@ -46,3 +46,8 @@ pub use self::hydrograph::{
     HydrographAdjustment, HydrographPeak, HydrographPoint, HydrographThreshold, ObservationBias,
     RatingPoint, analyze_model_hydrograph, rating_value, threshold_status, validate_hydrograph,
 };
+
+#[cfg(feature = "inundation-write")]
+mod inundation;
+#[cfg(feature = "inundation-write")]
+pub(crate) use self::inundation::{classify, wet_fraction};

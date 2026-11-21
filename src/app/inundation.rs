@@ -1,0 +1,306 @@
+use super::OperationControl;
+use crate::store::StoreError;
+use serde::Serialize;
+use std::path::PathBuf;
+
+#[derive(Clone, Debug)]
+pub struct InundationProcessRequest {
+    pub run: PathBuf,
+    pub scenario: String,
+    pub hand: PathBuf,
+    pub catchments: PathBuf,
+    pub replace: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InundationProcessStatus {
+    Created,
+    Reused,
+    Replaced,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct InundationProcessReport {
+    pub path: PathBuf,
+    pub scenario: String,
+    pub status: InundationProcessStatus,
+    pub width: usize,
+    pub height: usize,
+    pub historical_count: usize,
+    pub forecast_count: usize,
+}
+
+/// Calculate and retain the explicit, user-supplied raster pair for a completed scenario.
+pub fn process_inundation(
+    request: InundationProcessRequest,
+    control: &OperationControl,
+) -> Result<InundationProcessReport, StoreError> {
+    #[cfg(feature = "inundation-write")]
+    {
+        enabled::process(request, control)
+    }
+    #[cfg(not(feature = "inundation-write"))]
+    {
+        let _ = (request, control);
+        Err(StoreError::Format(
+            "inundation processing requires a build with --features inundation-write and system libnetcdf"
+                .into(),
+        ))
+    }
+}
+
+#[cfg(feature = "inundation-write")]
+mod enabled {
+    use super::{
+        InundationProcessReport, InundationProcessRequest, InundationProcessStatus,
+        OperationControl,
+    };
+    use crate::{
+        analysis::{classify, wet_fraction},
+        store::{
+            FLOOD_MASK_FILE, FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource,
+            INUNDATION_TILE, InundationLevel, InundationMask, InundationMetadata,
+            InundationProvenance, InundationRasters, InundationStage, InundationWriter, StoreError,
+            digest_file, read_flood_source, read_retained_manifest,
+        },
+    };
+    use std::{collections::HashMap, fs, path::Path};
+    use terrio::Window;
+
+    pub(super) fn process(
+        request: InundationProcessRequest,
+        control: &OperationControl,
+    ) -> Result<InundationProcessReport, StoreError> {
+        cancelled(control)?;
+        let run = request.run.canonicalize()?;
+        validate_scenario_id(&request.scenario)?;
+        let manifest_path = run.join("manifest.json");
+        let run_manifest_sha256 = digest(&manifest_path)?;
+        let manifest = read_retained_manifest(&run).map_err(StoreError::Schema)?;
+        let scenario_matches = manifest
+            .scenarios
+            .iter()
+            .filter(|s| s.id == request.scenario);
+        let mut scenario_matches = scenario_matches.peekable();
+        if scenario_matches
+            .next()
+            .is_none_or(|s| s.state != "completed")
+            || scenario_matches.peek().is_some()
+        {
+            return Err(StoreError::InvalidValue(format!(
+                "retained run has no unique completed scenario {}",
+                request.scenario
+            )));
+        }
+        let results = run.join("results");
+        let scenario_dir = results.join(&request.scenario);
+        if scenario_dir.canonicalize()? != scenario_dir {
+            return Err(StoreError::InvalidPath(
+                "scenario results path must be retained in the selected run".into(),
+            ));
+        }
+        let mut stage = InundationStage::lock(&results, &request.scenario)?;
+        let path = scenario_dir.join(FLOOD_MASK_FILE);
+        let source_path = scenario_dir.join(FLOOD_SOURCE_FILE);
+        if !source_path.is_file() {
+            let reason = fs::read_to_string(scenario_dir.join(FLOOD_SOURCE_DIAGNOSTIC))
+                .unwrap_or_else(|_| {
+                    "this run did not retain the required HANDTUDO source".to_owned()
+                });
+            return Err(StoreError::InvalidValue(format!(
+                "inundation unavailable for scenario {}. {}",
+                request.scenario,
+                reason.trim()
+            )));
+        }
+        if source_path.symlink_metadata()?.file_type().is_symlink() {
+            return Err(StoreError::InvalidPath(
+                "the retained flood source must be a regular file".into(),
+            ));
+        }
+        let flood_source_sha256 = digest(&source_path)?;
+        let source = read_flood_source(&source_path)?;
+        let flood_source = &source.provenance.processing["flood_source"];
+        if flood_source["scenario"].as_str() != Some(&request.scenario)
+            || flood_source["depth_datum"].as_str() != Some("model_channel_bed")
+        {
+            return Err(StoreError::Integrity(
+                "flood source provenance does not match the selected scenario".into(),
+            ));
+        }
+        cancelled(control)?;
+        let mut rasters = InundationRasters::open(&request.hand, &request.catchments)?;
+        let (hand_hash, catchment_hash) = rasters.input_hashes();
+        let (hand_sidecars, catchments_sidecars) = rasters.sidecar_hashes();
+        let metadata = InundationMetadata {
+            width: rasters.width,
+            height: rasters.height,
+            epsg: rasters.epsg,
+            origin_x: rasters.transform[0],
+            origin_y: rasters.transform[3],
+            pixel_width: rasters.transform[1],
+            pixel_height: rasters.transform[5],
+            timeline: source.timeline.clone(),
+            historical_count: source.historical_count,
+            provenance: InundationProvenance {
+                run_manifest_sha256,
+                scenario: request.scenario.clone(),
+                hand_sha256: hand_hash.into(),
+                catchments_sha256: catchment_hash.into(),
+                flood_source_sha256,
+                hand_sidecars: hand_sidecars.to_vec(),
+                catchments_sidecars: catchments_sidecars.to_vec(),
+                vertical_datum: "Z0".into(),
+                hand_vertical_shift_m: 0,
+            },
+        };
+        let verify_inputs = |rasters: &InundationRasters| -> Result<(), StoreError> {
+            rasters.verify()?;
+            if digest(&source_path)? != metadata.provenance.flood_source_sha256
+                || digest(&manifest_path)? != metadata.provenance.run_manifest_sha256
+            {
+                return Err(StoreError::Integrity(
+                    "retained run inputs changed during inundation processing".into(),
+                ));
+            }
+            cancelled(control)
+        };
+        let mut report = InundationProcessReport {
+            path,
+            scenario: request.scenario,
+            status: InundationProcessStatus::Created,
+            width: metadata.width,
+            height: metadata.height,
+            historical_count: metadata.historical_count,
+            forecast_count: metadata.timeline.bounds.len() - metadata.historical_count,
+        };
+        let replace = match report.path.symlink_metadata() {
+            Ok(info) if info.is_file() => {
+                let same = InundationMask::open(&report.path).and_then(|mask| {
+                    if mask.metadata() != &metadata {
+                        return Ok(false);
+                    }
+                    mask.validate_payload(|| cancelled(control))?;
+                    Ok(true)
+                });
+                if matches!(same, Ok(true)) {
+                    verify_inputs(&rasters)?;
+                    report.status = InundationProcessStatus::Reused;
+                    return Ok(report);
+                }
+                cancelled(control)?;
+                if !request.replace {
+                    return Err(StoreError::Integrity(format!(
+                        "existing flood mask differs from the selected inputs or is invalid. Use --replace to rebuild {}",
+                        report.path.display()
+                    )));
+                }
+                true
+            }
+            Ok(_) => {
+                return Err(StoreError::InvalidPath(format!(
+                    "flood mask destination must be a regular file: {}",
+                    report.path.display()
+                )));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+        let staged = stage.temporary_file(&results)?;
+        let mut writer = InundationWriter::create(&staged, &metadata)?;
+        write_rasters(&mut rasters, &source, &mut writer, control)?;
+        writer.close()?;
+        let mask = InundationMask::open(&staged)?;
+        if mask.metadata() != &metadata {
+            return Err(StoreError::Integrity(
+                "reopened flood mask metadata differs from the processed inputs".into(),
+            ));
+        }
+        mask.validate_payload(|| cancelled(control))?;
+        drop(mask);
+        verify_inputs(&rasters)?;
+        stage.publish(&staged, &report.path, replace)?;
+        if replace {
+            report.status = InundationProcessStatus::Replaced;
+        }
+        Ok(report)
+    }
+
+    fn write_rasters(
+        rasters: &mut InundationRasters,
+        source: &FloodSource,
+        writer: &mut InundationWriter,
+        control: &OperationControl,
+    ) -> Result<(), StoreError> {
+        let spans = source.mini_ids.len();
+        let minis: HashMap<_, _> = source
+            .mini_ids
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(i, id)| (id, i))
+            .collect();
+        let mut mask = Vec::new();
+        let mut overview = Vec::new();
+        let chunk = INUNDATION_TILE;
+        for y in (0..rasters.height).step_by(chunk) {
+            let h = chunk.min(rasters.height - y);
+            for x in (0..rasters.width).step_by(chunk) {
+                cancelled(control)?;
+                let w = chunk.min(rasters.width - x);
+                let tile = Window::new(x, y, w, h);
+                let cells = rasters.read_cells(tile, &minis)?;
+                mask.resize(w * h, 0);
+                for (time, depth) in source.depth_m.chunks_exact(spans).enumerate() {
+                    cancelled(control)?;
+                    classify(&cells, depth, &source.channel_depth_m, &mut mask);
+                    writer.write(InundationLevel::Full, time, tile, &mask)?;
+                    for level in [InundationLevel::Overview4, InundationLevel::Overview16] {
+                        let factor = level.factor();
+                        let window = Window::new(
+                            x / factor,
+                            y / factor,
+                            w.div_ceil(factor),
+                            h.div_ceil(factor),
+                        );
+                        wet_fraction(&mask, w, h, factor, &mut overview);
+                        writer.write(level, time, window, &overview)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_scenario_id(id: &str) -> Result<(), StoreError> {
+        if id.len() <= 64
+            && id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+        {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidValue("invalid scenario ID".into()))
+        }
+    }
+
+    fn digest(path: &Path) -> Result<String, StoreError> {
+        digest_file(path).map(|(hash, _)| hash).map_err(|e| {
+            StoreError::Integrity(format!("reading {} for provenance: {e}", path.display()))
+        })
+    }
+
+    fn cancelled(control: &OperationControl) -> Result<(), StoreError> {
+        if control.is_cancelled() {
+            return Err(StoreError::InvalidValue(
+                "inundation processing cancelled".into(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[cfg(all(test, feature = "inundation-write"))]
+mod tests;
