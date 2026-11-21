@@ -2015,22 +2015,22 @@ impl Monitoring {
     }
 
     fn sync_inundation(&mut self) {
-        let source = self
+        let run = self
             .run
             .as_deref()
-            .filter(|_| !self.switching_project && !self.loading[0])
-            .and_then(|run| {
-                let active = self.active_source(&run.root);
-                let scenario = &mut self.display.inundation_scenario;
-                if !run.scenarios.contains(scenario) {
-                    scenario.clone_from(run.scenarios.first()?);
-                }
-                Some(inundation::Source {
-                    active,
-                    root: run.root.clone(),
-                    scenario: scenario.clone(),
-                })
-            });
+            .filter(|_| !self.switching_project && !self.loading[0]);
+        let active = run.and_then(|run| self.active_source(&run.root));
+        let scenario = &mut self.display.inundation_scenario;
+        let source = run.and_then(|run| {
+            if !run.scenarios.contains(scenario) {
+                scenario.clone_from(run.scenarios.first()?);
+            }
+            Some(inundation::Source {
+                active,
+                root: run.root.clone(),
+                scenario: scenario.clone(),
+            })
+        });
         self.inundation.select(source);
     }
 

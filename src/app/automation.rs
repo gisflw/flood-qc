@@ -505,7 +505,7 @@ fn execute_step(
     step_dir: &Path,
     control: &OperationControl,
     lock: &File,
-) -> Result<PathBuf, OperationError> {
+) -> Result<(PathBuf, PathBuf), OperationError> {
     let draft = || {
         draft_for_slot(workspace, job, step, local).map_err(|message| {
             OperationError::InvalidRequest {
@@ -517,7 +517,7 @@ fn execute_step(
     match step.kind {
         AutomationStepKind::Prepare => draft()?
             .prepare_controlled(workspace.into(), step_dir.join("prepared"), control)
-            .map(|report| report.prepared),
+            .map(|report| (report.prepared.clone(), report.prepared)),
         AutomationStepKind::RunAll => {
             run_draft_locked(&draft()?, control, workspace, lock).map(execution_root)
         }
@@ -537,8 +537,8 @@ fn execute_step(
     }
 }
 
-fn execution_root(report: ExecutionReport) -> PathBuf {
-    report.run_root
+fn execution_root(report: ExecutionReport) -> (PathBuf, PathBuf) {
+    (report.run_root, report.attempt_manifest)
 }
 
 fn begin_stage(
@@ -809,12 +809,12 @@ impl Runner<'_> {
             let result = execute_step(self.workspace, job, step, local, &step_dir, &control, lock);
             self.control.end();
             let artifact = match result {
-                Ok(artifact) => {
+                Ok((artifact, durable_artifact)) => {
                     finish_stage(
                         status,
                         path,
                         AutomationState::Completed,
-                        vec![artifact.clone()],
+                        vec![durable_artifact],
                         None,
                     )?;
                     artifact
@@ -829,7 +829,7 @@ impl Runner<'_> {
                         .error
                         .clone()
                         .or_else(|| Some("one or more scenarios failed".into()));
-                    return finish_stage(status, path, state, vec![report.run_root], error);
+                    return finish_stage(status, path, state, vec![report.attempt_manifest], error);
                 }
                 Err(error) => {
                     let state = if matches!(error, OperationError::Cancelled { .. })

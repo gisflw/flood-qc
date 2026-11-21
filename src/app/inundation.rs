@@ -212,7 +212,7 @@ mod enabled {
         };
         let mut report = InundationProcessReport {
             path,
-            scenario: request.scenario,
+            scenario: request.scenario.clone(),
             status: InundationProcessStatus::Created,
             width: metadata.width,
             height: metadata.height,
