@@ -9,7 +9,7 @@ use chrono::{Duration, NaiveDate, Timelike};
 use std::{fs, path::Path};
 use terrio::{DataType, Raster, RasterConfig, RasterWriteOptions, raster::RasterData};
 
-const WIDTH: usize = 1031;
+const WIDTH: usize = 2055;
 const HEIGHT: usize = 5;
 
 fn raster(path: &Path, x_min: f64, epsg: Option<u32>, nodata: f64, data: RasterData) {
@@ -166,11 +166,16 @@ fn processes_and_reuses_a_compressed_scenario_mask() {
         mask.read_window(InundationLevel::Full, 2, 0, 0, 1, 1)
             .is_err()
     );
-    let file = netcdf::open(&report.path).unwrap();
-    let mask_variable = file.variable("inundation_mask").unwrap();
+    let file = terrio::multidim::open(report.path.to_str().unwrap()).unwrap();
+    let mask_variable = file.array("inundation_mask").unwrap();
     assert_eq!(
-        mask_variable.chunking().unwrap().unwrap(),
-        vec![1, HEIGHT, 256]
+        mask_variable.info.chunks.as_deref(),
+        Some(&[1, HEIGHT, 256][..])
+    );
+    assert_eq!(
+        mask.read_window(InundationLevel::Full, 1, 1024, 0, 4, 1)
+            .unwrap(),
+        [255; 4],
     );
     let original = digest_file(&report.path).unwrap();
     assert_eq!(
@@ -195,7 +200,7 @@ fn rejects_invalid_rasters_and_unavailable_source_without_publishing() {
         hand(&request.hand, -51. + shift, epsg);
         let result = process_inundation(request.clone(), &control).unwrap_err();
         assert!(result.to_string().contains(error), "{result}");
-        assert!(!scenario.join(FLOOD_MASK_FILE).exists());
+        assert!(scenario.join(FLOOD_MASK_FILE).symlink_metadata().is_err());
     }
     fs::remove_file(scenario.join(FLOOD_SOURCE_FILE)).unwrap();
     fs::write(
@@ -205,7 +210,7 @@ fn rejects_invalid_rasters_and_unavailable_source_without_publishing() {
     .unwrap();
     let result = process_inundation(request, &control).unwrap_err();
     assert!(result.to_string().contains("HANDTUDO.FLB missing"));
-    assert!(!scenario.join(FLOOD_MASK_FILE).exists());
+    assert!(scenario.join(FLOOD_MASK_FILE).symlink_metadata().is_err());
 }
 
 #[test]

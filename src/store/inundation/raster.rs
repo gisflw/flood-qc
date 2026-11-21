@@ -15,11 +15,13 @@ pub(crate) struct InundationRasters {
     pub(crate) transform: [f64; 6],
 }
 
+type SidecarHash = (String, String);
+
 struct InputRaster {
     path: PathBuf,
     raster: LazyRaster,
     pub(crate) sha256: String,
-    pub(crate) sidecars: Vec<(String, String)>,
+    pub(crate) sidecars: Vec<SidecarHash>,
 }
 
 impl InputRaster {
@@ -132,7 +134,7 @@ impl InundationRasters {
         (&self.hand.sha256, &self.catchments.sha256)
     }
 
-    pub(crate) fn sidecar_hashes(&self) -> (&[(String, String)], &[(String, String)]) {
+    pub(crate) fn sidecar_hashes(&self) -> (&[SidecarHash], &[SidecarHash]) {
         (&self.hand.sidecars, &self.catchments.sidecars)
     }
 

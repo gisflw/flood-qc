@@ -220,7 +220,7 @@ mod enabled {
         mask.validate_payload(|| cancelled(control))?;
         drop(mask);
         verify_inputs(&rasters)?;
-        stage.publish(&staged, &report.path, replace)?;
+        stage.publish(&staged, &report.path, replace, || cancelled(control))?;
         if replace {
             report.status = InundationProcessStatus::Replaced;
         }
@@ -251,6 +251,9 @@ mod enabled {
                 let w = chunk.min(rasters.width - x);
                 let tile = Window::new(x, y, w, h);
                 let cells = rasters.read_cells(tile, &minis)?;
+                if cells.iter().all(Option::is_none) {
+                    continue;
+                }
                 mask.resize(w * h, 0);
                 for (time, depth) in source.depth_m.chunks_exact(spans).enumerate() {
                     cancelled(control)?;

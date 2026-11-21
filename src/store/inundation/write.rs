@@ -56,23 +56,41 @@ impl InundationStage {
         staged: &Path,
         destination: &Path,
         replace: bool,
+        check_cancelled: impl FnOnce() -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
+        let parent = destination
+            .parent()
+            .ok_or_else(|| schema("flood mask has no parent"))?;
         File::open(staged)?.sync_all()?;
+        // Keep the original inode until directory synchronization succeeds.
+        let original = staged.with_file_name("previous_flood_mask.nc");
         if replace {
-            #[cfg(windows)]
-            atomicwrites::replace_atomic(staged, destination)?;
-            #[cfg(not(windows))]
-            fs::rename(staged, destination)?;
+            fs::hard_link(destination, &original)?;
+        }
+        check_cancelled()?;
+        if replace {
+            replace_file(staged, destination)?;
         } else {
             fs::hard_link(staged, destination)?;
         }
-        sync_directory(
-            destination
-                .parent()
-                .ok_or_else(|| schema("flood mask has no parent"))?,
-        )
-        .map_err(format_error)
+        if let Err(error) = sync_directory(parent) {
+            if replace {
+                replace_file(&original, destination)?;
+            } else {
+                fs::remove_file(destination)?;
+            }
+            return Err(format_error(error));
+        }
+        Ok(())
     }
+}
+
+fn replace_file(from: &Path, to: &Path) -> Result<(), StoreError> {
+    #[cfg(windows)]
+    atomicwrites::replace_atomic(from, to)?;
+    #[cfg(not(windows))]
+    fs::rename(from, to)?;
+    Ok(())
 }
 
 impl Drop for InundationStage {
@@ -188,6 +206,7 @@ fn build_file(
         mask.set_chunking(&level.chunk(width, height))?;
         mask.set_compression(4, false)?;
         mask.put_attribute("grid_mapping", "crs")?;
+        mask.put_attribute("coordinates", "forecast_reference_time")?;
         mask.put_attribute("valid_range", vec![0_u8, level.maximum()])?;
         if level == InundationLevel::Full {
             mask.put_attribute("long_name", "inundation extent")?;
