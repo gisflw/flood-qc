@@ -7,8 +7,9 @@ use crate::store::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
     ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_tree,
     copy_working_inputs, digest_file, new_run_stage, publish_run_checked, read_basin_forcing,
-    read_operation_manifest, recover_run_cache, run_cache_root, run_stage_id, verify_inputs,
-    write_run_attempt, write_run_journal, write_run_manifest,
+    read_operation_manifest, recover_run_cache, retire_legacy_rainfall, run_cache_root,
+    run_stage_id, sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
+    write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -717,7 +718,12 @@ fn run_attempt(
     *committed = true;
     drop(committed);
     match result {
-        Ok(report) => Ok(report),
+        Ok(report) => {
+            if sync_directory(&run_cache_root(workspace)).is_ok() {
+                let _ = retire_legacy_rainfall(workspace);
+            }
+            Ok(report)
+        }
         Err(mut error) => {
             if cancelled && !matches!(error, OperationError::BatchFailed { .. }) {
                 error = OperationError::Cancelled {

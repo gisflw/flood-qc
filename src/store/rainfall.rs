@@ -284,11 +284,14 @@ pub(crate) fn retire_legacy_rainfall(workspace: &Path) -> Result<(), String> {
         Err(error) => return Err(error.to_string()),
     }
     // Let readers that started before migration finish before retiring their generation.
-    match fs::File::open(legacy.join("access.lock")) {
-        Ok(lock) => lock.lock().map_err(|error| error.to_string())?,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+    let _lock = match fs::File::open(legacy.join("access.lock")) {
+        Ok(lock) => {
+            lock.lock().map_err(|error| error.to_string())?;
+            Some(lock)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(error.to_string()),
-    }
+    };
     fs::remove_dir_all(&legacy).map_err(|error| error.to_string())?;
     super::sync_directory(&workspace.join("data/cache"))
 }
