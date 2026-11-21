@@ -12,7 +12,9 @@ mod references;
 pub use self::references::{
     ReferenceImportReport, import_level_references, upgrade_level_references,
 };
+mod cache_migration;
 mod migration_export;
+pub use self::cache_migration::{CacheMigrationReport, migrate_cache};
 mod operation;
 mod operational_run;
 mod rainfall;
@@ -497,7 +499,7 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     for (name, relative) in [
         ("history", "data/history.sqlite"),
         ("cache", "data/cache"),
-        ("runs", "data/runs"),
+        ("runs", "data/cache/run/active.json"),
     ] {
         let path = workspace.join(relative);
         let (code, message) = match fs::metadata(&path) {

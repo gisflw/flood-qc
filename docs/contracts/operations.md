@@ -2,12 +2,13 @@
 
 ## Choose an execution path
 
-| Action | Start with | Retains after success | Publishes active rainfall |
-| --- | --- | --- | --- |
-| `operation prepare` | Complete operation TOML | Reusable preparation. Stops before engine execution. | No |
-| `operation execute` | Retained preparation | Isolated trial | No |
-| `draft run` or **Run experiment** | Draft with accepted inputs | Isolated trial. Removes the temporary preparation. | No |
-| **Processing → New run → Run All** | Operation TOML with inputs accepted for the chosen local reference | Isolated trial. Removes the temporary preparation. | Yes |
+| Action | Start with | Publishes after success |
+| --- | --- | --- |
+| `operation prepare` | Complete operation TOML | A reusable preparation at the requested path |
+| `operation execute` | Saved preparation | A replacement active run |
+| `draft run` or **Run experiment** | Draft with accepted inputs | A replacement active run |
+| **Processing → New run → Run All** | Operation TOML with inputs accepted for the chosen local reference | A replacement active run |
+| `run replay` | Workspace attempt manifest | A replacement active run |
 
 Use [operation drafts](drafts.md) to edit and preview a recipe, or the
 [desktop run form](desktop.md#controlled-jobs) to run a saved recipe for a selected
@@ -47,28 +48,41 @@ labels by the same number of local hours as the reference. Other selections,
 including asset and correction IDs and any explicit state-capture timestamp,
 retain their saved values and are validated against the chosen reference.
 
-## Active rainfall cache
+## Active run and rainfall cache
 
-One generation per workspace supplies rainfall views. Its reference, timezone,
-coverage and scenario list describe the latest successful operational Run All.
-The pipeline stages its inputs temporarily and removes them after execution.
-Experiment runs and explicit execution of existing preparations leave the active
-display cache alone.
+Each workspace has one active run after its first successful execution. The
+pointer at `data/cache/run/active.json` selects the generation that supplies
+model results, rainfall, and any processed inundation masks. Successful
+execution publishes the whole generation together and reclaims the previous
+generation. An unsuccessful or cancelled execution preserves the active run.
+Concurrent executions use the same workspace lock. A later writable execution
+retries cleanup of abandoned staging and superseded generations.
 
-The active generation is selected atomically by `data/cache/rainfall/active.json`.
-It retains the observed and selected scenario working grids, prepared basin
-forcing, and frozen MINI.gtp. Zero scenarios use the working grid geometry and
-verified zero forecast intervals. Successful replacement retires the previous
-generation. A failed or cancelled update before the switch preserves the active
-generation. A cache publication error after successful model execution leaves
-the completed trial and surfaces a job error.
+The active generation retains its completed manifest, canonical basin and station
+results, selected engine evidence and logs, and optional flood sources and masks.
+It also retains the observed and selected scenario working rainfall grids,
+prepared basin forcing, and frozen MINI.gtp. Zero scenarios use the working grid
+geometry and verified zero forecast intervals. Rainfall and basin summaries read
+the selected generation. A missing cache returns no rainfall. Missing or corrupt
+members produce findings.
 
-`app::rainfall_cache_info` reads the active metadata, and
-`app::query_cached_rainfall` returns an overlay and optional basin summary from
-the same generation. Missing caches return no rainfall. Selected artifacts are
-checked on read and missing or corrupt inputs surface as findings. Read-only
-queries create no artifacts. Trial and preparation discovery do not participate
-in rainfall display.
+The workspace retains only a small attempt manifest for past executions under
+`data/run-manifests/`. This includes the recipe, recorded input identities,
+outcome, and diagnostic excerpts. To keep full results, export a bundle or copy
+the active run to a user-owned location before another successful run.
+Explicitly saved preparations remain reusable. See
+[sharing and replay](saved-data.md#sharing-and-automation).
+
+### Upgrade an existing workspace
+
+Preview the migration with
+`mgb-ops operation migrate-cache --workspace /region --keep-run <run-id>`.
+The preview lists affected paths and estimates reclaimable space. Move any
+manually kept runs or bundles out of `data/runs/` before applying. Repeat the
+command with `--apply` to activate the selected completed run, preserve the
+legacy manifests, and remove the legacy payloads. Legacy rainfall is adopted
+when its forcing agrees with the selected run. A migrated run without matching
+rainfall has no rainfall overlay until a successful execution supplies it.
 
 ## Request
 
@@ -192,37 +206,13 @@ forcing, calibration selection and state capture.
 
 Under the workspace lock, execution verifies a snapshot of the preparation and
 runs a history-only worker before launching isolated scenario workers. It then
-joins workers, cleans up temporary inputs, and commits the trial outcome. Failed
-or cancelled trials keep diagnostics and any validated results. When there are
-no successful scenarios, execution retains logs without a result manifest.
+joins workers, validates all requested scenarios, stages rainfall from the same
+prepared inputs, and cleans up temporary inputs. The final commit publishes the
+results and rainfall together.
 
-```mermaid
-flowchart TD
-    accTitle: Execution from a prepared snapshot to a retained trial
-    accDescr: Execution locks the workspace, verifies a snapshot, and runs isolated scenarios after shared history succeeds. Cancellation stops owned engines before cleanup. Failures retain diagnostics and validated results. A completed operational trial attempts active rainfall publication and remains available if publication fails.
-    lock["Lock workspace"] --> snapshot["Copy and verify prepared snapshot"]
-    snapshot --> history{"Shared history succeeds?"}
-    history -->|Yes| scenarios["Run isolated scenarios and validate outputs"]
-    history -->|No| cleanup["Join workers and clean up temporary inputs"]
-    scenarios --> cleanup
-    history -. Cancellation .-> stop["Stop and reap owned engines"]
-    scenarios -. Cancellation .-> stop
-    stop --> cleanup
-    cleanup --> commit{"All scenarios valid and trial committed successfully?"}
-    commit -->|No| incomplete["Keep diagnostics and any validated scenario results"]
-    commit -->|Yes| completed["Retain completed trial"]
-    completed --> operational{"Operational Run All?"}
-    operational -->|Yes| rainfall{"Active rainfall publication succeeds?"}
-    operational -->|No| success["Report success"]
-    rainfall -->|Published| success
-    rainfall -->|Publication failed| failure["Report job error and keep completed trial"]
-```
-
-A cancellation before the final commit stops and reaps owned engines and
-prevents a successful outcome. If active rainfall publication fails after the
-trial completes, the completed trial remains available and the job reports an
-error. See [controlled actions and cancellation](#controlled-actions-and-cancellation)
-and [active rainfall cache](#active-rainfall-cache).
+A cancellation before the commit stops and reaps owned engines. Failed
+execution, rainfall preparation, or publication leaves the previous active
+generation available. See [control and cancellation](#controlled-actions-and-cancellation).
 
 ## Prepared dependencies and run files
 
@@ -256,41 +246,30 @@ destination on Linux. Failed or cancelled staging is removed; an existing comple
 preparation is preserved.
 
 Execution takes a nonblocking OS lock on `<workspace>/.operation.lock`, held until
-children and workers stop and all file work finishes. Concurrent execution in that
-workspace returns `Busy`; the lock file's existence alone means nothing. Each
-invocation reserves a fresh disposable trial under `data/runs/`. During execution
-it uses a verified preparation snapshot, shared history worker and isolated
-scenario inputs. Finalization removes those temporary working trees.
+children and workers stop and file work finishes. Concurrent execution in that
+workspace returns `Busy`. Each invocation stages a generation privately under
+`data/cache/run/`. Finalization removes the verified preparation snapshot,
+shared history inputs, and isolated worker inputs.
 
-A trial with successful scenarios retains its recipe, preparation identity,
-validated canonical `results/<id>/basin.nc` and `station.nc`, the four original
-engine streams under `scenarios/<id>/Output/`, and debugging logs. Small
-`results/<id>/engine-inputs/` evidence retains the actual generated metadata and
-rainfall digest. These are comparison caches, not reusable preparations or a run
-registry. The root manifest has no retained input references after cleanup.
-Failed scenarios lose incomplete outputs. Zero successes leaves debugging logs
-without a result manifest. No Save run action, retention policy or automatic cache
-cleanup is provided. Existing saved artifacts are neither rewritten nor removed.
+The active generation supplies validated `results/<id>/basin.nc` and
+`station.nc`, the four original streams in `scenarios/<id>/Output/`, and
+diagnostics. Small `results/<id>/engine-inputs/` files record the actual generated
+metadata and rainfall digest. Supported engines provide an optional flood source
+for each successful scenario. See [inundation processing](inundation.md).
 
-Supported engine runs also retain an optional flood source for each successful
-scenario. See [inundation processing](inundation.md) for source requirements and
-mask generation.
-
-`discover_trials(workspace)` lists retained manifest roots; `read_trial(root)`
-validates successful canonical results and required engine streams. Older saved
-runs remain readable. Copying a recipe does not recover missing source bytes.
-Use an independently saved preparation for source-independent re-execution.
+`discover_trials(workspace)` returns the active root when present.
+`read_trial(root)` validates canonical results and required engine streams
+at an active or explicitly saved root. A manifest can replay a recipe using its
+referenced inputs. An independently saved preparation or a bundle with a
+preparation can reproduce an execution after the original sources are removed.
 
 Scenarios run concurrently in isolated directories with direct executable
 invocation, an explicit working directory, and only `MGB_INPUT_DIR`,
 `MGB_OUTPUT_DIR` and `OMP_NUM_THREADS` in the environment. Stdout and stderr go
 directly to separate files. Execution records include command, environment,
 status and elapsed time. Every launched child is waited for and every worker is
-joined. Failed scenarios preserve validated successful siblings and diagnostics.
-Success requires all selected scenarios and required outputs to validate, cleanup
-to finish and the outcome to persist. Failure returns a structured operation
-error; `BatchFailed` carries the partial `ExecutionReport`. Persistence and cleanup
-errors identify their paths and never claim success.
+joined. Failure returns a structured operation error. `BatchFailed` carries
+per-scenario status. Historical diagnostics are available in the attempt manifest.
 
 ## Controlled actions and cancellation
 
@@ -309,12 +288,11 @@ loading the entire file. JSON stdout contains the result, not progress text.
 
 CLI SIGINT requests cancellation. Controlled cancellation checks preparation
 boundaries, stops and reaps owned engines, joins concurrent workers, and finishes
-cleanup under the lock. It returns an error while preserving validated successful
-scenario caches and logs. Cancellation before the final commit marks the batch
-failed with an explicit cancellation reason; cancellation after that commit
-preserves success. Existing reusable preparations and unrelated attempts survive.
-Hard process termination and engine-created descendant processes are outside this
-normal cancellation guarantee; automatic recovery is not provided.
+cleanup under the lock. Cancellation before the final commit records the
+cancellation reason in the attempt manifest and keeps the previous active run.
+Cancellation after the commit preserves success. After hard process termination,
+the next writable execution cleans up abandoned cache stages. Engine-created
+descendant processes are outside the normal cancellation guarantee.
 
 ## Engine and canonical results
 

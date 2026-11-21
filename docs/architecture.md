@@ -165,23 +165,17 @@ Saved preparation and execution follow these rules:
   and the compatible engine to remain available; hashes cannot recover missing bytes.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
-- Each trial has independent successful result caches and a generated JSON manifest
-  for CLI use. App reports success only after every requested scenario and
-  its required outputs validate. Failures preserve diagnostics and successful
-  siblings' outputs without modifying other runs. No official-set publication or
-  latest-run pointer is maintained. Temporary execution snapshots and private inputs
-  are removed after workers stop; independently saved preparations remain reusable.
-- The active rainfall cache is a workspace-scoped product of verified prepared
-  inputs. Its store-owned atomic generation switch is independent of trial
-  retention. App selects when to publish and provides a shared generation to
-  map and basin rainfall queries. See the [operation contract](contracts/operations.md#active-rainfall-cache).
-- Operators may copy the recipe, dependencies, results or cache outputs elsewhere
-  for long-term storage. Generation is normal application behavior; no retention
-  flags, cleanup policy or archive-management workflow is added.
+- Each workspace publishes a single active generation containing results and
+  rainfall from the same validated execution. Inundation products extend that
+  generation. Store owns atomic publication and file retirement. App decides
+  when to commit based on all requested scenarios and required outputs.
+- Superseded and failed attempts leave replay manifests. Operators explicitly
+  export full results or save reusable preparations for long-term retention.
+  See the [operation contract](contracts/operations.md#active-run-and-rainfall-cache).
 
-The [operation contract](contracts/operations.md) defines the implemented prepared
-snapshots, isolated execution and disposable trial caches. App owns cancellation
-and progress; model stops and reaps its owned child processes using an explicit
+The [operation contract](contracts/operations.md) defines prepared snapshots,
+isolated execution and the active cache. App owns cancellation
+and progress. Model stops and reaps its owned child processes using an explicit
 cancellation signal. CLI uses `ctrlc` for portable SIGINT delivery to that shared
 control, rather than asynchronous signal handling inside the engine layer. The saved state is carried
 unchanged; hot-start generation and chaining follow later.

@@ -79,7 +79,9 @@ pub(crate) use self::rainfall::{
 mod inundation;
 pub use self::inundation::{
     FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
+    verify_inundation_run,
 };
+pub(crate) use self::inundation::{INUNDATION_ADOPTION, InundationAdoption, InundationRecipe};
 #[cfg(feature = "inundation-write")]
 pub(crate) use self::inundation::{
     INUNDATION_TILE, InundationRasters, InundationStage, InundationWriter,

@@ -219,7 +219,7 @@ raw data remain intact; removing a draft instruction only deselects it.
 
 `run_draft(&draft, &control)` uses the current accepted values without registering
 instructions. Run prepares and executes; Prepare only retains frozen dependencies
-for later execution. A successful trial recipe can be imported as a new draft,
-whose selected sources must be explicitly accepted again. Trial caches contain
-results and recipes rather than reusable source snapshots. Cancellation, progress,
-partial failure and retention follow the [operation contract](operations.md#controlled-actions-and-cancellation).
+for later execution. A successful run replaces the workspace active run. Import a saved attempt
+manifest as a new draft and explicitly accept its selected sources again.
+Cancellation, progress, and retention follow the
+[operation contract](operations.md#controlled-actions-and-cancellation).

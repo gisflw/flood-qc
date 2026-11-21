@@ -61,8 +61,10 @@ mod enabled {
         store::{
             FLOOD_MASK_FILE, FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource,
             INUNDATION_TILE, InundationLevel, InundationMask, InundationMetadata,
-            InundationProvenance, InundationRasters, InundationStage, InundationWriter, StoreError,
-            digest_file, read_flood_source, read_retained_manifest,
+            InundationProvenance, InundationRasters, InundationRecipe, InundationStage,
+            InundationWriter, StoreError, active_run, digest_file, read_flood_source,
+            read_retained_manifest, read_run_attempt, run_cache_root, verify_inundation_run,
+            write_run_attempt,
         },
     };
     use std::{collections::HashMap, fs, path::Path};
@@ -74,6 +76,24 @@ mod enabled {
     ) -> Result<InundationProcessReport, StoreError> {
         cancelled(control)?;
         let run = request.run.canonicalize()?;
+        let workspace = run.ancestors().nth(4).filter(|workspace| {
+            run.parent()
+                .is_some_and(|parent| parent == run_cache_root(workspace))
+        });
+        let _operation_lock = workspace
+            .map(crate::app::operation::lock_workspace)
+            .transpose()
+            .map_err(|error| StoreError::Integrity(error.to_string()))?;
+        if let Some(workspace) = workspace
+            && active_run(workspace)
+                .map_err(StoreError::Integrity)?
+                .as_deref()
+                != Some(&run)
+        {
+            return Err(StoreError::Integrity(
+                "inundation target is no longer the active run".into(),
+            ));
+        }
         validate_scenario_id(&request.scenario)?;
         let manifest_path = run.join("manifest.json");
         let run_manifest_sha256 = digest(&manifest_path)?;
@@ -155,6 +175,30 @@ mod enabled {
                 hand_vertical_shift_m: 0,
             },
         };
+        let record_recipe = |provenance: &InundationProvenance| -> Result<(), StoreError> {
+            let Some(workspace) = workspace else {
+                return Ok(());
+            };
+            let id = run
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_prefix("generation-"))
+                .ok_or_else(|| StoreError::Integrity("invalid managed run ID".into()))?;
+            let archive = workspace
+                .join("data/run-manifests")
+                .join(format!("{id}.json"));
+            let mut attempt = read_run_attempt(&archive).map_err(StoreError::Integrity)?;
+            let recipe = InundationRecipe {
+                hand: request.hand.canonicalize()?,
+                catchments: request.catchments.canonicalize()?,
+                provenance: provenance.clone(),
+            };
+            if attempt.inundation.get(&request.scenario) != Some(&recipe) {
+                attempt.inundation.insert(request.scenario.clone(), recipe);
+                write_run_attempt(workspace, &attempt).map_err(StoreError::Integrity)?;
+            }
+            Ok(())
+        };
         let verify_inputs = |rasters: &InundationRasters| -> Result<(), StoreError> {
             rasters.verify()?;
             if digest(&source_path)? != metadata.provenance.flood_source_sha256
@@ -178,14 +222,23 @@ mod enabled {
         let replace = match report.path.symlink_metadata() {
             Ok(info) if info.is_file() => {
                 let same = InundationMask::open(&report.path).and_then(|mask| {
-                    if mask.metadata() != &metadata {
-                        return Ok(false);
+                    let old = mask.metadata();
+                    let mut candidate = metadata.clone();
+                    candidate
+                        .provenance
+                        .run_manifest_sha256
+                        .clone_from(&old.provenance.run_manifest_sha256);
+                    if old != &candidate
+                        || verify_inundation_run(&run, &request.scenario, &old.provenance).is_err()
+                    {
+                        return Ok(None);
                     }
                     mask.validate_payload(&report.path, || cancelled(control))?;
-                    Ok(true)
+                    Ok(Some(old.provenance.clone()))
                 });
-                if matches!(same, Ok(true)) {
+                if let Ok(Some(provenance)) = same {
                     verify_inputs(&rasters)?;
+                    record_recipe(&provenance)?;
                     report.status = InundationProcessStatus::Reused;
                     return Ok(report);
                 }
@@ -221,6 +274,12 @@ mod enabled {
         drop(mask);
         verify_inputs(&rasters)?;
         stage.publish(&staged, &report.path, replace, || cancelled(control))?;
+        record_recipe(&metadata.provenance).map_err(|error| {
+            StoreError::Integrity(format!(
+                "mask published at {} but its replay metadata could not be saved: {error}",
+                report.path.display()
+            ))
+        })?;
         if replace {
             report.status = InundationProcessStatus::Replaced;
         }

@@ -121,7 +121,7 @@ rainfall preparation establish the list. Do not require every discovered input,
 state, or run-specific dates/horizons.
 
 Only report metadata presence of `data/history.sqlite`, `data/cache`, and
-`data/runs`. Absence or inaccessible metadata is informational. Do not open
+`data/cache/run/active.json`. Absence or inaccessible metadata is informational. Do not open
 SQLite or inspect `current_run.sqlite` or sidecars.
 
 Always report unchecked geometry/input contents, forcing, saved state, runtime

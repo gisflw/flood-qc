@@ -3,7 +3,7 @@
 MGB Ops inspects regional workspaces, prepares forcing from saved observations
 and forecasts, and runs the external MGB numerical engine in isolation. The CLI
 and optional native desktop interface use the shared Rust library for operation
-drafts, previews, and analysis of retained runs.
+drafts, previews, and analysis of the active run and explicitly saved runs.
 
 ## Development
 
@@ -38,7 +38,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Prepare and execute a saved recipe | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#choose-an-execution-path) |
 | Run an operation and update the rainfall display | Desktop **Processing → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
 | Edit, preview, or run an experiment | `draft` commands or **Draft → Run experiment** | [Draft workflow](docs/contracts/drafts.md#editing-source-acceptance-and-previews) |
-| Monitor rainfall or compare retained runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
+| Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
 | Generate and view an inundation mask | `inundation process`, then desktop **Map → Inundation** | [Inundation inputs and processing](docs/contracts/inundation.md) |
 | Review observations, export a bulletin, share runs, or schedule a job | CLI or desktop workflows | [Saved-data workflows](docs/contracts/saved-data.md) |
 
@@ -82,9 +82,11 @@ cargo run -- operation prepare --workspace "$workspace" --request operation.toml
 cargo run -- operation execute --workspace "$workspace" --prepared prepared --json
 ```
 
-Execution creates an isolated trial with logs and validated scenario results.
+Success replaces the workspace active run, including rainfall and scenario
+results. Past attempts keep a replay manifest. Export a bundle before replacement
+to keep full results.
 [Controlled cancellation](docs/contracts/operations.md#controlled-actions-and-cancellation)
-covers SIGINT and retained outputs.
+covers SIGINT and the commit boundary.
 
 ### Run an experiment
 

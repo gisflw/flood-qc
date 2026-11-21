@@ -1,7 +1,7 @@
 use super::{IntervalAxis, StoreError, TimeInterval};
 use chrono::{Offset, Utc};
 use serde::{Deserialize, Serialize};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use terrio::{
     DataType,
     multidim::{Array, Dataset},
@@ -89,6 +89,60 @@ pub struct InundationProvenance {
     pub catchments_sidecars: Vec<(String, String)>,
     pub vertical_datum: String,
     pub hand_vertical_shift_m: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InundationRecipe {
+    pub hand: PathBuf,
+    pub catchments: PathBuf,
+    pub provenance: InundationProvenance,
+}
+
+pub(crate) const INUNDATION_ADOPTION: &str = "inundation-adoption.json";
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InundationAdoption {
+    pub active_manifest_sha256: String,
+    pub donor: InundationProvenance,
+}
+
+/// An adopted product keeps its original provenance and is bound to the
+/// authoritative run manifest by the verified migration record.
+pub fn verify_inundation_run(
+    run: &Path,
+    scenario: &str,
+    provenance: &InundationProvenance,
+) -> Result<(), String> {
+    if provenance.scenario != scenario {
+        return Err(format!(
+            "mask scenario {} does not match {scenario}",
+            provenance.scenario
+        ));
+    }
+    let manifest_sha256 = super::digest_file(&run.join("manifest.json"))?.0;
+    if provenance.run_manifest_sha256 == manifest_sha256 {
+        return Ok(());
+    }
+    if scenario.is_empty()
+        || !scenario
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid inundation scenario ID".into());
+    }
+    let record = run.join("results").join(scenario).join(INUNDATION_ADOPTION);
+    let association = std::fs::symlink_metadata(&record)
+        .ok()
+        .filter(|meta| meta.is_file() && meta.len() <= 65_536)
+        .and_then(|_| super::read_draft::<InundationAdoption>(&record).ok());
+    if association.is_some_and(|record| {
+        record.active_manifest_sha256 == manifest_sha256 && record.donor == *provenance
+    }) {
+        return Ok(());
+    }
+    Err("mask was generated for a different run manifest".into())
 }
 
 impl InundationProvenance {

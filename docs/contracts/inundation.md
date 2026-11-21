@@ -26,12 +26,13 @@ build with `cargo build --locked --release --features inundation-write`.
 
 ```sh
 mgb-ops inundation process \
-  --run /region/data/runs/<run-id> --scenario <scenario-id> \
+  --run /region/data/cache/run/<generation> --scenario <scenario-id> \
   --hand /region/data/source/HAND_Flood.tif \
   --catchments /region/data/source/catchments.tif
 ```
 
-The chosen scenario must be complete and have `results/<scenario>/flood_source.nc`.
+Use the `run_root` returned by execution or the active generation selected in
+`data/cache/run/active.json`. The chosen scenario must be complete and have `results/<scenario>/flood_source.nc`.
 Supported new runs capture this compact source from the history-only and
 scenario engine streams. It retains the time and MINI axes and the channel
 depths supplied to that run. Existing runs without the source remain available
@@ -54,7 +55,9 @@ the run's valid times with its operation timezone retained for display. The
 product records the input identities and threshold method. Coarser display
 overviews represent wet area as a fraction of each block.
 
-In the desktop select the run in **Files**, then open **Map → Inundation** and
-choose the scenario. The slider steps through the saved model times and marks
+Open **Map → Modeled inundation** in the desktop and choose a scenario from
+the active run. The slider steps through the saved model times and marks
 the forecast boundary. The display reads the mask independently of the source
 rasters. Both NetCDF files are included in a shared bundle when present at export.
+When the workspace replaces the active run, it retires its old masks and flood
+sources. The attempt manifest retains the input paths and digests for reprocessing.

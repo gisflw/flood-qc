@@ -1,9 +1,11 @@
 use super::{map, text};
 use chrono::TimeZone as _;
 use eframe::egui::{self, Color32};
+#[cfg(test)]
+use mgb_ops::store::digest_file;
 use mgb_ops::store::{
     FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
-    digest_file,
+    verify_inundation_run,
 };
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
@@ -40,19 +42,7 @@ impl Source {
     }
 
     fn verify_provenance(&self, provenance: &InundationProvenance) -> Result<(), String> {
-        if provenance.scenario != self.scenario {
-            return Err(format!(
-                "mask scenario {} does not match {}",
-                provenance.scenario, self.scenario
-            ));
-        }
-        let manifest = self.root.join("manifest.json");
-        let (sha256, _) =
-            digest_file(&manifest).map_err(|error| format!("{}: {error}", manifest.display()))?;
-        if provenance.run_manifest_sha256 != sha256 {
-            return Err("mask was generated for a different run manifest".into());
-        }
-        Ok(())
+        verify_inundation_run(&self.root, &self.scenario, provenance)
     }
 }
 

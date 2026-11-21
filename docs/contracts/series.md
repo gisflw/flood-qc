@@ -82,14 +82,15 @@ A model rainfall request has this shape:
   },
   "selections": [{
     "kind": "model",
-    "root": "/regional/workspace/data/runs/TRIAL",
+    "root": "/regional/workspace/data/cache/run/<generation>",
     "scenario_id": "zero",
     "variable": "rain"
   }]
 }
 ```
 
-Paths resolve from the invocation directory, including paths inside this query
+Use the execution report's `run_root` or an explicitly saved bundle root for
+model selections. Paths resolve from the invocation directory, including paths inside this query
 request. The request file's location does not select a workspace. JSON mode emits
 `{ok:true,result:...}` or `{ok:false,error:...}` on stdout. A successful query can
 contain per-selection findings; export rejects findings rather than silently
