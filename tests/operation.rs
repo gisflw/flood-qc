@@ -174,6 +174,119 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
 }
 
 #[test]
+fn optional_flood_source_retains_exact_depth_and_reports_invalid_scenarios() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let path = dir.path().canonicalize().unwrap();
+    fixture(&path);
+
+    let cell = [
+        (8, "CatID", "1"),
+        (8, "Mini", "1"),
+        (15, "Xcen", "0.00"),
+        (15, "Ycen", "0.00"),
+        (8, "Sub", "1"),
+        (15, "Area_(km2)", "1.00"),
+        (15, "AreaM_(km2)", "1.00"),
+        (15, "Ltr_(km)", "1.00"),
+        (15, "Str_(m/km)", "1.00"),
+        (15, "Lrl_(km)", "1.00"),
+        (15, "Srl_(m/km)", "1.00"),
+        (8, "MiniJus", "-1"),
+        (8, "Ordem", "1"),
+        (5, "Hdr", "1"),
+        (10, "Width", "2.00"),
+        (10, "Depth", "8.00"),
+        (10, "NMAN", "0.04"),
+        (10, "BLC_01", "100.00"),
+    ];
+    let header: String = cell
+        .iter()
+        .map(|(width, name, _)| format!("{name:>width$}"))
+        .collect();
+    let row: String = cell
+        .iter()
+        .map(|(width, _, value)| format!("{value:>width$}"))
+        .collect();
+    fs::write(path.join("Input/Cell.hig"), format!("{header}\n{row}\n")).unwrap();
+    fs::write(
+        path.join("Input/COTA_AREA.FLP"),
+        "Minibacia Z0(m) Zfp(m) Areafp(km2)\n1 10 11 1\n",
+    )
+    .unwrap();
+    fs::write(
+        path.join("Input/control.txt"),
+        "hand\nhand-bad:other\nhand-missing:third\nhand-length:fourth\n",
+    )
+    .unwrap();
+    let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
+        workspace: path.clone(),
+        invocation_dir: path.clone(),
+        request_file: "request.toml".into(),
+        output: "prepared".into(),
+    })
+    .unwrap();
+    let trial = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
+        workspace: path.clone(),
+        invocation_dir: path.clone(),
+        prepared: prepared.prepared.clone(),
+    })
+    .unwrap();
+
+    let source = trial.run_root.join("results/zero/flood_source.nc");
+    let dataset = terrio::multidim::open(source.to_str().unwrap()).unwrap();
+    let depth = dataset.array("depth").unwrap();
+    assert_eq!(depth.info.data_type, terrio::DataType::F32);
+    assert_eq!(
+        depth.read().unwrap().bytes,
+        [1.5_f32, 2.5, 3.5]
+            .into_iter()
+            .flat_map(f32::to_le_bytes)
+            .collect::<Vec<_>>()
+    );
+    let channel = dataset.array("channel_depth").unwrap();
+    assert_eq!(channel.read().unwrap().bytes, 8.0_f32.to_le_bytes());
+    assert_eq!(dataset.root.attributes["historical_count"], 2);
+    let canonical =
+        mgb_ops::store::read_result_series(&trial.run_root.join("results/zero/basin.nc")).unwrap();
+    assert_eq!(canonical.raw_level_cm, [350, 450, 550]);
+    assert!(trial.scenarios[0].results.contains(&source));
+    assert!(
+        mgb_ops::read_trial(&trial.run_root).unwrap().scenarios[0]
+            .results
+            .contains(&source)
+    );
+    assert!(
+        !trial
+            .run_root
+            .join("scenarios/zero/Output/HANDTUDO.MGB")
+            .exists()
+    );
+    assert!(!trial.run_root.join("scenarios/.history/Output").exists());
+    for (id, issue) in [
+        ("other", "historical suffix differs"),
+        ("third", "HANDTUDO.MGB"),
+        ("fourth", "incorrect stream length"),
+    ] {
+        let results = trial.run_root.join("results").join(id);
+        assert!(results.join("basin.nc").is_file());
+        assert!(!results.join("flood_source.nc").exists());
+        assert!(
+            fs::read_to_string(results.join("flood_source_unavailable.txt"))
+                .unwrap()
+                .contains(issue)
+        );
+    }
+    let bundle = path.join("bundle");
+    mgb_ops::export_run(&trial.run_root, Some(&prepared.prepared), &bundle).unwrap();
+    assert_eq!(
+        fs::read(bundle.join("results/zero/flood_source.nc")).unwrap(),
+        fs::read(source).unwrap()
+    );
+}
+
+#[test]
 fn run_bundle_round_trips_and_regenerates_without_original_sources() {
     let _guard = TEST_LOCK.lock().unwrap();
     fs::create_dir_all("runs").unwrap();
