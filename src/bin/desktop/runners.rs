@@ -105,8 +105,7 @@ pub enum Outcome {
     Accepted(Box<Draft>, Vec<String>),
     Saved(Box<Draft>),
     Config(WorkspaceConfig),
-    Completed(PathBuf),
-    OperationalCompleted(PathBuf),
+    Completed,
     Operation(Box<OperationalRun>, Option<Vec<String>>),
     OperationalReadiness(Vec<String>),
     Choices(Choices),
@@ -409,11 +408,11 @@ impl Runners {
                                     &draft.ok_or("No draft")?,
                                     &operation_control,
                                 )
-                                .map(|r| Outcome::Completed(r.run_root)),
+                                .map(|_| Outcome::Completed),
                                 Action::RunOperation => operation
                                     .ok_or("Select an operation recipe")?
                                     .run_all(&operation_control)
-                                    .map(|r| Outcome::OperationalCompleted(r.run_root)),
+                                    .map(|_| Outcome::Completed),
                                 _ => unreachable!(),
                             }
                             .map_err(|e| e.to_string())
@@ -1730,7 +1729,7 @@ mod worker_tests {
         wait(&mut runner);
         assert!(runner.status.starts_with("Completed"), "{}", runner.status);
         runner.start(Action::RunAll, &ctx);
-        let completed = matches!(wait(&mut runner), Some(Outcome::Completed(_)));
+        let completed = matches!(wait(&mut runner), Some(Outcome::Completed));
         assert!(completed, "{}", runner.status);
     }
 }

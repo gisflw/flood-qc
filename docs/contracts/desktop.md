@@ -32,8 +32,8 @@ remain independent of runner work.
 | --- | --- |
 | Open a workspace or import saved data | **Project → Open TOML** or **Import data** |
 | Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
-| Step through modeled inundation | Select a run in **Files**, then use **Map → Inundation** |
-| Inspect location data or a retained run | **View → Charts**, **Data**, or **Files** |
+| Step through modeled inundation | Use **Map → Inundation** |
+| Inspect location data or a run | **View → Charts**, **Data**, or **Files** |
 | Review observation availability and QC | **View → Observation review** |
 | Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
 | Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |
@@ -51,9 +51,19 @@ See [saved-data workflows](saved-data.md) for request formats and outputs and
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
 `data/history.sqlite`, `data/forecasts.sqlite`, the [active rainfall
-cache](operations.md#active-rainfall-cache) and retained run manifests. Run state is displayed, including diagnostics and
-successful scenarios from partially failed attempts. Missing/corrupt scenario
-outputs produce findings rather than hiding usable siblings.
+cache](operations.md#active-rainfall-cache), and the workspace's active run.
+Charts, Files and Map open the active generation automatically. While viewing
+the active run, a newly published generation updates all three views and clears
+the previous scenario, inundation frame, and tiles. Files shows run status and diagnostics, including successful
+scenarios from partially failed attempts. Missing or corrupt scenario outputs
+produce findings and available siblings remain usable.
+
+Use **Files → Open comparison run** to open a retained run or exported bundle.
+The Files selector keeps explicitly opened runs available until the workspace
+closes. Choose **Active run** to return to the managed generation.
+**Share runs → Import bundle** copies a bundle to a new folder at the selected
+location outside managed storage. Import leaves the active run and current view
+as they were.
 
 | Interaction | Effect |
 | --- | --- |
@@ -84,14 +94,15 @@ Use **Apply** to commit a period edit. A successful **Processing → New run →
 the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
 the desktop is idle.
 
-**Map → Inundation** opens the selected retained run's scenario mask. Choose the
+**Map → Inundation** opens the displayed run's scenario mask. Choose the
 scenario and step through model hours with the slider or arrow keys while it has
 focus. The control starts at the first forecast hour and displays the model's
 local time. Double and Swipe use the same inundation frame on both sides. Use
-Refresh/F5 after generating a mask for an open run. See
+Refresh/F5 after generating a mask for an open run. Refresh resets the scenario
+and inundation frame. See
 [inundation processing](inundation.md) for the command and regional inputs.
 
-Choose the retained run in Files and its overlays in Charts. Chart timestamps use
+Choose model scenario overlays in Charts. Chart timestamps use
 the run or project observation timezone. Without a run, the initial chart window
 uses the current project-local hour and the preceding week. Chart loading runs independently of map and layer reads. Charts
 reports loading, data availability, and errors for the requested pair. If a
@@ -154,7 +165,7 @@ center and zoom of two side-by-side maps. Swipe compares the overlays at the sam
 scale and location using a draggable divider. Focus the divider and use the arrow
 keys to move it. Both comparison modes show left and right scenario and period
 controls in Rainfall. The views share the basemap, layers, and selected feature.
-The one-line bottom stripe shows map hover coordinates and rainfall, along with the selected retained run's reference time and timezone,
+The one-line bottom stripe shows map hover coordinates and rainfall, along with the displayed run's reference time and timezone,
 observed and forecast horizons, and available scenarios. The summary comes from
 the loaded run and its frozen recipe. Day horizons appear only when the saved
 hourly boundaries convert losslessly. Available scenarios have successful,
@@ -163,7 +174,7 @@ readable basin results. Unavailable fields in a loaded run show a dash.
 The resizable right pane defaults to Map. Its permanent Map tab contains Layers
 and Rainfall. Charts, Data, and Files are also available. Data
 offers location search, feature actions and the displayed series table. Files
-contains the retained run selector, provenance, assets and findings. Use the
+contains the run selector, provenance, assets and findings. Use the
 ribbon to open New run, experiment forms and Jobs in the same pane. Closing a form
 tab preserves its inputs. Jobs opens from the View ribbon.
 

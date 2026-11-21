@@ -29,6 +29,7 @@ const BATCH_SIZE: usize = 4;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Source {
+    pub active: Option<super::data::ActiveRun>,
     pub root: PathBuf,
     pub scenario: String,
 }
@@ -261,6 +262,16 @@ struct OpenMask {
 
 impl OpenMask {
     fn load(source: &Source) -> Result<(Self, Grid), Finding> {
+        if let Some(active) = &source.active {
+            active
+                .read(|| Ok(Self::open(source)))
+                .map_err(Finding::Invalid)?
+        } else {
+            Self::open(source)
+        }
+    }
+
+    fn open(source: &Source) -> Result<(Self, Grid), Finding> {
         let path = source.path();
         if matches!(path.try_exists(), Ok(false)) {
             return Err(Finding::Missing);
@@ -922,6 +933,7 @@ mod tests {
         let context = egui::Context::default();
         let mut state = Inundation::new(context.clone());
         let source = Source {
+            active: None,
             root: directory.path().into(),
             scenario: "old".into(),
         };
@@ -953,6 +965,7 @@ mod tests {
     fn a_same_named_scenario_requires_the_selected_manifest_digest() {
         let directory = tempfile::tempdir().unwrap();
         let source = Source {
+            active: None,
             root: directory.path().into(),
             scenario: "test".into(),
         };
@@ -983,6 +996,7 @@ mod tests {
             in_flight: false,
         };
         let source = Source {
+            active: None,
             root: PathBuf::from("run-a"),
             scenario: "test".into(),
         };
@@ -992,6 +1006,7 @@ mod tests {
         assert!(closing);
         let (opening, _) = pending.try_recv().unwrap();
         state.select(Some(Source {
+            active: None,
             root: PathBuf::from("run-b"),
             ..source
         }));

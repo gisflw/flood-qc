@@ -43,7 +43,7 @@ pub enum Task {
     Availability(ObservationReviewRequest),
     Spatial(ObservationReviewRequest, Option<String>, IdwSettings),
     Export(PathBuf, Option<PathBuf>, PathBuf),
-    Import(PathBuf),
+    Import(PathBuf, PathBuf),
     Regenerate(PathBuf, PathBuf),
     Analyze(PathBuf, Option<PathBuf>),
     Report(BulletinRequest, bool),
@@ -72,7 +72,6 @@ pub enum Output {
     Forecast(ForecastPreview),
     Availability(ObservationReviewReport),
     Spatial(SpatialObservationQcReport),
-    Run(PathBuf),
     Analysis(HydrographReport),
     Bulletin(BulletinPreview),
     JobConfiguration(String),
@@ -158,20 +157,22 @@ impl Task {
                     .display()
                     .to_string()
             }
-            Self::Import(bundle) => {
-                return mgb_ops::app::import_run(workspace, &resolve(&bundle))
-                    .map(|report| Output::Run(report.root));
+            Self::Import(bundle, destination) => {
+                mgb_ops::app::import_run_to(workspace, &resolve(&bundle), &resolve(&destination))?
+                    .root
+                    .display()
+                    .to_string()
             }
-            Self::Regenerate(bundle, engine) => {
-                return mgb_ops::app::regenerate_run(
-                    workspace,
-                    &resolve(&bundle),
-                    &resolve(&engine),
-                    control,
-                )
-                .map(|report| Output::Run(report.run_root))
-                .map_err(|e| e.to_string());
-            }
+            Self::Regenerate(bundle, engine) => mgb_ops::app::regenerate_run(
+                workspace,
+                &resolve(&bundle),
+                &resolve(&engine),
+                control,
+            )
+            .map_err(|e| e.to_string())?
+            .run_root
+            .display()
+            .to_string(),
             Self::Analyze(path, output) => {
                 let request = json(&resolve(&path))?;
                 let report = mgb_ops::app::analyze_hydrograph(&request)?;
@@ -276,6 +277,8 @@ pub struct Forms {
     variable: Option<ReviewVariable>,
     monthly: bool,
     bundle: PathBuf,
+    import_parent: PathBuf,
+    import_name: String,
     export: PathBuf,
     preparation: PathBuf,
     engine: PathBuf,
@@ -338,16 +341,13 @@ fn optional_path(
 }
 
 impl Forms {
-    pub fn receive(&mut self, response: Output, context: &egui::Context) -> Option<PathBuf> {
+    pub fn receive(&mut self, response: Output, context: &egui::Context) {
         match response {
-            Output::Run(root) => Some(root),
             Output::Notice(text) => {
                 self.notice = text;
-                None
             }
             Output::Analysis(report) => {
                 self.analysis = Some(report);
-                None
             }
             Output::Bulletin(report) => {
                 match report
@@ -372,20 +372,16 @@ impl Forms {
                     }
                 }
                 self.bulletin = Some(report);
-                None
             }
             Output::Jobs(jobs) => {
                 self.jobs = jobs;
-                None
             }
             Output::JobConfiguration(text) => {
                 self.job_text = text;
-                None
             }
             preview => {
                 self.preview_step = 0;
                 self.preview = Some(preview);
-                None
             }
         }
     }
@@ -966,11 +962,40 @@ impl Forms {
             true,
             pt,
         );
+        path_field(
+            ui,
+            text(
+                pt,
+                "Import location (outside managed storage)",
+                "Local de importação (fora do armazenamento gerenciado)",
+            ),
+            &mut self.import_parent,
+            true,
+            pt,
+        );
+        ui.horizontal(|ui| {
+            let label = ui.label(text(pt, "New folder name", "Nome da nova pasta"));
+            ui.text_edit_singleline(&mut self.import_name)
+                .labelled_by(label.id);
+        });
+        let name = Path::new(self.import_name.trim());
+        let named_folder = matches!(
+            (name.components().next(), name.components().nth(1)),
+            (Some(std::path::Component::Normal(_)), None)
+        );
         if ui
-            .button(text(pt, "Import bundle", "Importar pacote"))
+            .add_enabled(
+                !self.bundle.as_os_str().is_empty()
+                    && self.import_parent.is_absolute()
+                    && named_folder,
+                egui::Button::new(text(pt, "Import bundle", "Importar pacote")),
+            )
             .clicked()
         {
-            return Some(Task::Import(self.bundle.clone()));
+            return Some(Task::Import(
+                self.bundle.clone(),
+                self.import_parent.join(name),
+            ));
         }
         path_field(
             ui,

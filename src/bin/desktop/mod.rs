@@ -11,15 +11,19 @@ mod workflows;
 use self::layout::{Form, SideTab};
 
 use self::data::{
-    CHART_SLOT, ChartRequest, Job, Loaded, Project, RainSide, Run, SLOTS, UPSTREAM_SLOT, View,
-    ViewRequest, Worker,
+    ActiveRun, CHART_SLOT, ChartRequest, Job, Loaded, Project, RUN_SLOT, RainSide, Run, SLOTS,
+    UPSTREAM_SLOT, View, ViewRequest, Worker,
 };
 use eframe::egui::{self, Color32};
 use mgb_ops::analysis::HourlyWindow;
 use mgb_ops::app::{Location, RainfallPeriod, SeriesQuery, SeriesSelection};
 use mgb_ops::store::RainfallCacheInfo;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use walkers::{HttpTiles, MapMemory, lon_lat};
 
 const APP_ID: &str = "MGB Ops · Monitoring";
@@ -193,7 +197,6 @@ struct Display {
     local: Vec<map::LocalDisplay>,
     selection: Option<Location>,
     comparison: Option<ComparisonFields>,
-    run: Option<PathBuf>,
     rainfall_scenario: String,
     inundation_scenario: String,
     overlays: Vec<String>,
@@ -228,7 +231,6 @@ impl Default for Display {
             local: vec![],
             selection: None,
             comparison: None,
-            run: None,
             rainfall_scenario: String::new(),
             inundation_scenario: String::new(),
             overlays: vec![],
@@ -394,6 +396,10 @@ struct Monitoring {
     display: Display,
     project: Option<Arc<Project>>,
     run: Option<Arc<Run>>,
+    active_run: Result<Option<PathBuf>, String>,
+    comparison_runs: Vec<PathBuf>,
+    run_target: Option<PathBuf>,
+    run_check: Instant,
     rainfall: [RainfallView; 2],
     rainfall_info: Result<Option<RainfallCacheInfo>, String>,
     inundation: inundation::Inundation,
@@ -455,6 +461,10 @@ impl Monitoring {
             display,
             project: None,
             run: None,
+            active_run: Ok(None),
+            comparison_runs: Vec::new(),
+            run_target: None,
+            run_check: Instant::now(),
             rainfall: Default::default(),
             rainfall_info: Ok(None),
             inundation: inundation::Inundation::new(cc.egui_ctx.clone()),
@@ -520,7 +530,7 @@ impl Monitoring {
             return;
         }
         if slot == 0 {
-            self.inundation.refresh();
+            self.inundation.select(None);
             self.invalidate_chart();
             for dependent in 1..4 {
                 self.worker.invalidate(dependent);
@@ -589,6 +599,57 @@ impl Monitoring {
             self.depart(Departure::Project(config, workspace));
         }
     }
+    fn check_active_run(&mut self, refresh: bool) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        self.run_check = Instant::now() + Duration::from_secs(2);
+        let active = mgb_ops::app::discover_trials(&project.workspace)
+            .map(|roots| roots.into_iter().next())
+            .map_err(|error| error.to_string());
+        let changed = self.active_run != active;
+        let following_active =
+            self.run_target.as_ref() == self.active_run.as_ref().ok().and_then(Option::as_ref);
+        self.active_run = active;
+        if changed && following_active {
+            self.load_run(self.active_run.as_ref().ok().cloned().flatten());
+        } else if refresh {
+            self.load_run(self.run_target.clone());
+        }
+        if changed && self.check_rainfall_cache() {
+            self.request_view();
+        }
+    }
+
+    fn load_run(&mut self, root: Option<PathBuf>) {
+        self.invalidate_chart();
+        self.worker.invalidate(RUN_SLOT);
+        self.loading[RUN_SLOT] = false;
+        self.charts.clear();
+        self.chart_message.clear();
+        self.chart_retained = false;
+        self.display.overlays.clear();
+        self.display.inundation_scenario.clear();
+        self.inundation.select(None);
+        self.run = None;
+        self.run_target = root.clone();
+        if let Some(root) = root {
+            let active = self.active_source(&root);
+            self.submit(Job::Run(root, active));
+        } else {
+            self.request_chart();
+        }
+    }
+
+    fn active_source(&self, root: &std::path::Path) -> Option<ActiveRun> {
+        let project = self.project.as_ref()?;
+        let active = self.active_run.as_ref().ok()?.as_ref()?;
+        (root == active).then(|| ActiveRun {
+            workspace: project.workspace.clone(),
+            root: active.clone(),
+        })
+    }
+
     fn check_rainfall_cache(&mut self) -> bool {
         let info = self.project.as_ref().map_or(Ok(None), |project| {
             mgb_ops::app::rainfall_cache_info(&project.workspace)
@@ -774,6 +835,7 @@ impl Monitoring {
         let zone = self
             .run
             .as_ref()
+            .filter(|run| !run.time_zone.is_empty())
             .map_or(&project.time_zone, |run| &run.time_zone)
             .clone();
         let window = data::timestamp(&self.display.chart_start).and_then(|start| {
@@ -811,6 +873,7 @@ impl Monitoring {
             ));
         }
         self.submit(Job::Chart(ChartRequest {
+            active: run.and_then(|run| self.active_source(&run.root)),
             query: SeriesQuery {
                 location,
                 time_zone: zone,
@@ -829,6 +892,9 @@ impl Monitoring {
             .into_iter()
             .chain(self.chart_worker.poll());
         for reply in replies {
+            if matches!(reply.slot, RUN_SLOT | CHART_SLOT) && !self.loading[0] {
+                self.check_active_run(false);
+            }
             let worker = if reply.slot == CHART_SLOT {
                 &self.chart_worker
             } else {
@@ -849,6 +915,10 @@ impl Monitoring {
             match reply.result {
                 Err(error) if reply.slot == CHART_SLOT => self.chart_message = error,
                 Err(error) if reply.slot == UPSTREAM_SLOT => self.status = error,
+                Err(error) if reply.slot == RUN_SLOT => {
+                    self.status = error;
+                    self.request_chart();
+                }
                 Err(error) if rain_side.is_some() => {
                     self.rainfall[rain_side.unwrap().index()].finding = Some(error);
                 }
@@ -884,6 +954,9 @@ impl Monitoring {
                         self.charts.clear();
                         self.chart_message.clear();
                         self.run = None;
+                        self.active_run = Ok(None);
+                        self.comparison_runs.clear();
+                        self.run_target = None;
                         self.rainfall = Default::default();
                         self.rainfall_info = Ok(None);
                         for side in RainSide::BOTH {
@@ -929,10 +1002,7 @@ impl Monitoring {
                             self.display.local.iter().map(|l| l.path.clone()).collect(),
                         ));
                     }
-                    if self.display.run.is_none()
-                        && (self.display.chart_start.is_empty()
-                            || self.display.chart_end.is_empty())
-                    {
+                    if self.display.chart_start.is_empty() || self.display.chart_end.is_empty() {
                         use chrono::Timelike;
                         let now = chrono::Utc::now()
                             .with_timezone(
@@ -984,39 +1054,28 @@ impl Monitoring {
                         }
                     }
                     self.status = format!(
-                        "{} · {} {} · {} MINIs · {} {} · {} {}",
+                        "{} · {} {} · {} MINIs · {} {}",
                         project.workspace.display(),
                         project.stations.len(),
                         text(self.preferences.portuguese, "stations", "estações"),
                         project.topology.len(),
-                        project.runs.len(),
-                        text(self.preferences.portuguese, "runs", "execuções"),
                         project.findings.len(),
                         text(self.preferences.portuguese, "findings", "avisos")
                     );
-                    if let Some(root) = self.display.run.clone() {
-                        self.submit(Job::Run(root));
-                    } else {
-                        self.request_chart();
-                    }
+                    self.check_active_run(true);
                     self.request_view();
                 }
                 Ok(Loaded::Run(run)) => {
-                    let changed = self.run.as_ref().is_some_and(|old| old.root != run.root);
-                    if changed {
-                        self.display.overlays.clear();
+                    if self.active_run.as_ref().ok().and_then(Option::as_ref) != Some(&run.root)
+                        && !self.comparison_runs.contains(&run.root)
+                    {
+                        self.comparison_runs.push(run.root.clone());
                     }
-                    let new_window = self.display.run.as_ref() != Some(&run.root);
-                    if self.display.chart_start.is_empty() || new_window {
-                        self.display.chart_start = run.start.clone();
+                    if !run.start.is_empty() {
+                        self.display.chart_start.clone_from(&run.start);
+                        self.display.chart_end.clone_from(&run.end);
                     }
-                    if self.display.chart_end.is_empty() || new_window {
-                        self.display.chart_end = run.end.clone();
-                    }
-                    if self.display.overlays.is_empty() {
-                        self.display.overlays = run.scenarios.clone();
-                    }
-                    self.display.run = Some(run.root.clone());
+                    self.display.overlays.clone_from(&run.scenarios);
                     self.run = Some(run);
                     self.request_chart();
                 }
@@ -1749,31 +1808,53 @@ impl Monitoring {
                 ),
             );
         }
-        let mut selected = self.display.run.clone();
-        egui::ComboBox::from_label(text(pt, "Retained run", "Execução retida"))
-            .width(125.)
-            .truncate()
-            .selected_text(
-                self.display
-                    .run
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "—".into()),
-            )
-            .show_ui(ui, |ui| {
-                for root in &project.runs {
-                    ui.selectable_value(
-                        &mut selected,
-                        Some(root.clone()),
-                        root.file_name().unwrap_or_default().to_string_lossy(),
-                    );
-                }
-            });
-        if selected != self.display.run
-            && let Some(root) = selected
-        {
-            self.submit(Job::Run(root));
+        let active = self.active_run.as_ref().ok().cloned().flatten();
+        let active_label = text(pt, "Active run", "Execução ativa");
+        if let Err(error) = &self.active_run {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        let mut selected = self.run_target.clone();
+        let showing_active = selected == active;
+        let mut open_comparison = false;
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_label(text(pt, "Run source", "Fonte da execução"))
+                .width(180.)
+                .truncate()
+                .selected_text(if showing_active {
+                    active_label.clone()
+                } else {
+                    selected
+                        .as_deref()
+                        .map_or(String::new(), |path| path.display().to_string())
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut selected, active, active_label);
+                    for root in &self.comparison_runs {
+                        ui.selectable_value(
+                            &mut selected,
+                            Some(root.clone()),
+                            root.display().to_string(),
+                        );
+                    }
+                });
+            if ui
+                .button(text(
+                    pt,
+                    "Open comparison run…",
+                    "Abrir execução para comparação…",
+                ))
+                .clicked()
+                && let Some(root) = rfd::FileDialog::new().pick_folder()
+            {
+                selected = Some(root);
+                open_comparison = true;
+            }
+        });
+        if !self.loading[0] && (selected != self.run_target || open_comparison) {
+            self.load_run(selected);
+        }
+        if self.run_target.is_none() {
+            ui.label(text(pt, "No active run.", "Nenhuma execução ativa."));
         }
 
         if let Some(run) = &self.run {
@@ -1915,13 +1996,15 @@ impl Monitoring {
         let source = self
             .run
             .as_deref()
-            .filter(|_| !self.switching_project)
+            .filter(|_| !self.switching_project && !self.loading[0])
             .and_then(|run| {
+                let active = self.active_source(&run.root);
                 let scenario = &mut self.display.inundation_scenario;
                 if !run.scenarios.contains(scenario) {
                     scenario.clone_from(run.scenarios.first()?);
                 }
                 Some(inundation::Source {
+                    active,
                     root: run.root.clone(),
                     scenario: scenario.clone(),
                 })
@@ -1935,11 +2018,13 @@ impl Monitoring {
         }
         self.sync_inundation();
         section(ui, text(pt, "Inundation", "Inundação"), |ui| {
-            let Some(run) = self.run.as_ref().filter(|_| !self.switching_project) else {
+            let Some(run) = self.run.as_ref().filter(|run| {
+                !self.switching_project && !self.loading[0] && !run.scenarios.is_empty()
+            }) else {
                 ui.label(text(
                     pt,
-                    "Select a retained run in Files.",
-                    "Selecione uma execução retida em Arquivos.",
+                    "Run results will appear here when available.",
+                    "Os resultados disponíveis aparecerão aqui.",
                 ));
                 return;
             };
@@ -1964,11 +2049,13 @@ impl Monitoring {
         let cache = self.rainfall_info.as_ref().ok().and_then(Option::as_ref);
         let run = self.run.as_deref();
         let reference = run
+            .filter(|run| !run.reference.is_empty())
             .map(|run| run.reference.replace('T', " "))
             .or_else(|| cache.map(|info| info.reference.format("%Y-%m-%d %H:%M").to_string()))
             .unwrap_or_else(|| "—".into());
         let zones = [
-            run.map(|run| (text(pt, "Run", "Execução"), run.time_zone.as_str())),
+            run.filter(|run| !run.time_zone.is_empty())
+                .map(|run| (text(pt, "Run", "Execução"), run.time_zone.as_str())),
             cache.map(|info| (text(pt, "Rainfall", "Chuva"), info.time_zone.as_str())),
             self.charts
                 .report
@@ -2970,6 +3057,10 @@ impl Monitoring {
                 self.chart_fields = ComparisonFields::default();
                 self.project = None;
                 self.run = None;
+                self.active_run = Ok(None);
+                self.run_target = None;
+                self.comparison_runs.clear();
+                self.inundation.select(None);
                 self.rainfall = Default::default();
                 self.rainfall_info = Ok(None);
                 self.local.clear();
@@ -3142,20 +3233,25 @@ impl Monitoring {
 impl eframe::App for Monitoring {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.project.is_some() && !self.loading[0] {
+            if Instant::now() >= self.run_check
+                || ctx.input(|input| input.events.contains(&egui::Event::WindowFocused(true)))
+            {
+                self.check_active_run(false);
+            }
+            ctx.request_repaint_after(self.run_check.saturating_duration_since(Instant::now()));
+        }
         self.poll(&ctx);
         if let Some(outcome) = self.runners.poll() {
             match outcome {
-                runners::Outcome::Completed(root)
-                | runners::Outcome::OperationalCompleted(root) => {
-                    self.submit(Job::Run(root));
+                runners::Outcome::Completed => {
+                    self.check_active_run(false);
                     if self.check_rainfall_cache() {
                         self.request_view();
                     }
                 }
                 runners::Outcome::Workflow(output) => {
-                    if let Some(run) = self.workflows.receive(output, &ctx) {
-                        self.submit(Job::Run(run));
-                    }
+                    self.workflows.receive(output, &ctx);
                 }
                 runners::Outcome::DraftChanged => {
                     self.instructions = tools::InstructionTools::default();
@@ -3397,7 +3493,7 @@ mod interface_tests {
         .unwrap();
         assert_eq!(legacy.selected_operation_zone("UTC"), "America/Sao_Paulo");
         assert_eq!(legacy.config, PathBuf::from("region/config/workspace.toml"));
-        assert_eq!(legacy.run, Some(PathBuf::from("region/data/runs/run-1")));
+        assert!(serde_json::to_value(&legacy).unwrap().get("run").is_none());
         assert_eq!(legacy.basemap, 2);
         assert_eq!(legacy.layout.active, SideTab::Map);
         assert!(legacy.layout.tabs.contains(&SideTab::Data));

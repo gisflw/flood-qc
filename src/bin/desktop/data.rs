@@ -28,7 +28,6 @@ pub struct Project {
     pub stations: Vec<StationLocation>,
     pub references: Vec<LevelReference>,
     pub series: Vec<(String, String, String)>,
-    pub runs: Vec<PathBuf>,
     pub assets: Vec<String>,
     pub findings: Vec<String>,
     pub time_zone: String,
@@ -102,7 +101,6 @@ pub fn open(
         stations: vec![],
         references: vec![],
         series: vec![],
-        runs: vec![],
         assets: vec![],
         findings: vec![],
         time_zone: "America/Sao_Paulo".into(),
@@ -235,18 +233,6 @@ pub fn open(
             }
         }
     }
-    match mgb_ops::app::discover_trials(&project.workspace) {
-        Ok(runs) => project.runs = runs,
-        Err(error) => {
-            project.findings.push(error.to_string());
-            if let Some(previous) = previous {
-                project.runs = previous.runs.clone();
-                project
-                    .retained_sources
-                    .push(project.workspace.join("data/runs"));
-            }
-        }
-    }
     let catalog = project.workspace.join("data/forecasts.sqlite");
     if catalog.exists() {
         match canonical::ForecastCatalog::open_read_only(&project.workspace, &catalog)
@@ -281,6 +267,25 @@ pub fn open(
     project.retained_sources.sort();
     project.retained_sources.dedup();
     Ok(Arc::new(project))
+}
+
+/// The exact generation selected in the UI, held against retirement while files are read.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ActiveRun {
+    pub workspace: PathBuf,
+    pub root: PathBuf,
+}
+
+impl ActiveRun {
+    pub fn read<T>(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        mgb_ops::app::with_active_run(&self.workspace, |root| {
+            if root != self.root {
+                return Err("Active run changed while loading".into());
+            }
+            read()
+        })?
+        .ok_or_else(|| "Active run is no longer available".into())
+    }
 }
 
 pub struct Run {
@@ -322,42 +327,43 @@ pub fn read_run(root: PathBuf) -> Result<Arc<Run>, String> {
             Err(error) => findings.push(format!("{}: {error}", scenario.id)),
         }
     }
-    let basin = first.ok_or_else(|| {
-        format!(
-            "run has no available successful scenario results: {}",
-            findings.join("; ")
+    let (reference, start, end, time_zone) = if let Some(basin) = first {
+        let bounds = &basin.timeline.bounds;
+        (
+            basin
+                .provenance
+                .processing
+                .get("reference_time")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .into(),
+            bounds
+                .first()
+                .ok_or("empty result timeline")?
+                .start
+                .to_string()
+                .replace(' ', "T"),
+            bounds
+                .last()
+                .ok_or("empty result timeline")?
+                .end
+                .to_string()
+                .replace(' ', "T"),
+            basin.timeline.time_zone,
         )
-    })?;
+    } else {
+        (String::new(), String::new(), String::new(), String::new())
+    };
     Ok(Arc::new(Run {
         root,
         day_horizons: mgb_ops::app::retained_day_horizons(&manifest),
         manifest,
         scenarios,
         findings,
-        reference: basin
-            .provenance
-            .processing
-            .get("reference_time")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .into(),
-        start: basin
-            .timeline
-            .bounds
-            .first()
-            .ok_or("empty result timeline")?
-            .start
-            .to_string()
-            .replace(' ', "T"),
-        end: basin
-            .timeline
-            .bounds
-            .last()
-            .ok_or("empty result timeline")?
-            .end
-            .to_string()
-            .replace(' ', "T"),
-        time_zone: basin.timeline.time_zone,
+        reference,
+        start,
+        end,
+        time_zone,
     }))
 }
 
@@ -444,6 +450,7 @@ fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View
 }
 
 pub struct ChartRequest {
+    pub active: Option<ActiveRun>,
     pub query: SeriesQuery,
     pub comparison_station: Option<String>,
     pub notices: Vec<String>,
@@ -451,9 +458,14 @@ pub struct ChartRequest {
 
 impl ChartRequest {
     pub fn load(self) -> Result<Loaded, String> {
-        let report = match &self.comparison_station {
-            Some(station) => mgb_ops::app::query_comparison(&self.query, station)?,
-            None => mgb_ops::app::query_series(&self.query)?,
+        let query = || match &self.comparison_station {
+            Some(station) => mgb_ops::app::query_comparison(&self.query, station),
+            None => mgb_ops::app::query_series(&self.query),
+        };
+        let report = if let Some(active) = &self.active {
+            active.read(query)?
+        } else {
+            query()?
         };
         let labels = self
             .query
@@ -522,7 +534,7 @@ pub fn timestamp(value: &str) -> Result<NaiveDateTime, String> {
 
 pub enum Job {
     Open(PathBuf, PathBuf),
-    Run(PathBuf),
+    Run(PathBuf, Option<ActiveRun>),
     View(RainSide, ViewRequest),
     Local(Vec<PathBuf>),
     Export(SeriesReport, Option<String>, PathBuf),
@@ -534,7 +546,7 @@ impl Job {
     pub fn slot(&self) -> usize {
         match self {
             Self::Open(..) => 0,
-            Self::Run(..) => 1,
+            Self::Run(..) => RUN_SLOT,
             Self::View(side, _) => side.slot(),
             Self::Local(..) => 3,
             Self::Export(..) | Self::Png(..) => 4,
@@ -565,6 +577,7 @@ pub struct Reply {
     pub generation: u64,
     pub result: Result<Loaded, String>,
 }
+pub const RUN_SLOT: usize = 1;
 pub const UPSTREAM_SLOT: usize = 5;
 pub const CHART_SLOT: usize = 6;
 pub const SLOTS: usize = 8;
@@ -628,7 +641,8 @@ impl Worker {
                             Loaded::Project(project)
                         })
                     }
-                    Job::Run(root) => read_run(root).map(Loaded::Run),
+                    Job::Run(root, Some(active)) => active.read(|| read_run(root)).map(Loaded::Run),
+                    Job::Run(root, None) => read_run(root).map(Loaded::Run),
                     Job::View(_, request) => {
                         Ok(Loaded::View(Box::new(view(request, &mut rainfall_reader))))
                     }
@@ -798,6 +812,7 @@ mod tests {
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         let request = |id| {
             Job::Chart(ChartRequest {
+                active: None,
                 query: SeriesQuery {
                     location: Location::Mini(id),
                     time_zone: "UTC".into(),
@@ -811,7 +826,7 @@ mod tests {
                 notices: vec![],
             })
         };
-        map.submit(Job::Run("slow-map-lane".into()));
+        map.submit(Job::Run("slow-map-lane".into(), None));
         assert!(map.poll().is_empty());
         assert!(in_flight.try_recv().is_ok());
         chart.submit(request(1));
@@ -869,7 +884,7 @@ mod tests {
             thread: Some(thread),
             in_flight: None,
         };
-        worker.submit(Job::Run("delayed".into()));
+        worker.submit(Job::Run("delayed".into(), None));
         assert!(worker.is_busy());
         assert!(worker.poll().is_empty());
         start.recv().unwrap();
@@ -973,6 +988,13 @@ mod tests {
         assert_eq!(run.scenarios, ["good"]);
         assert_eq!(run.findings.len(), 1);
         assert_eq!(run.manifest.state, "failed");
+        std::fs::remove_file(dir.path().join("results/good/basin.nc")).unwrap();
+        let no_results = read_run(dir.path().into()).unwrap();
+        assert_eq!(no_results.manifest.state, "failed");
+        assert!(no_results.scenarios.is_empty());
+        assert!(no_results.start.is_empty());
+        assert_eq!(no_results.findings.len(), 2);
+
         let mut manifest = run.manifest.clone();
         manifest.scenarios[0].id = "../outside".into();
         std::fs::write(
@@ -1195,7 +1217,6 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         drop(database);
         let project = open(config.clone(), root.into(), None).unwrap();
         assert_eq!(project.stations.len(), 1);
-        assert!(project.runs.is_empty());
         let window = HourlyWindow::Explicit {
             start,
             end: start + chrono::Duration::hours(1),
@@ -1244,11 +1265,10 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
     #[test]
     fn newer_requests_replace_pending_work_and_old_replies() {
         let mut worker = Worker::new(eframe::egui::Context::default());
-        worker.submit(Job::Run("first".into()));
-        worker.submit(Job::Run("second".into()));
+        worker.submit(Job::Run("first".into(), None));
+        worker.submit(Job::Run("second".into(), None));
         assert_eq!(worker.generations[1], 2);
-        let latest =
-            matches!(&worker.pending[1], Some((2, Job::Run(path))) if path == Path::new("second"));
+        let latest = matches!(&worker.pending[1], Some((2, Job::Run(path, None))) if path == Path::new("second"));
         assert!(latest);
         let (sender, receiver) = mpsc::channel();
         worker.receiver = receiver;
