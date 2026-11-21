@@ -346,3 +346,49 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
     }
     sync_directory(root)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recovery_archives_unpublished_work_and_the_committed_run() {
+        fs::create_dir_all("runs").unwrap();
+        let workspace = tempfile::tempdir_in("runs").unwrap();
+        let workspace = workspace.path();
+        let active = new_run_stage_for(workspace, "active").unwrap();
+        let interrupted = new_run_stage_for(workspace, "interrupted").unwrap();
+        for stage in [&active, &interrupted] {
+            let mut attempt = RunAttemptManifest::new(run_stage_id(stage).unwrap().into());
+            attempt.finish("completed", None);
+            write_run_journal(stage, &attempt).unwrap();
+            fs::write(stage.join("manifest.json"), "{}").unwrap();
+        }
+        // Simulate interruption after the pointer replacement and before archiving.
+        write_draft(
+            &run_cache_root(workspace).join("active.json"),
+            &ActiveRun {
+                schema_version: 1,
+                generation: "generation-active".into(),
+            },
+        )
+        .unwrap();
+
+        recover_run_cache(workspace).unwrap();
+        recover_run_cache(workspace).unwrap();
+        assert_eq!(
+            active_run(workspace).unwrap().as_deref(),
+            Some(active.as_path())
+        );
+        assert!(active.join("manifest.json").is_file());
+        assert!(!active.join(JOURNAL).exists());
+        assert!(!interrupted.exists());
+        for (id, state) in [("active", "completed"), ("interrupted", "interrupted")] {
+            let archive = workspace
+                .join("data/run-manifests")
+                .join(format!("{id}.json"));
+            let record = read_run_attempt(&archive).unwrap();
+            assert_eq!(record.state, state);
+        }
+    }
+}

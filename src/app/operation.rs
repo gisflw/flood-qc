@@ -146,6 +146,7 @@ pub struct ScenarioExecution {
 pub struct ExecutionReport {
     pub run_root: PathBuf,
     pub run_artifact: PathBuf,
+    pub attempt_manifest: PathBuf,
     pub status: BatchStatus,
     pub scenarios: Vec<ScenarioExecution>,
     pub error: Option<String>,
@@ -633,7 +634,14 @@ pub(super) fn run_preparation_locked(
     run_attempt(workspace, control, |run_root, attempt| {
         let prepared = run_root.join("preparation");
         let report = prepare(workspace, prepared, control)?;
-        execute_in_stage(&report.prepared, run_root, attempt, control, true)
+        execute_in_stage(
+            workspace,
+            &report.prepared,
+            run_root,
+            attempt,
+            control,
+            true,
+        )
     })
 }
 
@@ -645,7 +653,7 @@ pub(super) fn execute_locked(
     _temporary_preparation: bool,
 ) -> Result<ExecutionReport, OperationError> {
     run_attempt(workspace, control, |run_root, attempt| {
-        execute_in_stage(prepared, run_root, attempt, control, false)
+        execute_in_stage(workspace, prepared, run_root, attempt, control, false)
     })
 }
 
@@ -742,7 +750,8 @@ fn run_attempt(
             fs::remove_dir_all(&run_root).map_err(|error| store_error(&run_root, error))?;
             if let OperationError::BatchFailed { report } = &mut error {
                 report.run_root = archive.parent().unwrap_or(workspace).to_path_buf();
-                report.run_artifact = archive;
+                report.run_artifact = archive.clone();
+                report.attempt_manifest = archive;
                 for item in &mut report.scenarios {
                     item.logs.clear();
                     item.results.clear();
@@ -754,6 +763,7 @@ fn run_attempt(
 }
 
 fn execute_in_stage(
+    workspace: &Path,
     prepared: &Path,
     run_root: &Path,
     attempt: &mut RunAttemptManifest,
@@ -897,6 +907,9 @@ fn execute_in_stage(
         .collect();
     let report = ExecutionReport {
         run_artifact: run_root.join("manifest.json"),
+        attempt_manifest: workspace
+            .join("data/run-manifests")
+            .join(format!("{}.json", attempt.attempt_id)),
         run_root: run_root.to_path_buf(),
         status: if complete && !cancelled {
             BatchStatus::Completed
