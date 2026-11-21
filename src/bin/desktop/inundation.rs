@@ -713,12 +713,16 @@ fn timestamp(meta: &InundationMetadata, value: chrono::NaiveDateTime) -> String 
 }
 
 fn hour_slider(ui: &mut egui::Ui, frame: &mut usize, last: usize, pt: bool) -> egui::Response {
-    ui.add(
+    let response = ui.add(
         egui::Slider::new(frame, 0..=last)
             .step_by(1.)
             .text(text(pt, "Hour", "Hora"))
             .show_value(false),
-    )
+    );
+    if response.drag_started() || response.clicked() {
+        response.request_focus();
+    }
+    response
 }
 
 #[cfg(test)]
