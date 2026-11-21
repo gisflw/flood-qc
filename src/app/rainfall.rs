@@ -1,14 +1,14 @@
+use super::OperationControl;
 use super::operation::ExecutionRecipe;
 use super::request::{ScenarioDocument, timestamp};
-use super::{OperationControl, OperationError};
 use crate::analysis::{
     HourlyWindow, RainSummary, accumulated_valid_basin_forcing, accumulated_valid_grid_rain,
     resolve_hourly_window, signed_rainfall_window,
 };
 use crate::store::{
     BasinForcing, DecodedRainfallFile, GridSeries, InputReference, MiniTopology, RainfallCacheInfo,
-    RegularGridSpec, StagedRainfallCache, TimeInterval, copy_tree, read_basin_forcing,
-    read_grid_series, read_mini_topology, read_rainfall_cache, verify_inputs,
+    RegularGridSpec, TimeInterval, copy_tree, read_basin_forcing, read_grid_series,
+    read_mini_topology, read_rainfall_cache, stage_rainfall, verify_inputs,
 };
 use std::path::{Path, PathBuf};
 
@@ -264,27 +264,12 @@ fn read_forcing(path: &Path) -> Result<BasinForcing, String> {
 }
 
 pub(super) fn stage(
-    workspace: &Path,
+    generation: &Path,
     prepared: &Path,
     recipe: &ExecutionRecipe,
     inputs: &[InputReference],
     control: &OperationControl,
-) -> Result<StagedRainfallCache, OperationError> {
-    stage_from_prepared(workspace, prepared, recipe, inputs, control).map_err(|message| {
-        OperationError::Store {
-            run_root: workspace.join("data/cache/rainfall"),
-            message,
-        }
-    })
-}
-
-fn stage_from_prepared(
-    workspace: &Path,
-    prepared: &Path,
-    recipe: &ExecutionRecipe,
-    inputs: &[InputReference],
-    control: &OperationControl,
-) -> Result<StagedRainfallCache, String> {
+) -> Result<RainfallCacheInfo, String> {
     let field = |key: &str| {
         recipe.document[key]
             .as_str()
@@ -312,8 +297,8 @@ fn stage_from_prepared(
         .filter(|scenario| scenario.kind == "zero")
         .map(|scenario| scenario.id.clone())
         .collect();
-    StagedRainfallCache::build(
-        workspace,
+    stage_rainfall(
+        generation,
         reference,
         time_zone.into(),
         coverage.clone(),
@@ -396,7 +381,7 @@ fn stage_from_prepared(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::store::{IntervalAxis, Provenance, write_grid_series};
+    use crate::store::{IntervalAxis, Provenance, new_run_stage, publish_run, write_grid_series};
 
     #[test]
     fn crossing_accumulation_preserves_masks_and_whole_native_intervals() {
@@ -409,8 +394,10 @@ mod tests {
         let cells = grid.latitudes.len() * grid.longitudes.len();
         let scenario = "rain";
         let build = |forecast_amount: f64| {
-            StagedRainfallCache::build(
-                root.path(),
+            let run = new_run_stage(root.path()).unwrap();
+            std::fs::write(run.join("manifest.json"), "{}").unwrap();
+            let info = stage_rainfall(
+                &run,
                 reference,
                 "UTC".into(),
                 TimeInterval { start, end },
@@ -462,9 +449,11 @@ mod tests {
                     Ok(())
                 },
             )
-            .unwrap()
+            .unwrap();
+            publish_run(root.path(), &run).unwrap();
+            info
         };
-        let generation = build(4.).publish().unwrap();
+        let generation = build(4.);
         let query = |period| {
             query_cached_rainfall(root.path(), scenario, &period, None, false)
                 .unwrap()
@@ -490,7 +479,7 @@ mod tests {
             assert_eq!(reused.info, crossing.info);
             assert_eq!(reused.values, crossing.values);
         }
-        let replacement = build(8.).publish().unwrap();
+        let replacement = build(8.);
         let refreshed = reader
             .query(root.path(), scenario, &period, None, false)
             .unwrap()

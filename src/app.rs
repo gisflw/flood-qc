@@ -31,7 +31,7 @@ pub use self::operation::{
     BatchStatus, ExecutionReport, ExecutionRequest, OperationControl, OperationError,
     OperationProgress, OperationStage, PreparationReport, PreparationRequest, ScenarioExecution,
     ScenarioProgress, TrialCache, discover_trials, execute_prepared, execute_prepared_controlled,
-    read_trial, run_draft, tail_log,
+    read_trial, run_draft, tail_log, with_active_run,
 };
 pub use self::request::{
     CalibrationDocument, EngineDocument, ForcingDocument, ForecastsDocument, GeometryDocument,

@@ -201,21 +201,23 @@ correction_ids = ["rs-ecmwf-correction"]
     fs::remove_file(root.join("observations.sqlite")).unwrap();
     fs::remove_file(root.join("forecast.sqlite")).unwrap();
     fs::remove_dir_all(root.join("forecast-assets")).unwrap();
-    let run = || {
+    let run = |workspace| {
         execute_prepared(ExecutionRequest {
-            workspace: root.clone(),
+            workspace,
             invocation_dir: root.clone(),
             prepared: "prepared".into(),
         })
         .unwrap()
     };
-    let first = run();
+    let first = run(root.clone());
     assert!(
         matches!(first.status, BatchStatus::Completed),
         "{:?}",
         first.scenarios
     );
-    let second = run();
+    let repeat_workspace = root.join("repeat");
+    fs::create_dir(&repeat_workspace).unwrap();
+    let second = run(repeat_workspace);
     assert!(
         matches!(second.status, BatchStatus::Completed),
         "{:?}",

@@ -1,13 +1,14 @@
 use super::operation::{input_file, verify_input_contents};
-use super::{InputReference, TimeInterval, collect_inputs, sync_directory, sync_tree, write_draft};
+use super::{
+    InputReference, TimeInterval, collect_inputs, read_draft, run_stage_id, sync_tree,
+    verify_inputs, with_active_run, write_draft,
+};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
-use std::fs::{self, File, Metadata, OpenOptions};
+use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 
-fn root(workspace: &Path) -> PathBuf {
-    workspace.join("data/cache/rainfall")
-}
+const RAINFALL_MANIFEST: &str = "manifest.json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,7 +23,7 @@ pub struct RainfallCacheInfo {
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Active {
+struct RainfallManifest {
     schema_version: u32,
     info: RainfallCacheInfo,
     inputs: Vec<InputReference>,
@@ -35,16 +36,9 @@ fn safe_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
-fn active(root: &Path) -> Result<Option<Active>, String> {
-    let file = match File::open(root.join("active.json")) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let value: Active = serde_json::from_reader(file).map_err(|error| error.to_string())?;
+fn validate(value: &RainfallManifest) -> Result<(), String> {
     if value.schema_version != 1
-        || !value.info.generation.starts_with("generation-")
-        || !safe_name(&value.info.generation)
+        || run_stage_id(Path::new(&value.info.generation)).is_err()
         || value.info.time_zone.parse::<chrono_tz::Tz>().is_err()
         || value.info.coverage.start >= value.info.reference
         || value.info.coverage.end <= value.info.reference
@@ -65,64 +59,50 @@ fn active(root: &Path) -> Result<Option<Active>, String> {
     {
         return Err("Invalid active rainfall cache metadata".into());
     }
-    Ok(Some(value))
+    Ok(())
 }
 
-/// Read only the atomic pointer for a cheap refresh probe.
-pub(crate) fn rainfall_cache_info(workspace: &Path) -> Result<Option<RainfallCacheInfo>, String> {
-    let root = root(workspace);
-    let Some(value) = active(&root)? else {
-        return Ok(None);
-    };
-    if !root.join("access.lock").is_file() || !root.join(&value.info.generation).is_dir() {
-        // The generation could have retired after the original pointer read.
-        if active(&root)?.is_some_and(|current| current.info.generation == value.info.generation) {
-            return Err("Active rainfall cache generation or access lock is missing".into());
-        }
-        return Ok(active(&root)?.map(|current| current.info));
+fn read_manifest(generation: &Path) -> Result<Option<RainfallManifest>, String> {
+    let root = generation.join("rainfall");
+    match fs::symlink_metadata(&root) {
+        Ok(metadata) if metadata.is_dir() => (),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        _ => return Err("Active rainfall cache directory is invalid".into()),
     }
-    Ok(Some(value.info))
+    let manifest: RainfallManifest = read_draft(&root.join(RAINFALL_MANIFEST))?;
+    validate(&manifest)?;
+    if generation.file_name().and_then(|name| name.to_str()) != Some(&manifest.info.generation) {
+        return Err("Active rainfall does not belong to the run generation".into());
+    }
+    Ok(Some(manifest))
 }
 
-/// Read a generation while its files are protected from retirement.
+pub(crate) fn rainfall_cache_info(workspace: &Path) -> Result<Option<RainfallCacheInfo>, String> {
+    with_active_run(workspace, |generation| {
+        Ok(read_manifest(generation)?.map(|manifest| manifest.info))
+    })
+    .map(Option::flatten)
+}
+
+/// Read rainfall while its run generation is protected from retirement.
 pub(crate) fn read_rainfall_cache<T>(
     workspace: &Path,
     read: impl FnOnce(&RainfallCacheInfo, &RainfallCacheFiles<'_>) -> Result<T, String>,
 ) -> Result<Option<T>, String> {
-    let root = root(workspace);
-    let _lock = match File::open(root.join("access.lock")) {
-        Ok(file) => {
-            file.lock_shared().map_err(|error| error.to_string())?;
-            file
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return if root
-                .join("active.json")
-                .try_exists()
-                .map_err(|e| e.to_string())?
-            {
-                Err("Active rainfall cache has no access lock".into())
-            } else {
-                Ok(None)
-            };
-        }
-        Err(error) => return Err(error.to_string()),
-    };
-    let Some(active) = active(&root)? else {
-        return Ok(None);
-    };
-    let generation = root.join(&active.info.generation);
-    if !fs::symlink_metadata(&generation).is_ok_and(|entry| entry.is_dir()) {
-        return Err("Active rainfall cache generation is missing or invalid".into());
-    }
-    read(
-        &active.info,
-        &RainfallCacheFiles {
-            root: generation,
-            inputs: &active.inputs,
-        },
-    )
-    .map(Some)
+    with_active_run(workspace, |generation| {
+        let Some(manifest) = read_manifest(generation)? else {
+            return Ok(None);
+        };
+        read(
+            &manifest.info,
+            &RainfallCacheFiles {
+                root: generation.join("rainfall"),
+                inputs: &manifest.inputs,
+            },
+        )
+        .map(Some)
+    })
+    .map(Option::flatten)
 }
 
 pub(crate) struct RainfallCacheFiles<'a> {
@@ -218,121 +198,106 @@ impl FileVersion {
     }
 }
 
-/// Holds an unlisted generation until the operation has finished successfully.
-pub(crate) struct StagedRainfallCache {
-    root: PathBuf,
-    generation: PathBuf,
-    active: Active,
-    published: bool,
+/// Stage rainfall inside the unpublished run generation.
+pub(crate) fn stage_rainfall(
+    generation: &Path,
+    reference: NaiveDateTime,
+    time_zone: String,
+    coverage: TimeInterval,
+    scenarios: Vec<String>,
+    zero_scenarios: Vec<String>,
+    build: impl FnOnce(&Path) -> Result<(), String>,
+) -> Result<RainfallCacheInfo, String> {
+    let info = RainfallCacheInfo {
+        generation: generation
+            .file_name()
+            .ok_or("Missing generation name")?
+            .to_string_lossy()
+            .into_owned(),
+        reference,
+        time_zone,
+        coverage,
+        scenarios,
+        zero_scenarios,
+    };
+    let root = generation.join("rainfall");
+    fs::create_dir(&root).map_err(|error| error.to_string())?;
+    build(&root)?;
+    let manifest = RainfallManifest {
+        schema_version: 1,
+        info,
+        inputs: collect_inputs(&root)?,
+    };
+    validate(&manifest)?;
+    write_draft(&root.join(RAINFALL_MANIFEST), &manifest)?;
+    sync_tree(&root)?;
+    Ok(manifest.info)
 }
 
-impl StagedRainfallCache {
-    /// Workspace writers already hold the operational lock while staging and publishing.
-    pub(crate) fn build(
-        workspace: &Path,
-        reference: NaiveDateTime,
-        time_zone: String,
-        coverage: TimeInterval,
-        scenarios: Vec<String>,
-        zero_scenarios: Vec<String>,
-        build: impl FnOnce(&Path) -> Result<(), String>,
-    ) -> Result<Self, String> {
-        let root = root(workspace);
-        fs::create_dir_all(&root).map_err(|error| error.to_string())?;
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(false)
-            .open(root.join("access.lock"))
+pub(crate) fn adopt_legacy_rainfall(workspace: &Path, generation: &Path) -> Result<bool, String> {
+    let legacy = workspace.join("data/cache/rainfall");
+    let pointer = legacy.join("active.json");
+    if !pointer.try_exists().map_err(|error| error.to_string())? {
+        return Ok(false);
+    }
+    let legacy_lock =
+        fs::File::open(legacy.join("access.lock")).map_err(|error| error.to_string())?;
+    legacy_lock
+        .lock_shared()
+        .map_err(|error| error.to_string())?;
+    let mut manifest: RainfallManifest = read_draft(&pointer)?;
+    validate(&manifest)?;
+    if !safe_name(&manifest.info.generation) {
+        return Err("Invalid legacy rainfall generation".into());
+    }
+    let source = legacy.join(&manifest.info.generation);
+    if !fs::symlink_metadata(&source).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err("Invalid legacy rainfall directory".into());
+    }
+    verify_inputs(&source, &manifest.inputs)?;
+    let destination = generation.join("rainfall");
+    fs::create_dir(&destination).map_err(|error| error.to_string())?;
+    for member in &manifest.inputs {
+        let target = destination.join(&member.path);
+        fs::create_dir_all(target.parent().ok_or("Missing rainfall member directory")?)
             .map_err(|error| error.to_string())?;
-        lock.lock().map_err(|error| error.to_string())?;
-        // Keep the listed generation, and remove leftovers from interrupted updates.
-        // An invalid pointer does not prevent an explicit rebuild.
-        if let Ok(old) = active(&root) {
-            retire(
-                &root,
-                old.as_ref().map(|active| active.info.generation.as_str()),
-            )?;
-        }
-        drop(lock);
-
-        let generation = format!(
-            "generation-{}-{}",
-            chrono::Utc::now().format("%Y%m%dT%H%M%S%9f"),
-            std::process::id()
-        );
-        let path = root.join(&generation);
-        fs::create_dir(&path).map_err(|error| error.to_string())?;
-        let mut staged = Self {
-            root,
-            generation: path,
-            active: Active {
-                schema_version: 1,
-                info: RainfallCacheInfo {
-                    generation,
-                    reference,
-                    time_zone,
-                    coverage,
-                    scenarios,
-                    zero_scenarios,
-                },
-                inputs: Vec::new(),
-            },
-            published: false,
-        };
-        build(&staged.generation)?;
-        staged.active.inputs = collect_inputs(&staged.generation)?;
-        sync_tree(&staged.generation)?;
-        sync_directory(&staged.root)?;
-        Ok(staged)
+        fs::hard_link(source.join(&member.path), &target).map_err(|error| error.to_string())?;
     }
-
-    pub(crate) fn publish(mut self) -> Result<RainfallCacheInfo, String> {
-        let _lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(self.root.join("access.lock"))
-            .map_err(|error| error.to_string())?;
-        _lock.lock().map_err(|error| error.to_string())?;
-        write_draft(&self.root.join("active.json"), &self.active)?;
-        self.published = true;
-        // The pointer has committed. An interrupted retirement is retried before staging.
-        if sync_directory(&self.root).is_ok() {
-            let _ = retire(&self.root, Some(&self.active.info.generation));
-        }
-        Ok(self.active.info.clone())
-    }
+    verify_inputs(&destination, &manifest.inputs)?;
+    manifest.info.generation = generation
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("Missing generation name")?
+        .into();
+    validate(&manifest)?;
+    write_draft(&destination.join(RAINFALL_MANIFEST), &manifest)?;
+    sync_tree(&destination)?;
+    Ok(true)
 }
 
-fn retire(root: &Path, keep: Option<&str>) -> Result<(), String> {
-    for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let name = entry.file_name();
-        if name.to_str().is_some_and(|name| {
-            name.starts_with("generation-") && safe_name(name) && Some(name) != keep
-        }) && entry
-            .file_type()
-            .map_err(|error| error.to_string())?
-            .is_dir()
-        {
-            fs::remove_dir_all(entry.path()).map_err(|error| error.to_string())?;
-        }
+pub(crate) fn retire_legacy_rainfall(workspace: &Path) -> Result<(), String> {
+    let legacy = workspace.join("data/cache/rainfall");
+    match fs::symlink_metadata(&legacy) {
+        Ok(metadata) if metadata.is_dir() => (),
+        Ok(_) => return Err("Invalid legacy rainfall directory".into()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.to_string()),
     }
-    Ok(())
-}
-
-impl Drop for StagedRainfallCache {
-    fn drop(&mut self) {
-        if !self.published {
-            let _ = fs::remove_dir_all(&self.generation);
-        }
+    // Let readers that started before migration finish before retiring their generation.
+    match fs::File::open(legacy.join("access.lock")) {
+        Ok(lock) => lock.lock().map_err(|error| error.to_string())?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+        Err(error) => return Err(error.to_string()),
     }
+    fs::remove_dir_all(&legacy).map_err(|error| error.to_string())?;
+    super::sync_directory(&workspace.join("data/cache"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::store::{new_run_stage, publish_run};
+    use std::fs::File;
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -385,8 +350,10 @@ mod tests {
             .unwrap();
         let hour = chrono::Duration::hours(1);
         let build = |text: &str| {
-            StagedRainfallCache::build(
-                workspace.path(),
+            let run = new_run_stage(workspace.path()).unwrap();
+            fs::write(run.join("manifest.json"), "{}").unwrap();
+            let info = stage_rainfall(
+                &run,
                 reference,
                 "UTC".into(),
                 TimeInterval {
@@ -397,10 +364,12 @@ mod tests {
                 vec!["zero".into()],
                 |dir| fs::write(dir.join("member"), text).map_err(|e| e.to_string()),
             )
-            .unwrap()
+            .unwrap();
+            (run, info)
         };
-        let first = build("first").publish().unwrap();
-        let second = build("second");
+        let (first_run, first) = build("first");
+        publish_run(workspace.path(), &first_run).unwrap();
+        let (second_run, second) = build("second");
         let (reading, reader_ready) = mpsc::channel();
         let (release, reader_release) = mpsc::channel();
         let (writing, writer_ready) = mpsc::channel();
@@ -426,7 +395,8 @@ mod tests {
             reader_ready.recv().unwrap();
             scope.spawn(move || {
                 writing.send(()).unwrap();
-                published.send(second.publish().unwrap()).unwrap();
+                publish_run(workspace_path, &second_run).unwrap();
+                published.send(second).unwrap();
             });
             writer_ready.recv().unwrap();
             let still_reading = writer_done.recv_timeout(Duration::from_millis(50)).is_err();
@@ -435,7 +405,7 @@ mod tests {
             let second = writer_done.recv_timeout(Duration::from_secs(2)).unwrap();
             assert_eq!(rainfall_cache_info(workspace.path()).unwrap(), Some(second));
         });
-        let first_retired = !root(workspace.path()).join(first.generation).exists();
+        let first_retired = !first_run.exists();
         assert!(first_retired);
     }
 }

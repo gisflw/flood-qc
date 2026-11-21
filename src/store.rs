@@ -69,11 +69,18 @@ pub use self::calibration::{
 mod automation;
 pub(crate) use self::automation::{automation_documents, write_automation_document};
 
+mod run_cache;
+pub(crate) use self::run_cache::{
+    RunAttemptManifest, active_run, collect_run_diagnostics, new_run_stage, new_run_stage_for,
+    publish_run, publish_run_checked, read_run_attempt, recover_run_cache, run_cache_root,
+    run_stage_id, with_active_run, write_run_attempt, write_run_journal,
+};
+
 mod rainfall;
 pub use self::rainfall::RainfallCacheInfo;
 pub(crate) use self::rainfall::{
-    DecodedRainfallFile, RainfallCacheFiles, StagedRainfallCache, rainfall_cache_info,
-    read_rainfall_cache,
+    DecodedRainfallFile, RainfallCacheFiles, adopt_legacy_rainfall, rainfall_cache_info,
+    read_rainfall_cache, retire_legacy_rainfall, stage_rainfall,
 };
 
 mod inundation;

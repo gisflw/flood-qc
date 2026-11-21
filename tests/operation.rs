@@ -159,15 +159,27 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
     assert!(matches!(one.status, mgb_ops::app::BatchStatus::Completed));
     assert!(matches!(two.status, mgb_ops::app::BatchStatus::Completed));
     assert_ne!(one.run_root, two.run_root);
-    assert_eq!(mgb_ops::discover_trials(&path).unwrap().len(), 2);
     assert_eq!(
-        mgb_ops::read_trial(&one.run_root).unwrap().scenarios.len(),
+        mgb_ops::discover_trials(&path).unwrap(),
+        [two.run_root.clone()]
+    );
+    assert!(!one.run_root.exists());
+    assert_eq!(
+        mgb_ops::read_trial(&two.run_root).unwrap().scenarios.len(),
         4
     );
-    let copied = mgb_ops::Draft::import_manifest(path.clone(), &path, &one.run_root).unwrap();
+    let rainfall = mgb_ops::app::rainfall_cache_info(&path).unwrap().unwrap();
+    assert_eq!(Some(rainfall.generation.as_ref()), two.run_root.file_name());
+    assert_eq!(
+        fs::read_dir(path.join("data/run-manifests"))
+            .unwrap()
+            .count(),
+        2
+    );
+    let copied = mgb_ops::Draft::import_manifest(path.clone(), &path, &two.run_root).unwrap();
     assert_eq!(copied.document.operation.scenarios.len(), 4);
     let stations =
-        mgb_ops::store::read_station_results(&one.run_root.join("results/zero/station.nc"))
+        mgb_ops::store::read_station_results(&two.run_root.join("results/zero/station.nc"))
             .unwrap();
     assert_eq!(stations.level_cm, [40, 40, 40]);
     assert_eq!(stations.level_valid, [true, true, true]);
@@ -495,7 +507,7 @@ fn canonical_forecast_reaches_frozen_preparation_and_execution() {
 }
 
 #[test]
-fn failed_scenario_preserves_sibling_and_lock_rejects_overlap() {
+fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
     let _guard = TEST_LOCK.lock().unwrap();
     use std::fs::OpenOptions;
     fs::create_dir_all("runs").unwrap();
@@ -585,12 +597,19 @@ fn failed_scenario_preserves_sibling_and_lock_rejects_overlap() {
         .unwrap();
     assert_eq!(usage.status.code(), Some(2));
     assert!(matches!(report.status, mgb_ops::app::BatchStatus::Failed));
-    assert!(report.run_root.join("results/zero/basin.nc").is_file());
-    assert!(!report.run_root.join("results/other/basin.nc").exists());
+    assert!(mgb_ops::discover_trials(&path).unwrap().is_empty());
+    assert!(
+        report
+            .scenarios
+            .iter()
+            .all(|scenario| scenario.results.is_empty())
+    );
     assert_eq!(report.scenarios[1].exit_code, Some(3));
     let manifest: serde_json::Value =
         serde_json::from_slice(&fs::read(report.run_artifact).unwrap()).unwrap();
     assert_eq!(manifest["state"], "failed");
+    assert_eq!(manifest["operation"]["scenarios"][0]["state"], "completed");
+    fs::write(path.join("Input/control.txt"), "").unwrap();
     let empty_request = fs::read_to_string(path.join("request.toml"))
         .unwrap()
         .replace("station_ids = [\"s\"]", "station_ids = []");
@@ -602,15 +621,12 @@ fn failed_scenario_preserves_sibling_and_lock_rejects_overlap() {
         output: "prepared-empty".into(),
     })
     .unwrap();
-    let Err(mgb_ops::OperationError::BatchFailed { report: empty }) =
-        mgb_ops::app::execute_prepared(mgb_ops::app::ExecutionRequest {
-            workspace: path.clone(),
-            invocation_dir: path.clone(),
-            prepared: "prepared-empty".into(),
-        })
-    else {
-        panic!("expected failure")
-    };
+    let empty = mgb_ops::app::execute_prepared(mgb_ops::app::ExecutionRequest {
+        workspace: path.clone(),
+        invocation_dir: path.clone(),
+        prepared: "prepared-empty".into(),
+    })
+    .unwrap();
     let station =
         mgb_ops::store::read_station_results(&empty.run_root.join("results/zero/station.nc"))
             .unwrap();
@@ -623,7 +639,7 @@ fn failed_scenario_preserves_sibling_and_lock_rejects_overlap() {
 }
 
 #[test]
-fn malformed_output_and_large_logs_leave_siblings_complete() {
+fn malformed_output_archives_completed_siblings_and_bounded_log_tails() {
     let _guard = TEST_LOCK.lock().unwrap();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
@@ -659,23 +675,21 @@ fn malformed_output_and_large_logs_leave_siblings_complete() {
             .message
             .contains("incorrect stream length")
     );
-    assert!(report.run_root.join("results/third/basin.nc").is_file());
-    assert_eq!(
-        fs::metadata(report.run_root.join("scenarios/third/logs/stdout.log"))
-            .unwrap()
-            .len(),
-        2_000_000
-    );
-    assert_eq!(
-        fs::metadata(report.run_root.join("scenarios/zero/logs/stdout.log"))
-            .unwrap()
-            .len(),
-        0
-    );
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(report.run_artifact).unwrap()).unwrap();
+    assert_eq!(manifest["operation"]["scenarios"][2]["state"], "completed");
+    let diagnostic = manifest["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["path"] == "scenarios/third/logs/stdout.log")
+        .unwrap();
+    assert_eq!(diagnostic["tail"].as_str().unwrap(), "x".repeat(4096));
+    assert!(mgb_ops::discover_trials(&path).unwrap().is_empty());
 }
 
 #[test]
-fn final_manifest_failure_reaps_children_and_keeps_running_manifest() {
+fn final_manifest_failure_reaps_children_and_archives_attempt() {
     let _guard = TEST_LOCK.lock().unwrap();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
@@ -698,17 +712,17 @@ fn final_manifest_failure_reaps_children_and_keeps_running_manifest() {
     let mgb_ops::app::OperationError::Store { run_root, .. } = error else {
         panic!("expected store failure")
     };
-    for id in ["zero", "other", "third", "fourth"] {
-        assert!(
-            run_root
-                .join("scenarios")
-                .join(id)
-                .join("logs/stdout.log")
-                .is_file()
-        );
-    }
-    assert!(!run_root.join("manifest.json").exists());
-    assert!(!run_root.join("snapshot").exists());
+    assert!(!run_root.exists());
+    let manifest = fs::read_dir(path.join("data/run-manifests"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(manifest).unwrap()).unwrap();
+    assert_eq!(manifest["state"], "failed");
+    assert_eq!(manifest["operation"]["scenarios"][0]["state"], "completed");
+    assert!(mgb_ops::discover_trials(&path).unwrap().is_empty());
 }
 
 #[test]
@@ -1532,15 +1546,15 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
     })
     .unwrap();
     assert!(matches!(executed.status, mgb_ops::BatchStatus::Completed));
+    let supplied_result =
+        mgb_ops::store::read_result_series(&executed.run_root.join("results/corrected/basin.nc"))
+            .unwrap();
     let registered_run = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
         workspace: path.clone(),
         invocation_dir: path.clone(),
         prepared: "registered".into(),
     })
     .unwrap();
-    let supplied_result =
-        mgb_ops::store::read_result_series(&executed.run_root.join("results/corrected/basin.nc"))
-            .unwrap();
     let registered_result = mgb_ops::store::read_result_series(
         &registered_run.run_root.join("results/corrected/basin.nc"),
     )
@@ -1851,7 +1865,7 @@ fn incomplete_draft_open_reports_unaccepted_missing_sources_in_api_and_cli() {
 }
 
 #[test]
-fn cancellation_reaps_engines_keeps_successes_and_releases_lock() {
+fn cancellation_reaps_engines_archives_outcomes_and_releases_lock() {
     use std::time::{Duration, Instant};
     let _guard = TEST_LOCK.lock().unwrap();
     fs::create_dir_all("runs").unwrap();
@@ -1911,21 +1925,16 @@ fn cancellation_reaps_engines_keeps_successes_and_releases_lock() {
         let Err(mgb_ops::OperationError::BatchFailed { report }) = result else {
             panic!("expected cancellation")
         };
-        assert_eq!(attempt, report.run_root);
-        assert!(attempt.join("results/zero/basin.nc").is_file());
-        assert!(!attempt.join("results/other").exists());
-        assert!(!attempt.join("snapshot").exists());
-        assert!(!attempt.join("scenarios/other/Input").exists());
-        assert!(!attempt.join("scenarios/other/Output").exists());
+        assert!(!attempt.exists());
         #[cfg(target_os = "linux")]
         for pid in pids {
             assert!(!Path::new("/proc").join(pid.trim()).exists());
         }
-        let cache = mgb_ops::read_trial(&attempt).unwrap();
-        assert!(cache.scenarios.iter().any(|s| s.id == "zero"));
-        assert!(cache.preparation_sha256.is_some());
-        let copied = mgb_ops::Draft::import_manifest(root.clone(), &root, &attempt).unwrap();
-        assert_eq!(copied.document.operation.scenarios.len(), 4);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(report.run_artifact).unwrap()).unwrap();
+        assert_eq!(manifest["state"], "cancelled");
+        assert_eq!(manifest["operation"]["scenarios"][0]["state"], "completed");
+        assert!(mgb_ops::discover_trials(&root).unwrap().is_empty());
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -1989,7 +1998,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let (attempt, pid) = 'waiting: loop {
-        if let Ok(entries) = fs::read_dir(root.join("data/runs")) {
+        if let Ok(entries) = fs::read_dir(root.join("data/cache/run")) {
             for entry in entries.flatten() {
                 let attempt = entry.path();
                 if let Ok(pid) = fs::read_to_string(attempt.join("scenarios/.history/pid")) {
@@ -2011,9 +2020,15 @@ fn cli_sigint_cancels_history_and_reaps_child() {
     assert!(!output.status.success());
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["kind"], "batch_failed");
-    assert!(!attempt.join("manifest.json").exists());
-    assert!(!attempt.join("snapshot").exists());
-    assert!(attempt.join("scenarios/.history/logs/stderr.log").exists());
+    assert!(!attempt.exists());
+    let archive = Path::new(result["report"]["run_artifact"].as_str().unwrap());
+    let manifest: serde_json::Value = serde_json::from_slice(&fs::read(archive).unwrap()).unwrap();
+    assert_eq!(manifest["state"], "cancelled");
+    assert_eq!(
+        manifest["operation"]["scenarios"][0]["error"]["stage"],
+        "history"
+    );
+
     #[cfg(target_os = "linux")]
     assert!(!Path::new("/proc").join(pid.trim()).exists());
     let lock = fs::OpenOptions::new()
@@ -2120,11 +2135,12 @@ fn run_uses_current_draft_and_cleans_temporary_preparation() {
     assert_ne!(first.run_root, second.run_root);
     control.cancel();
     assert!(!control.is_cancelled());
-    assert!(first.run_root.join("results/zero/basin.nc").exists());
+    assert!(!first.run_root.exists());
+    assert!(second.run_root.join("results/zero/basin.nc").exists());
 }
 
 #[test]
-fn cancellation_during_finalization_keeps_completed_results() {
+fn cancellation_during_finalization_preserves_the_publication_boundary() {
     use std::time::{Duration, Instant};
     let _guard = TEST_LOCK.lock().unwrap();
     fs::create_dir_all("runs").unwrap();
@@ -2167,35 +2183,42 @@ fn cancellation_during_finalization_keeps_completed_results() {
         }
         control.cancel();
         let result = worker.join().unwrap();
-        let report = match result {
-            Err(mgb_ops::OperationError::BatchFailed { report }) => {
-                assert!(matches!(report.status, mgb_ops::BatchStatus::Failed));
-                assert_eq!(report.error.as_deref(), Some("operation cancelled"));
-                report
+        match result {
+            Err(mgb_ops::OperationError::Cancelled { .. })
+            | Err(mgb_ops::OperationError::BatchFailed { .. }) => {
+                assert!(mgb_ops::discover_trials(&root).unwrap().is_empty());
+                let path = fs::read_dir(root.join("data/run-manifests"))
+                    .unwrap()
+                    .next()
+                    .unwrap()
+                    .unwrap()
+                    .path();
+                let manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+                assert_eq!(manifest["state"], "cancelled");
             }
             Ok(report) => {
                 assert!(matches!(report.status, mgb_ops::BatchStatus::Completed));
                 assert!(!control.is_cancelled());
-                report
+                assert_eq!(
+                    mgb_ops::discover_trials(&root).unwrap(),
+                    [report.run_root.clone()]
+                );
+                assert_eq!(
+                    mgb_ops::read_trial(&report.run_root)
+                        .unwrap()
+                        .scenarios
+                        .len(),
+                    4
+                );
             }
             other => panic!("unexpected result: {other:?}"),
-        };
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(&report.run_artifact).unwrap()).unwrap();
-        assert_eq!(manifest["error"].as_str(), report.error.as_deref());
-        assert_eq!(
-            mgb_ops::read_trial(&report.run_root)
-                .unwrap()
-                .scenarios
-                .len(),
-            4
-        );
-        assert!(report.run_root.join("results/zero/basin.nc").is_file());
+        }
     });
 }
 
 #[test]
-fn cleanup_error_is_reported_after_workers_stop_and_lock_releases() {
+fn failed_worker_tree_is_removed_after_workers_stop_and_lock_releases() {
     use std::time::{Duration, Instant};
     let _guard = TEST_LOCK.lock().unwrap();
     fs::create_dir_all("runs").unwrap();
@@ -2236,11 +2259,11 @@ fn cleanup_error_is_reported_after_workers_stop_and_lock_releases() {
         fs::write(attempt.join("scenarios/.history"), b"blocked").unwrap();
         control.cancel();
         let result = worker.join().unwrap();
-        let Err(mgb_ops::OperationError::Store { message, .. }) = result else {
-            panic!("expected cleanup error")
+        let Err(mgb_ops::OperationError::BatchFailed { report }) = result else {
+            panic!("expected cancelled batch")
         };
-        assert!(message.contains(".history"));
-        assert!(!attempt.join("snapshot").exists());
+        assert!(report.run_artifact.is_file());
+        assert!(!attempt.exists());
         let lock = fs::OpenOptions::new()
             .read(true)
             .write(true)
@@ -2507,9 +2530,8 @@ fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
         .unwrap();
     assert_ne!(switched.generation, active.generation);
     assert_eq!(switched.reference, time("2026-01-01T02:00:00"));
-    fs::remove_dir_all(workspace.join("data/runs")).unwrap();
     assert!(!workspace.join("data/cache/preparations").exists());
-    let without_run_artifacts = mgb_ops::app::query_cached_rainfall(
+    let after_switch = mgb_ops::app::query_cached_rainfall(
         &workspace,
         "zero",
         &mgb_ops::app::RainfallPeriod::SignedHours(1),
@@ -2518,10 +2540,10 @@ fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
     )
     .unwrap()
     .unwrap();
-    assert_eq!(without_run_artifacts.info, switched);
-    assert_eq!(without_run_artifacts.summary.unwrap().mean_mm, Some(0.));
+    assert_eq!(after_switch.info, switched);
+    assert_eq!(after_switch.summary.unwrap().mean_mm, Some(0.));
 
-    let cache = workspace.join("data/cache/rainfall");
+    let cache = workspace.join("data/cache/run");
     assert!(!cache.join(active.generation).exists());
     assert_eq!(
         fs::read_dir(&cache)
@@ -2538,7 +2560,7 @@ fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
     fs::write(
         cache
             .join(&switched.generation)
-            .join("checkpoints/observed-grid.nc"),
+            .join("rainfall/checkpoints/observed-grid.nc"),
         "invalid",
     )
     .unwrap();
