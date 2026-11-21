@@ -2641,11 +2641,29 @@ fn replay_from_standalone_recipe_requires_identical_sources() {
     assert_ne!(first.run_root, replayed.run_root);
     assert!(!first.run_root.exists());
 
+    let legacy = workspace.join("legacy-recipe.json");
+    let mut legacy_manifest: mgb_ops::store::OperationManifest =
+        mgb_ops::store::read_draft(&manifest).unwrap();
+    legacy_manifest.inputs.clear();
+    legacy_manifest
+        .recipe
+        .as_object_mut()
+        .unwrap()
+        .remove("source_identities");
+    mgb_ops::store::write_draft(&legacy, &legacy_manifest).unwrap();
+    let legacy_replayed = mgb_ops::replay_run(&workspace, &legacy, &control).unwrap();
+    assert!(
+        legacy_replayed
+            .run_root
+            .join("results/zero/basin.nc")
+            .is_file()
+    );
+
     fs::write(workspace.join("Input/control.txt"), "fail").unwrap();
     let error = mgb_ops::replay_run(&workspace, &archived, &control).unwrap_err();
     assert!(
         format!("{error}").contains("recorded operation recipe or source identities changed"),
         "{error}"
     );
-    assert!(replayed.run_root.exists());
+    assert!(legacy_replayed.run_root.exists());
 }

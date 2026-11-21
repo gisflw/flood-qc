@@ -830,7 +830,7 @@ fn prepare_accepted(
                     .cloned()
                     .collect::<Vec<_>>()
             };
-            if payload(expected) != payload(&manifest) {
+            if !expected.inputs.is_empty() && payload(expected) != payload(&manifest) {
                 return Err(source_error(
                     &request_path,
                     "recorded preparation inputs changed",
