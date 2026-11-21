@@ -32,6 +32,7 @@ remain independent of runner work.
 | --- | --- |
 | Open a workspace or import saved data | **Project → Open TOML** or **Import data** |
 | Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
+| Step through modeled inundation | Select a run in **Files**, then use **Map → Inundation** |
 | Inspect location data or a retained run | **View → Charts**, **Data**, or **Files** |
 | Review observation availability and QC | **View → Observation review** |
 | Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
@@ -82,6 +83,13 @@ coverage display as NA. Scenario changes apply immediately to the current period
 Use **Apply** to commit a period edit. A successful **Processing → New run → Run All** supplies
 the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
 the desktop is idle.
+
+**Map → Inundation** opens the selected retained run's scenario mask. Choose the
+scenario and step through model hours with the slider or arrow keys while it has
+focus. The control starts at the first forecast hour and displays the model's
+local time. Double and Swipe use the same inundation frame on both sides. Use
+Refresh/F5 after generating a mask for an open run. See
+[inundation processing](inundation.md) for the command and regional inputs.
 
 Choose the retained run in Files and its overlays in Charts. Chart timestamps use
 the run or project observation timezone. Without a run, the initial chart window

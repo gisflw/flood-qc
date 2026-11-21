@@ -272,6 +272,10 @@ Failed scenarios lose incomplete outputs. Zero successes leaves debugging logs
 without a result manifest. No Save run action, retention policy or automatic cache
 cleanup is provided. Existing saved artifacts are neither rewritten nor removed.
 
+Supported engine runs also retain an optional flood source for each successful
+scenario. See [inundation processing](inundation.md) for source requirements and
+mask generation.
+
 `discover_trials(workspace)` lists retained manifest roots; `read_trial(root)`
 validates successful canonical results and required engine streams. Older saved
 runs remain readable. Copying a recipe does not recover missing source bytes.
