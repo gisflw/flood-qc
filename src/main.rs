@@ -35,6 +35,10 @@ enum Command {
         #[command(subcommand)]
         command: RunCommand,
     },
+    Inundation {
+        #[command(subcommand)]
+        command: InundationCommand,
+    },
     Series {
         #[command(subcommand)]
         command: SeriesCommand,
@@ -727,6 +731,24 @@ fn draft_action(
 }
 
 #[derive(Subcommand)]
+enum InundationCommand {
+    /// Process an aligned HAND and catchments GeoTIFF pair for a retained scenario.
+    Process {
+        #[arg(long)]
+        run: PathBuf,
+        #[arg(long)]
+        scenario: String,
+        #[arg(long)]
+        hand: PathBuf,
+        #[arg(long)]
+        catchments: PathBuf,
+        #[arg(long)]
+        replace: bool,
+        #[arg(long)]
+        json: bool,
+    },
+}
+#[derive(Subcommand)]
 enum OperationCommand {
     Prepare {
         #[arg(long)]
@@ -813,7 +835,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             ..
         } | Command::Run {
             command: RunCommand::Regenerate { .. },
-        }
+        } | Command::Inundation { .. }
     ) {
         let signal_control = control.clone();
         ctrlc::set_handler(move || signal_control.cancel())?;
@@ -895,6 +917,53 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             };
             mgb_ops::app::save_canonical_forcing(&input, &output, kind)?;
             serde_json::to_writer(&mut out, &output)?;
+            writeln!(out)?;
+            Ok(true)
+        }
+        Command::Inundation {
+            command:
+                InundationCommand::Process {
+                    run,
+                    scenario,
+                    hand,
+                    catchments,
+                    replace,
+                    json,
+                },
+        } => {
+            use mgb_ops::app::{
+                InundationProcessRequest, InundationProcessStatus, process_inundation,
+            };
+            let result = process_inundation(
+                InundationProcessRequest {
+                    run,
+                    scenario,
+                    hand,
+                    catchments,
+                    replace,
+                },
+                &control,
+            );
+            match result {
+                Ok(report) if json => serde_json::to_writer(&mut out, &report)?,
+                Ok(report) => {
+                    let action = match report.status {
+                        InundationProcessStatus::Created => "Created",
+                        InundationProcessStatus::Reused => "Reused",
+                        InundationProcessStatus::Replaced => "Replaced",
+                    };
+                    write!(out, "{action} {}", report.path.display())?;
+                }
+                Err(error) if json => {
+                    serde_json::to_writer(
+                        &mut out,
+                        &serde_json::json!({ "error": error.to_string() }),
+                    )?;
+                    writeln!(out)?;
+                    return Ok(false);
+                }
+                Err(error) => return Err(Box::new(error)),
+            }
             writeln!(out)?;
             Ok(true)
         }

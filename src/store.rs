@@ -75,3 +75,12 @@ pub(crate) use self::rainfall::{
     DecodedRainfallFile, RainfallCacheFiles, StagedRainfallCache, rainfall_cache_info,
     read_rainfall_cache,
 };
+
+mod inundation;
+pub use self::inundation::{
+    FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
+};
+#[cfg(feature = "inundation-write")]
+pub(crate) use self::inundation::{
+    INUNDATION_CHUNK, InundationRasters, InundationStage, InundationWriter,
+};

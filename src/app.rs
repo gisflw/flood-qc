@@ -551,3 +551,8 @@ mod hydrograph;
 pub use self::hydrograph::{
     HydrographCurve, HydrographReport, HydrographRequest, analyze_hydrograph, export_hydrograph,
 };
+
+mod inundation;
+pub use self::inundation::{
+    InundationProcessReport, InundationProcessRequest, InundationProcessStatus, process_inundation,
+};
