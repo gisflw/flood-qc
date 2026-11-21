@@ -331,3 +331,46 @@ pub(crate) fn capture_flood_source(
         provenance,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{check_levels, match_hours, read_z0, start_time};
+    use crate::store::TimeInterval;
+    use chrono::Duration;
+
+    #[test]
+    fn distinguishes_mini_order_and_conflicting_z0() {
+        let cota = b" Minibacia Z0(m) Zfp(m) Areafp(km2)\r\n1 1122 1123 .91\r\n1 1122 1124 1.02\r\n2 10 11 1.00\r\n";
+        assert_eq!(read_z0(cota, &[1, 2]).unwrap(), [1122.0, 10.0]);
+        assert!(read_z0(cota, &[2, 1]).unwrap_err().contains("order"));
+        assert!(read_z0(cota, &[1, 2, 3]).unwrap_err().contains("count"));
+        let conflicting = b"Minibacia Z0(m) Zfp(m) Areafp(km2)\n1 10 11 1\n1 11 12 2\n";
+        assert!(read_z0(conflicting, &[1]).unwrap_err().contains("changes"));
+    }
+
+    #[test]
+    fn validates_canonical_hour_positions_and_signed_level_difference() {
+        let hour = Duration::hours(1);
+        let start = start_time("2026", "7", "20", "0").unwrap();
+        let mut bounds = [
+            TimeInterval {
+                start,
+                end: start + hour,
+            },
+            TimeInterval {
+                start: start + hour,
+                end: start + hour * 2,
+            },
+        ];
+        match_hours(start + hour, &bounds).unwrap();
+        check_levels(&[0.0, 2.5], &[1.0, 4.5], &[2.0], &bounds, &[4]).unwrap();
+        assert!(
+            check_levels(&[0.0, 2.49], &[1.0, 4.5], &[2.0], &bounds, &[4])
+                .unwrap_err()
+                .contains("2026-07-20 02:00:00 for MINI 4")
+        );
+        bounds[1].start += hour;
+        bounds[1].end += hour;
+        assert!(match_hours(start + hour, &bounds).is_err());
+    }
+}
