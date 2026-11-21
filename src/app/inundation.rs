@@ -57,7 +57,7 @@ mod enabled {
         OperationControl,
     };
     use crate::{
-        analysis::{classify, wet_fraction},
+        analysis::{InundationStages, update_tile, wet_fraction},
         store::{
             FLOOD_MASK_FILE, FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource,
             INUNDATION_TILE, InundationLevel, InundationMask, InundationMetadata,
@@ -233,7 +233,7 @@ mod enabled {
         writer: &mut InundationWriter,
         control: &OperationControl,
     ) -> Result<(), StoreError> {
-        let spans = source.mini_ids.len();
+        let stages = InundationStages::new(&source.depth_m, &source.channel_depth_m);
         let minis: HashMap<_, _> = source
             .mini_ids
             .iter()
@@ -242,7 +242,8 @@ mod enabled {
             .map(|(i, id)| (id, i))
             .collect();
         let mut mask = Vec::new();
-        let mut overview = Vec::new();
+        let mut changing = Vec::new();
+        let mut overviews = [Vec::new(), Vec::new()];
         let chunk = INUNDATION_TILE;
         for y in (0..rasters.height).step_by(chunk) {
             let h = chunk.min(rasters.height - y);
@@ -251,15 +252,18 @@ mod enabled {
                 let w = chunk.min(rasters.width - x);
                 let tile = Window::new(x, y, w, h);
                 let cells = rasters.read_cells(tile, &minis)?;
-                if cells.iter().all(Option::is_none) {
+                if !stages.initialize_tile(&cells, &mut mask, &mut changing) {
                     continue;
                 }
-                mask.resize(w * h, 0);
-                for (time, depth) in source.depth_m.chunks_exact(spans).enumerate() {
+                for (time, frame) in stages.frames().enumerate() {
                     cancelled(control)?;
-                    classify(&cells, depth, &source.channel_depth_m, &mut mask);
+                    let refresh = time == 0 || update_tile(&changing, frame, &mut mask);
                     writer.write(InundationLevel::Full, time, tile, &mask)?;
-                    for level in [InundationLevel::Overview4, InundationLevel::Overview16] {
+                    for (level, overview) in
+                        [InundationLevel::Overview4, InundationLevel::Overview16]
+                            .into_iter()
+                            .zip(&mut overviews)
+                    {
                         let factor = level.factor();
                         let window = Window::new(
                             x / factor,
@@ -267,8 +271,10 @@ mod enabled {
                             w.div_ceil(factor),
                             h.div_ceil(factor),
                         );
-                        wet_fraction(&mask, w, h, factor, &mut overview);
-                        writer.write(level, time, window, &overview)?;
+                        if refresh {
+                            wet_fraction(&mask, w, h, factor, overview);
+                        }
+                        writer.write(level, time, window, overview)?;
                     }
                 }
             }

@@ -82,7 +82,7 @@ fn fixture(dir: &Path) -> InundationProcessRequest {
     let source = FloodSource {
         timeline: IntervalAxis {
             time_zone: "America/Sao_Paulo".into(),
-            bounds: (0..2)
+            bounds: (0..4)
                 .map(|t| TimeInterval {
                     start: origin + Duration::hours(t),
                     end: origin + Duration::hours(t + 1),
@@ -90,7 +90,7 @@ fn fixture(dir: &Path) -> InundationProcessRequest {
                 .collect(),
         },
         mini_ids: vec![1],
-        depth_m: vec![3., 4.],
+        depth_m: vec![3., 4., 4., 3.],
         channel_depth_m: vec![2.],
         historical_count: 1,
         provenance: Provenance {
@@ -121,7 +121,7 @@ fn processes_and_reuses_a_compressed_scenario_mask() {
     let control = OperationControl::default();
     let report = process_inundation(request.clone(), &control).unwrap();
     assert_eq!(report.status, InundationProcessStatus::Created);
-    assert_eq!((report.historical_count, report.forecast_count), (1, 1));
+    assert_eq!((report.historical_count, report.forecast_count), (1, 3));
     let mask = InundationMask::open(&report.path).unwrap();
     assert_eq!(mask.metadata().epsg, 4618);
     assert_eq!(mask.metadata().timeline.time_zone, "America/Sao_Paulo");
@@ -139,31 +139,26 @@ fn processes_and_reuses_a_compressed_scenario_mask() {
         [0, 1, 255, 255, 255],
     );
     assert_eq!(
-        mask.read_window(InundationLevel::Full, 1, WIDTH - 1, 0, 1, 1)
-            .unwrap(),
-        [1],
-    );
-    assert_eq!(
         mask.read_window(InundationLevel::Overview4, 0, 0, 0, 2, 1)
             .unwrap(),
         [6, 255],
     );
-    assert_eq!(
-        mask.read_window(InundationLevel::Overview4, 1, (WIDTH - 1) / 4, 0, 1, 1)
-            .unwrap(),
-        [8],
-    );
-    assert_eq!(
-        mask.read_window(InundationLevel::Overview16, 1, (WIDTH - 1) / 16, 0, 1, 1)
-            .unwrap(),
-        [3],
-    );
+    for (level, expected) in [
+        (InundationLevel::Full, [0, 1, 1, 0]),
+        (InundationLevel::Overview4, [0, 8, 8, 0]),
+        (InundationLevel::Overview16, [0, 3, 3, 0]),
+    ] {
+        let x = (WIDTH - 1) / level.factor();
+        for (time, value) in expected.into_iter().enumerate() {
+            assert_eq!(mask.read_window(level, time, x, 0, 1, 1).unwrap(), [value]);
+        }
+    }
     assert!(
         mask.read_window(InundationLevel::Full, 0, WIDTH, 0, 1, 1)
             .is_err()
     );
     assert!(
-        mask.read_window(InundationLevel::Full, 2, 0, 0, 1, 1)
+        mask.read_window(InundationLevel::Full, 4, 0, 0, 1, 1)
             .is_err()
     );
     let file = terrio::multidim::open(report.path.to_str().unwrap()).unwrap();

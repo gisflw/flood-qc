@@ -50,4 +50,4 @@ pub use self::hydrograph::{
 #[cfg(feature = "inundation-write")]
 mod inundation;
 #[cfg(feature = "inundation-write")]
-pub(crate) use self::inundation::{classify, wet_fraction};
+pub(crate) use self::inundation::{InundationStages, update_tile, wet_fraction};
