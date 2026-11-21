@@ -23,6 +23,33 @@ fn absolute_parent(path: &Path) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
+fn check_detached_destination(workspace: &Path, destination: &Path) -> Result<(), String> {
+    let resolved_destination = absolute_parent(destination)?.join(
+        destination
+            .file_name()
+            .ok_or("destination needs a filename")?,
+    );
+    let data = workspace
+        .canonicalize()
+        .map_err(|e| e.to_string())?
+        .join("data");
+    let resolved_data = data.canonicalize().unwrap_or_else(|_| data.clone());
+    for managed in ["cache", "run-manifests", "runs"] {
+        let managed_path = data.join(managed);
+        if resolved_destination.starts_with(resolved_data.join(managed))
+            || resolved_destination.starts_with(&managed_path)
+            || managed_path
+                .canonicalize()
+                .is_ok_and(|path| resolved_destination.starts_with(path))
+        {
+            return Err(
+                "bundle destination is inside the managed run cache or manifest archive".into(),
+            );
+        }
+    }
+    Ok(())
+}
+
 fn engine_reference(manifest: &OperationManifest) -> Result<&InputReference, String> {
     let mut candidates = manifest.inputs.iter().filter(|file| {
         matches!(
@@ -121,6 +148,7 @@ pub fn export_run(
             if active != run_path {
                 return Err("selected run is no longer active".into());
             }
+            check_detached_destination(workspace, destination)?;
             export_run_directory(run, run_id, preparation, destination)
         })?
         .ok_or_else(|| "workspace has no active run".into());
@@ -229,31 +257,11 @@ fn import_checked_run(
     bundle: BundleManifest,
 ) -> Result<RunBundleReport, String> {
     let parent = absolute_parent(destination)?;
-    let workspace = workspace.canonicalize().map_err(|e| e.to_string())?;
     let source_root = source.canonicalize().map_err(|e| e.to_string())?;
     if parent.starts_with(source_root) {
         return Err("import destination is inside its source bundle".into());
     }
-    let resolved_destination = parent.join(
-        destination
-            .file_name()
-            .ok_or("destination needs a filename")?,
-    );
-    let data = workspace.join("data");
-    let resolved_data = data.canonicalize().unwrap_or_else(|_| data.clone());
-    for managed in ["cache", "run-manifests", "runs"] {
-        let managed_path = data.join(managed);
-        if resolved_destination.starts_with(resolved_data.join(managed))
-            || resolved_destination.starts_with(&managed_path)
-            || managed_path
-                .canonicalize()
-                .is_ok_and(|path| resolved_destination.starts_with(path))
-        {
-            return Err(
-                "import destination is inside the managed run cache or manifest archive".into(),
-            );
-        }
-    }
+    check_detached_destination(workspace, destination)?;
     publish_directory(destination, |stage| {
         for path in bundle
             .files
@@ -311,11 +319,6 @@ pub fn replay_run(
     {
         return Err(invalid(
             "manifest belongs to a different operational workspace".into(),
-        ));
-    }
-    if manifest.inputs.is_empty() {
-        return Err(invalid(
-            "manifest has no retained preparation identities".into(),
         ));
     }
     let ManifestRecipe {

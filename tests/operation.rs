@@ -306,6 +306,9 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
         prepared: prepared.prepared.clone(),
     })
     .unwrap();
+    assert!(
+        mgb_ops::export_run(&trial.run_root, None, &source.join("data/cache/run/bundle")).is_err()
+    );
     let bundle = source.join("bundle");
     mgb_ops::export_run(&trial.run_root, Some(&prepared.prepared), &bundle).unwrap();
     assert!(!bundle.join("preparation/baseline/engine").exists());
