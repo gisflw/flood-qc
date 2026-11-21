@@ -310,17 +310,26 @@ pub(crate) fn capture_flood_source(
         .processing
         .as_object_mut()
         .ok_or("invalid flood source provenance")?;
+    let evidence = [
+        ("scenario", scenario),
+        ("depth_datum", "model_channel_bed"),
+        (
+            "bed_elevation",
+            "COTA_AREA.FLP Z0 minus Cell.hig Depth (float32)",
+        ),
+        ("history_handtudo_sha256", &history.hand_sha256),
+        ("scenario_handtudo_sha256", &scenario_sha256),
+        ("cell_hig_sha256", &history.cell_sha256),
+        ("cota_area_flp_sha256", &history.cota_sha256),
+    ];
     processing.insert(
         "flood_source".into(),
-        serde_json::json!({
-            "scenario": scenario,
-            "depth_datum": "model_channel_bed",
-            "bed_elevation": "COTA_AREA.FLP Z0 minus Cell.hig Depth (float32)",
-            "history_handtudo_sha256": history.hand_sha256,
-            "scenario_handtudo_sha256": scenario_sha256,
-            "cell_hig_sha256": history.cell_sha256,
-            "cota_area_flp_sha256": history.cota_sha256,
-        }),
+        serde_json::Value::Object(
+            evidence
+                .into_iter()
+                .map(|(key, value)| (key.into(), value.into()))
+                .collect(),
+        ),
     );
     Ok(FloodSource {
         timeline: forcing.timeline.clone(),
