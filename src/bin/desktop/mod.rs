@@ -539,19 +539,20 @@ impl Monitoring {
             self.worker.invalidate(RainSide::Right.slot());
             self.loading[RainSide::Right.slot()] = false;
         }
-        if slot == 1 {
-            self.invalidate_chart();
-        }
         self.loading[slot] = true;
         self.worker.submit(job);
-        if slot == UPSTREAM_SLOT {
-            return;
+        let pt = self.preferences.portuguese;
+        match slot {
+            UPSTREAM_SLOT => {}
+            RUN_SLOT => self.status = text(pt, "Loading run…", "Carregando execução…"),
+            _ => {
+                self.status = text(
+                    pt,
+                    "Loading; previous view retained",
+                    "Carregando; visualização anterior mantida",
+                );
+            }
         }
-        self.status = text(
-            self.preferences.portuguese,
-            "Loading; previous view retained",
-            "Carregando; visualização anterior mantida",
-        );
     }
     fn remember(&mut self) {
         if self.runners.initialized
@@ -612,7 +613,17 @@ impl Monitoring {
             self.run_target.as_ref() == self.active_run.as_ref().ok().and_then(Option::as_ref);
         self.active_run = active;
         if changed && following_active {
-            self.load_run(self.active_run.as_ref().ok().cloned().flatten());
+            let target = self.active_run.as_ref().ok().cloned().flatten();
+            if target.is_none() {
+                self.status = self.active_run.as_ref().err().cloned().unwrap_or_else(|| {
+                    text(
+                        self.preferences.portuguese,
+                        "No active run.",
+                        "Nenhuma execução ativa.",
+                    )
+                });
+            }
+            self.load_run(target);
         } else if refresh {
             self.load_run(self.run_target.clone());
         }
@@ -1078,6 +1089,15 @@ impl Monitoring {
                         self.display.chart_end.clone_from(&run.end);
                     }
                     self.display.overlays.clone_from(&run.scenarios);
+                    self.status = format!(
+                        "{} · {}",
+                        text(
+                            self.preferences.portuguese,
+                            "Run loaded",
+                            "Execução carregada"
+                        ),
+                        run.root.display(),
+                    );
                     self.run = Some(run);
                     self.request_chart();
                 }
