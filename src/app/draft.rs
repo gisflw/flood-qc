@@ -11,9 +11,9 @@ use crate::analysis::{
 };
 use crate::store::{
     ForecastCatalog, ForecastCorrection, GridFrame, GridSeries, IntervalAxis, ObservationInputs,
-    ObservationReplacement, ObservationSelection, ObservationStore, check_correction,
-    collect_inputs, digest_file, read_draft, read_retained_manifest, validate_replacement,
-    write_draft,
+    ObservationReplacement, ObservationSelection, ObservationStore, OperationManifest,
+    check_correction, collect_inputs, digest_file, read_draft, read_retained_manifest,
+    validate_replacement, write_draft,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -64,6 +64,31 @@ pub(super) fn observation_identity(
         .samples
         .retain(|s| inputs.series.iter().any(|v| v.series_id == s.series_id));
     identity(&(inputs, timeline))
+}
+
+pub(super) fn read_recipe_manifest(path: &Path) -> Result<OperationManifest, String> {
+    let manifest = if path.is_dir() {
+        let manifest = read_retained_manifest(path)?;
+        if manifest.preparation_sha256.is_some() {
+            super::operation::read_trial(path).map_err(|e| e.to_string())?;
+        }
+        manifest
+    } else {
+        let value: serde_json::Value = read_draft(path)?;
+        if value.get("attempt_id").is_some() {
+            crate::store::read_run_attempt(path)?
+                .operation
+                .ok_or("attempt has no retained operation recipe")?
+        } else {
+            serde_json::from_value(value).map_err(|e| e.to_string())?
+        }
+    };
+    if manifest.schema_version != 1
+        || !["prepared", "completed", "failed"].contains(&manifest.state.as_str())
+    {
+        return Err("expected a retained operation recipe".into());
+    }
+    Ok(manifest)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -562,18 +587,18 @@ impl Draft {
     pub fn import_manifest(
         workspace: PathBuf,
         invocation_dir: &Path,
-        root: &Path,
+        path: &Path,
     ) -> Result<Self, String> {
-        let root = super::absolute(invocation_dir, root);
-        let manifest = read_retained_manifest(&root)?;
-        if manifest.preparation_sha256.is_some() {
-            super::operation::read_trial(&root).map_err(|e| e.to_string())?;
-        }
-        if manifest.schema_version != 1
-            || !["prepared", "completed", "failed"].contains(&manifest.state.as_str())
-        {
-            return Err("manifest is not a retained preparation or completed run".into());
-        }
+        let path = super::absolute(invocation_dir, path);
+        let manifest = read_recipe_manifest(&path)?;
+        Self::from_manifest(workspace, invocation_dir, &manifest)
+    }
+
+    pub(super) fn from_manifest(
+        workspace: PathBuf,
+        invocation_dir: &Path,
+        manifest: &OperationManifest,
+    ) -> Result<Self, String> {
         let mut document = manifest
             .recipe
             .get("document")

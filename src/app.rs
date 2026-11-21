@@ -36,7 +36,9 @@ pub use self::request::{
     GridDocument, HotStartDocument, InterpolationDocument, LevelsDocument, ObservedDocument,
     PreparationDocument, RoutingMode, ScenarioDocument, retained_day_horizons,
 };
-pub use self::sharing::{RunBundleReport, export_run, import_run, regenerate_run};
+pub use self::sharing::{
+    RunBundleReport, export_run, import_run, import_run_to, regenerate_run, replay_run,
+};
 mod forecast;
 pub use self::forecast::{
     CanonicalForecastDocument, NormalizeForecastDocument, NormalizeForecastError,

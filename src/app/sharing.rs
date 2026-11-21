@@ -108,10 +108,32 @@ pub fn export_run(
     preparation: Option<&Path>,
     destination: &Path,
 ) -> Result<RunBundleReport, String> {
-    let run_id = run
+    let run_path = run.canonicalize().map_err(|e| e.to_string())?;
+    let name = run_path
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("expected a run directory name")?;
+    if let Some(workspace) = run_path.ancestors().nth(4)
+        && run_path.parent() == Some(workspace.join("data/cache/run").as_path())
+        && let Some(run_id) = name.strip_prefix("generation-")
+    {
+        return super::operation::with_active_run(workspace, |active| {
+            if active != run_path {
+                return Err("selected run is no longer active".into());
+            }
+            export_run_directory(run, run_id, preparation, destination)
+        })?
+        .ok_or_else(|| "workspace has no active run".into());
+    }
+    export_run_directory(run, name, preparation, destination)
+}
+
+fn export_run_directory(
+    run: &Path,
+    run_id: &str,
+    preparation: Option<&Path>,
+    destination: &Path,
+) -> Result<RunBundleReport, String> {
     let parent = absolute_parent(destination)?;
     if parent.starts_with(run.canonicalize().map_err(|error| error.to_string())?) {
         return Err("bundle destination is inside its source run".into());
@@ -186,10 +208,50 @@ pub fn import_run(workspace: &Path, source: &Path) -> Result<RunBundleReport, St
     let run_base = workspace
         .canonicalize()
         .map_err(|error| error.to_string())?
-        .join("data/runs");
+        .join("saved-runs");
     fs::create_dir_all(&run_base).map_err(|error| error.to_string())?;
-    let destination = run_base.join(&bundle.run_id);
-    publish_directory(&destination, |stage| {
+    import_checked_run(workspace, source, &run_base.join(&bundle.run_id), bundle)
+}
+
+pub fn import_run_to(
+    workspace: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<RunBundleReport, String> {
+    let bundle = checked_bundle(source)?;
+    import_checked_run(workspace, source, destination, bundle)
+}
+
+fn import_checked_run(
+    workspace: &Path,
+    source: &Path,
+    destination: &Path,
+    bundle: BundleManifest,
+) -> Result<RunBundleReport, String> {
+    let parent = absolute_parent(destination)?;
+    let workspace = workspace.canonicalize().map_err(|e| e.to_string())?;
+    let source_root = source.canonicalize().map_err(|e| e.to_string())?;
+    if parent.starts_with(source_root) {
+        return Err("import destination is inside its source bundle".into());
+    }
+    let resolved_destination = parent.join(
+        destination
+            .file_name()
+            .ok_or("destination needs a filename")?,
+    );
+    for managed in ["data/cache", "data/run-manifests", "data/runs"] {
+        let managed = workspace.join(managed);
+        if resolved_destination.starts_with(&managed)
+            || managed
+                .canonicalize()
+                .is_ok_and(|path| resolved_destination.starts_with(path))
+        {
+            return Err(
+                "import destination is inside the managed run cache or manifest archive".into(),
+            );
+        }
+    }
+    publish_directory(destination, |stage| {
         for path in bundle
             .files
             .iter()
@@ -206,10 +268,88 @@ pub fn import_run(workspace: &Path, source: &Path) -> Result<RunBundleReport, St
             return Err("bundle changed while copying".into());
         }
         Ok(RunBundleReport {
-            root: destination.clone(),
+            root: destination.into(),
             run_id: bundle.run_id,
             has_preparation: bundle.preparation_engine.is_some(),
         })
+    })
+}
+
+pub fn replay_run(
+    workspace: &Path,
+    manifest_path: &Path,
+    control: &OperationControl,
+) -> Result<ExecutionReport, OperationError> {
+    use super::draft::read_recipe_manifest;
+    use super::operation::{ExecutionRecipe, lock_workspace, run_preparation_locked};
+    use super::prepare::{TypedPreparationRequest, prepare_replay};
+
+    control.check()?;
+    let invalid = |message| OperationError::InvalidRequest {
+        field: "manifest".into(),
+        message,
+    };
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| OperationError::Source {
+            path: workspace.into(),
+            message: error.to_string(),
+        })?;
+    if !manifest_path.is_file() {
+        return Err(invalid("expected a standalone manifest file".into()));
+    }
+    let manifest = read_recipe_manifest(manifest_path).map_err(invalid)?;
+    let recipe: ExecutionRecipe = serde_json::from_value(manifest.recipe.clone())
+        .map_err(|error| invalid(error.to_string()))?;
+    if recipe
+        .operational_workspace
+        .as_ref()
+        .is_some_and(|root| root != &workspace)
+    {
+        return Err(invalid(
+            "manifest belongs to a different operational workspace".into(),
+        ));
+    }
+    let draft =
+        super::Draft::from_manifest(workspace.clone(), &workspace, &manifest).map_err(invalid)?;
+    let document = draft.preparation_document().map_err(invalid)?;
+    let replacements = recipe.inline_replacements.then(|| {
+        draft
+            .document
+            .instructions
+            .replacements
+            .unwrap_or_default()
+            .into_iter()
+            .map(|entry| entry.value)
+            .collect()
+    });
+    let corrections = draft
+        .document
+        .instructions
+        .corrections
+        .into_iter()
+        .enumerate()
+        .map(|(index, entries)| {
+            entries
+                .filter(|_| recipe.inline_corrections.contains(&index))
+                .map(|entries| entries.into_iter().map(|entry| entry.value).collect())
+        })
+        .collect();
+
+    let lock = lock_workspace(&workspace)?;
+    run_preparation_locked(control, &workspace, &lock, |workspace, output, control| {
+        prepare_replay(
+            TypedPreparationRequest {
+                workspace: workspace.into(),
+                invocation_dir: workspace.into(),
+                output,
+                document,
+                replacements,
+                corrections,
+            },
+            &manifest,
+            control,
+        )
     })
 }
 

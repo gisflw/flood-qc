@@ -378,6 +378,16 @@ enum RunCommand {
         workspace: PathBuf,
         #[arg(long)]
         bundle: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    Replay {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        json: bool,
     },
     Regenerate {
         #[arg(long)]
@@ -768,6 +778,18 @@ enum OperationCommand {
         #[arg(long)]
         json: bool,
     },
+    MigrateCache {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        keep_run: String,
+        #[arg(long)]
+        inundation_donor: Option<String>,
+        #[arg(long)]
+        apply: bool,
+        #[arg(long)]
+        json: bool,
+    },
 }
 #[derive(Subcommand)]
 enum ForecastCommand {
@@ -834,7 +856,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             command: DraftCommand::Prepare { .. } | DraftCommand::Run { .. },
             ..
         } | Command::Run {
-            command: RunCommand::Regenerate { .. },
+            command: RunCommand::Regenerate { .. } | RunCommand::Replay { .. },
         } | Command::Inundation { .. }
     ) {
         let signal_control = control.clone();
@@ -981,9 +1003,38 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     let report = mgb_ops::app::export_run(&run, prepared.as_deref(), &output)?;
                     serde_json::to_writer(&mut out, &report)?;
                 }
-                RunCommand::Import { workspace, bundle } => {
-                    let report = mgb_ops::app::import_run(&workspace, &bundle)?;
+                RunCommand::Import {
+                    workspace,
+                    bundle,
+                    output,
+                } => {
+                    let report = mgb_ops::app::import_run_to(&workspace, &bundle, &output)?;
                     serde_json::to_writer(&mut out, &report)?;
+                }
+                RunCommand::Replay {
+                    workspace,
+                    manifest,
+                    json,
+                } => {
+                    let result = mgb_ops::app::replay_run(&workspace, &manifest, &control);
+                    let Some(report) = operation_result(result, json, &mut out)? else {
+                        return Ok(false);
+                    };
+                    let completed = matches!(report.status, mgb_ops::BatchStatus::Completed);
+                    if json {
+                        serde_json::to_writer(&mut out, &report)?;
+                    } else {
+                        write!(
+                            out,
+                            "Run {} ({:?})",
+                            report.run_root.display(),
+                            report.status
+                        )?;
+                    }
+                    if !completed {
+                        writeln!(out)?;
+                        return Ok(false);
+                    }
                 }
                 RunCommand::Regenerate {
                     workspace,
@@ -1181,6 +1232,30 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             }
             out.flush()?;
             Ok(matches!(report.status, mgb_ops::BatchStatus::Completed))
+        }
+        Command::Operation {
+            command:
+                OperationCommand::MigrateCache {
+                    workspace,
+                    keep_run,
+                    inundation_donor,
+                    apply,
+                    json,
+                },
+        } => {
+            let report = mgb_ops::app::migrate_cache(
+                &workspace,
+                &keep_run,
+                inundation_donor.as_deref(),
+                apply,
+            )?;
+            if json {
+                serde_json::to_writer(&mut out, &report)?;
+                writeln!(out)?;
+            } else {
+                writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
+            }
+            Ok(true)
         }
         Command::Forecast {
             command: ForecastCommand::ImportCanonical { workspace, request },

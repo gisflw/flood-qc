@@ -316,13 +316,15 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
     fs::remove_file(source.join("observations.sqlite")).unwrap();
     let target = source.join("receiver");
     fs::create_dir(&target).unwrap();
-    let imported = mgb_ops::import_run(&target, &bundle).unwrap();
+    let destination = target.join("saved-run");
+    let imported = mgb_ops::import_run_to(&target, &bundle, &destination).unwrap();
+    assert_eq!(imported.root, destination);
     assert!(imported.has_preparation);
-    assert!(mgb_ops::import_run(&target, &bundle).is_err());
-    assert_eq!(
-        mgb_ops::discover_trials(&target).unwrap(),
-        std::slice::from_ref(&imported.root)
-    );
+    assert!(mgb_ops::import_run_to(&target, &bundle, &destination).is_err());
+    let cache = target.join("data/cache/run");
+    fs::create_dir_all(&cache).unwrap();
+    assert!(mgb_ops::import_run_to(&target, &bundle, &cache.join("imported")).is_err());
+    assert!(mgb_ops::discover_trials(&target).unwrap().is_empty());
     fs::write(source.join("wrong-engine"), b"different").unwrap();
     assert!(
         mgb_ops::regenerate_run(
@@ -349,7 +351,7 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
     fs::write(bundle.join(raw), b"corrupt").unwrap();
     let other = source.join("other-receiver");
     fs::create_dir(&other).unwrap();
-    assert!(mgb_ops::import_run(&other, &bundle).is_err());
+    assert!(mgb_ops::import_run_to(&other, &bundle, &other.join("rejected")).is_err());
     assert!(mgb_ops::discover_trials(&other).unwrap().is_empty());
 }
 
@@ -2592,4 +2594,43 @@ forecast_horizon_days = 2
     assert!(operation.coverage().is_err());
     operation.set_reference("2025-12-25T01:00:00".into());
     assert_eq!(operation.coverage().unwrap()[0], "2025-12-24T00:00:00");
+}
+
+#[test]
+fn replay_from_standalone_recipe_requires_identical_sources() {
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let temporary = tempfile::tempdir_in("runs").unwrap();
+    let workspace = temporary.path().canonicalize().unwrap();
+    fixture(&workspace);
+    let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
+        workspace: workspace.clone(),
+        invocation_dir: workspace.clone(),
+        request_file: "request.toml".into(),
+        output: "prepared".into(),
+    })
+    .unwrap();
+    let manifest = workspace.join("recipe.json");
+    fs::copy(prepared.prepared.join("manifest.json"), &manifest).unwrap();
+    fs::remove_dir_all(&prepared.prepared).unwrap();
+
+    let editable =
+        mgb_ops::Draft::import_manifest(workspace.clone(), &workspace, &manifest).unwrap();
+    assert_eq!(
+        editable.document.operation.reference_time.as_deref(),
+        Some("2026-01-01T02:00:00")
+    );
+    assert!(editable.document.sources.accepted.is_empty());
+    let control = mgb_ops::OperationControl::default();
+    let first = mgb_ops::replay_run(&workspace, &manifest, &control).unwrap();
+    assert!(matches!(first.status, mgb_ops::BatchStatus::Completed));
+    assert!(first.run_root.join("results/zero/basin.nc").is_file());
+
+    fs::write(workspace.join("Input/control.txt"), "fail").unwrap();
+    let error = mgb_ops::replay_run(&workspace, &manifest, &control).unwrap_err();
+    assert!(
+        format!("{error}").contains("recorded operation recipe or source identities changed"),
+        "{error}"
+    );
+    assert!(first.run_root.exists());
 }
