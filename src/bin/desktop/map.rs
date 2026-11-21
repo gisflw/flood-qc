@@ -1,4 +1,5 @@
 use super::data::{Project, Rain, RainSide};
+use super::inundation;
 use eframe::egui::{self, Color32, Pos2, Stroke};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers, math::point,
@@ -221,6 +222,7 @@ pub fn default_layers() -> Vec<LayerControl> {
     [
         ("catchments", false, 0.25),
         ("rainfall", true, 0.65),
+        (inundation::KIND, false, 0.85),
         ("upstream", true, 0.3),
         ("rivers", true, 0.85),
         ("stations", true, 1.0),
@@ -398,19 +400,19 @@ pub fn project_paths(paths: &[Vec<(f64, f64)>]) -> Vec<Vec<(f64, f64)>> {
         .collect()
 }
 // Display-only Web Mercator; authoritative WGS84 coordinates remain in store values.
-fn world((lon, lat): (f64, f64)) -> (f64, f64) {
+pub(super) fn world((lon, lat): (f64, f64)) -> (f64, f64) {
     (
         (1. + lon / 180.) / 2.,
         (1. - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.,
     )
 }
-struct ScreenTransform {
+pub(super) struct ScreenTransform {
     center: (f64, f64),
     scale: f64,
     origin: Pos2,
 }
 impl ScreenTransform {
-    fn new(projector: &Projector, rect: egui::Rect, zoom: f64) -> Self {
+    pub(super) fn new(projector: &Projector, rect: egui::Rect, zoom: f64) -> Self {
         let center = projector.unproject(rect.center().to_vec2());
         Self {
             center: world((center.x(), center.y())),
@@ -418,7 +420,7 @@ impl ScreenTransform {
             origin: rect.center(),
         }
     }
-    fn project(&self, point: (f64, f64)) -> Pos2 {
+    pub(super) fn project(&self, point: (f64, f64)) -> Pos2 {
         self.origin
             + egui::vec2(
                 ((point.0 - self.center.0) * self.scale) as f32,
@@ -489,6 +491,8 @@ pub fn rain_color(value: Option<f64>, maximum: f64) -> Color32 {
 pub fn layer_swatch(kind: &str) -> Color32 {
     if kind == "rainfall" {
         rain_color(Some(10.), RAIN_MAX_MM)
+    } else if kind == inundation::KIND {
+        inundation::COLOR
     } else {
         color(kind)
     }
@@ -913,6 +917,7 @@ pub struct Overlay<'a> {
     pub project: &'a Project,
     pub layers: &'a [LayerControl],
     pub rainfall: [Option<&'a RainImage>; 2],
+    pub inundation: &'a mut inundation::Inundation,
     pub side: Option<RainSide>,
     pub selection: &'a Option<Location>,
     pub upstream: Option<&'a BasinPaths>,
@@ -1020,6 +1025,10 @@ impl Overlay<'_> {
                             );
                         }
                     }
+                }
+                inundation::KIND => {
+                    self.inundation
+                        .draw(ui, projector, response.rect, memory.zoom(), layer.opacity)
                 }
                 "catchments" => {
                     self.cache.catchments(self.project, layer.opacity);
