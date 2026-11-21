@@ -1,6 +1,7 @@
 use crate::store::{BasinForcing, ResultSeries, StationOffset, StationResults};
 use std::collections::HashSet;
-use std::fs;
+use std::fs::File;
+use std::io::Read;
 use std::path::Path;
 
 #[derive(Clone, Debug)]
@@ -13,27 +14,41 @@ pub(crate) struct DecodedEngineResults {
     pub level_valid: Vec<bool>,
 }
 
-pub(crate) fn read_stream(path: &Path, count: usize) -> Result<Vec<f64>, super::ModelError> {
-    let bytes = fs::read(path).map_err(|error| {
-        let message = format!("{}: {error}", path.display());
+pub(super) fn read_stream_bytes(path: &Path, count: usize) -> Result<Vec<u8>, super::ModelError> {
+    let incorrect_length = || {
+        super::ModelError::MalformedOutput(format!("{}: incorrect stream length", path.display()))
+    };
+    let io = |error: std::io::Error| super::ModelError::Io(format!("{}: {error}", path.display()));
+    let expected = count.checked_mul(4).ok_or_else(incorrect_length)?;
+    let mut file = File::open(path).map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
-            super::ModelError::MissingOutput(message)
+            super::ModelError::MissingOutput(format!("{}: {error}", path.display()))
         } else {
-            super::ModelError::Io(message)
+            io(error)
         }
     })?;
-    if count.checked_mul(4) != Some(bytes.len()) {
-        return Err(super::ModelError::MalformedOutput(format!(
-            "{}: incorrect stream length",
-            path.display()
-        )));
+    let metadata = file.metadata().map_err(io)?;
+    if !metadata.is_file() || metadata.len() != expected as u64 {
+        return Err(incorrect_length());
     }
-    bytes
+    let mut bytes = Vec::new();
+    file.by_ref()
+        .take((expected as u64).saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(io)?;
+    if bytes.len() != expected {
+        return Err(incorrect_length());
+    }
+    Ok(bytes)
+}
+
+fn read_stream(path: &Path, count: usize) -> Result<Vec<f64>, super::ModelError> {
+    read_stream_bytes(path, count)?
         .as_chunks::<4>()
         .0
         .iter()
         .map(|word| {
-            let value = f32::from_le_bytes([word[0], word[1], word[2], word[3]]) as f64;
+            let value = f64::from(f32::from_le_bytes(*word));
             if value.is_finite() {
                 Ok(value)
             } else {

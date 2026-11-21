@@ -84,3 +84,8 @@ pub use self::inundation::{
 pub(crate) use self::inundation::{
     INUNDATION_CHUNK, InundationRasters, InundationStage, InundationWriter,
 };
+
+mod flood_source;
+pub(crate) use self::flood_source::{
+    FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource, read_flood_source, write_flood_source,
+};

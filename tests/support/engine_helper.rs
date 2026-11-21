@@ -38,6 +38,25 @@ fn main() {
     fs::write(output.join("QTUDO_Inercial_Prev.MGB"), binary(horizon, 3.0)).unwrap();
     fs::write(output.join("YTUDO.MGB"), binary(history, 1.0041)).unwrap();
     fs::write(output.join("YTUDO_prev.MGB"), binary(horizon, 1.0041)).unwrap();
+    if control.lines().any(|line| line == "hand") {
+        let levels: Vec<_> = (0..history).map(|index| 3.5 + index as f32).collect();
+        let bytes = |values: &[f32]| values.iter().copied().flat_map(f32::to_le_bytes).collect::<Vec<_>>();
+        let mut mixed = levels.clone();
+        mixed[..horizon].fill(5.5);
+        fs::write(output.join("YTUDO.MGB"), bytes(&mixed)).unwrap();
+        fs::write(output.join("YTUDO_prev.MGB"), binary(horizon, 5.5)).unwrap();
+        if !control.lines().any(|line| line == format!("hand-missing:{scenario}")) {
+            let mut depth: Vec<_> = mixed.iter().map(|value| value - 2.0).collect();
+            if control.lines().any(|line| line == format!("hand-bad:{scenario}")) {
+                *depth.last_mut().unwrap() = 9.5;
+            }
+            let mut depth = bytes(&depth);
+            if control.lines().any(|line| line == format!("hand-length:{scenario}")) {
+                depth.pop();
+            }
+            fs::write(output.join("HANDTUDO.MGB"), depth).unwrap();
+        }
+    }
     if control.lines().any(|line| line == format!("malformed:{scenario}")) {
         fs::write(output.join("YTUDO_prev.MGB"), [1]).unwrap();
     }

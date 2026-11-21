@@ -1,10 +1,12 @@
 use crate::model::{
-    EnginePlan, HistoryResults, decode_outputs, quantize_levels, read_history, reference_levels,
-    run_engine, write_metadata, write_rainfall,
+    EnginePlan, FloodHistory, HistoryResults, capture_flood_history, capture_flood_source,
+    decode_outputs, quantize_levels, read_history, reference_levels, run_engine, write_metadata,
+    write_rainfall,
 };
 use crate::store::{
-    ScenarioFailure, ScenarioRecord, StationOffset, copy_tree, copy_working_inputs, digest_file,
-    read_basin_forcing, read_operation_manifest, sync_tree, verify_inputs, write_run_manifest,
+    FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, ScenarioFailure, ScenarioRecord, StationOffset,
+    copy_tree, copy_working_inputs, digest_file, read_basin_forcing, read_operation_manifest,
+    sync_tree, verify_inputs, write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -840,6 +842,16 @@ pub(super) fn execute_locked(
                 .map(|p| run_root.join(p))
                 .chain(
                     (record.state == "completed")
+                        .then(|| {
+                            run_root
+                                .join("results")
+                                .join(&record.id)
+                                .join(FLOOD_SOURCE_FILE)
+                        })
+                        .filter(|path| path.is_file()),
+                )
+                .chain(
+                    (record.state == "completed")
                         .then(|| run_root.join("scenarios").join(&record.id).join("state"))
                         .filter(|path| path.is_dir()),
                 )
@@ -915,6 +927,11 @@ fn remove_if_exists(path: &Path) -> std::io::Result<()> {
     }
 }
 
+struct SharedHistory {
+    hydrology: HistoryResults,
+    flood: Result<FloodHistory, String>,
+}
+
 fn execute_scenarios(
     root: &Path,
     snapshot: &Path,
@@ -933,17 +950,19 @@ fn execute_scenarios(
             if let Some(error) = outcome.error {
                 return Err(format!("history run: {error}"));
             }
+            let forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{first}.nc")))
+                .map_err(|e| e.to_string())?;
             let count = recipe
                 .historical_count
-                .checked_mul(
-                    read_basin_forcing(&snapshot.join("forcing").join(format!("{first}.nc")))
-                        .map_err(|e| e.to_string())?
-                        .basins
-                        .mini_ids
-                        .len(),
-                )
+                .checked_mul(forcing.basins.mini_ids.len())
                 .ok_or("history length overflow")?;
-            Ok(read_history(&plan.output, count)?)
+            let history = read_history(&plan.output, count)?;
+            let flood =
+                capture_flood_history(&plan, &forcing, recipe.historical_count, &history.level_m);
+            Ok(SharedHistory {
+                hydrology: history,
+                flood,
+            })
         });
     let history = match history {
         Ok(value) => value,
@@ -1017,7 +1036,7 @@ fn run_scenario(
     recipe: &ExecutionRecipe,
     id: &str,
     plan: Result<EnginePlan, String>,
-    history: &HistoryResults,
+    history: &SharedHistory,
     control: &OperationControl,
 ) -> ScenarioRecord {
     control.scenario_state(id, "running");
@@ -1112,7 +1131,7 @@ fn run_scenario(
             forcing,
             recipe.historical_count,
             recipe.forecast_count,
-            history,
+            &history.hydrology,
         )?;
         let basin = quantize_levels(&raw)?;
         let station = reference_levels(&raw, &recipe.selected_station_ids, &recipe.offsets)?;
@@ -1137,6 +1156,23 @@ fn run_scenario(
         )
         .map_err(|e| e.to_string())?;
         sync_tree(&result_dir)?;
+        let flood = history
+            .flood
+            .as_ref()
+            .map_err(|error| format!("shared flood history unavailable: {error}"))
+            .and_then(|history| {
+                capture_flood_source(&plan, id, history, &raw.forcing, &raw.level_m)
+            })
+            .and_then(|source| {
+                crate::store::write_flood_source(&result_dir.join(FLOOD_SOURCE_FILE), &source)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = flood {
+            let _ = crate::store::write_atomic(
+                &result_dir.join(FLOOD_SOURCE_DIAGNOSTIC),
+                format!("{error}\n").as_bytes(),
+            );
+        }
         record.basin_result = Some(Path::new("results").join(id).join("basin.nc"));
         record.station_result = Some(Path::new("results").join(id).join("station.nc"));
         Ok(())
@@ -1227,6 +1263,10 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
             }
         }
         let mut results = vec![basin, station];
+        let flood = root.join("results").join(id).join(FLOOD_SOURCE_FILE);
+        if flood.is_file() {
+            results.push(flood);
+        }
         if let Some(at) =
             hot_save_time(&manifest.recipe["document"]).map_err(|e| store_error(root, e))?
         {
