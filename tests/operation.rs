@@ -1478,7 +1478,21 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
         serde_json::from_slice(&fs::read(path.join("registered/manifest.json")).unwrap()).unwrap();
     let supplied: serde_json::Value =
         serde_json::from_slice(&fs::read(path.join("supplied/manifest.json")).unwrap()).unwrap();
-    assert_eq!(registered["recipe"], supplied["recipe"]);
+    assert_eq!(
+        registered["recipe"]["document"],
+        supplied["recipe"]["document"]
+    );
+    assert_eq!(
+        registered["recipe"]["source_identities"],
+        supplied["recipe"]["source_identities"]
+    );
+    assert!(registered["recipe"].get("inline_replacements").is_none());
+    assert!(registered["recipe"].get("inline_corrections").is_none());
+    assert_eq!(supplied["recipe"]["inline_replacements"], true);
+    assert_eq!(
+        supplied["recipe"]["inline_corrections"],
+        serde_json::json!([0])
+    );
     assert!(
         mgb_ops::prepare_typed(typed(
             "duplicate-replacement",

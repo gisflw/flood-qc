@@ -97,11 +97,11 @@ pub(crate) fn with_active_run<T>(
     let lock = match File::open(root.join("access.lock")) {
         Ok(lock) => lock,
         Err(error) if error.kind() == ErrorKind::NotFound => {
-            return if active_run(workspace)?.is_some() {
-                Err("Active run has no access lock".into())
-            } else {
-                Ok(None)
-            };
+            if active_run(workspace)?.is_none() {
+                return Ok(None);
+            }
+            File::open(root.join("access.lock"))
+                .map_err(|error| format!("Active run access lock: {error}"))?
         }
         Err(error) => return Err(error.to_string()),
     };
