@@ -70,6 +70,9 @@ execution from the same prepared input after the disposable original observation
 and forecast catalogs, forecast artifacts, baseline Input and executable were
 removed. Both executions completed all four scenarios. Each run used a shared
 history-only execution to recover the overwritten historical level prefix.
+The workspace keeps one active execution. To inspect both repeats after the
+second execution, save the first active result in a user-owned location before
+starting the second.
 
 An independent comparison checked every joined f64 forcing value, full basin
 results `362×8649`, station results `362×101`, all variable masks, mini IDs,
@@ -111,3 +114,43 @@ Routine tests need no provider, regional workspace, Python or MGB installation.
 These checks establish Linux numerical equivalence for the stated saved case.
 They do not establish acquisition, Windows support, new-state compatibility or
 hydrological validity. The saved state remains an empirical regression input.
+
+## Canonical forcing, state, calibration, and bulletin probes
+
+The supplied Linux engine has SHA-256
+`263381e450484e5bc345e269f21c54e84d89afdff97ca2d9752eb951907f88eb`.
+The saved-path release regression still matches complete forcing and result
+arrays and raw engine streams, including a repeat from the retained preparation
+with original sources removed. The final saved-case release test completed in 81.79 seconds.
+
+Disposable runs traced the engine reading `QOBS_hora.PRN`, `QSUBST_hora.PRN`,
+`vento.txt`, and case-sensitive `DATA.hot`. A malformed QOBS field failed inside
+the observed-flow reader. The tested QOBS change did not affect the qualified
+engine outputs. Changing reservoir releases and the first wind block changed
+numerical output. A short wind block failed. Changes to the second wind block
+had no effect in this build.
+
+A Rust zero-scenario trial with 37 historical and 12 forecast hourly labels
+read frozen canonical wind and disabled reservoir substitutions after its
+original inputs were moved. It saved six finite, dimensionally valid files at
+July 11, 2026 01:00 local time and recorded matching sizes and digests. The
+history-only worker published no state. Controlled variants with `HOT.HOT`
+set or unset, and valid, missing, or deliberately corrupted input `CI` files,
+produced the same engine streams. The executable never opened those input files.
+The executable dispatches to inertial routing. Warm-state chaining and alternate
+routing require a compatible build and separate qualification.
+
+A separate 241+121 hour zero-scenario trial used edited mini 1 channel width and
+watershed 1 soil parameters. Its two Fortran processes opened their private
+`Cell.hig` and `paruso.hig`. The prepared geometry aliases and soil files matched
+the selected digests after the original selections were moved. The run decoded
+successfully. Read-only checks preserved the frozen originals.
+
+A regional report from the retained corrected ECMWF case rendered PDF, HTML,
+Markdown, CSV, and figures. An independent traversal of 454 upstream minis
+covering 26,582.508470 km² gave 1.547342862 mm of observed 24-hour rain and
+24.662107032 mm of forecast 24-hour rain. The report displayed 1.5 and 24.7 mm.
+Independent SQLite and NetCDF reads matched the PCH Autódromo stage of 27,845 cm,
+changes of −8 cm over one hour and −49 cm over 24 hours, and bias-adjusted +6 h
+and +12 h values of 27,845 cm. The frozen database lacks threshold rows. A
+separate synthetic report exercises threshold classification.

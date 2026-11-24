@@ -1,10 +1,15 @@
 use crate::model::{
-    EnginePlan, HistoryResults, decode_outputs, quantize_levels, read_history, reference_levels,
-    run_engine, write_metadata, write_rainfall,
+    EnginePlan, FloodHistory, HistoryResults, capture_flood_history, capture_flood_source,
+    decode_outputs, quantize_levels, read_history, reference_levels, run_engine, write_metadata,
+    write_rainfall,
 };
 use crate::store::{
-    ScenarioFailure, ScenarioRecord, StationOffset, copy_tree, copy_working_inputs, digest_file,
-    read_basin_forcing, read_operation_manifest, sync_tree, verify_inputs, write_run_manifest,
+    FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
+    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_tree,
+    copy_working_inputs, digest_file, new_run_stage, publish_run_checked, read_basin_forcing,
+    read_operation_manifest, recover_run_cache, retire_legacy_rainfall, run_cache_root,
+    run_stage_id, sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
+    write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -142,6 +147,7 @@ pub struct ScenarioExecution {
 pub struct ExecutionReport {
     pub run_root: PathBuf,
     pub run_artifact: PathBuf,
+    pub attempt_manifest: PathBuf,
     pub status: BatchStatus,
     pub scenarios: Vec<ScenarioExecution>,
     pub error: Option<String>,
@@ -153,7 +159,7 @@ pub enum OperationError {
         message: String,
     },
     BatchFailed {
-        report: ExecutionReport,
+        report: Box<ExecutionReport>,
     },
     InvalidRequest {
         field: String,
@@ -192,11 +198,19 @@ impl std::error::Error for OperationError {}
 #[serde(deny_unknown_fields)]
 pub(super) struct ExecutionRecipe {
     pub document: serde_json::Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_workspace: Option<PathBuf>,
     pub historical_count: usize,
     pub forecast_count: usize,
     pub selected_station_ids: Vec<String>,
     pub offsets: Vec<StationOffset>,
     pub omp_threads: usize,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub source_identities: std::collections::BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub inline_replacements: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub inline_corrections: Vec<usize>,
 }
 
 fn resolved(invocation: &Path, path: &Path) -> PathBuf {
@@ -224,7 +238,7 @@ fn store_error(root: &Path, message: impl ToString) -> OperationError {
         message: message.to_string(),
     }
 }
-fn validate_recipe(
+pub(super) fn validate_recipe(
     root: &Path,
     recipe: &ExecutionRecipe,
     scenarios: &[ScenarioRecord],
@@ -263,11 +277,22 @@ fn validate_recipe(
     retained.engine.executable = document.engine.executable.clone();
     retained.engine.input_dir = document.engine.input_dir.clone();
     retained.forecasts.catalog = document.forecasts.catalog.clone();
+    if let (Some(requested), Some(resolved)) = (&mut retained.forcing, &document.forcing) {
+        requested.reservoir_schedules = resolved.reservoir_schedules.clone();
+        requested.wind_observations = resolved.wind_observations.clone();
+    }
+    if let (Some(requested), Some(resolved)) = (&mut retained.calibration, &document.calibration) {
+        requested.soil = resolved.soil.clone();
+    }
+    if let (Some(requested), Some(resolved)) = (&mut retained.hot_start, &document.hot_start) {
+        requested.use_bundle = resolved.use_bundle.clone();
+    }
     if serde_json::to_value(&retained).map_err(|error| error.to_string())?
         != serde_json::to_value(&document).map_err(|error| error.to_string())?
     {
         return Err("recipe differs from retained request".into());
     }
+    super::additional::check_engine(&document, &root.join(crate::store::PREPARED_ENGINE))?;
     if document.schema_version != 1
         || document.step_seconds != 3600
         || document.engine.omp_threads != recipe.omp_threads
@@ -294,17 +319,6 @@ fn validate_recipe(
         ) {
             ("zero", None, true) => continue,
             ("raw", Some(asset), true) | ("corrected", Some(asset), false) if !asset.is_empty() => {
-                if !root
-                    .join("sources/native")
-                    .join(format!("{asset}.nc"))
-                    .is_file()
-                    || !root
-                        .join("sources/original")
-                        .join(format!("{asset}.grib2"))
-                        .is_file()
-                {
-                    return Err("missing retained forecast asset".into());
-                }
                 if catalog.is_none() {
                     catalog = Some(
                         crate::store::ForecastCatalog::open_read_only(
@@ -314,10 +328,16 @@ fn validate_recipe(
                         .map_err(|error| error.to_string())?,
                     );
                 }
+                let catalog = catalog.as_ref().unwrap();
+                let (selected, _) = catalog.load_native(asset).map_err(|e| e.to_string())?;
+                if selected.retained_source != selected.snapshot_source_path()
+                    || selected.native_artifact
+                        != Path::new("sources/native").join(format!("{asset}.nc"))
+                {
+                    return Err("invalid retained forecast paths".into());
+                }
                 actual_corrections.extend(
                     catalog
-                        .as_ref()
-                        .unwrap()
                         .load_corrections(asset, corrections)
                         .map_err(|error| error.to_string())?,
                 );
@@ -340,6 +360,20 @@ fn validate_recipe(
         .map_err(|e| e.to_string())?;
     if first.timeline.bounds.len() != count || first.timeline.time_zone != document.time_zone {
         return Err("forcing timeline differs from recipe".into());
+    }
+    let path = root.join("forcing/additional.json");
+    if document
+        .forcing
+        .as_ref()
+        .is_some_and(|doc| !doc.mappings.is_empty())
+    {
+        let prepared: crate::store::PreparedAdditionalForcing = crate::store::read_draft(&path)?;
+        prepared.validate().map_err(|e| e.to_string())?;
+        if prepared.timeline != first.timeline {
+            return Err("additional forcing timeline differs from rainfall".into());
+        }
+    } else if path.exists() {
+        return Err("additional forcing has no recipe selection".into());
     }
     let parse = |value: &str| {
         chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").map_err(|e| e.to_string())
@@ -387,17 +421,18 @@ fn validate_recipe(
     let mut historical = first.timeline.clone();
     historical.bounds.truncate(recipe.historical_count);
     let selection = ObservationSelection {
-        provider_codes: document.observed.provider_codes,
-        station_ids: document.observed.station_ids,
+        provider_codes: document.observed.provider_codes.clone(),
+        station_ids: document.observed.station_ids.clone(),
     };
     let observations = ObservationStore::open_read_only(&root.join("sources/observations.sqlite"))
         .map_err(|e| e.to_string())?;
+    let extra_stations = super::additional::extra_stations(&observations, &document)?;
     let (inputs, offsets) = observations
         .read_selection_with_stations(
             &selection,
             &historical,
             &document.observed.replacement_ids,
-            &recipe.selected_station_ids,
+            &extra_stations,
         )
         .map_err(|e| e.to_string())?;
     if serde_json::to_value(&inputs.series).map_err(|e| e.to_string())? != selected_series
@@ -463,8 +498,24 @@ fn prepare_worker(
         horizon,
         &forcing.basins,
     )?;
+    let additional = snapshot.join("forcing/additional.json");
+    if additional.is_file() {
+        let values: crate::store::PreparedAdditionalForcing =
+            crate::store::read_draft(&additional)?;
+        let selected = if history {
+            values
+                .prefix(recipe.historical_count)
+                .map_err(|e| e.to_string())?
+        } else {
+            values
+        };
+        crate::model::write_additional_forcing(&input, &selected)?;
+    }
+    if !history && let Some(at) = hot_save_time(&recipe.document)? {
+        crate::model::write_hot_save_request(&input, at)?;
+    }
     Ok(EnginePlan {
-        executable: snapshot.join("baseline/engine"),
+        executable: snapshot.join(crate::store::PREPARED_ENGINE),
         cwd: worker.clone(),
         input,
         output: worker.join("Output"),
@@ -477,6 +528,15 @@ fn prepare_worker(
             .ok_or("missing timezone")?
             .to_string(),
     })
+}
+
+fn hot_save_time(document: &serde_json::Value) -> Result<Option<chrono::NaiveDateTime>, String> {
+    document
+        .get("hot_start")
+        .and_then(|selection| selection.get("save_at"))
+        .and_then(serde_json::Value::as_str)
+        .map(|at| super::request::timestamp("hot_start.save_at", at).map_err(|e| e.to_string()))
+        .transpose()
 }
 
 fn scenario_record(id: String) -> ScenarioRecord {
@@ -521,7 +581,7 @@ pub fn execute_prepared_controlled(
     execute_locked(&workspace, &prepared, control, &lock, false)
 }
 
-fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
+pub(super) fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -535,6 +595,7 @@ fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
         },
         std::fs::TryLockError::Error(e) => store_error(workspace, e),
     })?;
+    recover_run_cache(workspace).map_err(|error| store_error(workspace, error))?;
     Ok(lock)
 }
 
@@ -551,38 +612,168 @@ pub fn run_draft(
             message: e.to_string(),
         })?;
     let lock = lock_workspace(&workspace)?;
-    let base = workspace.join("data/cache/preparations");
-    fs::create_dir_all(&base).map_err(|e| store_error(&workspace, e))?;
-    let prepared = base.join(format!(
-        "{}-{}",
-        chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"),
-        std::process::id()
-    ));
-    let report = draft.prepare_controlled(workspace.clone(), prepared, control)?;
-    let result = control
-        .check()
-        .and_then(|()| execute_locked(&workspace, &report.prepared, control, &lock, true));
-    if let Err(error) = remove_if_exists(&report.prepared) {
-        return Err(store_error(
-            &report.prepared,
-            format!(
-                "{}; preparation cleanup failed: {error}",
-                result
-                    .as_ref()
-                    .err()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "trial completed".into())
-            ),
-        ));
-    }
-    result
+    run_draft_locked(draft, control, &workspace, &lock)
 }
 
-fn execute_locked(
+pub(super) fn run_draft_locked(
+    draft: &super::Draft,
+    control: &OperationControl,
+    workspace: &Path,
+    lock: &std::fs::File,
+) -> Result<ExecutionReport, OperationError> {
+    run_preparation_locked(control, workspace, lock, |workspace, prepared, control| {
+        draft.prepare_controlled(workspace.to_path_buf(), prepared, control)
+    })
+}
+
+pub(super) fn run_preparation_locked(
+    control: &OperationControl,
+    workspace: &Path,
+    _lock: &std::fs::File,
+    prepare: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
+) -> Result<ExecutionReport, OperationError> {
+    run_attempt(workspace, control, |run_root, attempt| {
+        let prepared = run_root.join("preparation");
+        let report = prepare(workspace, prepared, control)?;
+        execute_in_stage(
+            workspace,
+            &report.prepared,
+            run_root,
+            attempt,
+            control,
+            true,
+        )
+    })
+}
+
+pub(super) fn execute_locked(
     workspace: &Path,
     prepared: &Path,
     control: &OperationControl,
     _lock: &std::fs::File,
+    _temporary_preparation: bool,
+) -> Result<ExecutionReport, OperationError> {
+    run_attempt(workspace, control, |run_root, attempt| {
+        execute_in_stage(workspace, prepared, run_root, attempt, control, false)
+    })
+}
+
+fn run_attempt(
+    workspace: &Path,
+    control: &OperationControl,
+    execute: impl FnOnce(&Path, &mut RunAttemptManifest) -> Result<ExecutionReport, OperationError>,
+) -> Result<ExecutionReport, OperationError> {
+    control.check()?;
+    {
+        let base = workspace.join("data/runs");
+        match fs::read_dir(&base) {
+            Ok(entries) => {
+                for entry in entries {
+                    let entry = entry.map_err(|error| store_error(&base, error))?;
+                    if entry
+                        .file_type()
+                        .map_err(|error| store_error(&base, error))?
+                        .is_dir()
+                    {
+                        return Err(store_error(&base, "Migrate legacy runs before executing"));
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(store_error(&base, error)),
+        }
+    }
+    let run_root = new_run_stage(workspace).map_err(|error| store_error(workspace, error))?;
+    let mut attempt = RunAttemptManifest::new(
+        run_stage_id(&run_root)
+            .map_err(|error| store_error(&run_root, error))?
+            .into(),
+    );
+    write_run_journal(&run_root, &attempt).map_err(|error| store_error(&run_root, error))?;
+    control.set_progress(OperationStage::Preparation, None, Some(run_root.clone()));
+    let result = execute(&run_root, &mut attempt);
+
+    let result = result.and_then(|report| {
+        control.check()?;
+        attempt.finish("completed", None);
+        write_run_journal(&run_root, &attempt).map_err(|error| store_error(&run_root, error))?;
+        publish_run_checked(workspace, &run_root, |commit| {
+            let mut committed = control
+                .committed
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            control.check().map_err(|error| error.to_string())?;
+            commit()?;
+            *committed = true;
+            Ok(())
+        })
+        .map_err(|error| store_error(&run_root, error))?;
+        Ok(report)
+    });
+    let mut committed = control
+        .committed
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let cancelled = control.is_cancelled();
+    *committed = true;
+    drop(committed);
+    match result {
+        Ok(report) => {
+            if sync_directory(&run_cache_root(workspace)).is_ok() {
+                let _ = retire_legacy_rainfall(workspace);
+            }
+            Ok(report)
+        }
+        Err(mut error) => {
+            if cancelled && !matches!(error, OperationError::BatchFailed { .. }) {
+                error = OperationError::Cancelled {
+                    message: "operation cancelled".into(),
+                };
+            }
+            let message = match &error {
+                OperationError::BatchFailed { report } => report.error.clone(),
+                _ => Some(error.to_string()),
+            };
+            let message = if cancelled {
+                Some("operation cancelled".into())
+            } else {
+                message
+            };
+            let state = if cancelled { "cancelled" } else { "failed" };
+            attempt.finish(state, message.clone());
+            if let Some(operation) = &mut attempt.operation {
+                operation.state = state.into();
+                operation
+                    .finished_at
+                    .get_or_insert_with(|| chrono::Utc::now().to_rfc3339());
+                operation.error = message;
+            }
+            attempt.diagnostics = collect_run_diagnostics(&run_root);
+            write_run_journal(&run_root, &attempt)
+                .map_err(|error| store_error(&run_root, error))?;
+            let archive = write_run_attempt(workspace, &attempt)
+                .map_err(|error| store_error(&run_root, error))?;
+            fs::remove_dir_all(&run_root).map_err(|error| store_error(&run_root, error))?;
+            if let OperationError::BatchFailed { report } = &mut error {
+                report.run_root = archive.parent().unwrap_or(workspace).to_path_buf();
+                report.run_artifact = archive.clone();
+                report.attempt_manifest = archive;
+                for item in &mut report.scenarios {
+                    item.logs.clear();
+                    item.results.clear();
+                }
+            }
+            Err(error)
+        }
+    }
+}
+
+fn execute_in_stage(
+    workspace: &Path,
+    prepared: &Path,
+    run_root: &Path,
+    attempt: &mut RunAttemptManifest,
+    control: &OperationControl,
     temporary_preparation: bool,
 ) -> Result<ExecutionReport, OperationError> {
     control.check()?;
@@ -609,128 +800,77 @@ fn execute_locked(
             message,
         }
     })?;
-    let run_base = workspace.join("data/runs");
-    fs::create_dir_all(&run_base).map_err(|e| store_error(workspace, e))?;
-    let run_root = run_base.join(format!(
-        "{}-{}",
-        chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f"),
-        std::process::id()
-    ));
-    fs::create_dir(&run_root).map_err(|e| store_error(&run_root, e))?;
-    control.set_progress(OperationStage::Preparation, None, Some(run_root.clone()));
-    let snapshot = run_root.join("snapshot");
-    let freeze = (|| -> Result<(), OperationError> {
-        copy_tree(prepared, &snapshot).map_err(|e| store_error(&run_root, e))?;
-        control.check()?;
-        verify_inputs(&snapshot, &manifest.inputs).map_err(|e| store_error(&run_root, e))?;
-        if digest_file(&snapshot.join("manifest.json")).map_err(|e| store_error(&run_root, e))?
-            != manifest_identity
-        {
-            return Err(store_error(
-                &run_root,
-                "prepared manifest changed while freezing",
-            ));
-        }
-        control.check()
-    })();
-    if let Err(error) = freeze {
-        fs::remove_dir_all(&run_root)
-            .map_err(|e| store_error(&run_root, format!("{error}; cleanup failed: {e}")))?;
-        return Err(error);
-    }
-    if temporary_preparation && let Err(error) = fs::remove_dir_all(prepared) {
-        fs::remove_dir_all(&run_root).map_err(|cleanup| {
-            store_error(
-                &run_root,
-                format!("preparation cleanup failed: {error}; attempt cleanup failed: {cleanup}"),
-            )
-        })?;
-        return Err(store_error(
-            prepared,
-            format!("preparation cleanup failed: {error}"),
-        ));
-    }
     manifest.preparation_sha256 = Some(manifest_identity.0.clone());
     manifest.state = "running".into();
     manifest.created_at = now(&recipe);
     manifest.finished_at = None;
-    for item in &mut manifest.inputs {
-        item.path = Path::new("snapshot").join(&item.path);
+    attempt.state = "running".into();
+    attempt.operation = Some(manifest.clone());
+    write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
+
+    let snapshot = run_root.join("snapshot");
+    copy_tree(prepared, &snapshot).map_err(|error| store_error(run_root, error))?;
+    control.check()?;
+    verify_inputs(&snapshot, &manifest.inputs).map_err(|error| store_error(run_root, error))?;
+    if digest_file(&snapshot.join("manifest.json")).map_err(|error| store_error(run_root, error))?
+        != manifest_identity
+    {
+        return Err(store_error(
+            run_root,
+            "prepared manifest changed while freezing",
+        ));
     }
-    let setup = fs::create_dir(run_root.join("scenarios"))
-        .and_then(|()| fs::create_dir(run_root.join("results")));
-    if let Err(error) = setup {
-        fs::remove_dir_all(&run_root).map_err(|cleanup| {
-            store_error(&run_root, format!("{error}; cleanup failed: {cleanup}"))
-        })?;
-        return Err(store_error(&run_root, error));
+    if temporary_preparation {
+        fs::remove_dir_all(prepared).map_err(|error| store_error(prepared, error))?;
     }
-    let records = execute_scenarios(&run_root, &snapshot, &recipe, &manifest.scenarios, control);
-    manifest.scenarios = records;
-    control.set_progress(OperationStage::Finalization, None, Some(run_root.clone()));
+    fs::create_dir(run_root.join("scenarios"))
+        .and_then(|()| fs::create_dir(run_root.join("results")))
+        .map_err(|error| store_error(run_root, error))?;
+    manifest.scenarios =
+        execute_scenarios(run_root, &snapshot, &recipe, &manifest.scenarios, control);
+    control.set_progress(
+        OperationStage::Finalization,
+        None,
+        Some(run_root.to_path_buf()),
+    );
+    let cancelled = control.is_cancelled();
     let complete = manifest
         .scenarios
         .iter()
         .all(|item| item.state == "completed");
-    // Keep engine logs, successful original streams, and validated canonical results.
-    let mut cleanup_errors = Vec::new();
-    for record in &manifest.scenarios {
-        let worker = run_root.join("scenarios").join(&record.id);
-        if let Err(error) = clean_worker(&worker, record.state == "completed") {
-            cleanup_errors.push(format!("{}: {error}", worker.display()));
-        }
-        if record.state != "completed" {
-            let path = run_root.join("results").join(&record.id);
-            if let Err(error) = remove_if_exists(&path) {
-                cleanup_errors.push(format!("{}: {error}", path.display()));
-            }
-        }
-    }
-    let history = run_root.join("scenarios/.history");
-    if let Err(error) = clean_worker(&history, false) {
-        cleanup_errors.push(format!("{}: {error}", history.display()));
-    }
-    if let Err(error) = remove_if_exists(&snapshot) {
-        cleanup_errors.push(format!("{}: {error}", snapshot.display()));
-    }
-    if !cleanup_errors.is_empty() {
-        return Err(store_error(
-            &run_root,
-            format!("cleanup failed: {}", cleanup_errors.join("; ")),
-        ));
-    }
-    manifest.inputs.clear();
-    if manifest.scenarios.iter().any(|s| s.state == "completed") {
-        sync_tree(&run_root).map_err(|e| store_error(&run_root, e))?;
-    }
-    let mut committed = control.committed.lock().unwrap_or_else(|e| e.into_inner());
-    let cancelled = control.is_cancelled();
-    manifest.state = if complete && !cancelled {
+    manifest.state = if cancelled {
+        "cancelled"
+    } else if complete {
         "completed"
     } else {
         "failed"
     }
     .into();
     manifest.finished_at = Some(now(&recipe));
-    if cancelled {
-        manifest.error = Some("operation cancelled".into());
-    }
-    if manifest.scenarios.iter().any(|s| s.state == "completed")
-        && let Err(error) = write_run_manifest(&run_root, &manifest)
-    {
-        let temporary = run_root.join("manifest.json.tmp");
-        if let Err(cleanup) = fs::remove_file(&temporary)
-            && cleanup.kind() != std::io::ErrorKind::NotFound
-        {
-            return Err(store_error(
-                &run_root,
-                format!("{error}; cleanup failed: {cleanup}"),
-            ));
+    manifest.error = if cancelled {
+        Some("operation cancelled".into())
+    } else if !complete {
+        Some("one or more scenarios failed".into())
+    } else {
+        None
+    };
+    attempt.operation = Some(manifest.clone());
+    attempt.diagnostics = collect_run_diagnostics(run_root);
+    write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
+    if complete && !cancelled {
+        super::rainfall::stage(run_root, &snapshot, &recipe, &manifest.inputs, control)
+            .map_err(|error| store_error(run_root, error))?;
+        fs::remove_dir_all(&snapshot).map_err(|error| store_error(run_root, error))?;
+        for record in &manifest.scenarios {
+            let worker = run_root.join("scenarios").join(&record.id);
+            clean_worker(&worker, true).map_err(|error| store_error(&worker, error))?;
         }
-        return Err(store_error(&run_root, error));
+        let history = run_root.join("scenarios/.history");
+        clean_worker(&history, false).map_err(|error| store_error(&history, error))?;
+        manifest.inputs.clear();
+        write_run_manifest(run_root, &manifest).map_err(|error| store_error(run_root, error))?;
     }
-    *committed = true;
-    drop(committed);
+
     let scenarios = manifest
         .scenarios
         .iter()
@@ -752,13 +892,31 @@ fn execute_locked(
                 .into_iter()
                 .flatten()
                 .map(|p| run_root.join(p))
+                .chain(
+                    (record.state == "completed")
+                        .then(|| {
+                            run_root
+                                .join("results")
+                                .join(&record.id)
+                                .join(FLOOD_SOURCE_FILE)
+                        })
+                        .filter(|path| path.is_file()),
+                )
+                .chain(
+                    (record.state == "completed")
+                        .then(|| run_root.join("scenarios").join(&record.id).join("state"))
+                        .filter(|path| path.is_dir()),
+                )
                 .collect(),
             error: record.error.clone(),
         })
         .collect();
     let report = ExecutionReport {
         run_artifact: run_root.join("manifest.json"),
-        run_root,
+        attempt_manifest: workspace
+            .join("data/run-manifests")
+            .join(format!("{}.json", attempt.attempt_id)),
+        run_root: run_root.to_path_buf(),
         status: if complete && !cancelled {
             BatchStatus::Completed
         } else {
@@ -768,7 +926,9 @@ fn execute_locked(
         error: manifest.error.clone(),
     };
     if cancelled || !complete {
-        Err(OperationError::BatchFailed { report })
+        Err(OperationError::BatchFailed {
+            report: Box::new(report),
+        })
     } else {
         Ok(report)
     }
@@ -783,7 +943,7 @@ fn clean_worker(path: &Path, success: bool) -> std::io::Result<()> {
     for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
-        if name == "logs" || (success && name == "Output") {
+        if name == "logs" || (success && (name == "Output" || name == "state")) {
             continue;
         }
         if entry.file_type()?.is_dir() {
@@ -817,11 +977,9 @@ fn clean_worker(path: &Path, success: bool) -> std::io::Result<()> {
     Ok(())
 }
 
-fn remove_if_exists(path: &Path) -> std::io::Result<()> {
-    match fs::remove_dir_all(path) {
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        result => result,
-    }
+struct SharedHistory {
+    hydrology: HistoryResults,
+    flood: Result<FloodHistory, String>,
 }
 
 fn execute_scenarios(
@@ -842,17 +1000,19 @@ fn execute_scenarios(
             if let Some(error) = outcome.error {
                 return Err(format!("history run: {error}"));
             }
+            let forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{first}.nc")))
+                .map_err(|e| e.to_string())?;
             let count = recipe
                 .historical_count
-                .checked_mul(
-                    read_basin_forcing(&snapshot.join("forcing").join(format!("{first}.nc")))
-                        .map_err(|e| e.to_string())?
-                        .basins
-                        .mini_ids
-                        .len(),
-                )
+                .checked_mul(forcing.basins.mini_ids.len())
                 .ok_or("history length overflow")?;
-            Ok(read_history(&plan.output, count)?)
+            let history = read_history(&plan.output, count)?;
+            let flood =
+                capture_flood_history(&plan, &forcing, recipe.historical_count, &history.level_m);
+            Ok(SharedHistory {
+                hydrology: history,
+                flood,
+            })
         });
     let history = match history {
         Ok(value) => value,
@@ -926,7 +1086,7 @@ fn run_scenario(
     recipe: &ExecutionRecipe,
     id: &str,
     plan: Result<EnginePlan, String>,
-    history: &HistoryResults,
+    history: &SharedHistory,
     control: &OperationControl,
 ) -> ScenarioRecord {
     control.scenario_state(id, "running");
@@ -947,13 +1107,35 @@ fn run_scenario(
         control.check().map_err(|e| e.to_string())?;
         let mut forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{id}.nc")))
             .map_err(|e| e.to_string())?;
+        if let Some(at) = hot_save_time(&recipe.document)? {
+            let state = plan.cwd.join("state");
+            crate::model::package_hot_start(
+                &plan.output,
+                &state,
+                at,
+                forcing.basins.mini_ids.len(),
+            )?;
+            crate::store::write_draft(
+                &state.join("state.json"),
+                &crate::store::HotStartManifest {
+                    schema_version: 1,
+                    saved_at: at,
+                    time_zone: forcing.timeline.time_zone.clone(),
+                    scenario: id.into(),
+                    engine_sha256: digest_file(&plan.executable)?.0,
+                    geometry_sha256: digest_file(&plan.input.join("Cell.hig"))?.0,
+                    soil_sha256: digest_file(&plan.input.join("paruso.hig"))?.0,
+                    files: crate::store::collect_inputs(&state)?,
+                },
+            )?;
+        }
         let mut hashes = String::new();
         for path in [
             plan.input.join("PARHIG.hig"),
             plan.input.join("Previsao.meta"),
             plan.input.join("CHUVABIN.hig"),
             plan.input.join("MINI.gtp"),
-            snapshot.join("baseline/engine"),
+            snapshot.join(crate::store::PREPARED_ENGINE),
         ] {
             hashes.push_str(&digest_file(&path)?.0);
         }
@@ -970,16 +1152,36 @@ fn run_scenario(
         );
         processing.insert(
             "engine_sha256".into(),
-            digest_file(&snapshot.join("baseline/engine"))?.0.into(),
+            digest_file(&snapshot.join(crate::store::PREPARED_ENGINE))?
+                .0
+                .into(),
         );
         processing.insert("snapshot_sha256".into(), snapshot_hash.into());
+        if snapshot.join("forcing/additional.json").is_file()
+            || recipe.document.get("calibration").is_some()
+        {
+            let mut selected = serde_json::Map::new();
+            for name in [
+                "QOBS_hora.PRN",
+                "QSUBST_hora.PRN",
+                "vento.txt",
+                "Cell.hig",
+                "paruso.hig",
+            ] {
+                let path = plan.input.join(name);
+                if path.is_file() {
+                    selected.insert(name.into(), digest_file(&path)?.0.into());
+                }
+            }
+            processing.insert("engine_input_sha256".into(), selected.into());
+        }
         forcing.provenance.processing = processing.into();
         let raw = decode_outputs(
             &plan.output,
             forcing,
             recipe.historical_count,
             recipe.forecast_count,
-            history,
+            &history.hydrology,
         )?;
         let basin = quantize_levels(&raw)?;
         let station = reference_levels(&raw, &recipe.selected_station_ids, &recipe.offsets)?;
@@ -1004,6 +1206,23 @@ fn run_scenario(
         )
         .map_err(|e| e.to_string())?;
         sync_tree(&result_dir)?;
+        let flood = history
+            .flood
+            .as_ref()
+            .map_err(|error| format!("shared flood history unavailable: {error}"))
+            .and_then(|history| {
+                capture_flood_source(&plan, id, history, &raw.forcing, &raw.level_m)
+            })
+            .and_then(|source| {
+                crate::store::write_flood_source(&result_dir.join(FLOOD_SOURCE_FILE), &source)
+                    .map_err(|error| error.to_string())
+            });
+        if let Err(error) = flood {
+            let _ = crate::store::write_atomic(
+                &result_dir.join(FLOOD_SOURCE_DIAGNOSTIC),
+                format!("{error}\n").as_bytes(),
+            );
+        }
         record.basin_result = Some(Path::new("results").join(id).join("basin.nc"));
         record.station_result = Some(Path::new("results").join(id).join("station.nc"));
         Ok(())
@@ -1036,24 +1255,36 @@ pub struct TrialCache {
 }
 
 pub fn discover_trials(workspace: &Path) -> Result<Vec<PathBuf>, OperationError> {
-    let base = workspace.join("data/runs");
-    let entries = match fs::read_dir(&base) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(store_error(&base, error)),
-    };
-    let mut roots = Vec::new();
-    for entry in entries {
-        let entry = entry.map_err(|e| store_error(&base, e))?;
-        if entry.path().join("manifest.json").is_file() {
-            roots.push(entry.path());
-        }
-    }
-    roots.sort();
-    Ok(roots)
+    active_run(workspace)
+        .map(|path| path.into_iter().collect())
+        .map_err(|error| store_error(workspace, error))
+}
+
+/// Perform an artifact read while the active generation is protected from retirement.
+pub fn with_active_run<T>(
+    workspace: &Path,
+    read: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    crate::store::with_active_run(workspace, read)
 }
 
 pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
+    if let Some(workspace) = root.ancestors().nth(4)
+        && root.parent() == Some(run_cache_root(workspace).as_path())
+    {
+        return with_active_run(workspace, |active| {
+            if active != root {
+                return Err("Run generation is no longer active".into());
+            }
+            read_trial_artifacts(root).map_err(|error| error.to_string())
+        })
+        .map_err(|error| store_error(root, error))?
+        .ok_or_else(|| store_error(root, "Workspace has no active run"));
+    }
+    read_trial_artifacts(root)
+}
+
+fn read_trial_artifacts(root: &Path) -> Result<TrialCache, OperationError> {
     let manifest = crate::store::read_retained_manifest(root).map_err(|e| store_error(root, e))?;
     if manifest.state == "prepared" {
         return Err(store_error(root, "expected trial cache"));
@@ -1070,7 +1301,7 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
         }
         let basin = root.join("results").join(id).join("basin.nc");
         let station = root.join("results").join(id).join("station.nc");
-        crate::store::read_result_series(&basin).map_err(|e| store_error(root, e))?;
+        let values = crate::store::read_result_series(&basin).map_err(|e| store_error(root, e))?;
         crate::store::read_station_results(&station).map_err(|e| store_error(root, e))?;
         if manifest.preparation_sha256.is_some() {
             for name in [
@@ -1093,6 +1324,45 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
                 }
             }
         }
+        let mut results = vec![basin, station];
+        let flood = root.join("results").join(id).join(FLOOD_SOURCE_FILE);
+        if flood.is_file() {
+            results.push(flood);
+        }
+        if let Some(at) =
+            hot_save_time(&manifest.recipe["document"]).map_err(|e| store_error(root, e))?
+        {
+            let state = root.join("scenarios").join(id).join("state");
+            let record: crate::store::HotStartManifest =
+                crate::store::read_draft(&state.join("state.json"))
+                    .map_err(|e| store_error(root, e))?;
+            if record.schema_version != 1
+                || record.saved_at != at
+                || record.scenario != *id
+                || record.time_zone != values.timeline.time_zone
+                || values.provenance.processing["engine_sha256"].as_str()
+                    != Some(&record.engine_sha256)
+            {
+                return Err(store_error(
+                    root,
+                    "state provenance differs from its completed scenario",
+                ));
+            }
+            let actual = crate::store::collect_inputs(&state).map_err(|e| store_error(root, e))?;
+            let actual: Vec<_> = actual
+                .into_iter()
+                .filter(|file| file.path != Path::new("state.json"))
+                .collect();
+            if actual != record.files || actual.len() != 6 {
+                return Err(store_error(
+                    root,
+                    "retained state differs from its integrity index",
+                ));
+            }
+            crate::model::validate_hot_start(&state, at, values.basins.mini_ids.len())
+                .map_err(|e| store_error(root, e))?;
+            results.push(state);
+        }
         scenarios.push(ScenarioExecution {
             id: id.clone(),
             status: BatchStatus::Completed,
@@ -1102,7 +1372,7 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
                 .iter()
                 .map(|name| root.join("scenarios").join(id).join("logs").join(name))
                 .collect(),
-            results: vec![basin, station],
+            results,
             error: None,
         });
     }

@@ -1,14 +1,19 @@
 use super::{
     ForecastCorrection, ForecastSource, GridSeries, StoreError, read_grid_series, write_grid_series,
 };
-use rusqlite::{Connection, OptionalExtension, params};
+use chrono::{DateTime, SecondsFormat, Timelike, Utc};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
+
+static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
 const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT UNIQUE NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),schema_version INTEGER NOT NULL,normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
 #[derive(Debug, Clone)]
@@ -25,6 +30,75 @@ pub struct ForecastAsset {
     pub source_id: String,
     pub retained_source: PathBuf,
     pub native_artifact: PathBuf,
+}
+impl ForecastAsset {
+    pub fn snapshot_source_path(&self) -> PathBuf {
+        let extension = if self
+            .retained_source
+            .extension()
+            .is_some_and(|ext| ext == "nc")
+        {
+            "nc"
+        } else {
+            "grib2"
+        };
+        PathBuf::from(format!("sources/original/{}.{extension}", self.asset_id))
+    }
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalForecastMetadata {
+    pub provider: String,
+    pub model: String,
+    pub product: String,
+    pub cycle_utc: DateTime<Utc>,
+}
+impl CanonicalForecastMetadata {
+    fn cycle(&self) -> String {
+        self.cycle_utc.to_rfc3339_opts(SecondsFormat::Secs, true)
+    }
+
+    fn validate(&self, native: &GridSeries) -> Result<(), StoreError> {
+        if [&self.provider, &self.model, &self.product]
+            .iter()
+            .any(|text| text.trim().is_empty())
+            || self.cycle_utc.nanosecond() != 0
+        {
+            return Err(invalid(
+                "forecast metadata requires nonempty provider, model, product and a whole-second UTC cycle",
+            ));
+        }
+        if native
+            .values
+            .iter()
+            .zip(&native.valid)
+            .any(|(value, valid)| *valid && *value < 0.0)
+        {
+            return Err(invalid("negative forecast rainfall"));
+        }
+        if native
+            .timeline
+            .bounds
+            .iter()
+            .any(|interval| (interval.end - interval.start).num_seconds() % 3600 != 0)
+        {
+            return Err(invalid(
+                "canonical forecast intervals must span whole hours",
+            ));
+        }
+        Ok(())
+    }
+}
+fn canonical_source_id(hash: &str, settings: &str) -> String {
+    let mut identity = Sha256::new();
+    identity.update(b"canonical-forecast:");
+    identity.update(hash.as_bytes());
+    identity.update(settings.as_bytes());
+    format!("{:x}", identity.finalize())
+}
+fn forecast_asset_id(source_id: &str) -> String {
+    let key = format!("forecast-asset:{source_id}");
+    format!("{:x}", Sha256::digest(key.as_bytes()))
 }
 pub struct ForecastSnapshotSelection {
     pub asset_id: String,
@@ -64,8 +138,10 @@ fn create_workspace_dir(workspace: &Path, relative_path: &Path) -> Result<(), St
     for component in relative_path.components() {
         path.push(component.as_os_str());
         let full = workspace.join(&path);
-        if !full.exists() {
-            fs::create_dir(&full)?;
+        if let Err(err) = fs::create_dir(&full)
+            && err.kind() != std::io::ErrorKind::AlreadyExists
+        {
+            return Err(err.into());
         }
         let verified = resolve(workspace, &path)?;
         if !verified.is_dir() {
@@ -81,6 +157,9 @@ fn text(p: &Path) -> Result<&str, StoreError> {
         .ok_or_else(|| StoreError::InvalidPath("path is not UTF-8".into()))
 }
 fn digest(path: &Path) -> Result<(String, u64), StoreError> {
+    if !fs::metadata(path)?.is_file() {
+        return Err(invalid("forecast artifact must be a regular file"));
+    }
     let mut file = File::open(path)?;
     let mut hash = Sha256::new();
     let count = std::io::copy(&mut file, &mut hash)?;
@@ -167,6 +246,14 @@ fn check_source(source: &ForecastSource, native: &GridSeries) -> Result<(), Stor
         ));
     }
     Ok(())
+}
+fn bounds(native: &GridSeries) -> (String, String) {
+    let first = native.timeline.bounds.first().unwrap().start;
+    let last = native.timeline.bounds.last().unwrap().end;
+    (
+        first.format("%Y-%m-%dT%H:%M:%S").to_string(),
+        last.format("%Y-%m-%dT%H:%M:%S").to_string(),
+    )
 }
 pub fn check_correction(c: &ForecastCorrection) -> Result<(), StoreError> {
     if c.correction_id.is_empty()
@@ -292,9 +379,9 @@ impl ForecastCatalog {
         create_workspace_dir(&workspace, root)?;
         let mut connection = Connection::open(cat)?;
         connection.pragma_update(None, "foreign_keys", true)?;
-        let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version == 0 {
-            let tx = connection.transaction()?;
             let tables:i64=tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0))?;
             if tables != 0 {
                 return Err(StoreError::Schema(
@@ -303,18 +390,132 @@ impl ForecastCatalog {
             }
             tx.execute_batch(SCHEMA)?;
             tx.pragma_update(None, "user_version", 1)?;
-            tx.commit()?;
         } else if version != 1 {
             return Err(StoreError::Schema(format!(
                 "unsupported forecast catalog version {version}"
             )));
         }
+        tx.commit()?;
         Ok(Self {
             workspace,
             root: root.to_path_buf(),
             connection,
         })
     }
+    /// Register a canonical NetCDF without re-encoding its retained source or native grid.
+    pub fn register_canonical(
+        &mut self,
+        source: &Path,
+        metadata: &CanonicalForecastMetadata,
+    ) -> Result<ForecastAsset, StoreError> {
+        if self.root.as_os_str().is_empty() {
+            return Err(invalid("canonical registration requires an artifact root"));
+        }
+        let (sha, length) = digest(source)?;
+        let length_i64 =
+            i64::try_from(length).map_err(|_| invalid("canonical forecast too large"))?;
+        let settings = serde_json::to_string(metadata).map_err(|e| invalid(e.to_string()))?;
+        let source_id = canonical_source_id(&sha, &settings);
+        let asset_id = forecast_asset_id(&source_id);
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM asset WHERE asset_id=?1)",
+            [&asset_id],
+            |r| r.get(0),
+        )?;
+        if exists {
+            tx.commit()?;
+            return self.load_native(&asset_id).map(|(asset, _)| asset);
+        }
+        let rel_dir = self.root.join(&asset_id);
+        let dir = self.workspace.join(&rel_dir);
+        let retained_source = rel_dir.join("source.nc");
+        let native_artifact = rel_dir.join("native.nc");
+        let root = resolve(&self.workspace, &self.root)?;
+        let staged_series = if !dir.exists() {
+            let stage = root.join(format!(
+                ".canonical-{}-{}",
+                std::process::id(),
+                NEXT_STAGE.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&stage)?;
+            let result = (|| {
+                let retained = stage.join("source.nc");
+                copy_source(source, &retained)?;
+                if digest(&retained)? != (sha.clone(), length) {
+                    return Err(StoreError::Integrity(
+                        "canonical forecast source changed".into(),
+                    ));
+                }
+                let series = read_grid_series(&retained)?;
+                metadata.validate(&series)?;
+                copy_source(&retained, &stage.join("native.nc"))?;
+                super::sync_directory(&stage).map_err(std::io::Error::other)?;
+                match fs::rename(&stage, &dir) {
+                    Ok(()) => Ok(series),
+                    Err(_) if dir.is_dir() => Ok(series),
+                    Err(err) => Err(StoreError::Io(err)),
+                }
+            })();
+            if stage.is_dir() {
+                let _ = fs::remove_dir_all(&stage);
+            }
+            Some(result?)
+        } else {
+            None
+        };
+        let retained = resolve(&self.workspace, &retained_source)?;
+        let native = resolve(&self.workspace, &native_artifact)?;
+        for file in [&retained, &native] {
+            if digest(file)? != (sha.clone(), length) {
+                return Err(StoreError::Integrity(
+                    "canonical forecast retained artifact differs".into(),
+                ));
+            }
+        }
+        let series = match staged_series {
+            Some(series) => series,
+            None => {
+                let series = read_grid_series(&native)?;
+                metadata.validate(&series)?;
+                series
+            }
+        };
+        let (first, last) = bounds(&series);
+        super::sync_directory(&root).map_err(std::io::Error::other)?;
+        tx.execute(
+            "INSERT INTO asset VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            params![
+                asset_id,
+                source_id,
+                metadata.provider,
+                metadata.model,
+                metadata.product,
+                metadata.cycle(),
+                text(&retained_source)?,
+                sha,
+                length_i64,
+                text(&native_artifact)?,
+                sha,
+                length_i64,
+                2,
+                settings,
+                series.timeline.time_zone,
+                first,
+                last,
+            ],
+        )?;
+        tx.commit()?;
+        Ok(ForecastAsset {
+            asset_id,
+            source_id,
+            retained_source,
+            native_artifact,
+        })
+    }
+
     pub fn register_native(
         &mut self,
         source_path: &Path,
@@ -327,8 +528,7 @@ impl ForecastCatalog {
                 "source changed during normalization".into(),
             ));
         }
-        let asset_key = format!("forecast-asset:{}", source.source_id);
-        let asset_id = format!("{:x}", Sha256::digest(asset_key.as_bytes()));
+        let asset_id = forecast_asset_id(&source.source_id);
         let rel_dir = self.root.join(&asset_id);
         let dir = self.workspace.join(&rel_dir);
         fs::create_dir(&dir)?;
@@ -349,8 +549,8 @@ impl ForecastCatalog {
         write_grid_series(&temp, native)?;
         File::open(&temp)?.sync_all()?;
         fs::rename(&temp, &native_file)?;
-        File::open(&dir)?.sync_all()?;
-        File::open(self.workspace.join(&self.root))?.sync_all()?;
+        super::sync_directory(&dir).map_err(std::io::Error::other)?;
+        super::sync_directory(&self.workspace.join(&self.root)).map_err(std::io::Error::other)?;
         let (native_sha, native_len) = digest(&native_file)?;
         let first = &native
             .timeline
@@ -423,11 +623,11 @@ impl ForecastCatalog {
         let native_artifact = PathBuf::from(native);
         let source_file = resolve(&self.workspace, &retained_source)?;
         let native_file = resolve(&self.workspace, &native_artifact)?;
-        if version != 1
+        if !matches!(version, 1 | 2)
             || src_len < 0
             || native_len < 0
             || digest(&source_file)? != (src_sha.clone(), src_len as u64)
-            || digest(&native_file)? != (native_sha, native_len as u64)
+            || digest(&native_file)? != (native_sha.clone(), native_len as u64)
         {
             return Err(StoreError::Integrity(
                 "asset content/schema mismatch".into(),
@@ -435,46 +635,52 @@ impl ForecastCatalog {
         }
         let series = read_grid_series(&native_file)?;
         let (provider,model,product,cycle,settings):(String,String,String,String,String)=self.connection.query_row("SELECT provider,model,product,cycle_utc,normalization_json FROM asset WHERE asset_id=?",[asset_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-        let provider = match provider.as_str() {
-            "ecmwf" => super::ForecastProvider::Ecmwf,
-            "noaa" => super::ForecastProvider::Noaa,
-            _ => return Err(StoreError::Integrity("unknown provider".into())),
-        };
-        let cycle_utc = chrono::DateTime::parse_from_rfc3339(&cycle)
-            .map_err(|e| StoreError::Integrity(e.to_string()))?
-            .to_utc();
-        let normalization_json =
-            serde_json::from_str(&settings).map_err(|e| StoreError::Integrity(e.to_string()))?;
-        let source = ForecastSource {
-            source_id: source_id.clone(),
-            provider,
-            model,
-            product,
-            cycle_utc,
-            sha256: src_sha,
-            byte_length: src_len as u64,
-            normalization_json,
-        };
-        check_source(&source, &series).map_err(|e| StoreError::Integrity(e.to_string()))?;
-        let asset_key = format!("forecast-asset:{source_id}");
-        if asset_id != format!("{:x}", Sha256::digest(asset_key.as_bytes())) {
+        if version == 2 {
+            let metadata: CanonicalForecastMetadata = serde_json::from_str(&settings)
+                .map_err(|e| StoreError::Integrity(e.to_string()))?;
+            if metadata.provider != provider
+                || metadata.model != model
+                || metadata.product != product
+                || metadata.cycle() != cycle
+                || retained_source.extension().is_none_or(|ext| ext != "nc")
+                || src_sha != native_sha
+                || src_len != native_len
+                || canonical_source_id(&src_sha, &settings) != source_id
+            {
+                return Err(StoreError::Integrity(
+                    "canonical forecast metadata mismatch".into(),
+                ));
+            }
+            metadata
+                .validate(&series)
+                .map_err(|e| StoreError::Integrity(e.to_string()))?;
+        } else {
+            let provider = match provider.as_str() {
+                "ecmwf" => super::ForecastProvider::Ecmwf,
+                "noaa" => super::ForecastProvider::Noaa,
+                _ => return Err(StoreError::Integrity("unknown provider".into())),
+            };
+            let cycle_utc = DateTime::parse_from_rfc3339(&cycle)
+                .map_err(|e| StoreError::Integrity(e.to_string()))?
+                .to_utc();
+            let normalization_json = serde_json::from_str(&settings)
+                .map_err(|e| StoreError::Integrity(e.to_string()))?;
+            let source = ForecastSource {
+                source_id: source_id.clone(),
+                provider,
+                model,
+                product,
+                cycle_utc,
+                sha256: src_sha,
+                byte_length: src_len as u64,
+                normalization_json,
+            };
+            check_source(&source, &series).map_err(|e| StoreError::Integrity(e.to_string()))?;
+        }
+        if asset_id != forecast_asset_id(&source_id) {
             return Err(StoreError::Integrity("asset identity mismatch".into()));
         }
-        let first = series
-            .timeline
-            .bounds
-            .first()
-            .ok_or_else(|| invalid("empty axis"))?;
-        let last = series
-            .timeline
-            .bounds
-            .last()
-            .ok_or_else(|| invalid("empty axis"))?;
-        if series.provenance.source_ids.as_slice() != [source_id.as_str()]
-            || series.timeline.time_zone != zone
-            || first.start.format("%Y-%m-%dT%H:%M:%S").to_string() != start
-            || last.end.format("%Y-%m-%dT%H:%M:%S").to_string() != end
-        {
+        if series.timeline.time_zone != zone || bounds(&series) != (start, end) {
             return Err(StoreError::Integrity("asset metadata mismatch".into()));
         }
         Ok((
@@ -555,13 +761,45 @@ impl ForecastCatalog {
         let tx = self.connection.unchecked_transaction()?;
         let (asset, mut native) = self.load_native(asset_id)?;
         let corrections = self.load_corrections(asset_id, ids)?;
+        self.selected_provenance(&asset, &mut native, !ids.is_empty())?;
         tx.commit()?;
-        if let Some(settings) = native.provenance.processing.as_object_mut() {
-            settings.insert("asset_id".into(), asset.asset_id.clone().into());
-        } else if !ids.is_empty() {
+        Ok((asset, native, corrections))
+    }
+
+    fn selected_provenance(
+        &self,
+        asset: &ForecastAsset,
+        native: &mut GridSeries,
+        has_corrections: bool,
+    ) -> Result<(), StoreError> {
+        let processing = &mut native.provenance.processing;
+        if asset
+            .retained_source
+            .extension()
+            .is_some_and(|ext| ext == "nc")
+        {
+            let settings: String = self.connection.query_row(
+                "SELECT normalization_json FROM asset WHERE asset_id=?1",
+                [&asset.asset_id],
+                |row| row.get(0),
+            )?;
+            let normalization: serde_json::Value = serde_json::from_str(&settings)
+                .map_err(|e| StoreError::Integrity(e.to_string()))?;
+            *processing = serde_json::Value::Object(
+                [
+                    ("parent".into(), std::mem::take(processing)),
+                    ("normalization".into(), normalization),
+                    ("asset_id".into(), asset.asset_id.clone().into()),
+                ]
+                .into_iter()
+                .collect(),
+            );
+        } else if let Some(map) = processing.as_object_mut() {
+            map.insert("asset_id".into(), asset.asset_id.clone().into());
+        } else if has_corrections {
             return Err(invalid("native processing metadata is not an object"));
         }
-        Ok((asset, native, corrections))
+        Ok(())
     }
     /// Materialize selected catalog rows while reading their native grids in one transaction.
     pub fn snapshot_selected(
@@ -615,11 +853,7 @@ impl ForecastCatalog {
             } else {
                 self.load_corrections(id, ids)?
             };
-            if let Some(processing) = native.provenance.processing.as_object_mut() {
-                processing.insert("asset_id".into(), id.clone().into());
-            } else if !ids.is_empty() {
-                return Err(invalid("native processing metadata is not an object"));
-            }
+            self.selected_provenance(&asset, &mut native, !ids.is_empty())?;
             if asset_ids.insert(id.clone()) {
                 let mut query = tx.prepare("SELECT * FROM asset WHERE asset_id=?1")?;
                 let values = query.query_row([id], |row| {
@@ -631,7 +865,7 @@ impl ForecastCatalog {
                 destination_tx.execute(
                     "UPDATE asset SET source_path=?1,native_path=?2 WHERE asset_id=?3",
                     params![
-                        format!("sources/original/{id}.grib2"),
+                        text(&asset.snapshot_source_path())?,
                         format!("sources/native/{id}.nc"),
                         id
                     ],

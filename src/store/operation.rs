@@ -1,18 +1,37 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
-    fs::{self, File, OpenOptions},
+    fs::{self, File, Metadata, OpenOptions},
     io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+pub(crate) const PREPARED_ENGINE: &str = if cfg!(windows) {
+    "baseline/engine.exe"
+} else {
+    "baseline/engine"
+};
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputReference {
     pub path: PathBuf,
     pub kind: String,
     pub size: u64,
     pub sha256: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HotStartManifest {
+    pub schema_version: u32,
+    pub saved_at: chrono::NaiveDateTime,
+    pub time_zone: String,
+    pub scenario: String,
+    pub engine_sha256: String,
+    pub geometry_sha256: String,
+    pub soil_sha256: String,
+    pub files: Vec<InputReference>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -120,39 +139,55 @@ pub fn collect_inputs(root: &Path) -> Result<Vec<InputReference>, String> {
 pub fn verify_inputs(root: &Path, inputs: &[InputReference]) -> Result<(), String> {
     let mut paths = std::collections::HashSet::new();
     for input in inputs {
-        if !valid_relative(&input.path)
-            || input
-                .path
-                .components()
-                .next()
-                .is_none_or(|component| component.as_os_str() != input.kind.as_str())
-            || !paths.insert(&input.path)
-            || input.sha256.len() != 64
-            || !input
-                .sha256
-                .bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-        {
+        if !paths.insert(&input.path) {
             return Err("invalid input reference".into());
         }
-        let mut path = root.to_path_buf();
-        for component in input.path.components() {
-            path.push(component.as_os_str());
-            let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if metadata.file_type().is_symlink() {
-                return Err("symlink in input path".into());
-            }
+        let (path, _) = input_file(root, input)?;
+        verify_input_contents(&path, input)?;
+    }
+    Ok(())
+}
+
+pub(super) fn input_file(
+    root: &Path,
+    input: &InputReference,
+) -> Result<(PathBuf, Metadata), String> {
+    if !valid_relative(&input.path)
+        || input
+            .path
+            .components()
+            .next()
+            .is_none_or(|component| component.as_os_str() != input.kind.as_str())
+        || input.sha256.len() != 64
+        || !input
+            .sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("invalid input reference".into());
+    }
+    let mut path = root.to_path_buf();
+    let mut components = input.path.components().peekable();
+    while let Some(component) = components.next() {
+        path.push(component.as_os_str());
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() {
+            return Err("symlink in input path".into());
         }
-        if !path.is_file() {
-            return Err("input is not a regular file".into());
+        if components.peek().is_none() && metadata.is_file() {
+            return Ok((path, metadata));
         }
-        let (hash, size) = digest_file(&path)?;
-        if hash != input.sha256 || size != input.size {
-            return Err(format!(
-                "input integrity mismatch: {}",
-                input.path.display()
-            ));
-        }
+    }
+    Err("input is not a regular file".into())
+}
+
+pub(super) fn verify_input_contents(path: &Path, input: &InputReference) -> Result<(), String> {
+    let (hash, size) = digest_file(path)?;
+    if hash != input.sha256 || size != input.size {
+        return Err(format!(
+            "input integrity mismatch: {}",
+            input.path.display()
+        ));
     }
     Ok(())
 }
@@ -168,9 +203,7 @@ pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
             let entry = entry.map_err(|e| e.to_string())?;
             copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
         }
-        File::open(destination)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| e.to_string())?;
+        sync_directory(destination)?;
     } else if metadata.is_file() {
         let before = digest_file(source)?;
         let mut input = File::open(source).map_err(|e| e.to_string())?;
@@ -228,9 +261,7 @@ pub fn write_run_manifest(root: &Path, manifest: &OperationManifest) -> Result<(
     file.write_all(b"\n").map_err(|e| e.to_string())?;
     file.sync_all().map_err(|e| e.to_string())?;
     fs::rename(&temporary, root.join("manifest.json")).map_err(|e| e.to_string())?;
-    File::open(root)
-        .and_then(|file| file.sync_all())
-        .map_err(|e| e.to_string())
+    sync_directory(root)
 }
 
 pub fn read_retained_manifest(root: &Path) -> Result<OperationManifest, String> {
@@ -296,7 +327,7 @@ pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String>
     }
     for required in [
         Path::new("request.toml"),
-        Path::new("baseline/engine"),
+        Path::new(PREPARED_ENGINE),
         Path::new("baseline/Input/MINI.gtp"),
         Path::new("baseline/Input/PARHIG.hig"),
         Path::new("baseline/Input/Previsao.meta"),
@@ -316,6 +347,16 @@ pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String>
     Ok(manifest)
 }
 
+pub fn sync_directory(path: &Path) -> Result<(), String> {
+    #[cfg(unix)]
+    File::open(path)
+        .and_then(|file| file.sync_all())
+        .map_err(|e| e.to_string())?;
+    #[cfg(not(unix))]
+    let _ = path;
+    Ok(())
+}
+
 pub fn sync_tree(path: &Path) -> Result<(), String> {
     let metadata = fs::symlink_metadata(path).map_err(|e| e.to_string())?;
     if metadata.file_type().is_symlink() {
@@ -325,6 +366,7 @@ pub fn sync_tree(path: &Path) -> Result<(), String> {
         for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
             sync_tree(&entry.map_err(|e| e.to_string())?.path())?;
         }
+        return sync_directory(path);
     } else if !metadata.is_file() {
         return Err("unexpected generated file type".into());
     }
@@ -340,18 +382,62 @@ pub fn finalize_prepared(stage: &Path, destination: &Path) -> Result<(), String>
         renameat_with(CWD, stage, CWD, destination, RenameFlags::NOREPLACE)
             .map_err(|e| e.to_string())?;
         let parent = destination.parent().ok_or("destination has no parent")?;
-        File::open(parent)
-            .and_then(|file| file.sync_all())
-            .map_err(|e| e.to_string())
+        sync_directory(parent)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(windows)]
+    {
+        atomicwrites::move_atomic(stage, destination).map_err(|e| e.to_string())
+    }
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         let _ = (stage, destination);
         Err("atomic preparation finalization is not qualified on this platform".into())
     }
 }
 
-#[cfg(all(test, target_os = "linux"))]
+pub fn publish_directory<T>(
+    destination: &Path,
+    build: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let name = destination.file_name().ok_or("destination has no name")?;
+    let parent = destination
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty());
+    let parent = parent
+        .unwrap_or(Path::new("."))
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let destination = parent.join(name);
+    if fs::symlink_metadata(&destination).is_ok() {
+        return Err(format!(
+            "destination already exists: {}",
+            destination.display()
+        ));
+    }
+    let stage = parent.join(format!(
+        ".mgb-ops-{}-{}",
+        std::process::id(),
+        chrono::Utc::now().format("%Y%m%d%H%M%S%.9f")
+    ));
+    fs::create_dir(&stage).map_err(|e| e.to_string())?;
+    let result = build(&stage).and_then(|value| {
+        sync_tree(&stage)?;
+        finalize_prepared(&stage, &destination)?;
+        Ok(value)
+    });
+    if result.is_err()
+        && let Err(error) = fs::remove_dir_all(&stage)
+        && error.kind() != std::io::ErrorKind::NotFound
+    {
+        return Err(format!(
+            "{}; staging cleanup failed: {error}",
+            result.err().unwrap()
+        ));
+    }
+    result
+}
+
+#[cfg(all(test, any(target_os = "linux", windows)))]
 mod tests {
     use super::finalize_prepared;
     #[test]

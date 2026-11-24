@@ -135,3 +135,122 @@ fn retained_source_is_immutable_and_correction_order_is_explicit() {
     std::fs::write(dir.path().join(asset.retained_source), b"corrupt").unwrap();
     assert!(c.load_native(&asset.asset_id).is_err());
 }
+
+#[test]
+fn canonical_netcdf_intake_keeps_bytes_and_existing_correction_workflow() {
+    use mgb_ops::analysis::corrected_forecast_frames;
+    use mgb_ops::store::{CanonicalForecastMetadata, write_grid_series};
+
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("external.nc");
+    let cycle = Utc.with_ymd_and_hms(2026, 7, 20, 0, 0, 0).unwrap();
+    let start = cycle.naive_utc();
+    let native = GridSeries {
+        timeline: IntervalAxis {
+            time_zone: "UTC".into(),
+            bounds: vec![TimeInterval {
+                start,
+                end: start + chrono::Duration::hours(1),
+            }],
+        },
+        grid: RegularGridSpec {
+            requested_bbox: [0., 0., 1., 1.],
+            resolution_degrees: 1.,
+            latitudes: vec![0.5],
+            longitudes: vec![0.5],
+            effective_bbox: [0., 0., 1., 1.],
+        },
+        values: vec![3.],
+        valid: vec![true],
+        provenance: Provenance {
+            source_ids: vec!["external".into()],
+            processing: "original canonical provenance".into(),
+        },
+    };
+    write_grid_series(&input, &native).unwrap();
+    let original_bytes = std::fs::read(&input).unwrap();
+    let mut catalog =
+        ForecastCatalog::open(dir.path(), "forecasts.sqlite".as_ref(), "files".as_ref()).unwrap();
+    let metadata = CanonicalForecastMetadata {
+        provider: "local".into(),
+        model: "forecast model".into(),
+        product: "rainfall".into(),
+        cycle_utc: cycle,
+    };
+    let asset = catalog.register_canonical(&input, &metadata).unwrap();
+    assert_eq!(
+        catalog
+            .register_canonical(&input, &metadata)
+            .unwrap()
+            .asset_id,
+        asset.asset_id
+    );
+    assert_eq!(catalog.asset_choices().unwrap().len(), 1);
+    assert_eq!(catalog.asset_choices().unwrap()[0].provider, "local");
+
+    std::fs::write(&input, b"invalid new content").unwrap();
+    assert!(catalog.register_canonical(&input, &metadata).is_err());
+    assert_eq!(
+        std::fs::read_dir(dir.path().join("files")).unwrap().count(),
+        1
+    );
+    for path in [&asset.retained_source, &asset.native_artifact] {
+        assert_eq!(
+            std::fs::read(dir.path().join(path)).unwrap(),
+            original_bytes
+        );
+    }
+    assert_eq!(catalog.load_native(&asset.asset_id).unwrap().1, native);
+
+    catalog
+        .register_corrections(&[ForecastCorrection {
+            correction_id: "scale".into(),
+            asset_id: asset.asset_id.clone(),
+            t0_hour: 0,
+            t1_hour: 1,
+            shift_lat_pixels: 0.,
+            shift_lon_pixels: 0.,
+            rotation_deg: 0.,
+            multiplication_factor: 2.,
+            editor: None,
+            reason: "review".into(),
+            created_at: "2026-07-20T00:00:00Z".into(),
+        }])
+        .unwrap();
+    let ids = vec!["scale".into()];
+    let (_, loaded, corrections) = catalog.load_selected(&asset.asset_id, &ids).unwrap();
+    assert_eq!(
+        loaded.provenance.processing["parent"],
+        native.provenance.processing
+    );
+    assert_eq!(
+        corrected_forecast_frames(&loaded, &corrections, &[0])
+            .unwrap()
+            .0[0]
+            .values,
+        [6.0]
+    );
+
+    let snapshot = dir.path().join("snapshot");
+    std::fs::create_dir_all(snapshot.join("sources/original")).unwrap();
+    std::fs::create_dir_all(snapshot.join("sources/native")).unwrap();
+    let snapshot_source = snapshot.join(asset.snapshot_source_path());
+    assert_eq!(snapshot_source.extension().unwrap(), "nc");
+    std::fs::copy(dir.path().join(&asset.retained_source), &snapshot_source).unwrap();
+    std::fs::copy(
+        dir.path().join(&asset.native_artifact),
+        snapshot.join(format!("sources/native/{}.nc", asset.asset_id)),
+    )
+    .unwrap();
+    let snapshot_db = snapshot.join("sources/forecast.sqlite");
+    catalog
+        .snapshot_selected(&snapshot_db, &[(asset.asset_id.clone(), ids.clone())])
+        .unwrap();
+    let reopened = ForecastCatalog::open_read_only(&snapshot, &snapshot_db).unwrap();
+    let (_, snapshot_native, snapshot_corrections) =
+        reopened.load_selected(&asset.asset_id, &ids).unwrap();
+    assert_eq!(snapshot_native, loaded);
+    assert_eq!(snapshot_corrections, corrections);
+    std::fs::write(&snapshot_source, b"not the retained bytes").unwrap();
+    assert!(reopened.load_native(&asset.asset_id).is_err());
+}

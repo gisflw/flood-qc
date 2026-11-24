@@ -341,6 +341,45 @@ pub fn corrected_forecast_frames(
     Ok((transformed, coverage))
 }
 
+pub(crate) fn forecast_interval_selection(
+    native: &IntervalAxis,
+    target_axis: &IntervalAxis,
+) -> Result<Vec<usize>, ForecastPreparationError> {
+    let invalid = |s: &str| ForecastPreparationError::InvalidInput(s.into());
+    if native.bounds.windows(2).any(|v| v[1].start < v[0].end) {
+        return Err(ForecastPreparationError::AmbiguousInterval(
+            "overlapping native intervals".into(),
+        ));
+    }
+    if native.time_zone != target_axis.time_zone {
+        return Err(ForecastPreparationError::SourceMismatch(
+            "operation timezone mismatch".into(),
+        ));
+    }
+    let mut selected = Vec::new();
+    for target in &target_axis.bounds {
+        if (target.end - target.start) != chrono::Duration::hours(1) {
+            return Err(invalid("target intervals must be hourly"));
+        }
+        let matching = native
+            .bounds
+            .iter()
+            .position(|b| b.start <= target.start && b.end >= target.end);
+        let i = matching.ok_or_else(|| {
+            ForecastPreparationError::MissingTimeCoverage(format!(
+                "target interval ending at {}",
+                target.end
+            ))
+        })?;
+        let seconds = (native.bounds[i].end - native.bounds[i].start).num_seconds();
+        if seconds <= 0 || seconds % 3600 != 0 {
+            return Err(invalid("native duration must be divisible by an hour"));
+        }
+        selected.push(i);
+    }
+    Ok(selected)
+}
+
 pub fn prepare_forecast(
     native: &crate::store::GridSeries,
     corrections: &[crate::store::ForecastCorrection],
@@ -348,16 +387,7 @@ pub fn prepare_forecast(
 ) -> Result<crate::store::ForecastPreparation, ForecastPreparationError> {
     use crate::store::{ForecastPreparation, GridSeries};
     let invalid = |s: &str| ForecastPreparationError::InvalidInput(s.into());
-    if native
-        .timeline
-        .bounds
-        .windows(2)
-        .any(|v| v[1].start < v[0].end)
-    {
-        return Err(ForecastPreparationError::AmbiguousInterval(
-            "overlapping native intervals".into(),
-        ));
-    }
+    let selected = forecast_interval_selection(&native.timeline, &request.timeline)?;
     native.validate().map_err(|e| invalid(&e.to_string()))?;
     request
         .timeline
@@ -375,11 +405,6 @@ pub fn prepare_forecast(
         .interpolation
         .validate()
         .map_err(|e| invalid(&e.to_string()))?;
-    if native.timeline.time_zone != request.timeline.time_zone {
-        return Err(ForecastPreparationError::SourceMismatch(
-            "operation timezone mismatch".into(),
-        ));
-    }
     if native
         .values
         .iter()
@@ -388,38 +413,10 @@ pub fn prepare_forecast(
     {
         return Err(invalid("negative forecast rainfall"));
     }
-    let mut selected = Vec::new();
     let mut used = Vec::new();
-    for (idx, target) in request.timeline.bounds.iter().enumerate() {
-        if (target.end - target.start) != chrono::Duration::hours(1) {
-            return Err(invalid("target intervals must be hourly"));
-        }
-        let matching: Vec<usize> = native
-            .timeline
-            .bounds
-            .iter()
-            .enumerate()
-            .filter_map(|(i, b)| (b.start <= target.start && b.end >= target.end).then_some(i))
-            .collect();
-        if matching.is_empty() {
-            return Err(ForecastPreparationError::MissingTimeCoverage(format!(
-                "target interval {idx}"
-            )));
-        }
-        if matching.len() != 1 {
-            return Err(ForecastPreparationError::AmbiguousInterval(format!(
-                "target interval {idx}"
-            )));
-        }
-        let i = matching[0];
-        let seconds =
-            (native.timeline.bounds[i].end - native.timeline.bounds[i].start).num_seconds();
-        if seconds <= 0 || seconds % 3600 != 0 {
-            return Err(invalid("native duration must be divisible by an hour"));
-        }
-        selected.push(i);
-        if !used.contains(&i) {
-            used.push(i);
+    for &index in &selected {
+        if !used.contains(&index) {
+            used.push(index);
         }
     }
     let (transformed, coverage) = corrected_forecast_frames(native, corrections, &used)?;

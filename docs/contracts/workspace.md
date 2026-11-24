@@ -26,10 +26,6 @@ the editable TOML as a `String`.
 same typed TOML schema (`WorkspaceConfig`, `WorkspaceSpatial`, `WorkspaceEngine`).
 Paths inside the document remain unchanged. Saving validates nonempty configured
 paths and atomically replaces the destination; a failed save preserves its bytes.
-`discover_rainfall_grids(workspace)` lists retained observed and scenario working
-grids under `data/cache/preparations` and `data/runs` without creating artifacts.
-Missing roots return no grids; discovery requires a manifest alongside the
-checkpoints and does not filter by run success.
 `inspect(request)` returns an `InspectionReport`, including expected failures;
 it does not print output or choose an exit code. Findings are available through
 `report.findings`, with their type exposed as `mgb_ops::app::Finding`. Finding
@@ -125,7 +121,7 @@ rainfall preparation establish the list. Do not require every discovered input,
 state, or run-specific dates/horizons.
 
 Only report metadata presence of `data/history.sqlite`, `data/cache`, and
-`data/runs`. Absence or inaccessible metadata is informational. Do not open
+`data/cache/run/active.json`. Absence or inaccessible metadata is informational. Do not open
 SQLite or inspect `current_run.sqlite` or sidecars.
 
 Always report unchecked geometry/input contents, forcing, saved state, runtime

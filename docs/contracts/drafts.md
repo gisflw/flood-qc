@@ -25,14 +25,15 @@ mgb-ops draft run --workspace /regional/workspace --draft draft.json --json
 mgb-ops draft save --workspace /regional/workspace --draft draft.json --output copy.json --omit-visualization --json
 ```
 
-`import-manifest --manifest DIRECTORY --output draft.json` copies the recipe and
-actual instruction values from a retained preparation or a trial with validated
-successful scenarios, including a partially failed trial. It does
-not select a workspace from that artifact or make its original dependencies
-available. Imported instruction values do not claim a registered origin.
+`import-manifest --manifest PATH --output draft.json` copies the recipe and
+actual instruction values from a standalone attempt manifest, an active or
+explicitly saved run directory, or a saved preparation. Select the workspace
+explicitly and confirm the sources before running the draft. Imported instruction
+values have no registered origin.
 
 `edit --draft draft.json --document replacement.json` replaces the document with
-another validated draft JSON document. There is no field-patching language.
+another validated draft JSON document, preserving its anchor. An incomplete
+draft can supply its missing reference and timezone through this command.
 `refresh --source observations` accepts the local observation selection;
 `--source forecast --scenario 0` accepts one forecast selection. The default
 `--source all` also checks preparation dependencies and requires a complete
@@ -82,10 +83,14 @@ coverage or rewriting their files. Imports compact compatible version 1 periods
 losslessly; incompatible periods retain version 1 and exact explicit boundaries.
 Complete TOML export likewise uses version 2 only when lossless. New drafts use
 version 2. The [desktop interface](desktop.md#workspace-settings-and-operation-drafts)
-adds exact-reference restoration and anchored filenames; explicit-path backend and
+adds anchored filenames; explicit-path backend and
 CLI save/open APIs retain their existing path behavior.
 `Draft::new_run` establishes a validated fixed-reference baseline without selecting
-operational sources. `DraftOperation::coverage` displays the shared period derivation after validating
+operational sources. The CLI `draft new` accepts `--reference` and `--time-zone`
+together to set the anchor on creation. Opening or saving a draft fixes any
+reference and timezone already present. Library callers can use
+`Draft::initialize_anchor` to fill missing anchor fields and clear prior source
+acceptance. `DraftOperation::coverage` displays the shared period derivation after validating
 the IANA timezone and all hourly labels against the same offset-transition rules,
 and `Draft::use_day_horizons` converts legacy coverage only when every hourly label
 is unchanged.
@@ -118,6 +123,27 @@ stations, minis, selected scenarios and result files without silently choosing
 replacements or making the operation dirty.
 
 ## Editing, source acceptance and previews
+
+Edit the draft, then explicitly accept the inputs for the intended action.
+Preview is optional and can use a local selection. Prepare and Run require a
+complete operation with current accepted inputs. If a selected source changes,
+accept it again before taking an action that uses it.
+
+```mermaid
+flowchart TD
+    accTitle: Accepting sources and using an operation draft
+    accDescr: After editing, accept selected sources. Preview can use a local selection. Complete operations with current accepted inputs can produce a reusable preparation or execute an experiment. Changes to selected inputs require fresh acceptance.
+    draft["Edit draft"] --> accept["Accept selected inputs"]
+    accept --> preview["Preview observations or a forecast, if useful"]
+    accept --> ready{"Complete operation and inputs current?"}
+    preview --> ready
+    ready -->|Yes| prepare["Prepare · retain a reusable snapshot"]
+    ready -->|Yes| run["Run · prepare and execute an experiment"]
+    ready -->|No| draft
+```
+
+[Save](#json-authoring-versions) can retain an incomplete draft.
+[Registration](#explicit-registration) is a separate action for selected edits.
 
 The public `Draft` API provides new/open/import/save/discard, typed mutable
 `document` values, refresh, action validation, previews and preparation. Library
@@ -193,7 +219,7 @@ raw data remain intact; removing a draft instruction only deselects it.
 
 `run_draft(&draft, &control)` uses the current accepted values without registering
 instructions. Run prepares and executes; Prepare only retains frozen dependencies
-for later execution. A successful trial recipe can be imported as a new draft,
-whose selected sources must be explicitly accepted again. Trial caches contain
-results and recipes rather than reusable source snapshots. Cancellation, progress,
-partial failure and retention follow the [operation contract](operations.md#controlled-actions-and-cancellation).
+for later execution. A successful run replaces the workspace active run. Import a saved attempt
+manifest as a new draft and explicitly accept its selected sources again.
+Cancellation, progress, and retention follow the
+[operation contract](operations.md#controlled-actions-and-cancellation).

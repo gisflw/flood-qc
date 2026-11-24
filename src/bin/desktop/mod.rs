@@ -1,20 +1,30 @@
 mod charts;
 mod data;
 mod export;
+mod inundation;
 mod layout;
 mod map;
 mod runners;
+mod theme;
+mod tools;
+mod workflows;
 use self::layout::{Form, SideTab};
 
 use self::data::{
-    CHART_SLOT, ChartRequest, Job, Loaded, Project, Run, UPSTREAM_SLOT, View, ViewRequest, Worker,
+    ActiveRun, CHART_SLOT, ChartRequest, Job, Loaded, Project, RUN_SLOT, RainSide, Run, SLOTS,
+    UPSTREAM_SLOT, View, ViewRequest, Worker,
 };
 use eframe::egui::{self, Color32};
 use mgb_ops::analysis::HourlyWindow;
-use mgb_ops::app::{Location, SeriesQuery, SeriesSelection};
+use mgb_ops::app::{Location, RainfallPeriod, SeriesQuery, SeriesSelection};
+use mgb_ops::store::RainfallCacheInfo;
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
-use walkers::{HttpTiles, Map, MapMemory, lon_lat};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+use walkers::{HttpTiles, MapMemory, lon_lat};
 
 const APP_ID: &str = "MGB Ops · Monitoring";
 const STORAGE: &str = "mgb-ops.monitoring.v1";
@@ -35,12 +45,107 @@ fn section(ui: &mut egui::Ui, title: String, content: impl FnOnce(&mut egui::Ui)
     content(ui);
 }
 
+fn rainfall_maximum(input: &str) -> Option<f64> {
+    input
+        .trim()
+        .replace(',', ".")
+        .parse::<f64>()
+        .ok()
+        .filter(|value| value.is_finite() && *value > 1.)
+}
+
+fn footer_box(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::group(ui.style())
+        .inner_margin(egui::Margin::symmetric(4, 2))
+        .show(ui, contents);
+}
+
 fn ribbon_group(ui: &mut egui::Ui, title: String, actions: impl FnOnce(&mut egui::Ui)) {
     ui.vertical(|ui| {
         ui.horizontal(actions);
         ui.small(title);
     });
     ui.separator();
+}
+
+fn ribbon_action(ui: &egui::Ui, emoji: &str, label: &str) -> egui::Button<'static> {
+    let emoji_font = egui::FontId::proportional(20.);
+    let label_font = egui::TextStyle::Button.resolve(ui.style());
+    let [emoji_width, label_width] = ui.fonts_mut(|fonts| {
+        [(emoji, &emoji_font), (label, &label_font)].map(|(text, font)| {
+            fonts
+                .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
+                .size()
+                .x
+        })
+    });
+    let width = emoji_width.max(label_width);
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        &format!("{emoji}\n"),
+        0.5 * (width - emoji_width),
+        egui::TextFormat {
+            font_id: emoji_font,
+            color: Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    job.append(
+        label,
+        0.5 * (width - label_width),
+        egui::TextFormat {
+            font_id: label_font,
+            color: Color32::PLACEHOLDER,
+            ..Default::default()
+        },
+    );
+    egui::Button::new(job).wrap_mode(egui::TextWrapMode::Extend)
+}
+
+fn button_label(response: &egui::Response, label: &str) {
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label)
+    });
+    if response.gained_focus() {
+        response.scroll_to_me(None);
+    }
+}
+
+fn ribbon_button(ui: &mut egui::Ui, emoji: &str, label: String) -> egui::Response {
+    let response = ui.add(ribbon_action(ui, emoji, &label));
+    button_label(&response, &label);
+    response
+}
+
+fn layer_row(ui: &mut egui::Ui, pt: bool, label: &str, color: Color32, visible: &mut bool) -> bool {
+    let id = ui.id().with("layer-settings-open");
+    let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
+    ui.horizontal(|ui| {
+        let action = if open {
+            text(pt, "Hide settings", "Ocultar configurações")
+        } else {
+            text(pt, "Show settings", "Mostrar configurações")
+        };
+        if icon_button(
+            ui,
+            if open { "-" } else { "+" },
+            &format!("{action} · {label}"),
+        )
+        .clicked()
+        {
+            open = !open;
+            ui.data_mut(|data| data.insert_temp(id, open));
+        }
+        theme::swatch(ui, color);
+        ui.checkbox(visible, label);
+    });
+    open
+}
+
+fn layer_opacity(ui: &mut egui::Ui, pt: bool, opacity: &mut f32) {
+    let label = ui.label(text(pt, "Opacity", "Opacidade"));
+    ui.add(egui::Slider::new(opacity, 0.0..=1.0))
+        .labelled_by(label.id);
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -87,24 +192,24 @@ struct Display {
     camera: MapMemory,
     layers: Vec<map::LayerControl>,
     basemap: usize,
+    rain_maximum: f64,
     labels: bool,
     local: Vec<map::LocalDisplay>,
     selection: Option<Location>,
     comparison: Option<ComparisonFields>,
-    run: Option<PathBuf>,
-    map_scenario: String,
+    rainfall_scenario: String,
+    inundation_scenario: String,
     overlays: Vec<String>,
     observations: bool,
-    grid: Option<PathBuf>,
-    reference: String,
-    zone: String,
     hours: i32,
     explicit: bool,
     start: String,
     end: String,
+    map_mode: map::Mode,
+    swipe: f32,
+    right_rainfall: Option<RainfallSettings>,
     chart_start: String,
     chart_end: String,
-    upstream: bool,
     #[serde(rename = "right_pane")]
     layout: layout::Layout,
     draft: Option<PathBuf>,
@@ -121,24 +226,24 @@ impl Default for Display {
             camera,
             layers: map::default_layers(),
             basemap: 1,
+            rain_maximum: map::RAIN_MAX_MM,
             labels: true,
             local: vec![],
             selection: None,
             comparison: None,
-            run: None,
-            map_scenario: String::new(),
+            rainfall_scenario: String::new(),
+            inundation_scenario: String::new(),
             overlays: vec![],
             observations: true,
-            grid: None,
-            reference: String::new(),
-            zone: "America/Sao_Paulo".into(),
             hours: -24,
             explicit: false,
             start: String::new(),
             end: String::new(),
+            map_mode: map::Mode::Single,
+            swipe: 0.5,
+            right_rainfall: None,
             chart_start: String::new(),
             chart_end: String::new(),
-            upstream: true,
             layout: layout::Layout::default(),
             draft: None,
             operation_zone: None,
@@ -146,10 +251,97 @@ impl Default for Display {
     }
 }
 impl Display {
+    fn restore_layers(&mut self) {
+        if !self
+            .layers
+            .iter()
+            .any(|layer| layer.kind == inundation::KIND)
+            && let Some((position, layer)) = map::default_layers()
+                .into_iter()
+                .enumerate()
+                .find(|(_, layer)| layer.kind == inundation::KIND)
+        {
+            self.layers.insert(position.min(self.layers.len()), layer);
+        }
+    }
+
     fn selected_operation_zone<'a>(&'a self, fallback: &'a str) -> &'a str {
         self.operation_zone.as_deref().unwrap_or(fallback)
     }
+
+    fn rainfall_settings(&self, side: RainSide) -> RainfallSettings {
+        if side == RainSide::Right
+            && let Some(settings) = &self.right_rainfall
+        {
+            return settings.clone();
+        }
+        RainfallSettings {
+            scenario: self.rainfall_scenario.clone(),
+            window: RainfallWindow {
+                hours: self.hours,
+                explicit: self.explicit,
+                start: self.start.clone(),
+                end: self.end.clone(),
+            },
+        }
+    }
+
+    fn set_rainfall_settings(&mut self, side: RainSide, settings: RainfallSettings) {
+        match side {
+            RainSide::Left => {
+                self.rainfall_scenario = settings.scenario;
+                self.hours = settings.window.hours;
+                self.explicit = settings.window.explicit;
+                self.start = settings.window.start;
+                self.end = settings.window.end;
+            }
+            RainSide::Right => self.right_rainfall = Some(settings),
+        }
+    }
+
+    fn set_map_mode(&mut self, mode: map::Mode) {
+        self.map_mode = mode;
+        if mode.comparing() && self.right_rainfall.is_none() {
+            self.right_rainfall = Some(self.rainfall_settings(RainSide::Left));
+        }
+    }
 }
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RainfallSettings {
+    scenario: String,
+    window: RainfallWindow,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct RainfallWindow {
+    hours: i32,
+    explicit: bool,
+    start: String,
+    end: String,
+}
+
+impl RainfallWindow {
+    fn period(&self) -> Result<RainfallPeriod, String> {
+        if self.explicit {
+            Ok(RainfallPeriod::Explicit {
+                start: data::timestamp(&self.start)?,
+                end: data::timestamp(&self.end)?,
+            })
+        } else {
+            Ok(RainfallPeriod::SignedHours(self.hours))
+        }
+    }
+}
+
+#[derive(Default)]
+struct RainfallView {
+    image: Option<map::RainImage>,
+    view: Option<View>,
+    finding: Option<String>,
+    draft: Option<RainfallWindow>,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
@@ -196,7 +388,7 @@ enum Departure {
     Close,
     Quit,
     New,
-    Draft(PathBuf, String, String),
+    Draft(PathBuf),
 }
 
 struct Monitoring {
@@ -204,11 +396,16 @@ struct Monitoring {
     display: Display,
     project: Option<Arc<Project>>,
     run: Option<Arc<Run>>,
-    view: Option<View>,
-    rainfall: Option<map::RainImage>,
+    active_run: Result<Option<PathBuf>, String>,
+    comparison_runs: Vec<PathBuf>,
+    run_target: Option<PathBuf>,
+    run_check: Instant,
+    rainfall: [RainfallView; 2],
+    rainfall_info: Result<Option<RainfallCacheInfo>, String>,
+    inundation: inundation::Inundation,
     worker: Worker,
     chart_worker: Worker,
-    loading: [bool; CHART_SLOT + 1],
+    loading: [bool; SLOTS],
     chart_fields: ComparisonFields,
     chart_message: String,
     chart_retained: bool,
@@ -217,38 +414,63 @@ struct Monitoring {
     charts: charts::Charts,
     tiles: Option<HttpTiles>,
     tile_source: usize,
-    cache: map::StaticCache,
+    cache: [map::StaticCache; 2],
     local: Vec<map::LocalLayer>,
     runners: runners::Runners,
+    workflows: workflows::Forms,
+    calibration: tools::CalibrationTools,
+    instructions: tools::InstructionTools,
     pending: Option<Departure>,
     saving_departure: bool,
     leaving_job: bool,
     allow_quit: bool,
     switching_project: bool,
-    open_candidate: Option<(PathBuf, String, String)>,
     ribbon: Ribbon,
     map_menu: Option<Location>,
-    upstream_basin: Option<(i64, Vec<i64>)>,
+    upstream_basin: Option<(i64, map::BasinPaths)>,
     chart_exports: bool,
     export_scale: u32,
 }
 impl Monitoring {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        let preferences: Preferences = cc
+        theme::install(&cc.egui_ctx);
+        let mut preferences: Preferences = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE))
             .unwrap_or_default();
+        preferences.appearance = if preferences.appearance == 2 { 2 } else { 1 };
+        for display in &mut preferences.recent {
+            if !display.rain_maximum.is_finite() || display.rain_maximum <= 1. {
+                display.rain_maximum = map::RAIN_MAX_MM;
+            }
+            if display.basemap > 3 {
+                display.basemap = 1;
+            }
+            display.layout.restore_tabs();
+            display.restore_layers();
+            display.set_map_mode(display.map_mode);
+            display.swipe = if display.swipe.is_finite() {
+                display.swipe.clamp(0., 1.)
+            } else {
+                0.5
+            };
+        }
         let display = preferences.recent.first().cloned().unwrap_or_default();
         let mut app = Self {
             preferences,
             display,
             project: None,
             run: None,
-            view: None,
-            rainfall: None,
+            active_run: Ok(None),
+            comparison_runs: Vec::new(),
+            run_target: None,
+            run_check: Instant::now(),
+            rainfall: Default::default(),
+            rainfall_info: Ok(None),
+            inundation: inundation::Inundation::new(cc.egui_ctx.clone()),
             worker: Worker::new(cc.egui_ctx.clone()),
             chart_worker: Worker::new(cc.egui_ctx.clone()),
-            loading: [false; CHART_SLOT + 1],
+            loading: [false; SLOTS],
             chart_fields: ComparisonFields::default(),
             chart_message: String::new(),
             chart_retained: false,
@@ -262,15 +484,17 @@ impl Monitoring {
             ),
             tiles: None,
             tile_source: 0,
-            cache: map::StaticCache::default(),
+            cache: Default::default(),
             local: vec![],
             runners: runners::Runners::default(),
+            workflows: workflows::Forms::default(),
+            calibration: tools::CalibrationTools::default(),
+            instructions: tools::InstructionTools::default(),
             pending: None,
             saving_departure: false,
             leaving_job: false,
             allow_quit: false,
             switching_project: false,
-            open_candidate: None,
             ribbon: Ribbon::Project,
             map_menu: None,
             upstream_basin: None,
@@ -306,24 +530,29 @@ impl Monitoring {
             return;
         }
         if slot == 0 {
+            self.inundation.select(None);
             self.invalidate_chart();
             for dependent in 1..4 {
                 self.worker.invalidate(dependent);
                 self.loading[dependent] = false;
             }
-        }
-        if slot == 1 {
-            self.invalidate_chart();
-            self.worker.invalidate(2);
-            self.loading[2] = false;
+            self.worker.invalidate(RainSide::Right.slot());
+            self.loading[RainSide::Right.slot()] = false;
         }
         self.loading[slot] = true;
         self.worker.submit(job);
-        self.status = text(
-            self.preferences.portuguese,
-            "Loading; previous view retained",
-            "Carregando; visualização anterior mantida",
-        );
+        let pt = self.preferences.portuguese;
+        match slot {
+            UPSTREAM_SLOT => {}
+            RUN_SLOT => self.status = text(pt, "Loading run…", "Carregando execução…"),
+            _ => {
+                self.status = text(
+                    pt,
+                    "Loading; previous view retained",
+                    "Carregando; visualização anterior mantida",
+                );
+            }
+        }
     }
     fn remember(&mut self) {
         if self.runners.initialized
@@ -345,6 +574,15 @@ impl Monitoring {
         self.preferences.recent.insert(0, self.display.clone());
         self.preferences.recent.truncate(10);
     }
+    fn choose_project(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("TOML", &["toml"])
+            .pick_file()
+        {
+            self.open_path(path);
+        }
+    }
+
     fn open_path(&mut self, config: PathBuf) {
         let workspace = self
             .preferences
@@ -362,61 +600,164 @@ impl Monitoring {
             self.depart(Departure::Project(config, workspace));
         }
     }
-    fn resolve_window(&mut self) -> Result<HourlyWindow, String> {
-        if self.display.explicit {
-            let window = HourlyWindow::Explicit {
-                start: data::timestamp(&self.display.start)?,
-                end: data::timestamp(&self.display.end)?,
-            };
-            mgb_ops::analysis::resolve_hourly_window(&self.display.zone, &window)?;
-            Ok(window)
+    fn check_active_run(&mut self, refresh: bool) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        self.run_check = Instant::now() + Duration::from_secs(2);
+        let active = mgb_ops::app::discover_trials(&project.workspace)
+            .map(|roots| roots.into_iter().next())
+            .map_err(|error| error.to_string());
+        let changed = self.active_run != active;
+        let following_active =
+            self.run_target.as_ref() == self.active_run.as_ref().ok().and_then(Option::as_ref);
+        self.active_run = active;
+        if changed && following_active {
+            let target = self.active_run.as_ref().ok().cloned().flatten();
+            if target.is_none() {
+                self.status = self.active_run.as_ref().err().cloned().unwrap_or_else(|| {
+                    text(
+                        self.preferences.portuguese,
+                        "No active run.",
+                        "Nenhuma execução ativa.",
+                    )
+                });
+            }
+            self.load_run(target);
+        } else if refresh {
+            self.load_run(self.run_target.clone());
+        }
+        if changed && self.check_rainfall_cache() {
+            self.request_view();
+        }
+    }
+
+    fn load_run(&mut self, root: Option<PathBuf>) {
+        self.invalidate_chart();
+        self.worker.invalidate(RUN_SLOT);
+        self.loading[RUN_SLOT] = false;
+        self.charts.clear();
+        self.chart_message.clear();
+        self.chart_retained = false;
+        self.display.overlays.clear();
+        self.display.inundation_scenario.clear();
+        self.inundation.select(None);
+        self.run = None;
+        self.run_target = root.clone();
+        if let Some(root) = root {
+            let active = self.active_source(&root);
+            self.submit(Job::Run(root, active));
         } else {
-            let (_, interval) = mgb_ops::analysis::signed_rainfall_window(
-                &self.display.zone,
-                data::timestamp(&self.display.reference)?,
-                self.display.hours,
-            )?;
-            self.display.start = interval.start.format("%Y-%m-%dT%H:%M:%S").to_string();
-            self.display.end = interval.end.format("%Y-%m-%dT%H:%M:%S").to_string();
-            Ok(HourlyWindow::Explicit {
-                start: interval.start,
-                end: interval.end,
-            })
+            self.request_chart();
         }
     }
-    fn run_rainfall(&mut self) {
-        if let Some(run) = &self.run {
-            self.display.grid = Some(if !self.display.explicit && self.display.hours < 0 {
-                run.root.join("checkpoints/observed-grid.nc")
-            } else {
-                run.root
-                    .join("checkpoints/forecast")
-                    .join(&self.display.map_scenario)
-                    .join("working.nc")
-            });
-        }
+
+    fn active_source(&self, root: &std::path::Path) -> Option<ActiveRun> {
+        let project = self.project.as_ref()?;
+        let active = self.active_run.as_ref().ok()?.as_ref()?;
+        (root == active).then(|| ActiveRun {
+            workspace: project.workspace.clone(),
+            root: active.clone(),
+        })
     }
+
+    fn check_rainfall_cache(&mut self) -> bool {
+        let info = self.project.as_ref().map_or(Ok(None), |project| {
+            mgb_ops::app::rainfall_cache_info(&project.workspace)
+        });
+        if self.rainfall_info == info {
+            return false;
+        }
+        self.rainfall_info = info;
+        if let Ok(Some(info)) = &self.rainfall_info
+            && let Some(first) = info.scenarios.first()
+        {
+            for side in RainSide::BOTH {
+                if side == RainSide::Right && self.display.right_rainfall.is_none() {
+                    continue;
+                }
+                let mut settings = self.display.rainfall_settings(side);
+                if !info.scenarios.contains(&settings.scenario) {
+                    settings.scenario.clone_from(first);
+                    self.display.set_rainfall_settings(side, settings);
+                }
+            }
+        }
+        for side in RainSide::BOTH {
+            self.worker.invalidate(side.slot());
+            self.loading[side.slot()] = false;
+            let state = &mut self.rainfall[side.index()];
+            state.image = None;
+            state.view = None;
+            state.finding = None;
+        }
+        true
+    }
+
     fn request_view(&mut self) {
-        self.worker.invalidate(2);
-        self.loading[2] = false;
-        if self.display.grid.is_none() {
-            self.rainfall = None;
+        self.request_rainfall(RainSide::Left);
+        if self.display.map_mode.comparing() {
+            self.request_rainfall(RainSide::Right);
         }
+    }
+
+    fn request_rainfall(&mut self, side: RainSide) {
         let Some(project) = self.project.clone() else {
             return;
         };
-        match self.resolve_window() {
-            Ok(window) => self.submit(Job::View(ViewRequest {
+        let settings = self.display.rainfall_settings(side);
+        let state = &mut self.rainfall[side.index()];
+        state.view = None;
+        state.finding = None;
+        let period = if let Ok(Some(info)) = &self.rainfall_info {
+            match settings
+                .window
+                .period()
+                .and_then(|period| Ok((period.resolve(info)?, period)))
+            {
+                Ok((window, period)) => {
+                    if state.image.as_ref().is_some_and(|image| {
+                        image.rain.generation != info.generation
+                            || image.rain.window != window
+                            || image.rain.scenario != settings.scenario
+                    }) {
+                        state.image = None;
+                    }
+                    Some(period)
+                }
+                Err(error) => {
+                    state.image = None;
+                    state.finding = Some(error);
+                    None
+                }
+            }
+        } else {
+            state.image = None;
+            None
+        };
+        self.loading[side.slot()] = true;
+        self.worker.submit(Job::View(
+            side,
+            ViewRequest {
                 project,
-                run: self.run.clone(),
                 location: self.display.selection.clone(),
-                map_scenario: self.display.map_scenario.clone(),
-                grid: self.display.grid.clone(),
-                zone: self.display.zone.clone(),
-                window,
-                upstream: self.display.upstream,
-            })),
-            Err(error) => self.status = error,
+                scenario: settings.scenario,
+                period,
+            },
+        ));
+    }
+
+    fn set_map_mode(&mut self, mode: map::Mode) {
+        let comparing = self.display.map_mode.comparing();
+        self.display.set_map_mode(mode);
+        if mode.comparing() && !comparing {
+            self.request_rainfall(RainSide::Right);
+        } else if !mode.comparing() && comparing {
+            self.worker.invalidate(RainSide::Right.slot());
+            self.loading[RainSide::Right.slot()] = false;
+            let state = &mut self.rainfall[RainSide::Right.index()];
+            state.image = None;
+            state.view = None;
         }
     }
 
@@ -505,6 +846,7 @@ impl Monitoring {
         let zone = self
             .run
             .as_ref()
+            .filter(|run| !run.time_zone.is_empty())
             .map_or(&project.time_zone, |run| &run.time_zone)
             .clone();
         let window = data::timestamp(&self.display.chart_start).and_then(|start| {
@@ -542,6 +884,7 @@ impl Monitoring {
             ));
         }
         self.submit(Job::Chart(ChartRequest {
+            active: run.and_then(|run| self.active_source(&run.root)),
             query: SeriesQuery {
                 location,
                 time_zone: zone,
@@ -560,6 +903,12 @@ impl Monitoring {
             .into_iter()
             .chain(self.chart_worker.poll());
         for reply in replies {
+            let rain_side = RainSide::from_slot(reply.slot);
+            if (matches!(reply.slot, RUN_SLOT | CHART_SLOT) || rain_side.is_some())
+                && !self.loading[0]
+            {
+                self.check_active_run(false);
+            }
             let worker = if reply.slot == CHART_SLOT {
                 &self.chart_worker
             } else {
@@ -572,10 +921,24 @@ impl Monitoring {
             if reply.slot == 0 {
                 self.switching_project = false;
             }
+            if rain_side.is_some() && self.check_rainfall_cache() {
+                self.request_view();
+                continue;
+            }
             match reply.result {
                 Err(error) if reply.slot == CHART_SLOT => self.chart_message = error,
                 Err(error) if reply.slot == UPSTREAM_SLOT => self.status = error,
+                Err(error) if reply.slot == RUN_SLOT => {
+                    self.status = error;
+                    self.request_chart();
+                }
+                Err(error) if rain_side.is_some() => {
+                    self.rainfall[rain_side.unwrap().index()].finding = Some(error);
+                }
                 Err(error) => {
+                    if reply.slot == 0 {
+                        self.request_view();
+                    }
                     self.status = format!(
                         "{error} · {}",
                         text(
@@ -604,11 +967,17 @@ impl Monitoring {
                         self.charts.clear();
                         self.chart_message.clear();
                         self.run = None;
-                        self.view = None;
-                        self.rainfall = None;
+                        self.active_run = Ok(None);
+                        self.comparison_runs.clear();
+                        self.run_target = None;
+                        self.rainfall = Default::default();
+                        self.rainfall_info = Ok(None);
+                        for side in RainSide::BOTH {
+                            self.worker.invalidate(side.slot());
+                            self.loading[side.slot()] = false;
+                        }
                         self.local.clear();
                         self.worker.invalidate(1);
-                        self.worker.invalidate(2);
                         self.worker.invalidate(3);
                         self.loading[1..4].fill(false);
                     }
@@ -617,12 +986,15 @@ impl Monitoring {
                         .as_ref()
                         .is_none_or(|old| !Arc::ptr_eq(&old.fills, &project.fills))
                     {
-                        self.cache.clear();
+                        self.cache.iter_mut().for_each(map::StaticCache::clear);
                         self.clear_upstream();
                         self.map_menu = None;
                     }
                     if !same {
                         self.runners = runners::Runners::default();
+                        self.workflows = workflows::Forms::default();
+                        self.calibration = tools::CalibrationTools::default();
+                        self.instructions = tools::InstructionTools::default();
                         self.runners.start(
                             runners::Action::Initialize {
                                 workspace: project.workspace.clone(),
@@ -637,31 +1009,13 @@ impl Monitoring {
                         );
                     }
                     self.project = Some(project.clone());
+                    self.check_rainfall_cache();
                     if !self.display.local.is_empty() {
                         self.submit(Job::Local(
                             self.display.local.iter().map(|l| l.path.clone()).collect(),
                         ));
                     }
-                    if self.display.reference.is_empty() {
-                        use chrono::Timelike;
-                        self.display.zone = project.time_zone.clone();
-                        if let Ok(zone) = project.time_zone.parse::<chrono_tz::Tz>() {
-                            let now = chrono::Utc::now()
-                                .with_timezone(&zone)
-                                .naive_local()
-                                .with_minute(0)
-                                .unwrap()
-                                .with_second(0)
-                                .unwrap()
-                                .with_nanosecond(0)
-                                .unwrap();
-                            self.display.reference = now.format("%Y-%m-%dT%H:%M:%S").to_string();
-                        }
-                    }
-                    if self.display.run.is_none()
-                        && (self.display.chart_start.is_empty()
-                            || self.display.chart_end.is_empty())
-                    {
+                    if self.display.chart_start.is_empty() || self.display.chart_end.is_empty() {
                         use chrono::Timelike;
                         let now = chrono::Utc::now()
                             .with_timezone(
@@ -696,9 +1050,6 @@ impl Monitoring {
                     if !same {
                         self.chart_fields = self.display.comparison.clone().unwrap_or_default();
                     }
-                    if self.display.zone.is_empty() {
-                        self.display.zone = project.time_zone.clone();
-                    }
                     if let Some(location) = &self.display.selection {
                         let valid = match location {
                             Location::Station(id) => {
@@ -707,7 +1058,6 @@ impl Monitoring {
                             Location::Mini(id) => project.topology.iter().any(|m| m.mini_id == *id),
                         };
                         if !valid {
-                            self.view = None;
                             self.display.selection = None;
                             self.status = text(
                                 self.preferences.portuguese,
@@ -717,61 +1067,38 @@ impl Monitoring {
                         }
                     }
                     self.status = format!(
-                        "{} · {} {} · {} MINIs · {} {} · {} {}",
+                        "{} · {} {} · {} MINIs · {} {}",
                         project.workspace.display(),
                         project.stations.len(),
                         text(self.preferences.portuguese, "stations", "estações"),
                         project.topology.len(),
-                        project.runs.len(),
-                        text(self.preferences.portuguese, "runs", "execuções"),
                         project.findings.len(),
                         text(self.preferences.portuguese, "findings", "avisos")
                     );
-                    if let Some(root) = self.display.run.clone() {
-                        self.submit(Job::Run(root));
-                    } else {
-                        if !self.display.reference.is_empty() {
-                            self.request_view();
-                        }
-                        self.request_chart();
-                    }
+                    self.check_active_run(true);
+                    self.request_view();
                 }
                 Ok(Loaded::Run(run)) => {
-                    let changed = self.run.as_ref().is_some_and(|old| old.root != run.root);
-                    if changed {
-                        self.display.overlays.clear();
-                        self.display.map_scenario.clear();
-                        self.display.grid = None;
-                        self.rainfall = None;
+                    if self.active_run.as_ref().ok().and_then(Option::as_ref) != Some(&run.root)
+                        && !self.comparison_runs.contains(&run.root)
+                    {
+                        self.comparison_runs.push(run.root.clone());
                     }
-                    self.display.zone = run.time_zone.clone();
-                    self.display.reference = run.reference.clone();
-                    let new_window = self.display.run.as_ref() != Some(&run.root);
-                    if self.display.chart_start.is_empty() || new_window {
-                        self.display.chart_start = run.start.clone();
+                    if !run.start.is_empty() {
+                        self.display.chart_start.clone_from(&run.start);
+                        self.display.chart_end.clone_from(&run.end);
                     }
-                    if self.display.chart_end.is_empty() || new_window {
-                        self.display.chart_end = run.end.clone();
-                    }
-                    if self.display.map_scenario.is_empty() {
-                        self.display.map_scenario = run.scenarios[0].clone();
-                    }
-                    if self.display.overlays.is_empty() {
-                        self.display.overlays = run.scenarios.clone();
-                    }
-                    if !run.scenarios.contains(&self.display.map_scenario) {
-                        self.status = text(
+                    self.display.overlays.clone_from(&run.scenarios);
+                    self.status = format!(
+                        "{} · {}",
+                        text(
                             self.preferences.portuguese,
-                            "Remembered scenario is unavailable; select an available scenario",
-                            "Cenário lembrado indisponível; selecione um cenário disponível",
-                        );
-                    }
-                    self.display.run = Some(run.root.clone());
+                            "Run loaded",
+                            "Execução carregada"
+                        ),
+                        run.root.display(),
+                    );
                     self.run = Some(run);
-                    if self.display.grid.is_none() {
-                        self.run_rainfall();
-                    }
-                    self.request_view();
                     self.request_chart();
                 }
                 Ok(Loaded::Chart {
@@ -784,42 +1111,37 @@ impl Monitoring {
                 }
                 Ok(Loaded::View(view)) => {
                     let mut view = *view;
-                    if view.rainfall.is_none()
-                        && self.display.grid.is_some()
-                        && let Some(retained) = &self.rainfall
-                    {
-                        view.findings.push(format!(
-                            "{}: {}",
-                            text(
-                                self.preferences.portuguese,
-                                "Retained rainfall",
-                                "Chuva anterior mantida"
-                            ),
-                            retained.rain.source.display()
-                        ));
-                    }
-                    if let Some(rain) = view.rainfall.take()
-                        && self
-                            .rainfall
+                    let side = rain_side.expect("rainfall replies use a rainfall slot");
+                    if view.rainfall.as_ref().is_some_and(|rain| {
+                        self.rainfall_info
                             .as_ref()
-                            .is_none_or(|image| !Arc::ptr_eq(&image.rain, &rain))
-                    {
-                        self.rainfall = Some(map::RainImage::new(context, rain));
+                            .ok()
+                            .and_then(Option::as_ref)
+                            .is_none_or(|info| info.generation != rain.generation)
+                    }) {
+                        self.request_rainfall(side);
+                        continue;
                     }
-                    self.status = if view.findings.is_empty() {
-                        text(self.preferences.portuguese, "Loaded", "Carregado")
+                    let state = &mut self.rainfall[side.index()];
+                    if let Some(rain) = view.rainfall.take() {
+                        if state.image.as_ref().is_none_or(|image| {
+                            image.rain.generation != rain.generation
+                                || image.rain.scenario != rain.scenario
+                                || image.rain.window != rain.window
+                        }) {
+                            state.image = Some(map::RainImage::new(
+                                context,
+                                rain,
+                                self.display.rain_maximum,
+                            ));
+                        }
                     } else {
-                        view.findings.join("; ")
-                    };
-                    self.view = Some(view);
+                        state.image = None;
+                    }
+                    state.view = Some(view);
                 }
-                Ok(Loaded::Upstream { mini, ids }) => {
-                    self.upstream_basin = Some((mini, ids));
-                    self.status = text(
-                        self.preferences.portuguese,
-                        "Upstream basin loaded",
-                        "Bacia a montante carregada",
-                    );
+                Ok(Loaded::Upstream { mini, paths }) => {
+                    self.upstream_basin = Some((mini, paths));
                 }
                 Ok(Loaded::Local(layers, findings)) => {
                     self.local.retain(|old| {
@@ -918,6 +1240,11 @@ impl Monitoring {
             })
             .unwrap_or_default();
         self.charts.source_labels = labels;
+        self.charts.scenario_order = self
+            .run
+            .as_ref()
+            .map(|run| run.scenarios.clone())
+            .unwrap_or_default();
         match self.charts.load(report, &references, pt) {
             Ok(()) => self.charts.comparison_station = station,
             Err(error) => {
@@ -931,7 +1258,7 @@ impl Monitoring {
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         ui.horizontal_wrapped(|ui| {
-            ui.strong("MGB Ops");
+            ui.label(egui::RichText::new("MGB Ops").heading().strong());
             ui.separator();
             for tab in [
                 Ribbon::Project,
@@ -940,67 +1267,87 @@ impl Monitoring {
                 Ribbon::Processing,
                 Ribbon::Settings,
             ] {
-                ui.selectable_value(&mut self.ribbon, tab, tab.label(pt));
+                ui.selectable_value(
+                    &mut self.ribbon,
+                    tab,
+                    egui::RichText::new(tab.label(pt)).strong(),
+                );
             }
         });
         ui.separator();
         egui::ScrollArea::horizontal()
-            .id_salt("ribbon-actions")
+            .id_salt(("ribbon-actions", self.ribbon.label(false)))
             .show(ui, |ui| {
                 ui.horizontal(|ui| match self.ribbon {
                     Ribbon::Project => {
                         ribbon_group(ui, text(pt, "Workspace", "Área de trabalho"), |ui| {
-                            if ui
-                                .button(text(pt, "↗ Open TOML…", "↗ Abrir TOML…"))
-                                .clicked()
-                                && let Some(path) = rfd::FileDialog::new()
-                                    .add_filter("TOML", &["toml"])
-                                    .pick_file()
-                            {
-                                self.open_path(path);
+                            let label = text(pt, "Open TOML…", "Abrir TOML…");
+                            let button = ribbon_action(ui, "📂", &label);
+                            let open = ui.add(if self.project.is_none() {
+                                button.fill(ui.visuals().selection.bg_fill)
+                            } else {
+                                button
+                            });
+                            button_label(&open, &label);
+                            if open.clicked() {
+                                self.choose_project();
                             }
                             if !self.preferences.recent.is_empty() {
-                                ui.menu_button(text(pt, "Recent", "Recentes"), |ui| {
-                                    for recent in self.preferences.recent.clone() {
-                                        if ui.button(recent.config.display().to_string()).clicked()
-                                        {
-                                            self.depart(Departure::Project(
-                                                recent.config,
-                                                recent.workspace,
-                                            ));
-                                            ui.close();
+                                let label = text(pt, "Recent", "Recentes");
+                                let (response, _) =
+                                    egui::containers::menu::MenuButton::from_button(ribbon_action(
+                                        ui, "🕒", &label,
+                                    ))
+                                    .ui(ui, |ui| {
+                                        for recent in self.preferences.recent.clone() {
+                                            if ui
+                                                .button(recent.config.display().to_string())
+                                                .clicked()
+                                            {
+                                                self.depart(Departure::Project(
+                                                    recent.config,
+                                                    recent.workspace,
+                                                ));
+                                                ui.close();
+                                            }
                                         }
-                                    }
-                                });
+                                    });
+                                button_label(&response, &label);
                             }
-                            if ui
-                                .add_enabled(
-                                    self.project.is_some(),
-                                    egui::Button::new(text(pt, "Close project", "Fechar projeto")),
+                            ui.add_enabled_ui(self.project.is_some(), |ui| {
+                                if ribbon_button(
+                                    ui,
+                                    "🚪",
+                                    text(pt, "Close project", "Fechar projeto"),
                                 )
                                 .clicked()
-                            {
-                                self.depart(Departure::Close);
-                            }
+                                {
+                                    self.depart(Departure::Close);
+                                }
+                            });
                         });
                         ribbon_group(ui, text(pt, "Monitoring", "Monitoramento"), |ui| {
-                            if ui
-                                .add_enabled(
-                                    !self.switching_project && self.project.is_some(),
-                                    egui::Button::new(text(
-                                        pt,
-                                        "↻ Refresh (F5)",
-                                        "↻ Atualizar (F5)",
-                                    )),
-                                )
-                                .clicked()
-                                && let Some(project) = &self.project
-                            {
-                                self.submit(Job::Open(
-                                    project.config.clone(),
-                                    project.workspace.clone(),
-                                ));
+                            if ribbon_button(ui, "📥", Form::Intake.label(pt)).clicked() {
+                                self.display.layout.form(Form::Intake);
                             }
+                            ui.add_enabled_ui(
+                                !self.switching_project && self.project.is_some(),
+                                |ui| {
+                                    if ribbon_button(
+                                        ui,
+                                        "🔄",
+                                        text(pt, "Refresh (F5)", "Atualizar (F5)"),
+                                    )
+                                    .clicked()
+                                        && let Some(project) = &self.project
+                                    {
+                                        self.submit(Job::Open(
+                                            project.config.clone(),
+                                            project.workspace.clone(),
+                                        ));
+                                    }
+                                },
+                            );
                         });
                     }
                     Ribbon::Draft => {
@@ -1009,42 +1356,29 @@ impl Monitoring {
                             && !self.switching_project;
                         ribbon_group(ui, text(pt, "Draft files", "Arquivos de rascunho"), |ui| {
                             ui.add_enabled_ui(enabled, |ui| {
-                                if ui
-                                    .button(text(pt, "+ New run", "+ Nova execução"))
+                                if ribbon_button(ui, "📄", text(pt, "New draft", "Novo rascunho"))
                                     .clicked()
                                 {
                                     self.depart(Departure::New);
                                 }
-                                if ui.button(text(pt, "↗ Open…", "↗ Abrir…")).clicked()
+                                if ribbon_button(ui, "📂", text(pt, "Open…", "Abrir…")).clicked()
                                     && let Some(path) = rfd::FileDialog::new()
                                         .add_filter("Draft JSON", &["json"])
                                         .pick_file()
                                 {
-                                    let zone = self
-                                        .runners
-                                        .draft
-                                        .as_ref()
-                                        .and_then(|d| d.document.operation.time_zone.clone())
-                                        .unwrap_or_else(|| self.display.zone.clone());
-                                    match runners::reference_now(&zone) {
-                                        Ok(reference) => {
-                                            self.open_candidate = Some((path, reference, zone))
-                                        }
-                                        Err(e) => self.runners.status = e,
-                                    };
+                                    self.depart(Departure::Draft(path));
                                 }
                             });
                         });
                         ribbon_group(ui, text(pt, "Save draft", "Salvar rascunho"), |ui| {
                             ui.add_enabled_ui(enabled, |ui| {
-                                if ui.button(text(pt, "▣ Save", "▣ Salvar")).clicked() {
+                                if ribbon_button(ui, "💾", text(pt, "Save", "Salvar")).clicked() {
                                     match self.runners.save_path() {
                                         Ok(path) => self.runners.save(path, ui.ctx()),
                                         Err(e) => self.runners.status = e,
                                     };
                                 }
-                                if ui
-                                    .button(text(pt, "▣ Save As…", "▣ Salvar como…"))
+                                if ribbon_button(ui, "📝", text(pt, "Save As…", "Salvar como…"))
                                     .clicked()
                                 {
                                     match self.runners.save_path() {
@@ -1067,23 +1401,49 @@ impl Monitoring {
                                 }
                             });
                         });
+                        ribbon_group(ui, text(pt, "Review", "Revisão"), |ui| {
+                            if ribbon_button(ui, "📋", Form::Instructions.label(pt)).clicked() {
+                                self.display.layout.form(Form::Instructions);
+                            }
+                        });
+                        ribbon_group(ui, text(pt, "Experiment", "Experimento"), |ui| {
+                            if ribbon_button(ui, "🧪", Form::RunAll.label(pt)).clicked() {
+                                self.display.layout.form(Form::RunAll);
+                            }
+                        });
                     }
                     Ribbon::View => {
                         ribbon_group(ui, text(pt, "Pages", "Páginas"), |ui| {
-                            for tab in [
-                                SideTab::Charts,
-                                SideTab::Data,
-                                SideTab::Rainfall,
-                                SideTab::Files,
+                            for (tab, emoji) in [
+                                (SideTab::Map, "🗺"),
+                                (SideTab::Charts, "📈"),
+                                (SideTab::Data, "📊"),
+                                (SideTab::Files, "📁"),
                             ] {
-                                if ui.button(tab.label(pt)).clicked() {
+                                if ribbon_button(ui, emoji, tab.label(pt)).clicked() {
                                     self.display.layout.open(tab);
                                 }
                             }
                         });
+                        ribbon_group(
+                            ui,
+                            text(pt, "Review and runs", "Revisão e execuções"),
+                            |ui| {
+                                for (form, emoji) in [
+                                    (Form::Review, "🔍"),
+                                    (Form::Analysis, "📉"),
+                                    (Form::Bulletin, "📰"),
+                                    (Form::RunBundle, "📦"),
+                                    (Form::Jobs, "📋"),
+                                ] {
+                                    if ribbon_button(ui, emoji, form.label(pt)).clicked() {
+                                        self.display.layout.form(form);
+                                    }
+                                }
+                            },
+                        );
                         ribbon_group(ui, text(pt, "Layout", "Layout"), |ui| {
-                            if ui
-                                .button(text(pt, "Reset layout", "Restaurar layout"))
+                            if ribbon_button(ui, "🔁", text(pt, "Reset layout", "Restaurar layout"))
                                 .clicked()
                             {
                                 self.display.layout = layout::Layout::default();
@@ -1096,25 +1456,39 @@ impl Monitoring {
                     }
                     Ribbon::Processing => {
                         ribbon_group(ui, text(pt, "Operation", "Operação"), |ui| {
-                            for form in [Form::Prepare, Form::Execute, Form::RunAll] {
-                                if ui.button(form.label(pt)).clicked() {
+                            let label = Form::NewRun.label(pt);
+                            let response = ui.add(
+                                ribbon_action(ui, "▶", &label).fill(ui.visuals().selection.bg_fill),
+                            );
+                            button_label(&response, &label);
+                            if response.clicked() {
+                                self.display.layout.form(Form::NewRun);
+                            }
+                            if ribbon_button(ui, "📥", Form::Forcing.label(pt)).clicked() {
+                                self.display.layout.form(Form::Forcing);
+                            }
+                        });
+                        ribbon_group(ui, text(pt, "Activity", "Atividade"), |ui| {
+                            if ribbon_button(ui, "🕒", Form::Automation.label(pt)).clicked() {
+                                self.display.layout.form(Form::Automation);
+                            }
+                        });
+                        ribbon_group(ui, text(pt, "Calibration", "Calibração"), |ui| {
+                            for (form, emoji) in [(Form::Geometry, "📐"), (Form::Soil, "🌱")] {
+                                if ribbon_button(ui, emoji, form.label(pt)).clicked() {
                                     self.display.layout.form(form);
                                 }
                             }
                         });
-                        ribbon_group(ui, text(pt, "Activity", "Atividade"), |ui| {
-                            if ui.button(Form::Jobs.label(pt)).clicked() {
-                                self.display.layout.form(Form::Jobs);
-                            }
-                        });
                     }
                     Ribbon::Settings => {
-                        ribbon_group(ui, text(pt, "Configuration", "Configuração"), |ui| {
-                            for tab in [SideTab::Interface, SideTab::Form(Form::Workspace)] {
-                                if ui.button(tab.label(pt)).clicked() {
-                                    self.display.layout.open(tab);
-                                }
-                            }
+                        ribbon_group(ui, SideTab::Interface.label(pt), |ui| {
+                            self.interface_settings(ui);
+                        });
+                        ribbon_group(ui, Form::Workspace.label(pt), |ui| {
+                            ui.add_enabled_ui(!self.switching_project, |ui| {
+                                self.runners.workspace_settings(ui, pt);
+                            });
                         });
                     }
                 });
@@ -1122,35 +1496,50 @@ impl Monitoring {
     }
     fn interface_settings(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        ui.heading(SideTab::Interface.label(pt));
         let old = self.preferences.portuguese;
-        egui::ComboBox::from_label(text(pt, "Language", "Idioma"))
-            .selected_text(if pt { "Português (Brasil)" } else { "English" })
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.preferences.portuguese, false, "English");
-                ui.selectable_value(&mut self.preferences.portuguese, true, "Português (Brasil)");
-            });
-        egui::ComboBox::from_label(text(pt, "Appearance", "Aparência"))
-            .selected_text(
-                [
-                    text(pt, "System", "Sistema"),
-                    text(pt, "Light", "Clara"),
-                    text(pt, "Dark", "Escura"),
-                ][self.preferences.appearance.min(2)]
-                .clone(),
-            )
-            .show_ui(ui, |ui| {
-                for (i, label) in [
-                    text(pt, "System", "Sistema"),
-                    text(pt, "Light", "Clara"),
-                    text(pt, "Dark", "Escura"),
-                ]
-                .into_iter()
-                .enumerate()
-                {
-                    ui.selectable_value(&mut self.preferences.appearance, i, label);
+        let previous_appearance = self.preferences.appearance;
+        ui.vertical(|ui| {
+            let label = ui.label(text(pt, "Language", "Idioma"));
+            egui::ComboBox::from_id_salt("interface-language")
+                .width(126.)
+                .selected_text(if pt { "Português (Brasil)" } else { "English" })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut self.preferences.portuguese, false, "English");
+                    ui.selectable_value(
+                        &mut self.preferences.portuguese,
+                        true,
+                        "Português (Brasil)",
+                    );
+                })
+                .response
+                .labelled_by(label.id);
+        });
+        ui.vertical(|ui| {
+            let label = ui.label(text(pt, "Appearance", "Aparência"));
+            ui.horizontal(|ui| {
+                for (value, emoji, name) in [
+                    (1, "☀", text(pt, "Light", "Claro")),
+                    (2, "🌙", text(pt, "Dark", "Escuro")),
+                ] {
+                    let response = ui
+                        .selectable_value(&mut self.preferences.appearance, value, emoji)
+                        .labelled_by(label.id);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::selected(
+                            egui::WidgetType::SelectableLabel,
+                            true,
+                            self.preferences.appearance == value,
+                            &name,
+                        )
+                    });
+                    response.on_hover_text(name);
                 }
             });
+        });
+        if previous_appearance != self.preferences.appearance || old != self.preferences.portuguese
+        {
+            ui.ctx().request_repaint();
+        }
         if old != self.preferences.portuguese
             && let Some(report) = self.charts.report.clone()
         {
@@ -1175,60 +1564,253 @@ impl Monitoring {
 
     fn right_pane(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        ui.horizontal_wrapped(|ui| {
-            for tab in self.display.layout.tabs.clone() {
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut self.display.layout.active, tab, tab.label(pt));
-                    if matches!(tab, SideTab::Interface | SideTab::Form(_))
-                        && icon_button(
-                            ui,
-                            "×",
-                            &format!("{} {}", text(pt, "Close", "Fechar"), tab.label(pt)),
-                        )
-                        .clicked()
-                    {
-                        self.display.layout.close(tab);
-                    }
+        let active = self.display.layout.active;
+        let active_id = ui.id().with("active-tab");
+        let changed = ui.data_mut(|data| {
+            let previous = data.get_temp::<SideTab>(active_id);
+            data.insert_temp(active_id, active);
+            previous != Some(active)
+        });
+        ui.scope(|ui| {
+            ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                bar_width: 4.,
+                bar_inner_margin: 2.,
+                ..egui::style::ScrollStyle::solid()
+            };
+            egui::ScrollArea::horizontal()
+                .id_salt("right-pane-tabs")
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.;
+                        for tab in self.display.layout.tabs.clone() {
+                            ui.push_id(tab.label(false), |ui| {
+                                let selected = self.display.layout.active == tab;
+                                let visuals = ui.visuals();
+                                let frame = egui::Frame::new()
+                                    .corner_radius(4.)
+                                    .stroke(if selected {
+                                        egui::Stroke::new(1., visuals.hyperlink_color)
+                                    } else {
+                                        visuals.widgets.inactive.bg_stroke
+                                    })
+                                    .fill(if selected {
+                                        visuals.selection.bg_fill
+                                    } else {
+                                        visuals.widgets.inactive.bg_fill
+                                    });
+                                let entry = frame.show(ui, |ui| {
+                                    ui.spacing_mut().item_spacing.x = 0.;
+                                    ui.horizontal(|ui| {
+                                        let label = tab.label(pt);
+                                        let title = egui::RichText::new(&label);
+                                        let response = ui.add(
+                                            egui::Button::new(if selected {
+                                                title.strong()
+                                            } else {
+                                                title
+                                            })
+                                            .selected(selected)
+                                            .frame_when_inactive(false),
+                                        );
+                                        if response.clicked() {
+                                            self.display.layout.open(tab);
+                                        }
+                                        if response.gained_focus() {
+                                            response.scroll_to_me(None);
+                                        }
+                                        if matches!(tab, SideTab::Form(_)) {
+                                            let close = ui.add(
+                                                egui::Button::new("×").frame_when_inactive(false),
+                                            );
+                                            let name =
+                                                format!("{} {label}", text(pt, "Close", "Fechar"));
+                                            button_label(&close, &name);
+                                            if close.on_hover_text(name).clicked() {
+                                                self.display.layout.close(tab);
+                                            }
+                                        }
+                                    });
+                                });
+                                if changed && tab == active {
+                                    ui.scroll_to_rect(
+                                        entry.response.rect,
+                                        Some(egui::Align::Center),
+                                    );
+                                }
+                            });
+                        }
+                    });
                 });
-            }
         });
         ui.separator();
         let tab = self.display.layout.active;
         ui.push_id(("right-pane-content", tab.label(false)), |ui| match tab {
+            SideTab::Map => self.map_controls(ui),
             SideTab::Charts => {
                 self.chart_controls(ui);
                 if self.charts.report.is_some() {
-                    let height = ((ui.available_height() - 65.) / 3.).max(110.);
+                    let available_height = ui.available_height();
                     egui::ScrollArea::vertical()
                         .id_salt("chart-plots")
-                        .show(ui, |ui| self.charts.show(ui, pt, height));
+                        .show(ui, |ui| self.charts.show(ui, pt, available_height));
                 }
             }
             SideTab::Data => self.data_page(ui),
-            SideTab::Rainfall => {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    if self.project.is_some()
-                        && ui
-                            .button(text(pt, "Apply map window", "Aplicar período do mapa"))
-                            .clicked()
-                    {
-                        self.request_view();
-                    }
-                    self.rainfall_controls(ui);
-                });
-            }
             SideTab::Files => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.files(ui));
             }
-            SideTab::Interface => {
-                egui::ScrollArea::vertical().show(ui, |ui| self.interface_settings(ui));
-            }
+            SideTab::Rainfall | SideTab::Interface | SideTab::Form(Form::Workspace) => {}
             SideTab::Form(form) => {
-                ui.add_enabled_ui(!self.switching_project, |ui| {
-                    self.runners.show(ui, form, pt)
+                ui.add_enabled_ui(!self.switching_project, |ui| match form {
+                    Form::Intake
+                    | Form::Review
+                    | Form::RunBundle
+                    | Form::Forcing
+                    | Form::Instructions
+                    | Form::Geometry
+                    | Form::Soil
+                    | Form::Analysis
+                    | Form::Bulletin
+                    | Form::Automation => self.workflow_form(ui, form, pt),
+                    _ => self.runners.show(
+                        ui,
+                        form,
+                        pt,
+                        self.project
+                            .as_ref()
+                            .map(|project| project.workspace.as_path()),
+                    ),
                 });
             }
         });
+    }
+
+    fn workflow_form(&mut self, ui: &mut egui::Ui, form: Form, pt: bool) {
+        let busy = self.runners.busy();
+        let width = ui.available_width();
+        egui::ScrollArea::both()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_max_width(width);
+                if form == Form::Automation
+                    && let Some(active) = self
+                        .runners
+                        .active
+                        .as_ref()
+                        .filter(|active| active.automation.is_some())
+                {
+                    if ui
+                        .button(text(pt, "Stop scheduling", "Parar agendamento"))
+                        .clicked()
+                    {
+                        active.cancel();
+                    }
+                    self.runners.jobs(ui, pt);
+                }
+                ui.add_enabled_ui(!busy, |ui| {
+                    let Some(draft) = self.runners.draft.as_mut() else {
+                        ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
+                        return;
+                    };
+                    if matches!(
+                        form,
+                        Form::Forcing | Form::Geometry | Form::Soil | Form::Instructions
+                    ) {
+                        runners::draft_anchor(ui, draft, pt);
+                    }
+                    let action = match form {
+                        Form::Forcing => {
+                            self.workflows.forcing(ui, pt, draft);
+                            None
+                        }
+                        Form::Geometry | Form::Soil => {
+                            let operation = &mut draft.document.operation;
+                            let geometry = operation
+                                .geometry
+                                .as_ref()
+                                .and_then(|value| value.mini_gtp.as_ref())
+                                .map(|path| draft.workspace.join(path));
+                            if form == Form::Geometry {
+                                if let Some(path) =
+                                    self.calibration.geometry(ui, pt, geometry.as_deref())
+                                {
+                                    operation.geometry.get_or_insert_default().mini_gtp =
+                                        Some(path);
+                                    operation
+                                        .calibration
+                                        .get_or_insert_default()
+                                        .use_edited_geometry = true;
+                                    draft.document.sources.accepted.remove("geometry");
+                                }
+                            } else {
+                                let soil = operation
+                                    .calibration
+                                    .as_ref()
+                                    .and_then(|value| value.soil.as_ref())
+                                    .map(|path| draft.workspace.join(path));
+                                if let Some(path) = self.calibration.soil(
+                                    ui,
+                                    pt,
+                                    geometry.as_deref(),
+                                    soil.as_deref(),
+                                ) {
+                                    operation.calibration.get_or_insert_default().soil = Some(path);
+                                    draft.document.sources.accepted.remove("soil");
+                                }
+                            }
+                            None
+                        }
+                        Form::Instructions => {
+                            ui.heading(form.label(pt));
+                            let accept = ui
+                                .button(text(
+                                    pt,
+                                    "Accept selected inputs",
+                                    "Aceitar entradas selecionadas",
+                                ))
+                                .clicked();
+                            let instruction = self.instructions.show(ui, pt, draft);
+                            self.workflows.show_preview(ui, pt, draft);
+                            if accept {
+                                Some(runners::Action::Accept)
+                            } else {
+                                instruction.map(|request| match request {
+                                    tools::InstructionAction::MaterializeReplacements => {
+                                        runners::Action::MaterializeReplacements
+                                    }
+                                    tools::InstructionAction::MaterializeCorrections(index) => {
+                                        runners::Action::MaterializeCorrections(index)
+                                    }
+                                    tools::InstructionAction::PreviewObservations => {
+                                        runners::Action::PreviewObservations
+                                    }
+                                    tools::InstructionAction::PreviewForecast(index) => {
+                                        runners::Action::PreviewForecast(index)
+                                    }
+                                    tools::InstructionAction::Register(selection) => {
+                                        runners::Action::RegisterInstructions(selection)
+                                    }
+                                })
+                            }
+                        }
+                        _ => match self
+                            .workflows
+                            .show(ui, form, pt, draft, self.run.as_deref())
+                        {
+                            Ok(task) => task.map(runners::Action::Workflow),
+                            Err(error) => {
+                                self.runners.status = error;
+                                None
+                            }
+                        },
+                    };
+                    if let Some(action) = action {
+                        self.runners.start(action, ui.ctx());
+                    }
+                });
+                ui.label(self.runners.localized_status(pt));
+            });
     }
 
     fn files(&mut self, ui: &mut egui::Ui) {
@@ -1240,7 +1822,7 @@ impl Monitoring {
         ui.label(project.workspace.display().to_string());
         for path in &project.retained_sources {
             ui.colored_label(
-                Color32::YELLOW,
+                ui.visuals().warn_fg_color,
                 format!(
                     "{}: {}",
                     text(pt, "Retained source", "Fonte anterior mantida"),
@@ -1248,31 +1830,53 @@ impl Monitoring {
                 ),
             );
         }
-        let mut selected = self.display.run.clone();
-        egui::ComboBox::from_label(text(pt, "Retained run", "Execução retida"))
-            .width(125.)
-            .truncate()
-            .selected_text(
-                self.display
-                    .run
-                    .as_ref()
-                    .and_then(|p| p.file_name())
-                    .map(|p| p.to_string_lossy().to_string())
-                    .unwrap_or_else(|| "—".into()),
-            )
-            .show_ui(ui, |ui| {
-                for root in &project.runs {
-                    ui.selectable_value(
-                        &mut selected,
-                        Some(root.clone()),
-                        root.file_name().unwrap_or_default().to_string_lossy(),
-                    );
-                }
-            });
-        if selected != self.display.run
-            && let Some(root) = selected
-        {
-            self.submit(Job::Run(root));
+        let active = self.active_run.as_ref().ok().cloned().flatten();
+        let active_label = text(pt, "Active run", "Execução ativa");
+        if let Err(error) = &self.active_run {
+            ui.colored_label(ui.visuals().error_fg_color, error);
+        }
+        let mut selected = self.run_target.clone();
+        let showing_active = selected == active;
+        let mut open_comparison = false;
+        ui.horizontal_wrapped(|ui| {
+            egui::ComboBox::from_label(text(pt, "Run source", "Fonte da execução"))
+                .width(180.)
+                .truncate()
+                .selected_text(if showing_active {
+                    active_label.clone()
+                } else {
+                    selected
+                        .as_deref()
+                        .map_or(String::new(), |path| path.display().to_string())
+                })
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut selected, active, active_label);
+                    for root in &self.comparison_runs {
+                        ui.selectable_value(
+                            &mut selected,
+                            Some(root.clone()),
+                            root.display().to_string(),
+                        );
+                    }
+                });
+            if ui
+                .button(text(
+                    pt,
+                    "Open comparison run…",
+                    "Abrir execução para comparação…",
+                ))
+                .clicked()
+                && let Some(root) = rfd::FileDialog::new().pick_folder()
+            {
+                selected = Some(root);
+                open_comparison = true;
+            }
+        });
+        if !self.loading[0] && (selected != self.run_target || open_comparison) {
+            self.load_run(selected);
+        }
+        if self.run_target.is_none() {
+            ui.label(text(pt, "No active run.", "Nenhuma execução ativa."));
         }
 
         if let Some(run) = &self.run {
@@ -1284,11 +1888,7 @@ impl Monitoring {
                     "Estado e proveniência da execução",
                 ),
                 |ui| {
-                    ui.small(format!(
-                        "{} · {}",
-                        status_label(&run.manifest.state, pt),
-                        run.manifest.created_at
-                    ));
+                    ui.small(status_label(&run.manifest.state, pt));
                     ui.small(format!(
                         "{}: {}",
                         text(pt, "Reference", "Referência"),
@@ -1296,10 +1896,10 @@ impl Monitoring {
                     ));
                     ui.label(run.root.display().to_string());
                     for finding in &run.findings {
-                        ui.colored_label(Color32::LIGHT_RED, finding);
+                        ui.colored_label(ui.visuals().warn_fg_color, finding);
                     }
                     if let Some(error) = &run.manifest.error {
-                        ui.colored_label(Color32::LIGHT_RED, error);
+                        ui.colored_label(ui.visuals().error_fg_color, error);
                     }
                     for scenario in &run.manifest.scenarios {
                         ui.label(format!(
@@ -1308,7 +1908,7 @@ impl Monitoring {
                             status_label(&scenario.state, pt)
                         ));
                         if let Some(error) = &scenario.error {
-                            ui.colored_label(Color32::LIGHT_RED, &error.message);
+                            ui.colored_label(ui.visuals().error_fg_color, &error.message);
                         }
                     }
                     ui.label(
@@ -1329,7 +1929,7 @@ impl Monitoring {
                     ui.label(asset);
                 }
                 for finding in &project.findings {
-                    ui.colored_label(Color32::LIGHT_RED, finding);
+                    ui.colored_label(ui.visuals().warn_fg_color, finding);
                 }
             },
         );
@@ -1392,61 +1992,137 @@ impl Monitoring {
         }
     }
 
-    fn left_panel(&mut self, ui: &mut egui::Ui) {
+    fn map_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        ui.heading(text(pt, "Run", "Execução"));
-        ui.strong("reference_time");
-        ui.label(self.run.as_ref().map_or_else(
-            || "—".into(),
-            |run| {
-                let document = &run.manifest.recipe["document"];
-                let reference = document["reference_time"]
-                    .as_str()
-                    .filter(|value| !value.is_empty())
-                    .unwrap_or(&run.reference);
-                let zone = document["time_zone"].as_str().unwrap_or(&run.time_zone);
-                if reference.is_empty() {
-                    "—".into()
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            self.map_cards(ui, pt);
+            ui.heading(text(pt, "Layers", "Camadas"));
+            self.layer_controls(ui);
+            self.inundation_controls(ui, pt);
+            self.rainfall_controls(ui);
+        });
+    }
+
+    fn inundation_visible(&self) -> bool {
+        self.display
+            .layers
+            .iter()
+            .any(|layer| layer.kind == inundation::KIND && layer.visible)
+    }
+
+    fn sync_inundation(&mut self) {
+        let run = self
+            .run
+            .as_deref()
+            .filter(|_| !self.switching_project && !self.loading[0]);
+        let active = run.and_then(|run| self.active_source(&run.root));
+        let scenario = &mut self.display.inundation_scenario;
+        let source = run.and_then(|run| {
+            if !run.scenarios.contains(scenario) {
+                scenario.clone_from(run.scenarios.first()?);
+            }
+            Some(inundation::Source {
+                active,
+                root: run.root.clone(),
+                scenario: scenario.clone(),
+            })
+        });
+        self.inundation.select(source);
+    }
+
+    fn inundation_controls(&mut self, ui: &mut egui::Ui, pt: bool) {
+        if !self.inundation_visible() {
+            return;
+        }
+        self.sync_inundation();
+        section(ui, text(pt, "Inundation", "Inundação"), |ui| {
+            let Some(run) = self.run.as_ref().filter(|run| {
+                !self.switching_project && !self.loading[0] && !run.scenarios.is_empty()
+            }) else {
+                ui.label(text(
+                    pt,
+                    "Run results will appear here when available.",
+                    "Os resultados disponíveis aparecerão aqui.",
+                ));
+                return;
+            };
+            let scenario = &mut self.display.inundation_scenario;
+            egui::ComboBox::from_label(text(pt, "Inundation scenario", "Cenário de inundação"))
+                .selected_text(scenario.as_str())
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for id in &run.scenarios {
+                        ui.selectable_value(scenario, id.clone(), id);
+                    }
+                });
+            self.sync_inundation();
+            self.inundation.controls(ui, pt);
+        });
+    }
+
+    fn run_summary(&self, pt: bool) -> String {
+        let cache = self.rainfall_info.as_ref().ok().and_then(Option::as_ref);
+        let run = self.run.as_deref();
+        let reference = run
+            .filter(|run| !run.reference.is_empty())
+            .map(|run| run.reference.replace('T', " "))
+            .or_else(|| cache.map(|info| info.reference.format("%Y-%m-%d %H:%M").to_string()))
+            .unwrap_or_else(|| "—".into());
+        let zones = [
+            run.filter(|run| !run.time_zone.is_empty())
+                .map(|run| (text(pt, "Run", "Execução"), run.time_zone.as_str())),
+            cache.map(|info| (text(pt, "Rainfall", "Chuva"), info.time_zone.as_str())),
+            self.charts
+                .report
+                .as_ref()
+                .map(|report| (text(pt, "Charts", "Gráficos"), report.time_zone.as_str())),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let zone = zones.first().map_or_else(
+            || {
+                self.project
+                    .as_ref()
+                    .map_or("—", |project| &project.time_zone)
+                    .to_owned()
+            },
+            |(_, first)| {
+                if zones.iter().all(|(_, zone)| zone == first) {
+                    (*first).to_owned()
                 } else {
-                    format!("{reference} · {zone}")
+                    zones
+                        .iter()
+                        .map(|(name, zone)| format!("{name} {zone}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 }
             },
-        ));
-        let horizons = self.run.as_ref().and_then(|run| run.day_horizons);
-        for (label, value) in [
-            (
-                "observed_horizon_days",
-                horizons.map(|(observed, _)| observed),
-            ),
-            (
-                "forecast_horizon_days",
-                horizons.map(|(_, forecast)| forecast),
-            ),
-        ] {
-            ui.horizontal_wrapped(|ui| {
-                ui.strong(label);
-                ui.label(value.map_or_else(|| "—".into(), |days| days.to_string()));
-            });
+        );
+        let mut result = format!(
+            "{}: {reference} | {}: {zone}",
+            text(pt, "Reference time", "Hora de referência"),
+            text(pt, "Timezone", "Fuso horário")
+        );
+        if let Some(run) = run {
+            let (obs, fc) = run
+                .day_horizons
+                .map_or(("—".into(), "—".into()), |(obs, fc)| {
+                    (format!("{obs} d"), format!("{fc} d"))
+                });
+            let scenarios = if run.scenarios.is_empty() {
+                "—".into()
+            } else {
+                run.scenarios.join(", ")
+            };
+            result.push_str(&format!(
+                " | {}: {obs} | {}: {fc} | {}: {scenarios}",
+                text(pt, "Observed", "Observado"),
+                text(pt, "Forecast", "Previsto"),
+                text(pt, "Scenarios", "Cenários")
+            ));
         }
-        ui.strong(text(pt, "Available scenarios", "Cenários disponíveis"));
-        egui::ScrollArea::vertical()
-            .id_salt("run-scenarios")
-            .max_height(96.)
-            .show(ui, |ui| {
-                ui.label(
-                    self.run
-                        .as_ref()
-                        .map_or_else(|| "—".into(), |run| run.scenarios.join(", ")),
-                );
-            });
-        ui.separator();
-        ui.heading(text(pt, "Layers", "Camadas"));
-        let selection = self.project.as_ref().and(self.display.selection.as_ref());
-        ui.label(selection.map_or_else(
-            || text(pt, "No feature selected", "Nenhuma feição selecionada"),
-            |location| self.feature_label(location),
-        ));
-        egui::ScrollArea::vertical().show(ui, |ui| self.layer_controls(ui));
+        result
     }
 
     fn feature_label(&self, location: &Location) -> String {
@@ -1463,26 +2139,30 @@ impl Monitoring {
         charts::location_label(location, self.preferences.portuguese)
     }
 
+    fn basemap_label(index: usize, pt: bool) -> String {
+        match index {
+            1 => text(pt, "Street (OpenStreetMap)", "Ruas (OpenStreetMap)"),
+            2 => text(pt, "Topographic (OpenTopoMap)", "Topográfico (OpenTopoMap)"),
+            3 => text(
+                pt,
+                "Satellite (NASA Blue Marble)",
+                "Satélite (NASA Blue Marble)",
+            ),
+            _ => text(pt, "None", "Nenhum"),
+        }
+    }
+
     fn layer_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         egui::ComboBox::from_label(text(pt, "Basemap", "Mapa base"))
-            .selected_text(
-                [
-                    if pt { "Nenhum" } else { "None" },
-                    "OpenStreetMap",
-                    "OpenTopoMap",
-                ][self.display.basemap.min(2)],
-            )
+            .selected_text(Self::basemap_label(self.display.basemap, pt))
             .show_ui(ui, |ui| {
-                for (i, label) in [
-                    if pt { "Nenhum" } else { "None" },
-                    "OpenStreetMap",
-                    "OpenTopoMap",
-                ]
-                .iter()
-                .enumerate()
-                {
-                    ui.selectable_value(&mut self.display.basemap, i, *label);
+                for index in 0..=3 {
+                    ui.selectable_value(
+                        &mut self.display.basemap,
+                        index,
+                        Self::basemap_label(index, pt),
+                    );
                 }
             });
         ui.checkbox(
@@ -1504,42 +2184,51 @@ impl Monitoring {
             let label = match layer.kind.as_str() {
                 "catchments" => text(pt, "Catchments", "Bacias"),
                 "rainfall" => text(pt, "Rainfall", "Chuva"),
+                inundation::KIND => text(pt, "Modeled inundation", "Inundação modelada"),
                 "upstream" => text(pt, "Upstream basin", "Bacia a montante"),
                 "rivers" => text(pt, "Rivers", "Rios"),
                 _ => text(pt, "Stations", "Estações"),
             };
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut layer.visible, label);
-                if i > 0
-                    && icon_button(ui, "↑", &text(pt, "Move layer up", "Mover camada acima"))
-                        .clicked()
-                {
-                    reorder = Some(i);
+            ui.push_id(&layer.kind, |ui| {
+                let expanded = layer_row(
+                    ui,
+                    pt,
+                    &label,
+                    map::layer_swatch(&layer.kind),
+                    &mut layer.visible,
+                );
+                if expanded {
+                    ui.indent("layer-settings", |ui| {
+                        layer_opacity(ui, pt, &mut layer.opacity);
+                        if ui
+                            .add_enabled(
+                                i > 0,
+                                egui::Button::new(text(pt, "Move up", "Mover acima")),
+                            )
+                            .clicked()
+                        {
+                            reorder = Some(i);
+                        }
+                    });
                 }
-            });
-            if layer.kind == "upstream" {
-                ui.horizontal_wrapped(|ui| {
-                    if let Some((mini, _)) = &self.upstream_basin {
-                        ui.label(format!("MINI {mini}"));
-                    }
-                    let loading = self.loading[UPSTREAM_SLOT];
-                    if loading {
-                        ui.spinner();
-                    }
-                    if (loading || self.upstream_basin.is_some())
-                        && ui
+                let loading = self.loading[UPSTREAM_SLOT];
+                if layer.kind == "upstream" && (loading || self.upstream_basin.is_some()) {
+                    ui.horizontal_wrapped(|ui| {
+                        if let Some((mini, _)) = &self.upstream_basin {
+                            ui.strong(format!("MINI {mini}"));
+                        }
+                        if loading {
+                            ui.spinner();
+                        }
+                        if ui
                             .small_button(text(pt, "Clear basin", "Limpar bacia"))
                             .clicked()
-                    {
-                        clear = true;
-                    }
-                });
-            }
-            ui.add(egui::Slider::new(&mut layer.opacity, 0.0..=1.0).text(text(
-                pt,
-                "Opacity",
-                "Opacidade",
-            )));
+                        {
+                            clear = true;
+                        }
+                    });
+                }
+            });
         }
         if clear {
             self.clear_upstream();
@@ -1548,19 +2237,7 @@ impl Monitoring {
         if let Some(i) = reorder {
             self.display.layers.swap(i, i - 1);
         }
-        ui.horizontal_wrapped(|ui| {
-            for (value, label) in [
-                (0., "0–1"),
-                (1., "1–10"),
-                (10., "10–25"),
-                (25., "25–50"),
-                (50., "50–100"),
-                (100., "100+"),
-            ] {
-                ui.colored_label(map::rain_color(Some(value)), format!("■ {label}"));
-            }
-            ui.label("mm");
-        });
+        ui.separator();
         if ui
             .button(text(pt, "Add local GIS…", "Adicionar GIS local…"))
             .clicked()
@@ -1581,36 +2258,51 @@ impl Monitoring {
         let mut remove = None;
         let mut reorder = None;
         for (i, style) in self.display.local.iter_mut().enumerate() {
-            ui.horizontal(|ui| {
-                ui.checkbox(
-                    &mut style.visible,
-                    style.path.file_name().unwrap_or_default().to_string_lossy(),
-                );
-                if i > 0
-                    && icon_button(ui, "↑", &text(pt, "Move layer up", "Mover camada acima"))
-                        .clicked()
-                {
-                    reorder = Some(i);
-                }
-                if icon_button(
+            let name = style
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .into_owned();
+            ui.push_id((&style.path, i), |ui| {
+                let expanded = layer_row(
                     ui,
-                    "×",
-                    &text(pt, "Remove local layer", "Remover camada local"),
-                )
-                .clicked()
-                {
-                    remove = Some(i);
+                    pt,
+                    &name,
+                    Color32::from_rgba_unmultiplied(
+                        style.color[0],
+                        style.color[1],
+                        style.color[2],
+                        style.color[3],
+                    ),
+                    &mut style.visible,
+                );
+                if expanded {
+                    ui.indent("local-layer-settings", |ui| {
+                        layer_opacity(ui, pt, &mut style.opacity);
+                        ui.horizontal(|ui| {
+                            let label = ui.label(text(pt, "Color", "Cor"));
+                            ui.color_edit_button_srgba_unmultiplied(&mut style.color)
+                                .labelled_by(label.id);
+                        });
+                        if ui
+                            .add_enabled(
+                                i > 0,
+                                egui::Button::new(text(pt, "Move up", "Mover acima")),
+                            )
+                            .clicked()
+                        {
+                            reorder = Some(i);
+                        }
+                        if ui.button(text(pt, "Remove", "Remover")).clicked() {
+                            remove = Some(i);
+                        }
+                        for layer in self.local.iter().filter(|l| l.path == style.path) {
+                            ui.small(&layer.name);
+                        }
+                    });
                 }
             });
-            ui.add(egui::Slider::new(&mut style.opacity, 0.0..=1.0).text(text(
-                pt,
-                "Opacity",
-                "Opacidade",
-            )));
-            ui.color_edit_button_srgba_unmultiplied(&mut style.color);
-            for layer in self.local.iter().filter(|l| l.path == style.path) {
-                ui.small(&layer.name);
-            }
         }
         if let Some(i) = reorder {
             self.display.local.swap(i, i - 1);
@@ -1676,6 +2368,7 @@ impl Monitoring {
                 state: self.charts.state.clone(),
                 report,
                 source_labels: self.charts.source_labels.clone(),
+                scenario_order: self.charts.scenario_order.clone(),
                 references,
                 portuguese: pt,
                 scale: self.export_scale,
@@ -1689,133 +2382,215 @@ impl Monitoring {
 
     fn rainfall_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
-        let Some(project) = self.project.clone() else {
+        if self.project.is_none() {
             return;
-        };
-        if let Some(run) = self.run.clone() {
-            let old = self.display.map_scenario.clone();
-            egui::ComboBox::from_label(text(pt, "Map scenario", "Cenário do mapa"))
-                .selected_text(&self.display.map_scenario)
-                .show_ui(ui, |ui| {
-                    for id in &run.scenarios {
-                        ui.selectable_value(&mut self.display.map_scenario, id.clone(), id);
-                    }
-                });
-            if old != self.display.map_scenario {
-                self.run_rainfall();
-                self.request_view();
+        }
+        ui.separator();
+        ui.heading(text(pt, "Rainfall", "Chuva"));
+        let info = self.rainfall_info.clone();
+        match &info {
+            Ok(Some(info)) => {
+                ui.small(format!(
+                    "{}: {}",
+                    text(pt, "Reference", "Referência"),
+                    info.reference.format("%Y-%m-%d %H:%M")
+                ));
+                ui.small(format!(
+                    "{} · {} – {}",
+                    text(pt, "Coverage", "Cobertura"),
+                    info.coverage.start.format("%Y-%m-%d %H:%M"),
+                    info.coverage.end.format("%Y-%m-%d %H:%M")
+                ));
+            }
+            Ok(None) => {
+                ui.label(text(
+                    pt,
+                    "No active rainfall cache. Use Processing → New run.",
+                    "Sem cache ativo de chuva. Use Processamento → Nova execução.",
+                ));
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().error_fg_color, error);
             }
         }
+        let comparing = self.display.map_mode.comparing();
+        for side in RainSide::BOTH {
+            if side == RainSide::Right && !comparing {
+                continue;
+            }
+            ui.push_id(side.index(), |ui| {
+                if comparing {
+                    ui.separator();
+                    ui.strong(map::side_label(side, pt));
+                }
+                if let Ok(Some(info)) = &info {
+                    self.rainfall_period_controls(ui, side, info);
+                }
+            });
+        }
+    }
+
+    fn rainfall_period_controls(
+        &mut self,
+        ui: &mut egui::Ui,
+        side: RainSide,
+        info: &RainfallCacheInfo,
+    ) {
+        let pt = self.preferences.portuguese;
+        let mut applied = self.display.rainfall_settings(side);
+        let scenario_label = ui.label(text(pt, "Scenario", "Cenário"));
+        let before = applied.scenario.clone();
+        egui::ComboBox::from_id_salt("rainfall-scenario")
+            .selected_text(&applied.scenario)
+            .show_ui(ui, |ui| {
+                for id in &info.scenarios {
+                    ui.selectable_value(&mut applied.scenario, id.clone(), id);
+                }
+            })
+            .response
+            .labelled_by(scenario_label.id);
+        let draft = self.rainfall[side.index()]
+            .draft
+            .get_or_insert_with(|| applied.window.clone());
+        let explicit = draft.explicit;
         ui.horizontal_wrapped(|ui| {
-            let reference = ui.label(text(
-                pt,
-                "Reference · local time",
-                "Referência · hora local",
-            ));
-            ui.add(egui::TextEdit::singleline(&mut self.display.reference).desired_width(145.))
-                .labelled_by(reference.id);
-            let zone = ui.label(text(pt, "Timezone", "Fuso horário"));
-            ui.add(egui::TextEdit::singleline(&mut self.display.zone).desired_width(120.))
-                .labelled_by(zone.id);
-        });
-        ui.horizontal(|ui| {
             ui.selectable_value(
-                &mut self.display.explicit,
+                &mut draft.explicit,
                 false,
                 text(pt, "Signed hours", "Horas com sinal"),
             );
             ui.selectable_value(
-                &mut self.display.explicit,
+                &mut draft.explicit,
                 true,
                 text(pt, "Start / end", "Início / fim"),
             );
         });
-        ui.horizontal_wrapped(|ui| {
-            if !self.display.explicit {
-                if ui
-                    .add(
-                        egui::DragValue::new(&mut self.display.hours)
-                            .range(-8760..=8760)
-                            .suffix(" h"),
-                    )
-                    .changed()
-                {
-                    self.run_rainfall();
-                }
+        if draft.explicit
+            && !explicit
+            && draft.start.is_empty()
+            && draft.end.is_empty()
+            && let Ok(window) = RainfallPeriod::SignedHours(draft.hours).resolve(info)
+        {
+            draft.start = window.start.format("%Y-%m-%dT%H:%M:%S").to_string();
+            draft.end = window.end.format("%Y-%m-%dT%H:%M:%S").to_string();
+        }
+        if draft.explicit {
+            for (name, value) in [
+                (text(pt, "From", "Início"), &mut draft.start),
+                (text(pt, "To", "Fim"), &mut draft.end),
+            ] {
+                let label = ui.label(name);
+                ui.add(egui::TextEdit::singleline(value).desired_width(145.))
+                    .labelled_by(label.id);
+            }
+        } else {
+            let label = ui.small(text(
+                pt,
+                "− Observed · + Forecast",
+                "− Observado · + Previsto",
+            ));
+            ui.add(
+                egui::DragValue::new(&mut draft.hours)
+                    .range(-8760..=8760)
+                    .suffix(" h"),
+            )
+            .labelled_by(label.id);
+        }
+        let window = draft.period().and_then(|period| period.resolve(info));
+        match &window {
+            Err(error) => {
+                ui.small(error);
+            }
+            Ok(window) if window.start < info.coverage.start || window.end > info.coverage.end => {
                 ui.small(text(
                     pt,
-                    "− Observed · + Forecast",
-                    "− Observado · + Previsto",
+                    "Window extends beyond cached coverage",
+                    "Período fora da cobertura do cache",
                 ));
-            } else {
-                for (name, value) in [
-                    (text(pt, "From", "Início"), &mut self.display.start),
-                    (text(pt, "To", "Fim"), &mut self.display.end),
-                ] {
-                    let label = ui.label(name);
-                    ui.add(egui::TextEdit::singleline(value).desired_width(145.))
-                        .labelled_by(label.id);
-                }
             }
-        });
-        if let Err(error) = self.resolve_window() {
-            ui.small(error);
-        } else {
-            ui.small(format!("{} → {}", self.display.start, self.display.end));
+            Ok(_) => (),
         }
-        ui.label(text(pt, "Rainfall source", "Fonte de chuva"));
-        egui::ComboBox::from_id_salt("rainfall-source")
-            .width(ui.available_width())
-            .truncate()
-            .selected_text(
-                self.display
-                    .grid
-                    .as_ref()
-                    .map(|p| {
-                        p.strip_prefix(&project.workspace)
-                            .unwrap_or(p)
-                            .display()
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "—".into()),
+        let apply = ui
+            .add_enabled(
+                window.is_ok(),
+                egui::Button::new(text(pt, "Apply", "Aplicar")),
             )
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut self.display.grid, None, "—");
-                for path in &project.grids {
-                    ui.selectable_value(
-                        &mut self.display.grid,
-                        Some(path.clone()),
-                        path.strip_prefix(&project.workspace)
-                            .unwrap_or(path)
-                            .display()
-                            .to_string(),
-                    );
-                }
-            });
-        if let Some(rain) = &self.rainfall {
-            ui.small(format!(
-                "{} · {} → {}",
-                rain.rain.source.display(),
-                rain.rain.window.start,
-                rain.rain.window.end
-            ));
+            .clicked();
+        if apply {
+            applied.window = draft.clone();
         }
-        if ui
-            .checkbox(
-                &mut self.display.upstream,
-                text(
-                    pt,
-                    "Include upstream in summary",
-                    "Incluir montante no resumo",
-                ),
-            )
-            .changed()
-        {
-            self.request_view();
+        if apply || before != applied.scenario {
+            self.display.set_rainfall_settings(side, applied);
+            self.request_rainfall(side);
         }
     }
+
+    fn rainfall_total(&self, ui: &mut egui::Ui, side: RainSide, pt: bool) {
+        if self.display.map_mode.comparing() {
+            ui.strong(map::side_label(side, pt));
+        }
+        let state = &self.rainfall[side.index()];
+        if let Some(rain) = &state.image {
+            ui.small(format!(
+                "{} – {}",
+                rain.rain.window.start.format("%Y-%m-%d %H:%M"),
+                rain.rain.window.end.format("%Y-%m-%d %H:%M"),
+            ));
+        }
+        let summary = state.view.as_ref().and_then(|view| view.summary.as_ref());
+        let finding = state.finding.as_ref().or_else(|| {
+            let view = state.view.as_ref()?;
+            view.rainfall_finding
+                .as_ref()
+                .or(view.summary_finding.as_ref())
+        });
+        if self.loading[side.slot()] {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.small(text(pt, "Loading rainfall…", "Carregando chuva…"));
+            });
+        } else if let Some(finding) = finding {
+            ui.colored_label(ui.visuals().error_fg_color, finding);
+        } else if self.display.selection.is_none() {
+            ui.weak(text(
+                pt,
+                "Select a station or MINI",
+                "Selecione uma estação ou MINI",
+            ));
+        } else if let Some(summary) = summary {
+            let rain = summary
+                .mean_mm
+                .map_or_else(|| "NA".into(), |mm| format!("{mm:.1} mm"));
+            ui.label(rain).on_hover_text(text(
+                pt,
+                "Area-weighted cumulative rainfall",
+                "Chuva acumulada ponderada pela área",
+            ));
+            ui.small(format!(
+                "{} · {:.1}/{:.1} km²·h",
+                text(pt, "Coverage", "Cobertura"),
+                summary.covered_area_hours,
+                summary.expected_area_hours
+            ));
+        } else {
+            ui.weak(text(pt, "Rainfall unavailable", "Chuva indisponível"));
+        }
+    }
+
     fn chart_controls(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
+        if self.project.is_none() {
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.strong(text(pt, "Time series", "Séries temporais"));
+                ui.label(text(
+                    pt,
+                    "Open a regional project to compare rainfall, flow, and level.",
+                    "Abra um projeto regional para comparar chuva, vazão e nível.",
+                ));
+            });
+            return;
+        }
+
         let mut apply = false;
         ui.horizontal_wrapped(|ui| {
             for (name, value) in [
@@ -1825,17 +2600,16 @@ impl Monitoring {
                     &mut self.chart_fields.station,
                 ),
             ] {
-                let label = ui.label(name);
-                let input = ui
-                    .add(egui::TextEdit::singleline(value).desired_width(90.))
-                    .labelled_by(label.id);
-                apply |= input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                ui.horizontal(|ui| {
+                    let label = ui.label(name);
+                    let input = ui
+                        .add(egui::TextEdit::singleline(value).desired_width(80.))
+                        .labelled_by(label.id);
+                    apply |= input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                });
             }
             apply |= ui
-                .add_enabled(
-                    self.project.is_some(),
-                    egui::Button::new(text(pt, "Apply", "Aplicar")),
-                )
+                .add(theme::primary(ui, text(pt, "Apply", "Aplicar")))
                 .clicked();
         });
         ui.horizontal_wrapped(|ui| {
@@ -1862,12 +2636,14 @@ impl Monitoring {
                             (text(pt, "From", "Início"), &mut self.display.chart_start),
                             (text(pt, "To", "Fim"), &mut self.display.chart_end),
                         ] {
-                            let label = ui.label(name);
-                            let input = ui
-                                .add(egui::TextEdit::singleline(value).desired_width(145.))
-                                .labelled_by(label.id);
-                            apply |=
-                                input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            ui.horizontal(|ui| {
+                                let label = ui.label(name);
+                                let input = ui
+                                    .add(egui::TextEdit::singleline(value).desired_width(145.))
+                                    .labelled_by(label.id);
+                                apply |= input.lost_focus()
+                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                            });
                         }
                     });
                     ui.horizontal_wrapped(|ui| {
@@ -1894,84 +2670,53 @@ impl Monitoring {
                     });
                 }
             });
-        if apply && self.project.is_some() {
+        if apply {
             self.display.comparison = Some(self.chart_fields.clone());
             self.request_chart();
         }
+        ui.separator();
         if self.loading[CHART_SLOT] {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.small(text(pt, "Loading comparison…", "Carregando comparação…"));
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(text(pt, "Loading comparison…", "Carregando comparação…"));
+                });
             });
         } else if !self.chart_message.is_empty() {
-            ui.add(egui::Label::new(&self.chart_message).truncate())
-                .on_hover_text(&self.chart_message);
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.add(egui::Label::new(&self.chart_message).truncate())
+                    .on_hover_text(&self.chart_message);
+            });
         } else if self.charts.report.is_none() {
-            ui.small(text(
-                pt,
-                "Enter IDs or choose View time series from the map menu.",
-                "Informe os IDs ou escolha Ver séries temporais no menu do mapa.",
-            ));
-        }
-        if self.chart_retained && self.charts.report.is_some() {
-            ui.small(text(
-                pt,
-                "Showing previous comparison",
-                "Exibindo comparação anterior",
-            ));
-        }
-        ui.separator();
-    }
-
-    fn location_summary(&mut self, ui: &mut egui::Ui) {
-        let pt = self.preferences.portuguese;
-        if let Some(location) = &self.display.selection {
-            ui.label(match location {
-                Location::Station(id) => format!("{}: {id}", text(pt, "Station", "Estação")),
-                Location::Mini(id) => format!("MINI: {id}"),
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.strong(text(pt, "Choose a location", "Escolha uma localização"));
+                ui.label(text(
+                    pt,
+                    "Enter an ID above or right-click a station or MINI on the map and choose View time series.",
+                    "Informe um ID acima ou clique com o botão direito em uma estação ou MINI no mapa e escolha Ver séries temporais.",
+                ));
+                if let Some(location) = self.display.selection.clone()
+                    && ui.button(text(pt, "Chart selected feature", "Mostrar séries da feição selecionada")).clicked()
+                {
+                    self.view_time_series(&location);
+                }
             });
         }
-        if let Some(view) = &self.view
-            && let Some(location) = &view.location
-        {
-            ui.small(format!(
-                "{}: {}",
-                text(pt, "Displayed summary", "Resumo exibido"),
-                charts::location_label(location, pt)
-            ));
-            if let Some(run) = &view.run {
-                ui.small(format!(
-                    "{} · {}",
-                    run.root.file_name().unwrap_or_default().to_string_lossy(),
-                    view.map_scenario
-                ));
-            }
+        if self.chart_retained && self.charts.report.is_some() {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                text(
+                    pt,
+                    "Showing previous comparison",
+                    "Exibindo comparação anterior",
+                ),
+            );
         }
-        if let Some(summary) = self.view.as_ref().and_then(|v| v.summary.as_ref()) {
-            let mean = summary
-                .mean_mm
-                .map(|v| format!("{v:.1}"))
-                .unwrap_or_else(|| "NA".into());
-            ui.label(format!("{:.1} km² · {mean} mm", summary.total_area_km2));
-            ui.small(format!(
-                "{:.1}/{:.1} km²·h",
-                summary.covered_area_hours, summary.expected_area_hours
-            ));
-            if let Some(view) = &self.view {
-                ui.small(format!(
-                    "{} → {} · {}",
-                    summary.window.start, summary.window.end, view.zone
-                ));
-            }
-        } else if let Some(area) = self.view.as_ref().and_then(|view| view.area_km2) {
-            ui.label(format!("{area:.1} km²"));
-        }
-        ui.separator();
     }
 }
 
 impl Monitoring {
-    fn map_page(&mut self, ui: &mut egui::Ui) {
+    fn map_page(&mut self, ui: &mut egui::Ui) -> Option<String> {
         let pt = self.preferences.portuguese;
         if self.project.is_some()
             && (self.tile_source != self.display.basemap
@@ -1987,83 +2732,240 @@ impl Monitoring {
                     walkers::sources::OpenTopoMap(walkers::sources::OpenTopoServer::A),
                     ui.ctx().clone(),
                 )),
+                3 => Some(HttpTiles::new(map::BlueMarble, ui.ctx().clone())),
                 _ => None,
             };
         }
         let focus_map =
             ui.input_mut(|input| input.consume_key(egui::Modifiers::COMMAND, egui::Key::Num1));
+        let mut mode = self.display.map_mode;
         ui.horizontal_wrapped(|ui| {
-            for (glyph, name, zoom_in) in [
-                ("+", text(pt, "Zoom in", "Aproximar"), true),
-                ("−", text(pt, "Zoom out", "Afastar"), false),
+            ui.strong(text(pt, "Map view", "Visualização do mapa"));
+            for (value, name) in [
+                (map::Mode::Single, text(pt, "Single", "Único")),
+                (map::Mode::Double, text(pt, "Double", "Duplo")),
+                (map::Mode::Swipe, text(pt, "Swipe", "Deslizar")),
             ] {
-                let response = icon_button(ui, glyph, &name);
-                if zoom_in && focus_map {
+                let response = ui.selectable_value(&mut mode, value, name);
+                if focus_map && mode == value {
                     response.request_focus();
                 }
-                if response.clicked() {
-                    if zoom_in {
-                        let _ = self.display.camera.zoom_in();
-                    } else {
-                        let _ = self.display.camera.zoom_out();
-                    }
-                }
-            }
-            if let Some(tiles) = &self.tiles {
-                use walkers::Tiles;
-                let attribution = tiles.attribution();
-                ui.hyperlink_to(attribution.text, attribution.url);
             }
         });
+        if mode != self.display.map_mode {
+            self.set_map_mode(mode);
+        }
+        self.sync_inundation();
+        let mut map_hover = None;
         let frame = egui::Frame::group(ui.style())
-            .outer_margin(6)
             .inner_margin(1)
-            .fill(ui.visuals().extreme_bg_color);
+            .fill(ui.visuals().faint_bg_color);
         if ui.available_height() > 16. && ui.available_width() > 16. {
             frame.show(ui, |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(ui.max_rect()));
                 if let Some(project) = &self.project {
-                    let upstream = self.upstream_basin.as_ref().map_or(&[][..], |(_, ids)| ids);
-                    let mut hit = None;
-                    let response = Map::new(
-                        self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles),
-                        &mut self.display.camera,
-                        lon_lat(-52., -30.),
-                    )
-                    .with_plugin(map::Overlay {
-                        project,
-                        layers: &self.display.layers,
-                        rainfall: self.rainfall.as_ref(),
-                        selection: &self.display.selection,
-                        upstream,
-                        hit: &mut hit,
-                        cache: &mut self.cache,
-                        labels: self.display.labels,
-                        local: &self.local,
-                        local_display: &self.display.local,
-                    })
-                    .show(ui, |_, _, _, _| {})
-                    .response;
-                    if response.secondary_clicked() {
-                        self.map_menu = hit;
-                    } else if let Some(location) = hit {
-                        self.select_location(location);
-                        ui.ctx().request_repaint();
+                    let upstream = self.upstream_basin.as_ref().map(|(_, paths)| paths);
+                    let images =
+                        RainSide::BOTH.map(|side| self.rainfall[side.index()].image.as_ref());
+                    let mut render = |ui: &mut egui::Ui,
+                                      side: RainSide,
+                                      camera: &mut MapMemory,
+                                      interactive,
+                                      swipe| {
+                        let mut hit = None;
+                        let response = map::Overlay {
+                            project,
+                            layers: &self.display.layers,
+                            rainfall: images,
+                            inundation: &mut self.inundation,
+                            side: (mode == map::Mode::Double).then_some(side),
+                            selection: &self.display.selection,
+                            upstream,
+                            hit: &mut hit,
+                            cache: &mut self.cache[side.index()],
+                            labels: self.display.labels,
+                            local: &self.local,
+                            local_display: &self.display.local,
+                        }
+                        .show(
+                            ui,
+                            self.tiles.as_mut().map(|t| t as &mut dyn walkers::Tiles),
+                            camera,
+                            interactive,
+                            swipe,
+                            pt,
+                        );
+                        if response.inner.is_some() {
+                            map_hover = response.inner;
+                        }
+                        (response.response, hit)
+                    };
+                    if mode == map::Mode::Double {
+                        let responses = map::double(
+                            ui,
+                            &mut self.display.camera,
+                            |ui, side, camera, interactive| {
+                                render(ui, side, camera, interactive, None)
+                            },
+                        );
+                        for (response, hit) in responses {
+                            self.map_interaction(response, hit);
+                        }
+                    } else {
+                        let swipe = (mode == map::Mode::Swipe).then_some(&mut self.display.swipe);
+                        let (response, hit) =
+                            render(ui, RainSide::Left, &mut self.display.camera, true, swipe);
+                        self.map_interaction(response, hit);
                     }
-                    map::feature_menu(&response, self.map_menu.clone(), |ui, location| {
-                        ui.label(self.feature_label(location));
-                        self.feature_actions(ui, location);
-                    });
                 } else {
-                    ui.centered_and_justified(|ui| {
-                        ui.heading(text(
-                            self.preferences.portuguese,
-                            "Open a regional project to monitor available data",
-                            "Abra um projeto regional para visualizar os dados",
-                        ));
+                    ui.vertical_centered(|ui| {
+                        ui.add_space((ui.available_height() * 0.3).min(140.));
+                        if self.loading[0] {
+                            ui.spinner();
+                            ui.heading(text(pt, "Opening project…", "Abrindo projeto…"));
+                        } else {
+                            ui.heading(text(
+                                pt,
+                                "Open a regional project",
+                                "Abra um projeto regional",
+                            ));
+                            if ui
+                                .add(theme::primary(ui, text(pt, "Open TOML…", "Abrir TOML…")))
+                                .clicked()
+                            {
+                                self.choose_project();
+                            }
+                        }
                     });
                 }
             });
+        }
+        self.inundation
+            .finish_view(ui.ctx(), self.inundation_visible());
+        map_hover
+    }
+
+    fn map_interaction(&mut self, response: egui::Response, hit: Option<Location>) {
+        if response.secondary_clicked() {
+            self.map_menu = hit;
+        } else if let Some(location) = hit {
+            self.select_location(location);
+            response.ctx.request_repaint();
+        }
+        map::feature_menu(&response, self.map_menu.clone(), |ui, location| {
+            ui.label(self.feature_label(location));
+            self.feature_actions(ui, location);
+        });
+    }
+
+    fn map_cards(&mut self, ui: &mut egui::Ui, pt: bool) {
+        if self.project.is_none() {
+            return;
+        }
+        theme::inset(ui.style()).show(ui, |ui| {
+            let id = ui.id().with(&self.display.config);
+            let mut input = ui
+                .data(|data| data.get_temp::<String>(id))
+                .unwrap_or_else(|| self.display.rain_maximum.to_string());
+            ui.horizontal(|ui| {
+                let label = ui.label(text(pt, "Maximum (mm)", "Máximo (mm)"));
+                let edit = ui
+                    .add(egui::TextEdit::singleline(&mut input).desired_width(72.))
+                    .labelled_by(label.id);
+                let parsed = rainfall_maximum(&input);
+                if (edit.lost_focus()
+                    || edit.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                    && let Some(value) = parsed
+                    && value != self.display.rain_maximum
+                {
+                    self.display.rain_maximum = value;
+                    for state in &mut self.rainfall {
+                        if let Some(image) = &mut state.image {
+                            image.recolor(value);
+                        }
+                    }
+                }
+                ui.data_mut(|data| data.insert_temp(id, input));
+                if parsed.is_none() {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        text(
+                            pt,
+                            "Enter a number greater than 1",
+                            "Informe um número maior que 1",
+                        ),
+                    );
+                }
+            });
+            map::rain_legend(ui, pt, self.display.rain_maximum);
+            ui.strong(text(
+                pt,
+                "Upstream basin rainfall over period",
+                "Chuva na bacia a montante no período",
+            ));
+            self.rainfall_total(ui, RainSide::Left, pt);
+            if self.display.map_mode.comparing() {
+                ui.separator();
+                self.rainfall_total(ui, RainSide::Right, pt);
+            }
+        });
+        if let Some(location) = &self.display.selection {
+            theme::inset(ui.style()).show(ui, |ui| self.selected_feature(ui, location));
+        }
+    }
+
+    fn selected_feature(&self, ui: &mut egui::Ui, location: &Location) {
+        let Some(project) = &self.project else { return };
+        let pt = self.preferences.portuguese;
+        ui.strong(self.feature_label(location));
+        if let Location::Station(id) = location
+            && let Some(entry) = project
+                .stations
+                .iter()
+                .find(|entry| entry.station.station_id == *id)
+        {
+            let station = &entry.station;
+            ui.small(format!(
+                "{} · {}",
+                station.provider_code, station.station_code
+            ));
+            if let (Some(lat), Some(lon)) = (station.latitude, station.longitude) {
+                ui.small(format!("{lat:.5}, {lon:.5}"));
+            }
+            if let Some(offset) = &entry.offset {
+                ui.small(format!(
+                    "MINI {} · {} {:+.2} m",
+                    offset.mini_id,
+                    text(pt, "Level offset", "Ajuste de nível"),
+                    offset.offset_m
+                ));
+            }
+        } else if let Location::Mini(id) = location
+            && let Some(mini) = project.topology.iter().find(|mini| mini.mini_id == *id)
+            && let Some(downstream) = mini.downstream
+        {
+            ui.small(format!(
+                "{} MINI {downstream}",
+                text(pt, "Downstream", "Jusante")
+            ));
+        }
+        let mut views = self.rainfall.iter().filter_map(|state| state.view.as_ref());
+        let area = views
+            .clone()
+            .find_map(|view| view.summary.as_ref().map(|summary| summary.total_area_km2))
+            .or_else(|| views.find_map(|view| view.area_km2));
+        let value = area.map_or_else(|| "NA".into(), |area| format!("{area:.1} km²"));
+        let response = ui.small(format!(
+            "{} · {value}",
+            text(pt, "Selected basin area", "Área da bacia selecionada")
+        ));
+        if area.is_none()
+            && let Some(finding) = self
+                .rainfall
+                .iter()
+                .find_map(|state| state.view.as_ref()?.findings.first())
+        {
+            response.on_hover_text(finding);
         }
     }
 
@@ -2093,7 +2995,6 @@ impl Monitoring {
                 ui.horizontal_wrapped(|ui| self.feature_actions(ui, &location));
             }
         }
-        self.location_summary(ui);
         egui::ScrollArea::both().show(ui, |ui| {
             if let Some(report) = self.charts.report.as_ref() {
                 ui.label(
@@ -2148,15 +3049,13 @@ impl Monitoring {
                 self.switching_project = true;
                 self.submit(Job::Open(config, workspace));
             }
-            Departure::New => self.runners.start(runners::Action::New, ctx),
-            Departure::Draft(path, reference, zone) => self.runners.start(
-                runners::Action::Open {
-                    path,
-                    reference,
-                    zone,
-                },
-                ctx,
-            ),
+            Departure::New => {
+                if let Some(project) = &self.project {
+                    self.runners
+                        .start(runners::Action::New(project.time_zone.clone()), ctx);
+                }
+            }
+            Departure::Draft(path) => self.runners.start(runners::Action::Open(path), ctx),
             Departure::Quit => {
                 self.allow_quit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -2173,54 +3072,27 @@ impl Monitoring {
                 self.chart_fields = ComparisonFields::default();
                 self.project = None;
                 self.run = None;
-                self.view = None;
-                self.rainfall = None;
+                self.active_run = Ok(None);
+                self.run_target = None;
+                self.comparison_runs.clear();
+                self.inundation.select(None);
+                self.rainfall = Default::default();
+                self.rainfall_info = Ok(None);
                 self.local.clear();
-                self.cache.clear();
+                self.cache.iter_mut().for_each(map::StaticCache::clear);
                 self.clear_upstream();
                 self.map_menu = None;
                 self.tiles = None;
                 self.loading.fill(false);
                 self.runners = runners::Runners::default();
+                self.workflows = workflows::Forms::default();
+                self.calibration = tools::CalibrationTools::default();
+                self.instructions = tools::InstructionTools::default();
             }
         }
     }
     fn departure_dialog(&mut self, ctx: &egui::Context) {
         let pt = self.preferences.portuguese;
-        if let Some((path, mut reference, mut zone)) = self.open_candidate.clone() {
-            let mut open = false;
-            let mut cancel = false;
-            egui::Modal::new(egui::Id::new("Open reference")).show(ctx, |ui| {
-                ui.heading(text(
-                    pt,
-                    "Open draft for reference",
-                    "Abrir rascunho para referência",
-                ));
-                ui.label(path.display().to_string());
-                ui.label(text(
-                    pt,
-                    "Candidate reference · local time",
-                    "Referência candidata · hora local",
-                ));
-                ui.text_edit_singleline(&mut reference);
-                ui.label(text(pt, "IANA timezone", "Fuso IANA"));
-                ui.text_edit_singleline(&mut zone);
-                ui.horizontal(|ui| {
-                    open = ui
-                        .button(text(pt, "Open exact match", "Abrir correspondência exata"))
-                        .clicked();
-                    cancel = ui.button(text(pt, "Cancel", "Cancelar")).clicked();
-                });
-            });
-            self.open_candidate = Some((path.clone(), reference.clone(), zone.clone()));
-            if open {
-                self.open_candidate = None;
-                self.depart(Departure::Draft(path, reference, zone));
-            } else if cancel {
-                self.open_candidate = None;
-            }
-            return;
-        }
         if let Some(path) = self.runners.overwrite.clone() {
             egui::Modal::new(egui::Id::new("Destination exists")).show(ctx, |ui| {
                 ui.heading(text(pt, "Destination exists", "Destino existente"));
@@ -2295,7 +3167,7 @@ impl Monitoring {
                             .clicked()
                         {
                             if let Some(active) = &self.runners.active {
-                                active.control.cancel();
+                                active.cancel();
                             }
                             self.leaving_job = true;
                             self.display.layout.form(Form::Jobs);
@@ -2376,16 +3248,31 @@ impl Monitoring {
 impl eframe::App for Monitoring {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        if self.project.is_some() && !self.loading[0] {
+            if Instant::now() >= self.run_check
+                || ctx.input(|input| input.events.contains(&egui::Event::WindowFocused(true)))
+            {
+                self.check_active_run(false);
+            }
+            ctx.request_repaint_after(self.run_check.saturating_duration_since(Instant::now()));
+        }
         self.poll(&ctx);
         if let Some(outcome) = self.runners.poll() {
             match outcome {
-                runners::Outcome::Completed(root) => {
-                    self.submit(Job::Run(root));
+                runners::Outcome::Completed => {
+                    self.check_active_run(false);
+                    if self.check_rainfall_cache() {
+                        self.request_view();
+                    }
                 }
-                runners::Outcome::Prepared(root) => {
-                    self.runners.prepared = root.clone();
-                    self.display.grid = Some(root.join("checkpoints/observed-grid.nc"));
-                    self.request_view();
+                runners::Outcome::Workflow(output) => {
+                    self.workflows.receive(output, &ctx);
+                }
+                runners::Outcome::DraftChanged => {
+                    self.instructions = tools::InstructionTools::default();
+                }
+                runners::Outcome::RegistrationReport(report, origin_errors) => {
+                    self.instructions.registration_report(report, origin_errors);
                 }
                 _ => {}
             }
@@ -2409,7 +3296,7 @@ impl eframe::App for Monitoring {
         ctx.set_theme(match self.preferences.appearance {
             1 => egui::ThemePreference::Light,
             2 => egui::ThemePreference::Dark,
-            _ => egui::ThemePreference::System,
+            _ => egui::ThemePreference::Light,
         });
         if self.loading.iter().any(|b| *b)
             || self.worker.is_busy()
@@ -2436,26 +3323,22 @@ impl eframe::App for Monitoring {
         {
             self.submit(Job::Open(p.config.clone(), p.workspace.clone()));
         }
-        egui::Panel::top("ribbon").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .button(Form::Jobs.label(self.preferences.portuguese))
-                    .clicked()
-                {
-                    self.display.layout.form(Form::Jobs);
-                }
-                if self.runners.busy() {
-                    ui.spinner();
-                }
-                ui.add(egui::Label::new(&self.status).truncate())
-                    .on_hover_text(&self.status);
-            });
-        });
+        let toolbar_frame = theme::toolbar(ui.style());
+        egui::Panel::top("ribbon")
+            .frame(toolbar_frame)
+            .show(ui, |ui| self.toolbar(ui));
+        let footer = egui::Panel::bottom("status")
+            .frame(toolbar_frame)
+            .show(ui, |ui| {
+                let height = ui.spacing().interact_size.y.max(16.) + 6.;
+                ui.allocate_exact_size(
+                    egui::vec2(ui.available_width(), height),
+                    egui::Sense::hover(),
+                )
+                .0
+            })
+            .inner;
         let width = ui.available_width();
-        egui::Panel::left("run-and-layers")
-            .exact_size((width * 0.24).clamp(156., 215.))
-            .show(ui, |ui| self.left_panel(ui));
         let min = (width * 0.30).clamp(190., 290.);
         let response = egui::Panel::right(egui::Id::new(("right-pane", &self.display.config)))
             .resizable(true)
@@ -2464,7 +3347,43 @@ impl eframe::App for Monitoring {
             .max_size((width * 0.41).max(min))
             .show(ui, |ui| self.right_pane(ui));
         self.display.layout.width = response.response.rect.width();
-        egui::CentralPanel::default().show(ui, |ui| self.map_page(ui));
+        let map_hover = egui::CentralPanel::default()
+            .show(ui, |ui| self.map_page(ui))
+            .inner;
+        let mut footer_ui = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(footer)
+                .id_salt("status-contents"),
+        );
+        footer_ui.set_clip_rect(footer);
+        let ui = &mut footer_ui;
+        use walkers::Tiles;
+        let pt = self.preferences.portuguese;
+        let run = self.run_summary(pt);
+        let attribution = self
+            .tiles
+            .as_ref()
+            .filter(|_| self.project.is_some() && self.tile_source == self.display.basemap)
+            .map(Tiles::attribution);
+        ui.horizontal(|ui| {
+            if let Some(credit) = attribution {
+                footer_box(ui, |ui| {
+                    ui.hyperlink_to(egui::RichText::new(credit.text).small(), credit.url);
+                });
+            }
+            let available = (ui.available_width() - 12.).max(1.);
+            let hover = map_hover.as_deref().unwrap_or("—");
+            for (label, fraction) in [(&run[..], 0.43), (hover, 0.42), (&self.status[..], 0.15)] {
+                footer_box(ui, |ui| {
+                    ui.add_sized(
+                        egui::vec2((available * fraction - 12.).max(1.), 16.),
+                        egui::Label::new(egui::RichText::new(label).small()).truncate(),
+                    )
+                    .on_hover_text(label);
+                });
+            }
+        });
+
         self.departure_dialog(&ctx);
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
@@ -2490,6 +3409,46 @@ pub fn run() -> eframe::Result {
 #[cfg(test)]
 mod interface_tests {
     use super::*;
+    #[test]
+    fn rainfall_scale_accepts_finite_maxima_and_defaults_for_saved_projects() {
+        assert_eq!(rainfall_maximum("27,5"), Some(27.5));
+        assert_eq!(rainfall_maximum(" 50 "), Some(50.));
+        for invalid in ["", "1", "0", "NaN", "inf"] {
+            assert_eq!(rainfall_maximum(invalid), None);
+        }
+        let display: Display = serde_json::from_str("{}").unwrap();
+        assert_eq!(display.rain_maximum, 100.);
+    }
+
+    #[test]
+    fn saved_layer_settings_gain_inundation_without_changing_existing_order() {
+        let mut display = Display::default();
+        display.layers.remove(2);
+        display.layers.reverse();
+        let previous: Vec<_> = display
+            .layers
+            .iter()
+            .map(|layer| layer.kind.clone())
+            .collect();
+        display.restore_layers();
+        display.restore_layers();
+        let added: Vec<_> = display
+            .layers
+            .iter()
+            .filter(|layer| layer.kind == inundation::KIND)
+            .collect();
+        assert_eq!(added.len(), 1);
+        let hidden = !added[0].visible;
+        assert!(hidden);
+        let remaining: Vec<_> = display
+            .layers
+            .into_iter()
+            .filter(|layer| layer.kind != inundation::KIND)
+            .map(|layer| layer.kind)
+            .collect();
+        assert_eq!(remaining, previous);
+    }
+
     #[test]
     fn chart_targets_clear_unrelated_fields_and_use_unique_links() {
         use mgb_ops::store::{Station, StationLocation, StationOffset};
@@ -2549,11 +3508,46 @@ mod interface_tests {
         .unwrap();
         assert_eq!(legacy.selected_operation_zone("UTC"), "America/Sao_Paulo");
         assert_eq!(legacy.config, PathBuf::from("region/config/workspace.toml"));
-        assert_eq!(legacy.run, Some(PathBuf::from("region/data/runs/run-1")));
+        assert!(serde_json::to_value(&legacy).unwrap().get("run").is_none());
         assert_eq!(legacy.basemap, 2);
-        assert_eq!(legacy.layout.active, SideTab::Charts);
+        assert_eq!(legacy.layout.active, SideTab::Map);
         assert!(legacy.layout.tabs.contains(&SideTab::Data));
     }
+    #[test]
+    fn rainfall_preferences_copy_applied_left_settings_only_on_first_comparison() {
+        let legacy = r#"{"rainfall_scenario":"left","hours":-18,"explicit":true,
+                        "start":"2026-01-01T02:00:00","end":"2026-01-01T05:00:00",
+                        "upstream":false}"#;
+        let mut display: Display = serde_json::from_str(legacy).unwrap();
+        assert_eq!(display.map_mode, map::Mode::Single);
+        assert_eq!(display.swipe, 0.5);
+        assert!(display.right_rainfall.is_none());
+        display.set_map_mode(map::Mode::Double);
+        let mut right = display.rainfall_settings(RainSide::Right);
+        assert_eq!(right.scenario, "left");
+        assert!(right.window.explicit);
+        assert_eq!(right.window.start, "2026-01-01T02:00:00");
+        assert_eq!(right.window.end, "2026-01-01T05:00:00");
+        right.scenario = "right".into();
+        right.window.explicit = false;
+        right.window.hours = 12;
+        display.set_rainfall_settings(RainSide::Right, right);
+        display.set_map_mode(map::Mode::Single);
+        display.set_map_mode(map::Mode::Swipe);
+        display.swipe = 0.72;
+        let saved = serde_json::to_string(&display).unwrap();
+        let restored: Display = serde_json::from_str(&saved).unwrap();
+        assert_eq!(restored.map_mode, map::Mode::Swipe);
+        assert_eq!(restored.swipe, 0.72);
+        assert_eq!(restored.rainfall_scenario, "left");
+        assert_eq!(restored.hours, -18);
+        let right = restored.rainfall_settings(RainSide::Right);
+        assert_eq!(right.scenario, "right");
+        let right_period_retained =
+            matches!(right.window.period(), Ok(RainfallPeriod::SignedHours(12)));
+        assert!(right_period_retained);
+    }
+
     #[test]
     fn icon_buttons_publish_accessible_names() {
         let context = egui::Context::default();

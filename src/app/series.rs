@@ -1,9 +1,11 @@
-use crate::analysis::{HourlyWindow, effective_observations, resolve_hourly_window};
+use crate::analysis::{
+    HourlyWindow, effective_flow_observations, effective_observations, resolve_hourly_window,
+};
 use crate::store::{
     IntervalAxis, ObservationSelection, ObservationStore, ObservationValue, ResultSeries,
     StationResults, TimeInterval, read_result_series, read_retained_manifest, read_station_results,
 };
-use chrono::{Duration, NaiveDateTime};
+use chrono::{Duration, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -90,17 +92,17 @@ fn valid_id(id: &str) -> bool {
 }
 type ModelMapping = Option<(i64, f64, f64, f64)>;
 
-struct ModelSource {
-    basin: ResultSeries,
+pub(super) struct ModelSource {
+    pub(super) basin: ResultSeries,
     station: Result<Option<StationResults>, String>,
-    reference: String,
+    pub(super) reference: String,
     run_id: String,
 }
 
-fn read_model(
+pub(super) fn read_model(
     root: &Path,
     scenario: &str,
-    zone: &str,
+    zone: Option<&str>,
     comparison: bool,
 ) -> Result<ModelSource, String> {
     if !valid_id(scenario) {
@@ -156,7 +158,7 @@ fn read_model(
     if !comparison {
         station.as_ref().map_err(Clone::clone)?;
     }
-    if basin.timeline.time_zone != zone {
+    if zone.is_some_and(|zone| basin.timeline.time_zone != zone) {
         return Err("result timeline, timezone, segment or reference metadata disagree".into());
     }
     let reference = basin
@@ -181,7 +183,7 @@ fn read_model(
         return Err("forecast reference time conflicts with result segments".into());
     }
     IntervalAxis {
-        time_zone: zone.into(),
+        time_zone: basin.timeline.time_zone.clone(),
         bounds: vec![TimeInterval {
             start: parsed_reference,
             end: parsed_reference
@@ -341,12 +343,19 @@ fn observation(
     let Location::Station(id) = station else {
         return Err("observations require a station".into());
     };
-    if effective && !matches!(variable, Variable::Rain) {
-        return Err("effective observations are supported for rainfall".into());
+    if effective && matches!(variable, Variable::Level) {
+        return Err("effective observations are supported for rainfall and flow".into());
     }
-    let bounds = if matches!(variable, Variable::Rain) {
+    let bounds = if matches!(variable, Variable::Rain) || effective {
         let mut bounds = Vec::new();
-        let mut start = window.start;
+        let mut start = if matches!(variable, Variable::Flow) {
+            window
+                .start
+                .checked_sub_signed(Duration::hours(1))
+                .ok_or("window overflow")?
+        } else {
+            window.start
+        };
         while start < window.end {
             let end = start
                 .checked_add_signed(Duration::hours(1))
@@ -391,15 +400,43 @@ fn observation(
     let points = if effective {
         inputs.series.retain(|s| s.series_id == *series_id);
         inputs.samples.retain(|s| s.series_id == *series_id);
-        effective_observations(&inputs, &axis)
-            .map_err(|e| e.to_string())?
-            .into_iter()
-            .map(|r| SeriesPoint {
-                timestamp: r.observed_at,
-                value: r.effective_value,
-                time_segment: None,
-            })
-            .collect()
+        inputs.replacements.retain(|item| item.station_id == *id);
+        let mut points: Vec<_> = if matches!(variable, Variable::Flow) {
+            effective_flow_observations(&inputs, &axis)
+        } else {
+            effective_observations(&inputs, &axis)
+        }
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .map(|r| SeriesPoint {
+            timestamp: r.observed_at,
+            value: r.effective_value,
+            time_segment: None,
+        })
+        .collect();
+        if matches!(variable, Variable::Flow) {
+            points.extend(
+                inputs
+                    .samples
+                    .iter()
+                    .filter(|sample| {
+                        let time = sample.observed_at;
+                        time >= window.start
+                            && time <= window.end
+                            && (time.minute() != 0 || time.second() != 0 || time.nanosecond() != 0)
+                    })
+                    .map(|sample| SeriesPoint {
+                        timestamp: sample.observed_at,
+                        value: sample.value.and_then(|value| match value {
+                            ObservationValue::FlowM3s(value) => Some(value),
+                            _ => None,
+                        }),
+                        time_segment: None,
+                    }),
+            );
+            points.sort_by_key(|point| point.timestamp);
+        }
+        points
     } else if matches!(variable, Variable::Rain) {
         let mut samples = inputs
             .samples
@@ -464,18 +501,24 @@ fn observation(
     })
 }
 pub fn query_series(request: &SeriesQuery) -> Result<SeriesReport, String> {
-    query(request, None)
+    query(request, None, None)
 }
 
 /// Compare model series for one MINI with observations from one station.
 pub fn query_comparison(request: &SeriesQuery, station: &str) -> Result<SeriesReport, String> {
-    if !matches!(request.location, Location::Mini(_)) || station.trim().is_empty() {
-        return Err("comparison requires a MINI and station ID".into());
-    }
-    query(request, Some(station))
+    query(request, Some(station), None)
 }
 
-fn query(request: &SeriesQuery, comparison_station: Option<&str>) -> Result<SeriesReport, String> {
+pub(super) fn query(
+    request: &SeriesQuery,
+    comparison_station: Option<&str>,
+    retained: Option<(&Path, &str, &ModelSource)>,
+) -> Result<SeriesReport, String> {
+    if comparison_station.is_some_and(|station| {
+        !matches!(request.location, Location::Mini(_)) || station.trim().is_empty()
+    }) {
+        return Err("comparison requires a MINI and station ID".into());
+    }
     match &request.location {
         Location::Station(id) if id.trim().is_empty() => {
             return Err("station ID must be nonempty".into());
@@ -501,24 +544,31 @@ fn query(request: &SeriesQuery, comparison_station: Option<&str>) -> Result<Seri
                 scenario_id,
                 variable,
             } => {
-                if model_source
-                    .as_ref()
-                    .is_none_or(|(path, scenario, _)| *path != root || *scenario != scenario_id)
+                let source = if let Some((_, _, source)) =
+                    retained.filter(|(path, id, _)| *path == root && *id == scenario_id)
                 {
-                    drop(model_source.take());
-                    model_source = Some((
-                        root,
-                        scenario_id,
-                        read_model(
+                    Ok(source)
+                } else {
+                    if model_source
+                        .as_ref()
+                        .is_none_or(|(path, scenario, _)| *path != root || *scenario != scenario_id)
+                    {
+                        drop(model_source.take());
+                        model_source = Some((
                             root,
                             scenario_id,
-                            &request.time_zone,
-                            comparison_station.is_some(),
-                        ),
-                    ));
-                }
-                let (_, _, source) = model_source.as_ref().unwrap();
-                source.as_ref().map_err(Clone::clone).and_then(|source| {
+                            read_model(
+                                root,
+                                scenario_id,
+                                Some(&request.time_zone),
+                                comparison_station.is_some(),
+                            ),
+                        ));
+                    }
+                    let (_, _, source) = model_source.as_ref().unwrap();
+                    source.as_ref().map_err(Clone::clone)
+                };
+                source.and_then(|source| {
                     model(
                         source,
                         scenario_id,

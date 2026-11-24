@@ -9,6 +9,7 @@ pub struct Export {
     pub state: eframe::egui_wgpu::RenderState,
     pub report: SeriesReport,
     pub source_labels: Vec<String>,
+    pub scenario_order: Vec<String>,
     pub references: Vec<LevelReference>,
     pub portuguese: bool,
     pub scale: u32,
@@ -75,6 +76,7 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
     }
     let mut charts = Charts::new(&export.state, 100);
     charts.source_labels = export.source_labels;
+    charts.scenario_order = export.scenario_order;
     charts.line_scale = export.scale as f32;
     charts.load(export.report.clone(), &export.references, export.portuguese)?;
     let scale = export.scale;
@@ -334,7 +336,10 @@ mod tests {
                 )),
                 ..Default::default()
             },
-            |ui| charts.show(ui, false, 160.),
+            |ui| {
+                let available_height = ui.available_height();
+                charts.show(ui, false, available_height);
+            },
         );
         frame.textures_delta.clear();
         for plot in &charts.plots {
@@ -363,6 +368,7 @@ mod tests {
                     state: state.clone(),
                     report: report.clone(),
                     source_labels: vec![],
+                    scenario_order: vec![],
                     references: vec![],
                     portuguese: true,
                     scale,

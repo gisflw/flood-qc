@@ -266,21 +266,29 @@ impl<'ast> Visit<'ast> for Gate {
             }
             return;
         }
+        if name == "include_bytes" {
+            let asset = syn::parse2::<syn::LitStr>(mac.tokens.clone());
+            let valid = mac.path.is_ident("include_bytes")
+                && self.owner == "analysis"
+                && self.source.as_deref() == Some(Path::new("analysis/report_graphics.rs"))
+                && asset.is_ok_and(|literal| literal.value() == "assets/NotoSans-Regular.ttf");
+            if !valid {
+                self.error("include_bytes permits only the owned bulletin font");
+            }
+            return;
+        }
         if name == "include_str" {
             let schema = syn::parse2::<syn::LitStr>(mac.tokens.clone());
             let valid = mac.path.is_ident("include_str")
                 && self.owner == "store"
                 && self.source.as_deref() == Some(Path::new("store/observations.rs"))
                 && schema.is_ok_and(|literal| {
-                    literal.value() == "sql/observations_v1.sql"
-                        && self
-                            .source
-                            .as_ref()
-                            .unwrap()
-                            .parent()
-                            .unwrap()
-                            .join(literal.value())
-                            == Path::new("store/sql/observations_v1.sql")
+                    matches!(
+                        literal.value().as_str(),
+                        "sql/observations_v1.sql"
+                            | "sql/observations_v2.sql"
+                            | "sql/observations_v3.sql"
+                    )
                 });
             if !valid {
                 self.error("include_str permits only the owned observations schema");
@@ -320,6 +328,9 @@ impl<'ast> Visit<'ast> for Gate {
             return;
         }
         let name = attr.path().segments.last().unwrap().ident.to_string();
+        if name == "default" && matches!(attr.meta, syn::Meta::Path(_)) {
+            return;
+        }
         if let syn::Meta::NameValue(value) = &attr.meta
             && !matches!(
                 &value.value,
@@ -365,6 +376,7 @@ impl<'ast> Visit<'ast> for Gate {
                         "Deserialize",
                         "Parser",
                         "Subcommand",
+                        "ValueEnum",
                     ]
                     .contains(&derive)
                     {
@@ -379,6 +391,18 @@ impl<'ast> Visit<'ast> for Gate {
                         .get_ident()
                         .map(ToString::to_string)
                         .unwrap_or_default();
+                    if name == "arg" && key == "requires" {
+                        let literal: syn::LitStr = meta.value()?.parse()?;
+                        let argument = literal.value();
+                        if argument.is_empty()
+                            || !argument.bytes().all(|byte| {
+                                byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-')
+                            })
+                        {
+                            return Err(meta.error("requires must name another argument"));
+                        }
+                        return Ok(());
+                    }
                     let path_keys = [
                         "default",
                         "default_value",
@@ -394,6 +418,7 @@ impl<'ast> Visit<'ast> for Gate {
                     ];
                     let plain_keys = [
                         "deny_unknown_fields",
+                        "alias",
                         "rename",
                         "rename_all",
                         "skip",
@@ -683,8 +708,13 @@ fn graph_fixtures() {
 #[test]
 fn schema_inclusion_is_limited_to_its_owner_and_static_path() {
     let source = Path::new("store/observations.rs");
-    let accepted = r#"const DDL: &str = include_str!("sql/observations_v1.sql");"#;
-    assert!(check_source("store", accepted, 1, Some(source)).is_empty());
+    for version in 1..=3 {
+        let accepted =
+            format!(r#"const DDL: &str = include_str!("sql/observations_v{version}.sql");"#);
+        assert!(check_source("store", &accepted, 1, Some(source)).is_empty());
+        assert!(!check_source("analysis", &accepted, 1, Some(source)).is_empty());
+        assert!(!check_source("store", &accepted, 1, Some(Path::new("store/other.rs"))).is_empty());
+    }
     for expression in [
         r#"include_str!(SCHEMA)"#,
         r#"include_str!("../store/sql/observations_v1.sql")"#,
@@ -696,8 +726,6 @@ fn schema_inclusion_is_limited_to_its_owner_and_static_path() {
         let code = format!("const DDL: &str = {expression};");
         assert!(!check_source("store", &code, 1, Some(source)).is_empty());
     }
-    assert!(!check_source("analysis", accepted, 1, Some(source)).is_empty());
-    assert!(!check_source("store", accepted, 1, Some(Path::new("store/other.rs"))).is_empty());
     assert!(!check_source("store", "pub use crate::adapters::Thing;", 1, Some(source)).is_empty());
 }
 
@@ -730,6 +758,31 @@ fn owner_names_as_local_values_do_not_create_import_edges() {
 }
 
 #[test]
+fn clap_requires_takes_a_literal_argument_name() {
+    assert!(
+        check(
+            "interface",
+            r#"struct Args { #[arg(long, requires = "time_zone")] reference: String }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "interface",
+            r#"struct Args { #[arg(requires = "crate::store::thing")] reference: String }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "interface",
+            r#"struct Args { #[arg(requires = key)] reference: String }"#
+        )
+        .is_empty()
+    );
+}
+
+#[test]
 fn nested_interfaces_keep_relative_paths_inside_the_interface() {
     assert!(check_at("interface", "use super::data::Job;", 1).is_empty());
     let escaped = check_at("interface", "use super::super::data::Job;", 1);
@@ -747,4 +800,23 @@ fn nested_interfaces_keep_relative_paths_inside_the_interface() {
         )
         .is_empty()
     );
+}
+
+#[test]
+fn bulletin_font_inclusion_is_limited_to_its_owner_and_static_path() {
+    let source = Path::new("analysis/report_graphics.rs");
+    let accepted = r#"const FONT: &[u8] = include_bytes!("assets/NotoSans-Regular.ttf");"#;
+    assert!(check_source("analysis", accepted, 1, Some(source)).is_empty());
+    assert!(!check_source("store", accepted, 1, Some(source)).is_empty());
+    assert!(
+        !check_source(
+            "analysis",
+            accepted,
+            1,
+            Some(Path::new("analysis/other.rs"))
+        )
+        .is_empty()
+    );
+    let escaped = r#"const FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");"#;
+    assert!(!check_source("analysis", escaped, 1, Some(source)).is_empty());
 }

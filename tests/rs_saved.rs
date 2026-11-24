@@ -201,26 +201,31 @@ correction_ids = ["rs-ecmwf-correction"]
     fs::remove_file(root.join("observations.sqlite")).unwrap();
     fs::remove_file(root.join("forecast.sqlite")).unwrap();
     fs::remove_dir_all(root.join("forecast-assets")).unwrap();
-    let run = || {
+    let run = |workspace| {
         execute_prepared(ExecutionRequest {
-            workspace: root.clone(),
+            workspace,
             invocation_dir: root.clone(),
             prepared: "prepared".into(),
         })
         .unwrap()
     };
-    let first = run();
+    let first = run(root.clone());
     assert!(
         matches!(first.status, BatchStatus::Completed),
         "{:?}",
         first.scenarios
     );
-    let second = run();
+    let repeat_workspace = root.join("repeat");
+    fs::create_dir(&repeat_workspace).unwrap();
+    let second = run(repeat_workspace);
     assert!(
         matches!(second.status, BatchStatus::Completed),
         "{:?}",
         second.scenarios
     );
+    let history_hand = fs::read(reference.join("capture/runs/history/Output/HANDTUDO.MGB"))
+        .expect("the frozen history flood stream");
+    assert_eq!(history_hand.len(), 241 * 8649 * size_of::<f32>());
     for scenario in ["zero", "ecmwf-raw", "noaa-raw", "ecmwf-corrected"] {
         for (file, headers) in [
             (
@@ -352,6 +357,43 @@ correction_ids = ["rs-ecmwf-correction"]
                 fs::read(first.run_root.join("results").join(scenario).join(file)).unwrap()
                     == fs::read(second.run_root.join("results").join(scenario).join(file)).unwrap(),
                 "repeat {scenario}/{file}"
+            );
+        }
+        let scenario_hand = fs::read(
+            reference
+                .join("capture/runs")
+                .join(scenario)
+                .join("Output/HANDTUDO.MGB"),
+        )
+        .expect("the frozen scenario flood stream");
+        let forecast_hand = &scenario_hand[..121 * 8649 * size_of::<f32>()];
+        for trial in [&first, &second] {
+            let path = trial
+                .run_root
+                .join("results")
+                .join(scenario)
+                .join("flood_source.nc");
+            let flood = terrio::multidim::open(path.to_str().unwrap()).unwrap_or_else(|error| {
+                let diagnostic =
+                    fs::read_to_string(path.with_file_name("flood_source_unavailable.txt"));
+                panic!(
+                    "could not open {}: {error}; diagnostic {diagnostic:?}",
+                    path.display()
+                );
+            });
+            assert_eq!(flood.root.attributes["historical_count"], 241);
+            let depth = flood.array("depth").unwrap();
+            assert_eq!(depth.shape(), [362, 8649]);
+            let bytes = depth.read().unwrap().bytes;
+            assert_eq!(
+                &bytes[..history_hand.len()],
+                history_hand,
+                "{scenario} history"
+            );
+            assert_eq!(
+                &bytes[history_hand.len()..],
+                forecast_hand,
+                "{scenario} forecast"
             );
         }
     }

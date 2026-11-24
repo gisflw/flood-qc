@@ -167,3 +167,18 @@ impl From<ModelError> for String {
         error.to_string()
     }
 }
+
+mod forcing;
+pub(crate) use self::forcing::write_additional_forcing;
+mod state;
+pub(crate) use self::state::{
+    QUALIFIED_RS_ENGINE_SHA256, package_hot_start, validate_hot_start, write_hot_save_request,
+};
+mod calibration;
+pub(crate) use self::calibration::{
+    GeometryFile, SoilFile, install_calibration, parse_classes, validate_calibration,
+    watershed_count,
+};
+
+mod flood_source;
+pub(crate) use self::flood_source::{FloodHistory, capture_flood_history, capture_flood_source};

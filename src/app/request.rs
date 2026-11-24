@@ -41,6 +41,48 @@ pub struct PreparationDocument {
     pub engine: EngineDocument,
     pub forecasts: ForecastsDocument,
     pub scenarios: Vec<ScenarioDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub forcing: Option<ForcingDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<CalibrationDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hot_start: Option<HotStartDocument>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub routing: Option<RoutingMode>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct ForcingDocument {
+    pub mappings: crate::store::ForcingSelections,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reservoir_schedules: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wind_observations: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct CalibrationDocument {
+    pub use_edited_geometry: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub soil: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct HotStartDocument {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub use_bundle: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_at: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingMode {
+    Inertial,
+    MuskingumCunge,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -340,10 +382,19 @@ pub(super) fn parse_request(request_bytes: Vec<u8>) -> Result<ValidatedRequest, 
 }
 
 pub(super) fn decode_request(request_bytes: &[u8]) -> Result<PreparationDocument, RequestError> {
+    decode_request_value(request_value(request_bytes)?)
+}
+
+pub(super) fn request_value(request_bytes: &[u8]) -> Result<serde_json::Value, RequestError> {
     let text = std::str::from_utf8(request_bytes)
         .map_err(|_| invalid("request", "expected UTF-8 TOML"))?;
     let raw: toml::Value = toml::from_str(text).map_err(|e| invalid("request", e.message()))?;
-    let mut value = serde_json::to_value(raw).map_err(|e| invalid("request", e.to_string()))?;
+    serde_json::to_value(raw).map_err(|e| invalid("request", e.to_string()))
+}
+
+pub(super) fn decode_request_value(
+    mut value: serde_json::Value,
+) -> Result<PreparationDocument, RequestError> {
     if value.get("schema_version").and_then(|v| v.as_u64()) == Some(2) {
         if value.get("observed_horizon_days").is_none()
             || value.get("forecast_horizon_days").is_none()
@@ -354,6 +405,54 @@ pub(super) fn decode_request(request_bytes: &[u8]) -> Result<PreparationDocument
         value["schema_version"] = 1.into();
     }
     serde_json::from_value(value).map_err(|e| invalid("request", e.to_string()))
+}
+
+fn timeline_endpoints(
+    reference: &str,
+    hfirst: &str,
+    hlast: &str,
+    ffirst: &str,
+    flast: &str,
+) -> Result<[NaiveDateTime; 4], RequestError> {
+    let reference = timestamp("reference_time", reference)?;
+    let hfirst = timestamp("historical_first_end", hfirst)?;
+    let hlast = timestamp("historical_last_end", hlast)?;
+    let ffirst = timestamp("forecast_first_end", ffirst)?;
+    let flast = timestamp("forecast_last_end", flast)?;
+    if reference != hlast || hlast.checked_add_signed(Duration::hours(1)) != Some(ffirst) {
+        return Err(invalid(
+            "timeline",
+            "reference must end history and forecast must immediately follow",
+        ));
+    }
+    if hfirst > hlast || ffirst > flast {
+        return Err(invalid("timeline", "first endpoint is after last"));
+    }
+    Ok([hfirst, hlast, ffirst, flast])
+}
+
+/// Inclusive hourly labels for observed and forecast rainfall.
+pub(super) fn coverage(value: &serde_json::Value) -> Result<[String; 4], String> {
+    let field = |key: &str| value[key].as_str().ok_or_else(|| format!("{key} required"));
+    let zone = field("time_zone")?;
+    let hfirst = field("historical_first_end")?;
+    let hlast = field("historical_last_end")?;
+    let ffirst = field("forecast_first_end")?;
+    let flast = field("forecast_last_end")?;
+    let [first, _, _, end] =
+        timeline_endpoints(field("reference_time")?, hfirst, hlast, ffirst, flast)
+            .map_err(|e| e.to_string())?;
+    // Validate the contiguous span without allocating every interval.
+    let start = first
+        .checked_sub_signed(Duration::hours(1))
+        .ok_or("Coverage start overflow")?;
+    IntervalAxis {
+        time_zone: zone.into(),
+        bounds: vec![TimeInterval { start, end }],
+    }
+    .validate()
+    .map_err(|e| e.to_string())?;
+    Ok([hfirst.into(), hlast.into(), ffirst.into(), flast.into()])
 }
 
 pub(super) fn validate_document(
@@ -370,16 +469,42 @@ pub(super) fn validate_document(
         .time_zone
         .parse::<chrono_tz::Tz>()
         .map_err(|_| invalid("time_zone", "unknown IANA timezone"))?;
-    let reference = timestamp("reference_time", &document.reference_time)?;
-    let hfirst = timestamp("historical_first_end", &document.historical_first_end)?;
-    let hlast = timestamp("historical_last_end", &document.historical_last_end)?;
-    let ffirst = timestamp("forecast_first_end", &document.forecast_first_end)?;
-    let flast = timestamp("forecast_last_end", &document.forecast_last_end)?;
-    if reference != hlast || hlast.checked_add_signed(Duration::hours(1)) != Some(ffirst) {
-        return Err(invalid(
-            "timeline",
-            "reference must end history and forecast must immediately follow",
-        ));
+    let [hfirst, hlast, ffirst, flast] = timeline_endpoints(
+        &document.reference_time,
+        &document.historical_first_end,
+        &document.historical_last_end,
+        &document.forecast_first_end,
+        &document.forecast_last_end,
+    )?;
+    if let Some(state) = &document.hot_start
+        && let Some(value) = &state.save_at
+    {
+        let at = timestamp("hot_start.save_at", value)?;
+        if at.date() <= hfirst.date() || at > hlast || at.hour() < hfirst.hour() {
+            return Err(invalid(
+                "hot_start.save_at",
+                "RS state save requires a later history date and an hour at or after the first simulation hour",
+            ));
+        }
+    }
+    if let Some(forcing) = &document.forcing {
+        forcing
+            .mappings
+            .validate()
+            .map_err(|e| invalid("forcing.mappings", e.to_string()))?;
+        if forcing
+            .mappings
+            .reservoirs
+            .iter()
+            .any(|item| item.schedule_id.is_some())
+            != forcing.reservoir_schedules.is_some()
+            || forcing.mappings.wind.is_empty() == forcing.wind_observations.is_some()
+        {
+            return Err(invalid(
+                "forcing",
+                "select a canonical data file and matching mappings together",
+            ));
+        }
     }
     let historical = axis(hfirst, hlast, &document.time_zone, "historical")?;
     let forecast = axis(ffirst, flast, &document.time_zone, "forecast")?;
@@ -526,6 +651,33 @@ pub(super) fn resolve_request(
         &mut document.engine.input_dir,
         true,
     )?;
+    if let Some(forcing) = &mut document.forcing {
+        for (field, path) in [
+            (
+                "forcing.reservoir_schedules",
+                &mut forcing.reservoir_schedules,
+            ),
+            ("forcing.wind_observations", &mut forcing.wind_observations),
+        ] {
+            if let Some(path) = path {
+                resolve_file(workspace, field, path, false)?;
+            }
+        }
+    }
+    if let Some(soil) = document
+        .calibration
+        .as_mut()
+        .and_then(|value| value.soil.as_mut())
+    {
+        resolve_file(workspace, "calibration.soil", soil, false)?;
+    }
+    if let Some(state) = document
+        .hot_start
+        .as_mut()
+        .and_then(|value| value.use_bundle.as_mut())
+    {
+        resolve_file(workspace, "hot_start.use_bundle", state, true)?;
+    }
     if document
         .scenarios
         .iter()

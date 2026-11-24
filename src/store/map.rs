@@ -1,3 +1,4 @@
+use serde::Serialize;
 use std::path::Path;
 
 use terrio::Geometry;
@@ -279,4 +280,111 @@ mod tests {
         .unwrap();
         assert!(read_map_layers(&path).is_err());
     }
+}
+
+/// Peak flow and configured threshold class for one MINI's 24-hour forecast window.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct MiniFlowExceedance {
+    pub mini_id: i64,
+    pub peak_m3s: Option<f64>,
+    pub peak_at: Option<chrono::NaiveDateTime>,
+    pub hours: u8,
+    pub return_period_years: Option<f64>,
+    pub status: String,
+}
+
+pub fn write_return_period_geojson(
+    destination: &Path,
+    features: &[MiniMapFeature],
+    report: &[MiniFlowExceedance],
+    window: &super::TimeInterval,
+    time_zone: &str,
+) -> Result<(), String> {
+    use std::collections::HashMap;
+    use wbvector::{
+        Geometry, Ring,
+        feature::{FieldDef, FieldType, FieldValue, Layer},
+    };
+    if destination
+        .extension()
+        .is_none_or(|value| value != "geojson")
+    {
+        return Err("return-period destination must end in .geojson".into());
+    }
+    let summary: HashMap<_, _> = report.iter().map(|row| (row.mini_id, row)).collect();
+    if summary.len() != report.len() || summary.len() != features.len() {
+        return Err("return-period report and geometry MINI counts differ".into());
+    }
+    let mut layer = Layer::new("return_period").with_crs_epsg(4326);
+    for (field, kind) in [
+        ("mini_id", FieldType::Integer),
+        ("peak_m3s", FieldType::Float),
+        ("peak_at", FieldType::Text),
+        ("hours", FieldType::Integer),
+        ("return_period_years", FieldType::Float),
+        ("status", FieldType::Text),
+        ("window_start", FieldType::Text),
+        ("window_end", FieldType::Text),
+        ("time_zone", FieldType::Text),
+    ] {
+        layer.add_field(FieldDef::new(field, kind));
+    }
+    let coordinates = |points: &[(f64, f64)]| -> Vec<Coord> {
+        points.iter().map(|&(x, y)| Coord::xy(x, y)).collect()
+    };
+    for feature in features {
+        let row = summary
+            .get(&feature.mini_id)
+            .ok_or("return-period MINI geometry mismatch")?;
+        let geometry = if !feature.polygons.is_empty() {
+            Geometry::MultiPolygon(
+                feature
+                    .polygons
+                    .iter()
+                    .map(|polygon| {
+                        (
+                            Ring::new(coordinates(&polygon.exterior)),
+                            polygon
+                                .interiors
+                                .iter()
+                                .map(|ring| Ring::new(coordinates(ring)))
+                                .collect(),
+                        )
+                    })
+                    .collect(),
+            )
+        } else if !feature.paths.is_empty() {
+            Geometry::MultiLineString(feature.paths.iter().map(|line| coordinates(line)).collect())
+        } else {
+            return Err(format!("MINI {} has no lines or polygons", feature.mini_id));
+        };
+        layer
+            .add_feature(
+                Some(geometry),
+                &[
+                    ("mini_id", row.mini_id.into()),
+                    (
+                        "peak_m3s",
+                        row.peak_m3s.map_or(FieldValue::Null, FieldValue::Float),
+                    ),
+                    (
+                        "peak_at",
+                        row.peak_at
+                            .map_or(FieldValue::Null, |v| v.to_string().into()),
+                    ),
+                    ("hours", i64::from(row.hours).into()),
+                    (
+                        "return_period_years",
+                        row.return_period_years
+                            .map_or(FieldValue::Null, FieldValue::Float),
+                    ),
+                    ("status", row.status.clone().into()),
+                    ("window_start", window.start.to_string().into()),
+                    ("window_end", window.end.to_string().into()),
+                    ("time_zone", time_zone.into()),
+                ],
+            )
+            .map_err(|e| e.to_string())?;
+    }
+    super::write_atomic(destination, wbvector::geojson::to_string(&layer).as_bytes())
 }

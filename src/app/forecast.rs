@@ -6,6 +6,39 @@ use serde::{Deserialize, Serialize};
 use crate::adapters::{NormalizationError, NormalizationRequest, normalize_saved_forecast};
 use crate::store::{ForecastCatalog, ForecastProvider, IntervalAxis, StoreError};
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CanonicalForecastDocument {
+    pub catalog: PathBuf,
+    pub artifact_root: PathBuf,
+    pub source: PathBuf,
+    pub metadata: crate::store::CanonicalForecastMetadata,
+}
+
+pub fn import_canonical_forecast(
+    workspace: &std::path::Path,
+    request: CanonicalForecastDocument,
+) -> Result<NormalizeForecastReport, StoreError> {
+    let workspace = workspace.canonicalize()?;
+    let source = super::absolute(&workspace, &request.source);
+    let mut catalog = ForecastCatalog::open(&workspace, &request.catalog, &request.artifact_root)?;
+    let asset = catalog.register_canonical(&source, &request.metadata)?;
+    let (_, grid) = catalog.load_native(&asset.asset_id)?;
+    Ok(NormalizeForecastReport {
+        source_id: asset.source_id,
+        asset_id: asset.asset_id,
+        retained_source: workspace.join(asset.retained_source),
+        native_artifact: workspace.join(asset.native_artifact),
+        native_shape: [
+            grid.timeline.bounds.len(),
+            grid.grid.latitudes.len(),
+            grid.grid.longitudes.len(),
+        ],
+        effective_bbox: grid.grid.effective_bbox,
+        timeline: grid.timeline,
+    })
+}
+
 #[derive(Debug)]
 pub enum NormalizeForecastError {
     Configuration(String),

@@ -80,6 +80,7 @@ use crate::store::{
     write_basin_forcing, write_grid_frame, write_grid_series, write_run_manifest,
 };
 use crate::store::{ForecastCorrection, ObservationReplacement};
+use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::PathBuf;
 
@@ -141,11 +142,30 @@ pub struct TypedPreparationRequest {
 pub fn prepare_typed(
     request: TypedPreparationRequest,
 ) -> Result<PreparationReport, OperationError> {
-    prepare_typed_checked(request, None, &super::OperationControl::default())
+    prepare_typed_checked(request, None, false, &super::OperationControl::default())
 }
 pub(super) fn prepare_typed_checked(
-    mut request: TypedPreparationRequest,
+    request: TypedPreparationRequest,
     identities: Option<std::collections::BTreeMap<String, String>>,
+    operational: bool,
+    control: &super::OperationControl,
+) -> Result<PreparationReport, OperationError> {
+    prepare_typed_internal(request, identities, operational, None, control)
+}
+
+pub(super) fn prepare_replay(
+    request: TypedPreparationRequest,
+    expected: &OperationManifest,
+    control: &super::OperationControl,
+) -> Result<PreparationReport, OperationError> {
+    prepare_typed_internal(request, None, true, Some(expected), control)
+}
+
+fn prepare_typed_internal(
+    mut request: TypedPreparationRequest,
+    identities: Option<BTreeMap<String, String>>,
+    operational: bool,
+    replay: Option<&OperationManifest>,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
     if request.corrections.len() != request.document.scenarios.len() {
@@ -205,6 +225,8 @@ pub(super) fn prepare_typed_checked(
         request.corrections,
         PathBuf::from("typed request"),
         identities,
+        operational,
+        replay,
         control,
     )
 }
@@ -242,6 +264,8 @@ pub fn prepare_controlled(
         corrections,
         request_path,
         None,
+        false,
+        None,
         control,
     )
 }
@@ -255,6 +279,8 @@ fn prepare_accepted(
     corrections: Vec<Option<Vec<ForecastCorrection>>>,
     request_path: PathBuf,
     identities: Option<std::collections::BTreeMap<String, String>>,
+    operational: bool,
+    replay: Option<&OperationManifest>,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
     control.set_progress(super::OperationStage::Preparation, None, None);
@@ -299,18 +325,51 @@ fn prepare_accepted(
         fs::write(stage.join("request.toml"), &accepted.request_bytes)
             .map_err(|e| source_error(&stage, e))?;
         let doc = &accepted.document;
+        let mut source_identities = BTreeMap::new();
+        let inline_replacements = replacements.is_some();
+        let inline_corrections = corrections
+            .iter()
+            .enumerate()
+            .filter_map(|(index, values)| values.is_some().then_some(index))
+            .collect();
+        super::additional::check_engine(doc, &doc.engine.executable)
+            .map_err(|e| source_error(&doc.engine.executable, e))?;
+        let edited_geometry = doc
+            .calibration
+            .as_ref()
+            .is_some_and(|selection| selection.use_edited_geometry);
+        let geometry_digest = digest_file(&doc.geometry.mini_gtp)
+            .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
         let geometry = crate::model::read_basin_geometry(&doc.geometry.mini_gtp)
             .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
-        if let Some(identities) = &identities {
-            let actual = super::draft::identity(
-                &digest_file(&doc.geometry.mini_gtp)
-                    .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?,
-            )
+        if digest_file(&doc.geometry.mini_gtp)
+            .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?
+            != geometry_digest
+        {
+            return Err(source_error(
+                &doc.geometry.mini_gtp,
+                "geometry changed while reading",
+            ));
+        }
+        let actual = super::draft::identity(&geometry_digest)
             .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
-            if identities.get("geometry") != Some(&actual) {
+        source_identities.insert("geometry".to_owned(), actual);
+        let soil_identity = super::additional::soil_identity(doc.calibration.as_ref())
+            .map_err(|e| source_error(&request_path, e))?;
+        if let Some(identities) = &identities {
+            if identities.get("geometry") != source_identities.get("geometry") {
                 return Err(source_error(
                     &doc.geometry.mini_gtp,
                     "geometry changed or has not been accepted; refresh inputs",
+                ));
+            }
+            if soil_identity
+                .as_ref()
+                .is_some_and(|value| identities.get("soil") != Some(value))
+            {
+                return Err(source_error(
+                    &request_path,
+                    "soil calibration changed or has not been accepted; refresh inputs",
                 ));
             }
         }
@@ -321,6 +380,8 @@ fn prepare_accepted(
         };
         let store = ObservationStore::open_read_only(&doc.observed.path)
             .map_err(|e| source_error(&doc.observed.path, e))?;
+        let extra_stations = super::additional::extra_stations(&store, doc)
+            .map_err(|e| source_error(&doc.observed.path, e))?;
         let (mut inputs, offsets) = store
             .read_selection_with_stations(
                 &selection,
@@ -330,7 +391,7 @@ fn prepare_accepted(
                 } else {
                     &doc.observed.replacement_ids
                 },
-                &doc.levels.station_ids,
+                &extra_stations,
             )
             .map_err(|e| source_error(&doc.observed.path, e))?;
         if let Some(identities) = &identities {
@@ -383,7 +444,7 @@ fn prepare_accepted(
         });
         if let Some(identities) = &identities {
             let mut source = inputs.clone();
-            source.replacements = source_replacements;
+            source.replacements = source_replacements.clone();
             let actual =
                 super::draft::observation_identity(&source, &accepted.historical, &selection)
                     .map_err(|e| source_error(&doc.observed.path, e))?;
@@ -393,6 +454,24 @@ fn prepare_accepted(
                     "observation source changed or has not been accepted; refresh inputs",
                 ));
             }
+        }
+        if let Some(additional) =
+            super::additional::capture(&accepted, &inputs, &source_replacements)
+                .map_err(|e| source_error(&request_path, e))?
+        {
+            if identities.as_ref().is_some_and(|values| {
+                values.get("additional_forcing") != Some(&additional.accepted)
+            }) {
+                return Err(source_error(
+                    &request_path,
+                    "additional forcing changed or has not been accepted; refresh inputs",
+                ));
+            }
+            for (name, bytes) in additional.raw_files {
+                let path = stage.join("sources").join(name);
+                fs::write(&path, bytes).map_err(|e| source_error(&path, e))?;
+            }
+            write_json(&stage.join("forcing/additional.json"), &additional.prepared)?;
         }
         for offset in &offsets {
             if !geometry.mini_ids.contains(&offset.mini_id) {
@@ -405,6 +484,15 @@ fn prepare_accepted(
         let obs_path = stage.join("sources/observations.sqlite");
         let mut subset = ObservationStore::create(&obs_path, &doc.time_zone)
             .map_err(|e| source_error(&obs_path, e))?;
+        if inputs
+            .replacements
+            .iter()
+            .any(|item| item.variable == "flow")
+        {
+            subset
+                .upgrade_replacements()
+                .map_err(|e| source_error(&obs_path, e))?;
+        }
         subset
             .write_batch(&ObservationBatch {
                 stations: inputs.stations.clone(),
@@ -496,9 +584,7 @@ fn prepare_accepted(
                     ),
                     (
                         &asset.retained_source,
-                        stage
-                            .join("sources/original")
-                            .join(format!("{}.grib2", asset.asset_id)),
+                        stage.join(asset.snapshot_source_path()),
                     ),
                 ] {
                     if !target.exists() {
@@ -568,10 +654,13 @@ fn prepare_accepted(
         }
         copy_tree(&doc.engine.input_dir, &stage.join("baseline/Input"))
             .map_err(|e| source_error(&doc.engine.input_dir, e))?;
-        copy_tree(&doc.engine.executable, &stage.join("baseline/engine"))
-            .map_err(|e| source_error(&doc.engine.executable, e))?;
-        if let Some(identities) = &identities {
-            let engine = stage.join("baseline/engine");
+        copy_tree(
+            &doc.engine.executable,
+            &stage.join(crate::store::PREPARED_ENGINE),
+        )
+        .map_err(|e| source_error(&doc.engine.executable, e))?;
+        {
+            let engine = stage.join(crate::store::PREPARED_ENGINE);
             let inputs = stage.join("baseline/Input");
             let actual_engine = super::draft::identity(
                 &digest_file(&engine).map_err(|e| source_error(&engine, e))?,
@@ -581,15 +670,54 @@ fn prepare_accepted(
                 &collect_inputs(&inputs).map_err(|e| source_error(&inputs, e))?,
             )
             .map_err(|e| source_error(&inputs, e))?;
-            if identities.get("engine") != Some(&actual_engine)
-                || identities.get("engine_inputs") != Some(&actual_inputs)
-            {
+            if identities.as_ref().is_some_and(|identities| {
+                identities.get("engine") != Some(&actual_engine)
+                    || identities.get("engine_inputs") != Some(&actual_inputs)
+            }) {
                 return Err(source_error(
                     &doc.engine.input_dir,
                     "engine inputs changed or have not been accepted; refresh inputs",
                 ));
             }
+            source_identities.insert("engine".to_owned(), actual_engine);
+            source_identities.insert("engine_inputs".to_owned(), actual_inputs);
         }
+        let stage_input = stage.join("baseline/Input");
+        let soil = doc
+            .calibration
+            .as_ref()
+            .and_then(|selection| selection.soil.as_deref());
+        if edited_geometry || soil.is_some() {
+            crate::model::install_calibration(
+                &stage_input,
+                edited_geometry.then_some(doc.geometry.mini_gtp.as_path()),
+                soil,
+            )
+            .map_err(|e| source_error(&stage_input, e))?;
+            if edited_geometry
+                && digest_file(&stage_input.join("Cell.hig"))
+                    .map_err(|e| source_error(&stage_input, e))?
+                    != geometry_digest
+            {
+                return Err(source_error(
+                    &doc.geometry.mini_gtp,
+                    "geometry changed while freezing",
+                ));
+            }
+            if let Some(expected) = soil_identity {
+                let actual = digest_file(&stage_input.join("paruso.hig"))
+                    .and_then(|value| super::draft::identity(&value))
+                    .map_err(|e| source_error(&stage_input, e))?;
+                if actual != expected {
+                    return Err(source_error(
+                        &stage_input,
+                        "soil calibration changed while freezing",
+                    ));
+                }
+            }
+        }
+        super::additional::check_engine(doc, &stage.join(crate::store::PREPARED_ENGINE))
+            .map_err(|e| source_error(&doc.engine.executable, e))?;
         control.check()?;
         let baseline_geometry =
             crate::model::read_basin_geometry(&stage.join("baseline/Input/MINI.gtp"))
@@ -626,6 +754,10 @@ fn prepare_accepted(
         );
         let recipe = ExecutionRecipe {
             document,
+            operational_workspace: operational.then(|| workspace.clone()),
+            source_identities,
+            inline_replacements,
+            inline_corrections,
             historical_count: accepted.historical.bounds.len(),
             forecast_count: accepted.forecast.bounds.len(),
             selected_station_ids: doc.levels.station_ids.clone(),
@@ -668,6 +800,43 @@ fn prepare_accepted(
             finished_at: None,
             error: None,
         };
+        if let Some(expected) = replay {
+            let mut original = expected.recipe.clone();
+            let mut actual = manifest.recipe.clone();
+            for recipe in [&mut original, &mut actual] {
+                if let Some(object) = recipe.as_object_mut() {
+                    object.remove("operational_workspace");
+                }
+            }
+            // Older manifests captured the preparation hashes without the raw identity map.
+            if original.get("source_identities").is_none()
+                && let Some(object) = actual.as_object_mut()
+            {
+                object.remove("source_identities");
+                object.remove("inline_replacements");
+                object.remove("inline_corrections");
+            }
+            if original != actual {
+                return Err(source_error(
+                    &request_path,
+                    "recorded operation recipe or source identities changed",
+                ));
+            }
+            let payload = |manifest: &OperationManifest| {
+                manifest
+                    .inputs
+                    .iter()
+                    .filter(|entry| entry.path != Path::new("request.toml"))
+                    .cloned()
+                    .collect::<Vec<_>>()
+            };
+            if !expected.inputs.is_empty() && payload(expected) != payload(&manifest) {
+                return Err(source_error(
+                    &request_path,
+                    "recorded preparation inputs changed",
+                ));
+            }
+        }
         control.check()?;
         sync_tree(&stage).map_err(|e| source_error(&stage, e))?;
         write_run_manifest(&stage, &manifest).map_err(|e| source_error(&stage, e))?;

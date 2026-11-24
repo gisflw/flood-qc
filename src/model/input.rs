@@ -54,48 +54,47 @@ fn write_rainfall_inner(path: &Path, forcing: &BasinForcing) -> Result<(), Input
         .map_err(|error| InputFailure::Io(error.to_string()))
 }
 
-fn edit_line(bytes: &[u8], headers: &[&[u8]], fields: &[String]) -> Result<Vec<u8>, String> {
-    let mut lines: Vec<Vec<u8>> = bytes
-        .split_inclusive(|byte| *byte == b'\n')
-        .map(<[u8]>::to_vec)
-        .collect();
-    let matches: Vec<_> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, line)| {
-            headers.iter().all(|header| {
-                line.windows(header.len())
-                    .any(|word| word.eq_ignore_ascii_case(header))
-            })
+fn metadata_row(lines: &[&[u8]], headers: &[&[u8]]) -> Result<usize, String> {
+    let mut matches = lines.iter().enumerate().filter(|(_, line)| {
+        headers.iter().all(|header| {
+            line.windows(header.len())
+                .any(|word| word.eq_ignore_ascii_case(header))
         })
-        .map(|(i, _)| i)
-        .collect();
-    if matches.len() != 1 {
-        return Err("missing or duplicate metadata header".into());
+    });
+    let (index, _) = matches.next().ok_or("missing metadata header")?;
+    if matches.next().is_some() {
+        return Err("duplicate metadata header".into());
     }
-    let index = (matches[0] + 1..lines.len())
+    (index + 1..lines.len())
         .find(|index| {
             let line = lines[*index].trim_ascii_start();
-            !line.is_empty() && line[0] != b'!' && line[0] != b'\r' && line[0] != b'\n'
+            !line.is_empty() && line[0] != b'!'
         })
-        .ok_or("missing metadata data row")?;
-    let original = &lines[index];
-    let body = original
-        .split(|byte| *byte == b'!')
-        .next()
-        .ok_or("invalid metadata row")?;
-    let tokens: Vec<_> = body
-        .split(|byte| byte.is_ascii_whitespace())
-        .filter(|token| !token.is_empty())
-        .collect();
-    if tokens.len() != fields.len()
-        || tokens.iter().any(|token| {
-            std::str::from_utf8(token)
-                .ok()
-                .and_then(|value| value.parse::<f64>().ok())
-                .is_none()
-        })
-    {
+        .ok_or_else(|| "missing metadata data row".into())
+}
+
+pub(super) fn metadata_fields<'a>(
+    bytes: &'a [u8],
+    headers: &[&[u8]],
+) -> Result<Vec<&'a str>, String> {
+    let lines: Vec<_> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
+    metadata_tokens(lines[metadata_row(&lines, headers)?])
+}
+
+fn metadata_tokens(row: &[u8]) -> Result<Vec<&str>, String> {
+    let body = row.split(|byte| *byte == b'!').next().unwrap_or_default();
+    Ok(std::str::from_utf8(body)
+        .map_err(|_| "invalid metadata fields")?
+        .split_ascii_whitespace()
+        .collect())
+}
+
+fn edit_line(bytes: &[u8], headers: &[&[u8]], fields: &[String]) -> Result<Vec<u8>, String> {
+    let mut lines: Vec<_> = bytes.split_inclusive(|byte| *byte == b'\n').collect();
+    let index = metadata_row(&lines, headers)?;
+    let original = lines[index];
+    let tokens = metadata_tokens(original)?;
+    if tokens.len() != fields.len() || tokens.iter().any(|token| token.parse::<f64>().is_err()) {
         return Err("invalid metadata fields".into());
     }
     let mut replacement = Vec::new();
@@ -130,7 +129,7 @@ fn edit_line(bytes: &[u8], headers: &[&[u8]], fields: &[String]) -> Result<Vec<u
     if field != fields.len() {
         return Err("missing metadata field".into());
     }
-    lines[index] = replacement;
+    lines[index] = &replacement;
     Ok(lines.concat())
 }
 

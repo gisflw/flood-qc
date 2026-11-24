@@ -39,7 +39,7 @@ impl From<rusqlite::Error> for StoreError {
         Self::Sqlite(e)
     }
 }
-fn attributes(values: Vec<(&str, Value)>) -> Value {
+pub(super) fn attributes(values: Vec<(&str, Value)>) -> Value {
     Value::Object(values.into_iter().map(|(k, v)| (k.to_owned(), v)).collect())
 }
 fn format_error(e: impl std::fmt::Display) -> StoreError {
@@ -57,7 +57,7 @@ fn attr<'a>(v: &'a Value, k: &str) -> Result<&'a str, StoreError> {
         .and_then(Value::as_str)
         .ok_or_else(|| StoreError::Schema(format!("missing attribute {k}")))
 }
-fn dimension(name: &str, size: usize, index: bool) -> Dimension {
+pub(super) fn dimension(name: &str, size: usize, index: bool) -> Dimension {
     Dimension {
         name: name.into(),
         path: format!("/{name}"),
@@ -66,7 +66,7 @@ fn dimension(name: &str, size: usize, index: bool) -> Dimension {
         indexing_variable: index.then(|| format!("/{name}")),
     }
 }
-fn add(
+pub(super) fn add(
     root: &mut Group,
     name: &str,
     datatype: DataType,
@@ -101,13 +101,13 @@ fn add(
     );
     Ok(())
 }
-fn i64_bytes(values: impl IntoIterator<Item = i64>) -> Vec<u8> {
+pub(super) fn i64_bytes(values: impl IntoIterator<Item = i64>) -> Vec<u8> {
     values.into_iter().flat_map(i64::to_le_bytes).collect()
 }
 fn f64_bytes(values: impl IntoIterator<Item = f64>) -> Vec<u8> {
     values.into_iter().flat_map(f64::to_le_bytes).collect()
 }
-fn base(
+pub(super) fn base(
     axis: &IntervalAxis,
     kind: &str,
     provenance: &Provenance,
@@ -197,7 +197,7 @@ fn precipitation(
         attributes(vec![]),
     )
 }
-fn write(root: Group, p: &Path) -> Result<(), StoreError> {
+pub(super) fn write(root: Group, p: &Path) -> Result<(), StoreError> {
     Dataset {
         driver: "Memory".into(),
         root,
@@ -295,7 +295,7 @@ pub fn write_basin_forcing(p: &Path, forcing: &BasinForcing) -> Result<(), Store
     )?;
     write(root, p)
 }
-fn array(
+pub(super) fn array(
     ds: &Dataset,
     name: &str,
     datatype: DataType,
@@ -326,7 +326,7 @@ fn array(
     }
     Ok(a.read().map_err(format_error)?.bytes)
 }
-fn ints(bytes: Vec<u8>) -> Result<Vec<i64>, StoreError> {
+pub(super) fn ints(bytes: Vec<u8>) -> Result<Vec<i64>, StoreError> {
     if !bytes.len().is_multiple_of(8) {
         return Err(StoreError::Schema("invalid integer bytes".into()));
     }
@@ -348,7 +348,7 @@ fn floats(bytes: Vec<u8>) -> Result<Vec<f64>, StoreError> {
         .map(|v| f64::from_le_bytes(*v))
         .collect())
 }
-fn open(
+pub(super) fn open(
     p: &Path,
     kind: &str,
     units: &str,
@@ -413,7 +413,7 @@ fn open(
     }
     Ok((ds, axis, provenance))
 }
-fn check_coordinate(ds: &Dataset, name: &str, units: &str) -> Result<(), StoreError> {
+pub(super) fn check_coordinate(ds: &Dataset, name: &str, units: &str) -> Result<(), StoreError> {
     let a = ds.array(name).map_err(format_error)?;
     if attr(&a.info.attributes, "units")? != units {
         return Err(StoreError::Schema(format!("invalid {name} units")));

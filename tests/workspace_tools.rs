@@ -89,26 +89,6 @@ fn draft_uses_selected_workspace_config() {
 }
 
 #[test]
-fn discovers_retained_rainfall_without_creating_caches() {
-    let dir = tempfile::tempdir().unwrap();
-    assert!(
-        mgb_ops::discover_rainfall_grids(dir.path())
-            .unwrap()
-            .is_empty()
-    );
-    assert!(!dir.path().join("data").exists());
-    let root = dir.path().join("data/cache/preparations/one");
-    std::fs::create_dir_all(root.join("checkpoints/forecast/raw")).unwrap();
-    std::fs::write(root.join("manifest.json"), "{}").unwrap();
-    std::fs::write(root.join("checkpoints/observed-grid.nc"), "").unwrap();
-    std::fs::write(root.join("checkpoints/forecast/raw/working.nc"), "").unwrap();
-    assert_eq!(
-        mgb_ops::discover_rainfall_grids(dir.path()).unwrap().len(),
-        2
-    );
-}
-
-#[test]
 fn operation_toml_save_keeps_existing_bytes_when_draft_instructions_cannot_be_represented() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("operation.toml");

@@ -6,8 +6,8 @@ pub mod store;
 
 pub use app::{
     FindingCode, FindingStatus, InspectionReport, InspectionRequest, WorkspaceConfig,
-    WorkspaceEngine, WorkspaceSpatial, discover_rainfall_grids, example_config, inspect,
-    read_workspace_config, write_workspace_config,
+    WorkspaceEngine, WorkspaceSpatial, example_config, inspect, read_workspace_config,
+    write_workspace_config,
 };
 
 pub use analysis::{
@@ -26,11 +26,11 @@ pub use store::{
 pub use app::{
     BatchStatus, EngineDocument, ExecutionReport, ExecutionRequest, ForecastsDocument,
     GeometryDocument, GridDocument, InterpolationDocument, LevelsDocument, ObservedDocument,
-    OperationControl, OperationError, OperationProgress, OperationStage, PreparationDocument,
-    PreparationReport, PreparationRequest, ScenarioDocument, ScenarioExecution, ScenarioProgress,
-    TrialCache, TypedPreparationRequest, discover_trials, execute_prepared,
-    execute_prepared_controlled, prepare, prepare_controlled, prepare_typed, read_trial, run_draft,
-    tail_log,
+    OperationControl, OperationError, OperationProgress, OperationStage, OperationalRun,
+    PreparationDocument, PreparationReport, PreparationRequest, ScenarioDocument,
+    ScenarioExecution, ScenarioProgress, TrialCache, TypedPreparationRequest, discover_trials,
+    execute_prepared, execute_prepared_controlled, prepare, prepare_controlled, prepare_typed,
+    read_trial, run_draft, tail_log,
 };
 pub use app::{
     NormalizeForecastDocument, NormalizeForecastError, NormalizeForecastReport,
@@ -46,6 +46,7 @@ pub use app::{
 };
 
 pub use app::{ReferenceImportReport, import_level_references, upgrade_level_references};
+pub use app::{RunBundleReport, export_run, import_run, import_run_to, regenerate_run, replay_run};
 
 pub use analysis::{
     GridAccumulation, HourlyWindow, RainSummary, RainfallSource, accumulated_grid_frame,

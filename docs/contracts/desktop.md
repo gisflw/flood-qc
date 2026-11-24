@@ -26,52 +26,96 @@ project switch blocks operational edits and saves until its loader succeeds or
 fails. Failure retains the old project and edits; ordinary F5 monitoring refreshes
 remain independent of runner work.
 
+## Common tasks
+
+| Task | Control |
+| --- | --- |
+| Open a workspace or import saved data | **Project → Open TOML** or **Import data** |
+| Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
+| Step through modeled inundation | Use **Map → Inundation** |
+| Inspect location data or a run | **View → Charts**, **Data**, or **Files** |
+| Review observation availability and QC | **View → Observation review** |
+| Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
+| Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |
+| Run an editable draft | **Draft → Run experiment** |
+| Run a saved operation TOML at a selected reference | **Processing → New run** |
+| Set forcing and state options | **Processing → Forcing and state** |
+| Start scheduling or monitor and cancel a job | **Processing → Automation** or **Jobs** |
+| Edit workspace settings | **Settings → Workspace Settings** |
+| Edit geometry or soil | **Processing → Calibration** |
+
+See [saved-data workflows](saved-data.md) for request formats and outputs and
+[controlled jobs](#controlled-jobs) for execution and cancellation.
+
 ## Data and selection
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
-`data/history.sqlite`, `data/forecasts.sqlite`, and backend-discovered rainfall
-checkpoints and run manifests. Run state is displayed, including diagnostics and
-successful scenarios from partially failed attempts. Missing/corrupt scenario
-outputs produce findings rather than hiding usable siblings.
+`data/history.sqlite`, `data/forecasts.sqlite`, the [active rainfall
+cache](operations.md#active-run-and-rainfall-cache), and the workspace's active run.
+Charts, Files and Map open the active generation automatically. While viewing
+the active run, a newly published generation updates all three views and clears
+the previous scenario, inundation frame, and tiles. Files shows the displayed
+run's status and provenance. Missing or corrupt scenario outputs produce
+findings. For previous attempts, read the diagnostics in `data/run-manifests/`.
 
-Left-click a station or MINI on the map to highlight it and identify it in Layers.
-Use Data search to select locations by ID or station name, including stations
-without coordinates. Entering a positive numeric search selects that MINI even
-without local topology. Visible station targets precede rivers and catchments.
-River hit tolerance is wider than its stroke, and catchment containment excludes
-holes. Alt-click inspects rainfall independently of selection. Station colors
-identify explicit model links and unknown associations.
+Use **Files → Open comparison run** to open a retained run or exported bundle.
+The Files selector keeps explicitly opened runs available until the workspace
+closes. Choose **Active run** to return to the managed generation.
+**Share runs → Import bundle** copies a bundle to a new folder at the selected
+location outside managed storage. Import leaves the active run and current view
+as they were.
 
-Right-click a feature for its actions. View time series opens Charts for that
-feature, fills its ID and the explicitly linked counterpart when unique, and
-clears the counterpart field when the link is unavailable or ambiguous. Left-click
-and search selections leave the chart comparison and the active tab unchanged.
-Charts has editable MINI ID and Station ID fields for manual pairing. Enter or
-Apply submits those IDs. Data also offers the feature actions for its selected
-location, including through keyboard navigation.
+| Interaction | Effect |
+| --- | --- |
+| Left-click a station or MINI | Highlight it on the map and show its ID and available metadata in the map pane. The active tab and chart comparison stay as they were. |
+| Search by ID or station name in **Data** | Select the matching location, including stations without coordinates. A positive numeric ID can select a MINI without local topology. The active tab and chart comparison stay as they were. |
+| Right-click a feature and choose **View time series** | Open Charts and fill the feature ID and its unique linked counterpart. The counterpart field is cleared if there is no unique link. |
+| Choose **Chart selected feature** in an empty Charts pane | Plot the currently selected feature using the same ID rules as **View time series**. |
+| Hover over the map | See the feature label and accumulated rainfall for the cell under the pointer in the bottom stripe. Double and Swipe identify the hovered side and scenario. |
+| Enter or choose **Apply** after editing chart IDs | Submit an explicit MINI and station pairing. |
+
+Visible station targets take precedence over rivers and catchments. River hit
+tolerance is wider than the stroke, and catchment containment excludes holes.
+Station colors distinguish explicit model links from unknown associations. The
+**Data** tab also offers feature actions for the selected location through
+keyboard navigation.
 Model series use the selected MINI and
 observations use the selected station. The level chart uses retained station
 levels when the run records the matching MINI and offset. It labels raw MINI
 levels and uses a separate scale when both datums have data. Station thresholds
 use the station scale. An available side can be viewed independently.
 
-Choose the retained run in Files, the map scenario in Rainfall, and the chart
-overlays in Charts. Negative signed map hours select the run's observed
-checkpoint and positive hours select its scenario checkpoint. Rainfall can also
-use a standalone checkpoint. Missing sources are reported independently.
+Choose a scenario and period in **Rainfall** on the **Map** tab. Reference, timezone and available
+coverage come from the active cache. Negative signed hours end at the reference
+and use observations. Positive hours start at the reference and use the selected
+forecast. Explicit start/end bounds can span both. Cells with incomplete
+coverage display as NA. Scenario changes apply immediately to the current period.
+Use **Apply** to commit a period edit. A successful **Processing → New run → Run All** supplies
+the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
+the desktop is idle.
 
-Apply the rainfall and chart windows in their respective pages. Both use shared
-hourly-window semantics. Map timestamps use the displayed timezone and chart
-timestamps use the run timezone or the project observation timezone. Without a
-run, the initial display window uses the current project-local hour and the
-preceding week. Chart loading runs independently of map and layer reads. Charts
+Enable **Inundation** under **Map → Layers** to see the displayed run's scenario
+mask and controls. Choose the scenario and step through model hours with the slider or arrow keys while it has
+focus. The control starts at the first forecast hour and displays the model's
+local time. Double and Swipe use the same inundation frame on both sides. Use
+Refresh/F5 after generating a mask for an open run. Refresh resets the scenario
+and inundation frame. See
+[inundation processing](inundation.md) for the command and regional inputs.
+
+Choose model scenario overlays in Charts. Chart timestamps use
+the run or project observation timezone. Without a run, the initial chart window
+uses the current project-local hour and the preceding week. Chart loading runs independently of map and layer reads. Charts
 reports loading, data availability, and errors for the requested pair. If a
 replacement fails, a retained comparison keeps its original displayed IDs and
 exports.
 Rainfall inspection returns the accumulated original numeric cell, including NA
 and supplied zero. Display opacity does not alter accumulation or recreate its
-texture. Area/rain summaries use validated upstream topology and local MINI areas.
-Load upstream basin uses the clicked MINI or the station's linked MINI when
+texture. The map's **Upstream basin rainfall over period** shows the area-weighted
+mean accumulation in mm, coverage, and period for each displayed side. The
+rainfall total and selected basin area include the outlet catchment and all its
+upstream catchments. The totals use frozen MINI topology and local areas.
+Project topology supplies the area when a frozen summary is unavailable. Load
+upstream basin uses the clicked MINI or the station's linked MINI when
 topology is available. Layers names the loaded basin by its outlet MINI and
 allows it to be hidden or cleared independently of later selections. Replacing
 a basin clears the previous one as loading starts. Project changes release it.
@@ -79,11 +123,15 @@ a basin clears the previous one as loading starts. Project changes release it.
 ## Display and exports
 
 The map includes attributed raster basemaps, river segments, catchments, stations,
-upstream fill, accumulated rainfall and a numeric legend. Operational layers have
-visibility/order/opacity controls. Local vector files add display-only layers
-with visibility, ordering, color and opacity controls; they do not alter inputs.
-Polygon parts retain their holes. Overview river simplification is display-only;
-close zoom uses original paths. Rainfall uses projected latitude strips to keep
+an upstream basin outline and accumulated rainfall. The map shows the rainfall scale when a
+loaded overlay is visible. The Map tab shows a linear blue bar from 1 mm to the configured maximum, which defaults to 100 mm. Colors at the
+endpoints also cover values outside that range. An NA swatch marks incomplete
+coverage. Use the checkbox in a layer row to toggle visibility. Expand the row
+with **+** for order and opacity controls. Expanded local vector rows also offer
+color and removal controls. Local vector layers affect only the display.
+Polygon parts retain their holes. At regional zoom, river paths are simplified
+with at most half a display pixel of error. Close zoom and river hit testing use
+the original paths. Rainfall uses projected latitude strips to keep
 pixel edges aligned in Web Mercator, rather than stretching four image corners.
 Labels appear only at suitable zoom/spacing and do not intercept selection.
 
@@ -91,11 +139,17 @@ The ribbon, left column and right pane use English or Brazilian Portuguese. Auto
 camera, layers, local files, selection, run/scenarios and time controls without a
 new project-file schema. Source errors identify the retained view separately.
 
-Rainfall, flow and level panels share time navigation and cursor position. Bars
+Rainfall, flow and level panels share time navigation and cursor position. The
+interactive charts scroll vertically on short windows and open with padding
+around the Y ranges. Bars
 use actual hourly interval edges. History and forecast are visually distinct;
 masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
-checkboxes control chart sources; legends identify those sources. Charts exports the displayed snapshot. CSV keeps model and observation location
+checkboxes control chart sources. Plots, legends, and cursor readouts share the
+same source colors, which stay stable when toggling scenarios within a run.
+Hover over a plot to update the readings below the charts. They are grouped by
+variable and remain visible after the pointer leaves the plot.
+Charts exports the displayed snapshot. CSV keeps model and observation location
 IDs on each row using the [shared series export](series.md) format. Complete PNG
 export identifies the pair and combines all three panels,
 localized titles, local-time axes, units, reference/threshold annotations and
@@ -104,28 +158,34 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 ## Layout and settings
 
 The ribbon has Project, Draft, View, Processing and Settings tabs with labeled
-groups of actions. The map stays visible in the center with zoom controls and
-basemap attribution. The fixed left column shows the selected retained run's
-`reference_time`, `observed_horizon_days`, `forecast_horizon_days` and available
-scenario IDs, with scrollable Layers below. The summary comes from the loaded
-run and its frozen recipe. Day horizons appear only when the saved hourly
-boundaries convert losslessly. Available scenarios have successful, readable
-basin results. Unavailable fields show a dash.
+groups of actions. The map stays visible in the center with linked basemap
+attribution in the bottom stripe when tiles are enabled. NASA Blue Marble provides a satellite basemap at regional scale.
+**Map view** offers **Single**, **Double**, and **Swipe**. Double synchronizes the
+center and zoom of two side-by-side maps. Swipe compares the overlays at the same
+scale and location using a draggable divider. Focus the divider and use the arrow
+keys to move it. Both comparison modes show left and right scenario and period
+controls in Rainfall. The views share the basemap, layers, and selected feature.
+The one-line bottom stripe shows map hover coordinates and rainfall, along with the displayed run's reference time and timezone,
+observed and forecast horizons, and available scenarios. The summary comes from
+the loaded run and its frozen recipe. Day horizons appear only when the saved
+hourly boundaries convert losslessly. Available scenarios have successful,
+readable basin results. Unavailable fields in a loaded run show a dash.
 
-The resizable right pane starts on Charts and also has Data, Rainfall and Files
-tabs. Data offers location search, summaries and the displayed series table.
-Rainfall controls the map's scenario, time window and checkpoint. Files contains
-the retained run selector, provenance, assets and findings. Use the ribbon to
-open Workspace Settings, Interface Settings, Prepare inputs, Execute MGB, Run All
-and Jobs in the same pane. Closing a form tab preserves its inputs. Jobs can
-also reopen from the status bar.
+The resizable right pane defaults to Map. Its permanent Map tab contains Layers
+and Rainfall. Charts, Data, and Files are also available. Data
+offers location search, feature actions and the displayed series table. Files
+contains the run selector, provenance, assets and findings. Use the
+ribbon to open New run, experiment forms and Jobs in the same pane. Closing a form
+tab preserves its inputs. Jobs opens from the View ribbon.
 
-Settings offers English/Brazilian Portuguese and System/Light/Dark, applied
-immediately and remembered app-wide. Preferences remember each project's right
-pane width and tabs. Projects saved with the previous docking layout open with
-the default pane. Reset layout restores the default pane and keeps results,
-selections and unfinished edits. Tab navigation and ribbon actions are keyboard
-accessible. Ctrl+1 focuses the map zoom controls, Ctrl+2/3 opens Charts/Data,
+The **Settings** ribbon contains the interface and workspace controls. English or
+Brazilian Portuguese and Light or Dark apply immediately and are remembered
+app-wide. Light is the default. Preferences remember each project's right pane, map view, divider position,
+and applied rainfall settings. Projects saved before map comparisons open in Single
+with their previous rainfall settings. Projects saved with the previous docking
+layout open with the default right pane. Reset layout restores the default right
+pane and keeps results, selections and unfinished edits. Tab navigation and ribbon
+actions are keyboard accessible. Ctrl+1 focuses **Map view**, Ctrl+2/3 opens Charts/Data,
 Ctrl+S saves the draft, Ctrl+Q requests exit, and F5 refreshes monitoring.
 
 ## Workspace settings and operation drafts
@@ -135,37 +195,40 @@ shared typed configuration read/save API. Save validates and atomically replaces
 TOML; Revert restores the loaded/saved baseline. Failed saves retain edits and
 existing destination bytes.
 
-Prepare inputs and Run All edit one shared version 2 [operation draft](drafts.md).
-They expose reference/timezone/day horizons and read-only shared-backend coverage,
+The Draft ribbon’s Run experiment form edits one shared
+[operation draft](drafts.md). They show its fixed reference and timezone,
+editable day horizons for version 2 drafts, and read-only coverage from the shared backend,
 observation paths/provider/station/series selections, ordered existing replacements,
 scenarios/forecast assets/ordered corrections, output stations, geometry/grid,
 interpolation, QC and engine settings. Load existing instructions/assets reads the
 selected catalogs independently without registering anything; an unavailable source
 reports its finding while choices from another available source remain usable.
 Selection toggles distinguish an unset field from an explicitly empty list (for
-example, no replacement instructions or no output stations). Existing imported instruction values
-remain preserved; their editors belong to later work.
+example, no replacement instructions or no output stations).
 
-New run always creates a fresh recipe with a fixed current-hour reference in the
-selected operation timezone. Available workspace paths initialize without selecting
-providers, assets or scenarios. Draft Open establishes a candidate reference and IANA
-timezone before reading the file; it defaults to the current hour and permits an
-explicit reference. Content must match both exactly. Automatic reopening considers
-only the remembered active draft with the independently established current-hour
-candidate in the separately remembered operation timezone; it never derives that
-candidate from the saved file or falls back to older drafts. Legacy day-horizon conversion is
-lossless or fails with the original file preserved for existing CLI workflows.
+New draft fixes the reference and timezone from the selected Processing setup.
+With no Processing setup, it uses the current hour in the workspace timezone.
+Available workspace paths initialize without selecting providers, assets or
+scenarios. Draft Open reads the selected file with its stored reference, timezone
+and coverage. Automatic reopening considers only the remembered active draft with
+the current-hour reference in the separately remembered operation timezone.
+Version 1 drafts retain their explicit coverage when opened.
 
 Draft Save writes under `config/drafts/` using
 `operation-YYYYMMDDTHHMMSS±HHMM.json`. Save As permits a different destination while
-requiring that reference-anchored suffix. Changing the reference chooses a new
-anchored destination and preserves the old file. Existing destinations require
+requiring that reference-anchored suffix. Existing destinations require
 explicit overwrite unless they are the active saved file. Incomplete drafts remain
 saveable; operational edits are never automatically saved. Explicit
 Accept/Refresh selected inputs accepts selected content through the shared backend;
 Check readiness displays backend findings, including changed/unaccepted sources.
 Monitoring F5 never accepts operational inputs. Preparing and running never
 implicitly accept sources or register instructions.
+
+**Draft → Review instructions** edits staged observation replacements and
+forecast corrections. Select the items to register and use **Commit selected corrections**.
+The two catalog outcomes report their registered IDs or their individual errors.
+Working selections and their order are preserved. An unchanged retry reuses the
+same IDs. Later edits keep the successful registration as their origin.
 
 Before New/Open replaces a draft, or closing/switching a project or quitting, Save,
 Discard and Cancel cover dirty configuration and draft edits, including hidden
@@ -174,11 +237,19 @@ changes alone do not make operational work dirty.
 
 ## Controlled jobs
 
-Prepare validates/freezes current accepted draft values and retains rainfall inputs
-without launching MGB; generated rainfall becomes available on the map. Execute
-MGB selects a retained preparation independently of the draft and can display its
-frozen recipe, period, scenarios and provenance. Run All uses the shared controlled
-draft preparation/execution workflow.
+Processing → New run opens a standalone form. Select an existing [operation
+TOML](operations.md#request). The reference defaults to the current hour in the
+recipe timezone and can be edited for a historical run. The form recalculates
+the two hourly periods as you edit. Check readiness validates the saved selections,
+including forecast coverage of the requested period. Select a recipe with matching
+forecast assets and corrections for the reference you intend to run.
+
+Accept/Refresh selected inputs explicitly accepts those inputs for the current
+reference. Changing the reference or selecting a recipe requires fresh acceptance.
+Run All prepares and executes with the shared controlled pipeline and publishes
+the new active run and its rainfall cache on success. Preparation is temporary. The operation
+keeps any open draft and its unsaved edits independent. The Draft ribbon’s
+experiment action uses the accepted draft values.
 
 Operational file work and processing run on a dedicated worker, separately from
 monitoring loading. One operational job runs at a time per workspace, with backend
@@ -200,7 +271,7 @@ Functional tests and a regional virtual X11 inspection pass on Linux. PNG checks
 use Vulkan llvmpipe software rendering. These do not establish operator-hardware
 performance, long-session memory behavior, HiDPI/input packaging, Wayland or
 Windows compatibility. Performance/memory thresholds and hardware acceptance
-remain open in the
-[GUI plan](../../.dev/plans/desktop_gui.md#remaining-monitoring-qualification).
-Basemap equivalence to the legacy Carto style is not qualified. The assistant,
-acquisition and instruction editors remain outside the current interface.
+remain open. Basemap equivalence to the legacy Carto style is unqualified.
+
+The saved-data forms use the same validated workflows as the CLI.
+Live acquisition and the assistant are later capabilities.

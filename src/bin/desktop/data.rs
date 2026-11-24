@@ -1,8 +1,11 @@
 use chrono::NaiveDateTime;
-use mgb_ops::analysis::{
-    HourlyWindow, RainSummary, accumulated_grid_rain, accumulated_rain, upstream_minis,
+#[cfg(test)]
+use mgb_ops::analysis::HourlyWindow;
+use mgb_ops::analysis::{RainSummary, upstream_minis};
+use mgb_ops::app::{
+    Location, RainfallCacheReader, RainfallPeriod, SeriesQuery, SeriesReport, SeriesSelection,
+    Variable,
 };
-use mgb_ops::app::{Location, SeriesQuery, SeriesReport, SeriesSelection, Variable};
 use mgb_ops::store::{
     self as canonical, LevelReference, MiniMapFeature, MiniTopology, StationLocation,
 };
@@ -20,13 +23,11 @@ pub struct Project {
     pub workspace: PathBuf,
     pub topology: Vec<MiniTopology>,
     pub segments: Arc<Vec<super::map::RiverPaths>>,
-    pub overview_segments: Arc<Vec<super::map::RiverPaths>>,
+    pub overview_segments: Arc<super::map::RiverOverviews>,
     pub catchments: Arc<Vec<MiniMapFeature>>,
     pub stations: Vec<StationLocation>,
     pub references: Vec<LevelReference>,
     pub series: Vec<(String, String, String)>,
-    pub runs: Vec<PathBuf>,
-    pub grids: Vec<PathBuf>,
     pub assets: Vec<String>,
     pub findings: Vec<String>,
     pub time_zone: String,
@@ -95,13 +96,11 @@ pub fn open(
         workspace,
         topology: vec![],
         segments: Arc::new(vec![]),
-        overview_segments: Arc::new(vec![]),
+        overview_segments: Arc::default(),
         catchments: Arc::new(vec![]),
         stations: vec![],
         references: vec![],
         series: vec![],
-        runs: vec![],
-        grids: vec![],
         assets: vec![],
         findings: vec![],
         time_zone: "America/Sao_Paulo".into(),
@@ -139,9 +138,9 @@ pub fn open(
             for name in ["mini_segments", "mini_catchments"] {
                 match canonical::read_mini_map_layer(path, name, &project.topology) {
                     Ok(features) if name == "mini_segments" => {
-                        project.overview_segments =
-                            Arc::new(super::map::overview_segments(&features));
                         project.segments = Arc::new(super::map::river_segments(&features));
+                        project.overview_segments =
+                            Arc::new(super::map::overview_segments(&project.segments));
                     }
                     Ok(features) => project.catchments = Arc::new(features),
                     Err(error) => project.findings.push(format!("{name}: {error}")),
@@ -234,30 +233,6 @@ pub fn open(
             }
         }
     }
-    match mgb_ops::app::discover_trials(&project.workspace) {
-        Ok(runs) => project.runs = runs,
-        Err(error) => {
-            project.findings.push(error.to_string());
-            if let Some(previous) = previous {
-                project.runs = previous.runs.clone();
-                project
-                    .retained_sources
-                    .push(project.workspace.join("data/runs"));
-            }
-        }
-    }
-    match mgb_ops::app::discover_rainfall_grids(&project.workspace) {
-        Ok(grids) => project.grids = grids,
-        Err(error) => {
-            project.findings.push(error);
-            if let Some(previous) = previous {
-                project.grids = previous.grids.clone();
-                project
-                    .retained_sources
-                    .push(project.workspace.join("data/cache/preparations"));
-            }
-        }
-    }
     let catalog = project.workspace.join("data/forecasts.sqlite");
     if catalog.exists() {
         match canonical::ForecastCatalog::open_read_only(&project.workspace, &catalog)
@@ -292,6 +267,25 @@ pub fn open(
     project.retained_sources.sort();
     project.retained_sources.dedup();
     Ok(Arc::new(project))
+}
+
+/// The exact generation selected in the UI, held against retirement while files are read.
+#[derive(Clone, PartialEq, Eq)]
+pub struct ActiveRun {
+    pub workspace: PathBuf,
+    pub root: PathBuf,
+}
+
+impl ActiveRun {
+    pub fn read<T>(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
+        mgb_ops::app::with_active_run(&self.workspace, |root| {
+            if root != self.root {
+                return Err("Active run changed while loading".into());
+            }
+            read()
+        })?
+        .ok_or_else(|| "Active run is no longer available".into())
+    }
 }
 
 pub struct Run {
@@ -333,118 +327,69 @@ pub fn read_run(root: PathBuf) -> Result<Arc<Run>, String> {
             Err(error) => findings.push(format!("{}: {error}", scenario.id)),
         }
     }
-    let basin = first.ok_or_else(|| {
-        format!(
-            "run has no available successful scenario results: {}",
-            findings.join("; ")
+    let (reference, start, end, time_zone) = if let Some(basin) = first {
+        let bounds = &basin.timeline.bounds;
+        (
+            basin
+                .provenance
+                .processing
+                .get("reference_time")
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .into(),
+            bounds
+                .first()
+                .ok_or("empty result timeline")?
+                .start
+                .to_string()
+                .replace(' ', "T"),
+            bounds
+                .last()
+                .ok_or("empty result timeline")?
+                .end
+                .to_string()
+                .replace(' ', "T"),
+            basin.timeline.time_zone,
         )
-    })?;
+    } else {
+        (String::new(), String::new(), String::new(), String::new())
+    };
     Ok(Arc::new(Run {
         root,
         day_horizons: mgb_ops::app::retained_day_horizons(&manifest),
         manifest,
         scenarios,
         findings,
-        reference: basin
-            .provenance
-            .processing
-            .get("reference_time")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .into(),
-        start: basin
-            .timeline
-            .bounds
-            .first()
-            .ok_or("empty result timeline")?
-            .start
-            .to_string()
-            .replace(' ', "T"),
-        end: basin
-            .timeline
-            .bounds
-            .last()
-            .ok_or("empty result timeline")?
-            .end
-            .to_string()
-            .replace(' ', "T"),
-        time_zone: basin.timeline.time_zone,
+        reference,
+        start,
+        end,
+        time_zone,
     }))
 }
 
 #[derive(Clone)]
 pub struct ViewRequest {
     pub project: Arc<Project>,
-    pub run: Option<Arc<Run>>,
     pub location: Option<Location>,
-    pub map_scenario: String,
-    pub grid: Option<PathBuf>,
-    pub zone: String,
-    pub window: HourlyWindow,
-    pub upstream: bool,
+    pub scenario: String,
+    pub period: Option<RainfallPeriod>,
 }
 pub struct Rain {
-    pub zone: String,
     pub grid: canonical::RegularGridSpec,
     pub values: Vec<Option<f64>>,
+    pub generation: String,
+    pub scenario: String,
     pub window: canonical::TimeInterval,
-    pub source: PathBuf,
 }
 pub struct View {
-    pub zone: String,
-    pub run: Option<Arc<Run>>,
-    pub map_scenario: String,
-    pub location: Option<Location>,
     pub rainfall: Option<Arc<Rain>>,
     pub summary: Option<RainSummary>,
+    pub rainfall_finding: Option<String>,
+    pub summary_finding: Option<String>,
     pub area_km2: Option<f64>,
     pub findings: Vec<String>,
 }
-type RainCache = Option<(
-    PathBuf,
-    u64,
-    std::time::SystemTime,
-    canonical::TimeInterval,
-    Arc<Rain>,
-)>;
-fn load_rain(
-    path: PathBuf,
-    zone: &str,
-    window: &HourlyWindow,
-    cache: &mut RainCache,
-) -> Result<Arc<Rain>, String> {
-    let metadata = std::fs::metadata(&path).map_err(|e| {
-        format!(
-            "{}: {e}. Select an available rainfall checkpoint or refresh sources.",
-            path.display()
-        )
-    })?;
-    let modified = metadata.modified().map_err(|e| e.to_string())?;
-    let interval = mgb_ops::analysis::resolve_hourly_window(zone, window)?;
-    if let Some((old, length, version, bounds, rain)) = cache
-        && old == &path
-        && *length == metadata.len()
-        && *version == modified
-        && bounds == &interval
-        && rain.zone == zone
-    {
-        return Ok(rain.clone());
-    }
-    let grid = canonical::read_grid_series(&path).map_err(|e| e.to_string())?;
-    if grid.timeline.time_zone != zone {
-        return Err("rainfall timezone differs from selection".into());
-    }
-    let accumulated = accumulated_grid_rain(&grid, window)?;
-    let rain = Arc::new(Rain {
-        zone: zone.into(),
-        grid: grid.grid,
-        values: accumulated.values,
-        window: accumulated.window,
-        source: path.clone(),
-    });
-    *cache = Some((path, metadata.len(), modified, interval, rain.clone()));
-    Ok(rain)
-}
+
 pub fn location_mini(location: &Location, stations: &[StationLocation]) -> Option<i64> {
     match location {
         Location::Mini(id) => Some(*id),
@@ -455,71 +400,57 @@ pub fn location_mini(location: &Location, stations: &[StationLocation]) -> Optio
     }
 }
 
-fn view(request: ViewRequest, cache: &mut RainCache) -> Result<View, String> {
+fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View {
+    let mini = request
+        .location
+        .as_ref()
+        .and_then(|location| location_mini(location, &request.project.stations));
     let mut result = View {
-        zone: request.zone.clone(),
-        run: request.run.clone(),
-        map_scenario: request.map_scenario.clone(),
-        location: request.location.clone(),
         rainfall: None,
         summary: None,
+        rainfall_finding: None,
+        summary_finding: None,
         area_km2: None,
         findings: vec![],
     };
-    let window = mgb_ops::analysis::resolve_hourly_window(&request.zone, &request.window)?;
-    if let Some(path) = request.grid {
-        match load_rain(path, &request.zone, &request.window, cache) {
-            Ok(rainfall) => result.rainfall = Some(rainfall),
-            Err(error) => result.findings.push(error),
+    if let Some(period) = request.period {
+        match rainfall_reader.query(
+            &request.project.workspace,
+            &request.scenario,
+            &period,
+            mini,
+            true,
+        ) {
+            Ok(Some(rainfall)) => {
+                result.rainfall = Some(Arc::new(Rain {
+                    grid: rainfall.grid,
+                    values: rainfall.values,
+                    generation: rainfall.info.generation,
+                    scenario: rainfall.scenario,
+                    window: rainfall.window,
+                }));
+                result.summary = rainfall.summary;
+                result.summary_finding = rainfall.summary_finding;
+            }
+            Ok(None) => (),
+            Err(error) => result.rainfall_finding = Some(error),
         }
     }
-    if let Some(location) = request.location
-        && let Some(mini) = location_mini(&location, &request.project.stations)
-    {
-        let ids = match upstream_minis(&request.project.topology, mini) {
-            Ok(ids) if request.upstream => ids,
-            Ok(_) => vec![mini],
-            Err(error) => {
-                result.findings.push(error);
-                vec![]
-            }
-        };
-        match mgb_ops::analysis::mini_area(&request.project.topology, &ids) {
+    if let Some(summary) = &result.summary {
+        result.area_km2 = Some(summary.total_area_km2);
+    } else if let Some(mini) = mini {
+        let area = upstream_minis(&request.project.topology, mini)
+            .and_then(|ids| mgb_ops::analysis::mini_area(&request.project.topology, &ids));
+        match area {
             Ok(area) => result.area_km2 = Some(area),
             Err(error) => result.findings.push(error),
         }
-        if let Some(run) = &request.run {
-            match canonical::read_result_series(
-                &run.root
-                    .join("results")
-                    .join(&request.map_scenario)
-                    .join("basin.nc"),
-            )
-            .map_err(|e| e.to_string())
-            .and_then(|series| {
-                if series.timeline.time_zone != request.zone {
-                    return Err("result timezone differs from selection".into());
-                }
-                accumulated_rain(
-                    &series,
-                    &request.project.topology,
-                    mini,
-                    request.upstream,
-                    &HourlyWindow::Explicit {
-                        start: window.start,
-                        end: window.end,
-                    },
-                )
-            }) {
-                Ok(summary) => result.summary = Some(summary),
-                Err(error) => result.findings.push(error),
-            }
-        }
     }
-    Ok(result)
+    result
 }
 
 pub struct ChartRequest {
+    pub active: Option<ActiveRun>,
     pub query: SeriesQuery,
     pub comparison_station: Option<String>,
     pub notices: Vec<String>,
@@ -527,9 +458,14 @@ pub struct ChartRequest {
 
 impl ChartRequest {
     pub fn load(self) -> Result<Loaded, String> {
-        let report = match &self.comparison_station {
-            Some(station) => mgb_ops::app::query_comparison(&self.query, station)?,
-            None => mgb_ops::app::query_series(&self.query)?,
+        let query = || match &self.comparison_station {
+            Some(station) => mgb_ops::app::query_comparison(&self.query, station),
+            None => mgb_ops::app::query_series(&self.query),
+        };
+        let report = if let Some(active) = &self.active {
+            active.read(query)?
+        } else {
+            query()?
         };
         let labels = self
             .query
@@ -598,8 +534,8 @@ pub fn timestamp(value: &str) -> Result<NaiveDateTime, String> {
 
 pub enum Job {
     Open(PathBuf, PathBuf),
-    Run(PathBuf),
-    View(ViewRequest),
+    Run(PathBuf, Option<ActiveRun>),
+    View(RainSide, ViewRequest),
     Local(Vec<PathBuf>),
     Export(SeriesReport, Option<String>, PathBuf),
     Upstream(Arc<Project>, i64),
@@ -610,8 +546,8 @@ impl Job {
     pub fn slot(&self) -> usize {
         match self {
             Self::Open(..) => 0,
-            Self::Run(..) => 1,
-            Self::View(..) => 2,
+            Self::Run(..) => RUN_SLOT,
+            Self::View(side, _) => side.slot(),
             Self::Local(..) => 3,
             Self::Export(..) | Self::Png(..) => 4,
             Self::Upstream(..) => UPSTREAM_SLOT,
@@ -627,7 +563,7 @@ pub enum Loaded {
     Export(PathBuf),
     Upstream {
         mini: i64,
-        ids: Vec<i64>,
+        paths: super::map::BasinPaths,
     },
     Chart {
         report: SeriesReport,
@@ -641,9 +577,38 @@ pub struct Reply {
     pub generation: u64,
     pub result: Result<Loaded, String>,
 }
+pub const RUN_SLOT: usize = 1;
 pub const UPSTREAM_SLOT: usize = 5;
 pub const CHART_SLOT: usize = 6;
-const SLOTS: usize = CHART_SLOT + 1;
+pub const SLOTS: usize = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RainSide {
+    Left,
+    Right,
+}
+
+impl RainSide {
+    pub const BOTH: [Self; 2] = [Self::Left, Self::Right];
+
+    pub fn slot(self) -> usize {
+        match self {
+            Self::Left => 2,
+            Self::Right => 7,
+        }
+    }
+
+    pub fn index(self) -> usize {
+        match self {
+            Self::Left => 0,
+            Self::Right => 1,
+        }
+    }
+
+    pub fn from_slot(slot: usize) -> Option<Self> {
+        Self::BOTH.into_iter().find(|side| side.slot() == slot)
+    }
+}
 
 pub struct Worker {
     sender: Option<mpsc::Sender<(u64, Job)>>,
@@ -661,8 +626,8 @@ impl Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         let thread = thread::spawn(move || {
-            let mut rain_cache = None;
             let mut last_project: Option<Arc<Project>> = None;
+            let mut rainfall_reader = RainfallCacheReader::default();
             while let Ok((generation, job)) = jobs.recv() {
                 if stopped.load(Ordering::Acquire) {
                     break;
@@ -670,20 +635,16 @@ impl Worker {
                 let slot = job.slot();
                 let result = match job {
                     Job::Open(config, workspace) => {
-                        if last_project
-                            .as_ref()
-                            .is_none_or(|p| p.config != config || p.workspace != workspace)
-                        {
-                            rain_cache = None;
-                        }
                         open(config, workspace, last_project.as_deref()).map(|project| {
                             last_project = Some(project.clone());
+                            rainfall_reader = RainfallCacheReader::default();
                             Loaded::Project(project)
                         })
                     }
-                    Job::Run(root) => read_run(root).map(Loaded::Run),
-                    Job::View(request) => {
-                        view(request, &mut rain_cache).map(|v| Loaded::View(Box::new(v)))
+                    Job::Run(root, Some(active)) => active.read(|| read_run(root)).map(Loaded::Run),
+                    Job::Run(root, None) => read_run(root).map(Loaded::Run),
+                    Job::View(_, request) => {
+                        Ok(Loaded::View(Box::new(view(request, &mut rainfall_reader))))
                     }
                     Job::Local(paths) => {
                         let mut loaded = Vec::new();
@@ -714,7 +675,16 @@ impl Worker {
                     Job::Png(export, destination) => super::export::write(*export, &destination)
                         .map(|_| Loaded::Export(destination)),
                     Job::Upstream(project, mini) => upstream_minis(&project.topology, mini)
-                        .map(|ids| Loaded::Upstream { mini, ids }),
+                        .and_then(|ids| {
+                            let paths = super::map::upstream_boundary(&project, &ids);
+                            if paths.is_empty() {
+                                return Err("No catchment geometry for upstream basin".into());
+                            }
+                            Ok(Loaded::Upstream {
+                                mini,
+                                paths: super::map::prepare_basin(paths),
+                            })
+                        }),
                     Job::Chart(request) => request.load(),
                     Job::Export(report, station, destination) => {
                         mgb_ops::app::export_comparison_csv(
@@ -842,6 +812,7 @@ mod tests {
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         let request = |id| {
             Job::Chart(ChartRequest {
+                active: None,
                 query: SeriesQuery {
                     location: Location::Mini(id),
                     time_zone: "UTC".into(),
@@ -855,7 +826,7 @@ mod tests {
                 notices: vec![],
             })
         };
-        map.submit(Job::Run("slow-map-lane".into()));
+        map.submit(Job::Run("slow-map-lane".into(), None));
         assert!(map.poll().is_empty());
         assert!(in_flight.try_recv().is_ok());
         chart.submit(request(1));
@@ -913,7 +884,7 @@ mod tests {
             thread: Some(thread),
             in_flight: None,
         };
-        worker.submit(Job::Run("delayed".into()));
+        worker.submit(Job::Run("delayed".into(), None));
         assert!(worker.is_busy());
         assert!(worker.poll().is_empty());
         start.recv().unwrap();
@@ -1017,6 +988,13 @@ mod tests {
         assert_eq!(run.scenarios, ["good"]);
         assert_eq!(run.findings.len(), 1);
         assert_eq!(run.manifest.state, "failed");
+        std::fs::remove_file(dir.path().join("results/good/basin.nc")).unwrap();
+        let no_results = read_run(dir.path().into()).unwrap();
+        assert_eq!(no_results.manifest.state, "failed");
+        assert!(no_results.scenarios.is_empty());
+        assert!(no_results.start.is_empty());
+        assert_eq!(no_results.findings.len(), 2);
+
         let mut manifest = run.manifest.clone();
         manifest.scenarios[0].id = "../outside".into();
         std::fs::write(
@@ -1116,44 +1094,39 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         assert!(source_version(dir.path()).is_none());
     }
     #[test]
-    fn rainfall_summary_rejects_a_different_model_timezone() {
+    fn saved_trial_does_not_supply_rainfall_without_an_active_cache() {
         let dir = tempfile::tempdir().unwrap();
         saved_trial(dir.path(), 0., 0.);
-        let run = read_run(dir.path().into()).unwrap();
-        let config = dir.path().join("workspace.toml");
+        let root = dir.path();
+        let config = root.join("workspace.toml");
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
-        let mut project = open(config, dir.path().into(), None).unwrap();
-        Arc::get_mut(&mut project).unwrap().topology = vec![MiniTopology {
-            mini_id: 1,
-            downstream: None,
-            area_km2: 1.,
-        }];
-        let window = HourlyWindow::Explicit {
-            start: timestamp(&run.start).unwrap(),
-            end: timestamp(&run.end).unwrap(),
-        };
+        let mut project = open(config, root.into(), None).unwrap();
+        Arc::get_mut(&mut project).unwrap().topology = vec![
+            MiniTopology {
+                mini_id: 1,
+                downstream: None,
+                area_km2: 1.,
+            },
+            MiniTopology {
+                mini_id: 2,
+                downstream: Some(1),
+                area_km2: 3.,
+            },
+        ];
         let result = view(
             ViewRequest {
                 project,
-                run: Some(run),
                 location: Some(Location::Mini(1)),
-                map_scenario: "good".into(),
-                grid: None,
-                zone: "America/Sao_Paulo".into(),
-                window,
-                upstream: false,
+                scenario: "good".into(),
+                period: Some(RainfallPeriod::SignedHours(-1)),
             },
-            &mut None,
-        )
-        .unwrap();
-        assert!(result.summary.is_none());
-        assert!(
-            result
-                .findings
-                .iter()
-                .any(|f| f.contains("timezone differs"))
+            &mut RainfallCacheReader::default(),
         );
-        assert_eq!(result.area_km2, Some(1.));
+        assert!(result.rainfall.is_none());
+        assert!(result.summary.is_none());
+        assert_eq!(result.area_km2, Some(4.));
+        let cache_missing = !root.join("data/cache/rainfall").exists();
+        assert!(cache_missing);
     }
     #[test]
     fn failed_geometry_refresh_retains_snapshot_and_loads_new_observations() {
@@ -1168,9 +1141,10 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             downstream: None,
             area_km2: 1.,
         }];
+        let path = super::super::map::ProjectedPath::new(vec![(0., 0.), (1., 1.)]);
         old.segments = Arc::new(Vec::from([super::super::map::RiverPaths {
             mini_id: 1,
-            paths: vec![Vec::from([(0., 0.), (1., 1.)])],
+            paths: vec![path],
         }]));
         std::fs::create_dir_all(root.join("data")).unwrap();
         let mut database =
@@ -1243,8 +1217,6 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         drop(database);
         let project = open(config.clone(), root.into(), None).unwrap();
         assert_eq!(project.stations.len(), 1);
-        assert!(project.runs.is_empty());
-        assert!(project.grids.is_empty());
         let window = HourlyWindow::Explicit {
             start,
             end: start + chrono::Duration::hours(1),
@@ -1262,42 +1234,6 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         assert!(untouched);
     }
     #[test]
-    fn rainfall_reuses_the_same_version_and_respects_masks_and_timezone() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("grid.nc");
-        let start = timestamp("2026-01-01T00:00:00").unwrap();
-        let end = start + chrono::Duration::hours(1);
-        let spec = canonical::RegularGridSpec::new([0., 0., 1., 1.], 1.).unwrap();
-        let cells = spec.latitudes.len() * spec.longitudes.len();
-        let mut grid = canonical::GridSeries {
-            timeline: canonical::IntervalAxis {
-                time_zone: "UTC".into(),
-                bounds: vec![canonical::TimeInterval { start, end }],
-            },
-            grid: spec,
-            values: vec![0.; cells],
-            valid: vec![true; cells],
-            provenance: canonical::Provenance {
-                source_ids: vec!["test".into()],
-                processing: serde_json::Value::Null,
-            },
-        };
-        grid.valid[0] = false;
-        canonical::write_grid_series(&path, &grid).unwrap();
-        let window = HourlyWindow::Explicit { start, end };
-        let mut cache = None;
-        let first = load_rain(path.clone(), "UTC", &window, &mut cache).unwrap();
-        let second = load_rain(path.clone(), "UTC", &window, &mut cache).unwrap();
-        assert!(Arc::ptr_eq(&first, &second));
-        assert_eq!(first.values[0], None);
-        assert_eq!(first.values[1], Some(0.));
-        assert!(load_rain(path, "America/Sao_Paulo", &window, &mut cache).is_err());
-        let source =
-            super::super::map::cell_at(&first, (grid.grid.longitudes[0], grid.grid.latitudes[0]))
-                .unwrap();
-        assert_eq!(source.2, None);
-    }
-    #[test]
     fn standard_config_association_only() {
         assert_eq!(
             infer_workspace(Path::new("/region/config/workspace.toml")),
@@ -1306,13 +1242,33 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         assert_eq!(infer_workspace(Path::new("/region/custom.toml")), None);
     }
     #[test]
+    fn rainfall_request_invalidation_is_independent_by_side() {
+        let mut worker = Worker::new(eframe::egui::Context::default());
+        let (sender, receiver) = mpsc::channel();
+        worker.receiver = receiver;
+        for side in RainSide::BOTH {
+            assert_eq!(RainSide::from_slot(side.slot()), Some(side));
+            sender
+                .send(Reply {
+                    slot: side.slot(),
+                    generation: 0,
+                    result: Err("synthetic reply".into()),
+                })
+                .unwrap();
+        }
+        worker.invalidate(RainSide::Left.slot());
+        let replies = worker.poll();
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].slot, RainSide::Right.slot());
+    }
+
+    #[test]
     fn newer_requests_replace_pending_work_and_old_replies() {
         let mut worker = Worker::new(eframe::egui::Context::default());
-        worker.submit(Job::Run("first".into()));
-        worker.submit(Job::Run("second".into()));
+        worker.submit(Job::Run("first".into(), None));
+        worker.submit(Job::Run("second".into(), None));
         assert_eq!(worker.generations[1], 2);
-        let latest =
-            matches!(&worker.pending[1], Some((2, Job::Run(path))) if path == Path::new("second"));
+        let latest = matches!(&worker.pending[1], Some((2, Job::Run(path, None))) if path == Path::new("second"));
         assert!(latest);
         let (sender, receiver) = mpsc::channel();
         worker.receiver = receiver;

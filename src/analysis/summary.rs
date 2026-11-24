@@ -1,5 +1,5 @@
 use crate::analysis::upstream_minis;
-use crate::store::{IntervalAxis, MiniTopology, ResultSeries, TimeInterval};
+use crate::store::{BasinForcing, IntervalAxis, MiniTopology, ResultSeries, TimeInterval};
 use chrono::{Duration, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
 
@@ -89,7 +89,58 @@ pub fn accumulated_rain(
     window: &HourlyWindow,
 ) -> Result<RainSummary, String> {
     results.validate().map_err(|e| e.to_string())?;
-    let window = resolve_hourly_window(&results.timeline.time_zone, window)?;
+    summarize_rain(
+        &results.timeline,
+        &results.basins.mini_ids,
+        |cell| results.precipitation_valid[cell].then_some(results.precipitation[cell]),
+        topology,
+        outlet,
+        upstream,
+        window,
+    )
+}
+
+/// Accumulate retained prepared rainfall using the same coverage rules as model results.
+pub fn accumulated_basin_forcing(
+    forcing: &BasinForcing,
+    topology: &[MiniTopology],
+    outlet: i64,
+    upstream: bool,
+    window: &HourlyWindow,
+) -> Result<RainSummary, String> {
+    forcing.validate().map_err(|e| e.to_string())?;
+    accumulated_valid_basin_forcing(forcing, topology, outlet, upstream, window)
+}
+
+/// Accumulate basin forcing already validated by the store reader.
+pub(crate) fn accumulated_valid_basin_forcing(
+    forcing: &BasinForcing,
+    topology: &[MiniTopology],
+    outlet: i64,
+    upstream: bool,
+    window: &HourlyWindow,
+) -> Result<RainSummary, String> {
+    summarize_rain(
+        &forcing.timeline,
+        &forcing.basins.mini_ids,
+        |cell| forcing.valid[cell].then_some(forcing.values[cell]),
+        topology,
+        outlet,
+        upstream,
+        window,
+    )
+}
+
+fn summarize_rain(
+    timeline: &IntervalAxis,
+    mini_ids: &[i64],
+    value: impl Fn(usize) -> Option<f64>,
+    topology: &[MiniTopology],
+    outlet: i64,
+    upstream: bool,
+    window: &HourlyWindow,
+) -> Result<RainSummary, String> {
+    let window = resolve_hourly_window(&timeline.time_zone, window)?;
     let ids = if upstream {
         upstream_minis(topology, outlet)?
     } else {
@@ -108,13 +159,13 @@ pub fn accumulated_rain(
             .find(|n| n.mini_id == id)
             .ok_or_else(|| format!("unknown MINI {id}"))?;
         area += node.area_km2;
-        let Some(index) = results.basins.mini_ids.iter().position(|v| *v == id) else {
+        let Some(index) = mini_ids.iter().position(|v| *v == id) else {
             complete = false;
             continue;
         };
         let mut sum = 0.0;
         let mut count = 0;
-        for (t, interval) in results.timeline.bounds.iter().enumerate() {
+        for (t, interval) in timeline.bounds.iter().enumerate() {
             if interval.end <= window.start || interval.start >= window.end {
                 continue;
             }
@@ -126,9 +177,9 @@ pub fn accumulated_rain(
             {
                 return Err("rainfall contains a partial or non-hourly native interval".into());
             }
-            let cell = t * results.basins.mini_ids.len() + index;
-            if results.precipitation_valid[cell] {
-                sum += results.precipitation[cell];
+            let cell = t * mini_ids.len() + index;
+            if let Some(rain) = value(cell) {
+                sum += rain;
                 count += 1;
             }
         }
@@ -175,6 +226,14 @@ pub fn accumulated_grid_rain(
     window: &HourlyWindow,
 ) -> Result<GridAccumulation, String> {
     grid.validate().map_err(|e| e.to_string())?;
+    accumulated_valid_grid_rain(grid, window)
+}
+
+/// Accumulate a grid already validated by the store reader.
+pub(crate) fn accumulated_valid_grid_rain(
+    grid: &crate::store::GridSeries,
+    window: &HourlyWindow,
+) -> Result<GridAccumulation, String> {
     let window = resolve_hourly_window(&grid.timeline.time_zone, window)?;
     let cells = grid.grid.latitudes.len() * grid.grid.longitudes.len();
     let mut sums = vec![0.0; cells];

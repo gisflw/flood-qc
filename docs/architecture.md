@@ -36,6 +36,22 @@ product commitments; the [workspace](contracts/workspace.md),
 | `app` | Workflows, private configuration/path resolution, selection, preparation/scenario coordination, failures, run outcomes | All four core owners |
 | CLI and desktop | Arguments/project selection, invocation-directory capture, presentation and interactive state | Intended public library APIs |
 
+```mermaid
+flowchart TD
+    accTitle: Module dependencies and the external engine
+    accDescr: CLI and desktop enter through public library APIs. App calls adapters, analysis, model and store. Adapters, analysis and model depend on store. Model invokes the external MGB executable.
+    interfaces["CLI and desktop"] --> facade["Public library APIs"]
+    facade --> app["app"]
+    app --> adapters["adapters"]
+    app --> analysis["analysis"]
+    app --> model["model"]
+    app --> store["store"]
+    adapters --> store
+    analysis --> store
+    model --> store
+    model -. invokes .-> engine["External MGB executable"]
+```
+
 These boundaries keep scientific processing independent of acquisition, registry
 lookups, and execution coordination. Canonical values work without database
 connections or filesystem state. Adapters, analysis, and model do not depend on
@@ -101,10 +117,10 @@ canonical levels by basin, and referenced levels by station. App supplies and
 snapshots the offset records; model does not query catalogs or estimate offsets
 from recent observations.
 
-Observation-based AR(1) correction of flow/level belongs to analysis for dataviz.
-Its implementation is deferred to that later capability. Fixed reference
-conversion belongs to the initial model pipeline; the two operations remain
-distinct, with raw and referenced model results available to later analysis.
+Fixed reference conversion belongs to the model pipeline. Analysis can apply
+observation-based AR(1) to retained flow or level series for comparison and
+reporting. It uses the raw and referenced model results without rewriting them.
+See [analysis and bulletins](contracts/saved-data.md#analysis-and-bulletins).
 
 ## Enforcement
 
@@ -127,8 +143,8 @@ The [architecture test](../tests/architecture.rs) enforces these source boundari
 
 Run `cargo test --locked --test architecture` independently or as part of
 `cargo test --locked`.
-GitHub Actions runs the formatting, lint, and test gates on Linux for pushes and
-pull requests. The toolchain is pinned and qualified deliberately.
+See the [development checks](../README.md#development) for the full local
+validation commands.
 The gate checks bounded source syntax, not behavioral ownership or execution
 lifecycle correctness; review and behavior tests must cover those responsibilities.
 Checker allowlists, parser mechanics, supported syntax, and known limitations stay
@@ -149,19 +165,17 @@ Saved preparation and execution follow these rules:
   and the compatible engine to remain available; hashes cannot recover missing bytes.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
-- Each trial has independent successful result caches and a generated JSON manifest
-  for CLI use. App reports success only after every requested scenario and
-  its required outputs validate. Failures preserve diagnostics and successful
-  siblings' outputs without modifying other runs. No official-set publication or
-  latest-run pointer is maintained. Temporary execution snapshots and private inputs
-  are removed after workers stop; independently saved preparations remain reusable.
-- Operators may copy the recipe, dependencies, results or cache outputs elsewhere
-  for long-term storage. Generation is normal application behavior; no retention
-  flags, cleanup policy or archive-management workflow is added.
+- Each workspace publishes a single active generation containing results and
+  rainfall from the same validated execution. Inundation products extend that
+  generation. Store owns atomic publication and file retirement. App decides
+  when to commit based on all requested scenarios and required outputs.
+- Superseded and failed attempts leave replay manifests. Operators explicitly
+  export full results or save reusable preparations for long-term retention.
+  See the [operation contract](contracts/operations.md#active-run-and-rainfall-cache).
 
-The [operation contract](contracts/operations.md) defines the implemented prepared
-snapshots, isolated execution and disposable trial caches. App owns cancellation
-and progress; model stops and reaps its owned child processes using an explicit
+The [operation contract](contracts/operations.md) defines prepared snapshots,
+isolated execution and the active cache. App owns cancellation
+and progress. Model stops and reaps its owned child processes using an explicit
 cancellation signal. CLI uses `ctrlc` for portable SIGINT delivery to that shared
 control, rather than asynchronous signal handling inside the engine layer. The saved state is carried
 unchanged; hot-start generation and chaining follow later.

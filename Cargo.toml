@@ -10,6 +10,10 @@ chrono-tz = { version = "0.10.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 ctrlc = "3"
+netcdf = { version = "=0.12.1", optional = true, default-features = false }
+lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "rustls", "ring", "webpki-roots"] }
+krilla = "=0.8.2"
+resvg = { version = "=0.45.1", default-features = false, features = ["text"] }
 rusqlite = { version = "0.42.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -35,12 +39,16 @@ unimplemented = "warn"
 [target.'cfg(target_os = "linux")'.dependencies]
 rustix = { version = "1.1.6", features = ["fs"] }
 
+[target.'cfg(windows)'.dependencies]
+atomicwrites = "0.4.4"
+
 [dependencies.wbvector]
 version = "=0.1.6"
 
 [features]
 default = []
-desktop = ["dep:eframe", "dep:rsplot", "dep:walkers", "dep:rfd", "dep:lyon_tessellation", "dep:ab_glyph"]
+inundation-write = ["dep:netcdf"]
+desktop = ["dep:eframe", "dep:rsplot", "dep:walkers", "dep:rfd", "dep:lyon_tessellation", "dep:ab_glyph", "dep:png", "dep:geo"]
 
 [[bin]]
 name = "mgb-ops-desktop"
@@ -73,4 +81,13 @@ optional = true
 
 [dependencies.ab_glyph]
 version = "0.2"
+optional = true
+
+[dependencies.geo]
+default-features = false
+version = "=0.33.1"
+optional = true
+
+[dependencies.png]
+version = "0.18"
 optional = true

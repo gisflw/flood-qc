@@ -19,6 +19,14 @@ pub fn write_draft<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
 }
 
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_file(path, bytes, true)
+}
+
+pub fn write_new_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    write_file(path, bytes, false)
+}
+
+fn write_file(path: &Path, bytes: &[u8], replace: bool) -> Result<(), String> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -41,7 +49,14 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
         file.write_all(bytes)
             .and_then(|()| file.sync_all())
             .map_err(|e| e.to_string())?;
-        fs::rename(&temporary, path).map_err(|e| e.to_string())
+        drop(file);
+        if replace {
+            fs::rename(&temporary, path).map_err(|e| e.to_string())
+        } else {
+            fs::hard_link(&temporary, path).map_err(|e| e.to_string())?;
+            fs::remove_file(&temporary).map_err(|e| e.to_string())?;
+            super::sync_directory(parent)
+        }
     })();
     if result.is_err() {
         let _ = fs::remove_file(&temporary);

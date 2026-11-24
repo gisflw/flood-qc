@@ -1,7 +1,9 @@
 use super::{layout::Form, text};
 use chrono::{TimeZone, Timelike};
 use eframe::egui;
-use mgb_ops::app::{Draft, WorkspaceConfig};
+use mgb_ops::app::{
+    Draft, OperationalRun, RegistrationReport, RegistrationSelection, WorkspaceConfig,
+};
 use std::{
     path::{Path, PathBuf},
     sync::{
@@ -72,33 +74,44 @@ pub enum Action {
         remembered: Option<PathBuf>,
     },
     Accept,
-    Prepare,
     RunAll,
-    Execute(PathBuf),
+    OpenOperation {
+        workspace: PathBuf,
+        recipe: PathBuf,
+    },
+    ValidateOperation,
+    AcceptOperation,
+    RunOperation,
     Save(PathBuf, bool),
     SaveConfig,
-    New,
-    Open {
-        path: PathBuf,
-        reference: String,
-        zone: String,
-    },
-    Inspect(PathBuf),
+    New(String),
+    Open(PathBuf),
     Choices,
     Readiness,
+    Workflow(super::workflows::Task),
+    MaterializeReplacements,
+    MaterializeCorrections(usize),
+    PreviewObservations,
+    PreviewForecast(usize),
+    RegisterInstructions(RegistrationSelection),
 }
 pub enum Outcome {
     Initialized(Box<Draft>, WorkspaceConfig),
     Draft(Box<Draft>),
+    OpenedDraft(Box<Draft>),
+    DraftChanged,
+    Registered(Box<Draft>, RegistrationReport, Vec<String>),
+    RegistrationReport(RegistrationReport, Vec<String>),
     Accepted(Box<Draft>, Vec<String>),
     Saved(Box<Draft>),
     Config(WorkspaceConfig),
-    Prepared(PathBuf),
-    Completed(PathBuf),
-    Provenance(String),
+    Completed,
+    Operation(Box<OperationalRun>, Option<Vec<String>>),
+    OperationalReadiness(Vec<String>),
     Choices(Choices),
     Collision(PathBuf),
     Readiness(Vec<String>),
+    Workflow(super::workflows::Output),
 }
 #[derive(Default)]
 pub struct Choices {
@@ -113,13 +126,29 @@ struct Reply {
 }
 pub struct Active {
     pub control: mgb_ops::app::OperationControl,
+    pub automation: Option<mgb_ops::app::AutomationControl>,
     receiver: mpsc::Receiver<Reply>,
     thread: Option<JoinHandle<()>>,
     logs: Arc<Mutex<String>>,
 }
+impl Active {
+    pub fn cancel(&self) {
+        self.control.cancel();
+        if let Some(automation) = &self.automation {
+            automation.stop();
+        }
+    }
+
+    fn progress(&self) -> Option<mgb_ops::app::OperationProgress> {
+        self.automation
+            .as_ref()
+            .and_then(|control| control.progress())
+            .or_else(|| self.control.progress())
+    }
+}
 impl Drop for Active {
     fn drop(&mut self) {
-        self.control.cancel();
+        self.cancel();
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }
@@ -128,14 +157,14 @@ impl Drop for Active {
 #[derive(Default)]
 pub struct Runners {
     pub draft: Option<Draft>,
+    operation: Option<OperationalRun>,
+    operational_readiness: Option<Vec<String>>,
     pub config: Option<WorkspaceConfig>,
     baseline: Option<WorkspaceConfig>,
     config_path: PathBuf,
     pub active: Option<Active>,
     pub status: String,
     pub logs: String,
-    pub prepared: PathBuf,
-    pub provenance: String,
     choices: Choices,
     pub last_saved: Option<PathBuf>,
     pub initialized: bool,
@@ -180,6 +209,7 @@ impl Runners {
             return;
         }
         let draft = self.draft.clone();
+        let operation = self.operation.clone();
         let config = self.config.clone();
         let config_path = self.config_path.clone();
         if let Action::Initialize { config, .. } = &action {
@@ -187,10 +217,20 @@ impl Runners {
         }
         let control = mgb_ops::app::OperationControl::default();
         let operation_control = control.clone();
+        let automation = match &action {
+            Action::Workflow(task) if task.needs_automation_control() => {
+                Some(mgb_ops::app::AutomationControl::default())
+            }
+            _ => None,
+        };
+        let automation_control = automation.clone();
         let live_logs = Arc::new(Mutex::new(String::new()));
         let worker_logs = live_logs.clone();
         let (sender, receiver) = mpsc::channel();
         let context = ctx.clone();
+        if matches!(action, Action::ValidateOperation | Action::AcceptOperation) {
+            self.operational_readiness = None;
+        }
         self.status = "Working".into();
         self.saved = false;
         self.cleanup_failed = false;
@@ -200,6 +240,53 @@ impl Runners {
             let mut logs = String::new();
             let result = (|| -> Result<Outcome, String> {
                 match action {
+                    Action::Workflow(task) => {
+                        let draft = draft.ok_or("Open a workspace first")?;
+                        task.run(
+                            &draft.workspace,
+                            &operation_control,
+                            automation_control.as_ref(),
+                        )
+                        .map(Outcome::Workflow)
+                    }
+                    Action::MaterializeReplacements | Action::MaterializeCorrections(_) => {
+                        let mut draft = draft.ok_or("Open a draft first")?;
+                        if let Action::MaterializeCorrections(index) = action {
+                            draft.materialize_corrections(index)?;
+                        } else {
+                            draft.materialize_replacements()?;
+                        }
+                        Ok(Outcome::Draft(Box::new(draft)))
+                    }
+                    Action::PreviewObservations => {
+                        let draft = draft.ok_or("Open a draft first")?;
+                        draft.preview_observations().map(|value| {
+                            Outcome::Workflow(super::workflows::Output::Observations(value))
+                        })
+                    }
+                    Action::PreviewForecast(index) => {
+                        let draft = draft.ok_or("Open a draft first")?;
+                        draft.preview_forecast(index).map(|value| {
+                            Outcome::Workflow(super::workflows::Output::Forecast(value))
+                        })
+                    }
+                    Action::RegisterInstructions(selection) => {
+                        let mut draft = draft.ok_or("Open a draft first")?;
+                        let report = draft.register_selected(&selection);
+                        let origin_errors = report
+                            .observations
+                            .mappings
+                            .iter()
+                            .chain(&report.forecasts.mappings)
+                            .filter_map(|mapping| {
+                                draft
+                                    .copy_registered_for_edit(mapping)
+                                    .err()
+                                    .map(|error| format!("{}: {error}", mapping.catalog_id))
+                            })
+                            .collect();
+                        Ok(Outcome::Registered(Box::new(draft), report, origin_errors))
+                    }
                     Action::Initialize {
                         workspace,
                         config,
@@ -226,32 +313,26 @@ impl Runners {
                         }
                         Ok(Outcome::Initialized(Box::new(draft), config))
                     }
-                    Action::New => {
+                    Action::New(zone) => {
                         let draft = draft.ok_or("Open a workspace first")?;
-                        Ok(Outcome::Draft(Box::new(fresh(
-                            draft.workspace,
-                            config.as_ref().ok_or("Configuration unavailable")?,
-                            draft
-                                .document
-                                .operation
-                                .time_zone
-                                .as_deref()
-                                .unwrap_or("America/Sao_Paulo"),
-                        )?)))
+                        let config = config.as_ref().ok_or("Configuration unavailable")?;
+                        let new = if let Some(operation) = operation {
+                            Draft::new_run(
+                                draft.workspace.clone(),
+                                &draft.workspace,
+                                Some(config),
+                                operation.reference(),
+                                operation.time_zone(),
+                            )?
+                        } else {
+                            fresh(draft.workspace, config, &zone)?
+                        };
+                        Ok(Outcome::OpenedDraft(Box::new(new)))
                     }
-                    Action::Open {
-                        path,
-                        reference,
-                        zone,
-                    } => {
+                    Action::Open(path) => {
                         let old = draft.ok_or("Open a workspace first")?;
-                        let mut opened = Draft::open(old.workspace.clone(), &old.workspace, &path)?;
-                        if !matches_reference(&opened, &reference, &zone) {
-                            return Err("Draft content does not match the independently selected reference and IANA timezone / O rascunho não corresponde à referência e ao fuso selecionados".into());
-                        }
-                        opened.use_day_horizons()?;
-                        anchored_name(&opened)?;
-                        Ok(Outcome::Draft(Box::new(opened)))
+                        let opened = Draft::open(old.workspace.clone(), &old.workspace, &path)?;
+                        Ok(Outcome::OpenedDraft(Box::new(opened)))
                     }
                     Action::Save(path, overwrite) => {
                         let mut draft = draft.ok_or("No draft")?;
@@ -285,23 +366,23 @@ impl Runners {
                         let readiness = draft.validate_preparation();
                         Ok(Outcome::Accepted(Box::new(draft), readiness))
                     }
-                    Action::Inspect(path) => Ok(Outcome::Provenance(
-                        serde_json::to_string_pretty(&mgb_ops::store::read_retained_manifest(
-                            &path,
-                        )?)
-                        .map_err(|e| e.to_string())?,
-                    )),
                     Action::Choices => {
                         Ok(Outcome::Choices(load_choices(&draft.ok_or("No draft")?)))
                     }
-                    Action::Prepare | Action::RunAll | Action::Execute(_) => {
-                        let draft = draft.ok_or("No draft")?;
-                        if matches!(action, Action::Prepare) {
-                            std::fs::create_dir_all(
-                                draft.workspace.join("data/cache/preparations"),
-                            )
-                            .map_err(|e| e.to_string())?;
-                        }
+                    Action::OpenOperation { workspace, recipe } => {
+                        let operation =
+                            OperationalRun::open(workspace, &recipe, chrono::Utc::now())?;
+                        Ok(Outcome::Operation(Box::new(operation), None))
+                    }
+                    Action::ValidateOperation => Ok(Outcome::OperationalReadiness(
+                        operation.ok_or("Select an operation recipe")?.validate(),
+                    )),
+                    Action::AcceptOperation => {
+                        let mut operation = operation.ok_or("Select an operation recipe")?;
+                        operation.accept_inputs()?;
+                        Ok(Outcome::Operation(Box::new(operation), Some(Vec::new())))
+                    }
+                    Action::RunAll | Action::RunOperation => {
                         let finished = Arc::new(AtomicBool::new(false));
                         let finished2 = finished.clone();
                         let progress_control = operation_control.clone();
@@ -321,37 +402,21 @@ impl Runners {
                                 thread::sleep(std::time::Duration::from_millis(250));
                             }
                         });
-                        let result = match action {
-                            Action::Prepare => {
-                                let output =
-                                    draft
-                                        .workspace
-                                        .join("data/cache/preparations")
-                                        .join(format!(
-                                            "{}-desktop",
-                                            chrono::Utc::now().format("%Y%m%dT%H%M%S%.9f")
-                                        ));
-                                draft
-                                    .prepare_controlled(
-                                        draft.workspace.clone(),
-                                        output,
-                                        &operation_control,
-                                    )
-                                    .map(|r| Outcome::Prepared(r.prepared))
+                        let result = (|| -> Result<Outcome, String> {
+                            match action {
+                                Action::RunAll => mgb_ops::app::run_draft(
+                                    &draft.ok_or("No draft")?,
+                                    &operation_control,
+                                )
+                                .map(|_| Outcome::Completed),
+                                Action::RunOperation => operation
+                                    .ok_or("Select an operation recipe")?
+                                    .run_all(&operation_control)
+                                    .map(|_| Outcome::Completed),
+                                _ => unreachable!(),
                             }
-                            Action::RunAll => mgb_ops::app::run_draft(&draft, &operation_control)
-                                .map(|r| Outcome::Completed(r.run_root)),
-                            Action::Execute(prepared) => mgb_ops::app::execute_prepared_controlled(
-                                mgb_ops::app::ExecutionRequest {
-                                    workspace: draft.workspace.clone(),
-                                    invocation_dir: draft.workspace.clone(),
-                                    prepared,
-                                },
-                                &operation_control,
-                            )
-                            .map(|r| Outcome::Completed(r.run_root)),
-                            _ => unreachable!(),
-                        };
+                            .map_err(|e| e.to_string())
+                        })();
                         finished.store(true, Ordering::Release);
                         let _ = observer.join();
                         if let Some(progress) = progress_control.progress()
@@ -359,7 +424,7 @@ impl Runners {
                         {
                             read_logs(&attempt, 0, &mut logs);
                         }
-                        result.map_err(|e| e.to_string())
+                        result
                     }
                 }
             })();
@@ -368,6 +433,7 @@ impl Runners {
         });
         self.active = Some(Active {
             control,
+            automation,
             receiver,
             thread: Some(worker),
             logs: live_logs,
@@ -375,7 +441,7 @@ impl Runners {
     }
     pub fn poll(&mut self) -> Option<Outcome> {
         if let Some(active) = &self.active {
-            if let Some(progress) = active.control.progress() {
+            if let Some(progress) = active.progress() {
                 self.progress = Some(progress);
             }
             self.logs = active
@@ -430,6 +496,18 @@ impl Runners {
                         self.draft = Some(*draft);
                         None
                     }
+                    Outcome::OpenedDraft(draft) => {
+                        self.last_saved = draft.path.clone();
+                        self.readiness.clear();
+                        self.readiness_checked = false;
+                        self.choices = Choices::default();
+                        self.draft = Some(*draft);
+                        Some(Outcome::DraftChanged)
+                    }
+                    Outcome::Registered(draft, report, origin_errors) => {
+                        self.draft = Some(*draft);
+                        Some(Outcome::RegistrationReport(report, origin_errors))
+                    }
                     Outcome::Saved(draft) => {
                         self.last_saved = draft.path.clone();
                         self.draft = Some(*draft);
@@ -454,8 +532,13 @@ impl Runners {
                         self.readiness = findings;
                         None
                     }
-                    Outcome::Provenance(value) => {
-                        self.provenance = value;
+                    Outcome::Operation(operation, readiness) => {
+                        self.operation = Some(*operation);
+                        self.operational_readiness = readiness;
+                        None
+                    }
+                    Outcome::OperationalReadiness(findings) => {
+                        self.operational_readiness = Some(findings);
                         None
                     }
                     other => Some(other),
@@ -489,7 +572,58 @@ impl Runners {
     pub fn save(&mut self, path: PathBuf, ctx: &egui::Context) {
         self.start(Action::Save(path, false), ctx);
     }
-    pub fn show(&mut self, ui: &mut egui::Ui, form: Form, pt: bool) {
+
+    pub fn workspace_settings(&mut self, ui: &mut egui::Ui, pt: bool) {
+        let status = self.localized_status(pt);
+        let busy = self.busy();
+        let Some(config) = &mut self.config else {
+            ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
+            return;
+        };
+        let original = config.clone();
+        ui.vertical(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                ui.horizontal(|ui| {
+                    let mut field = |label: String, value: &mut Option<String>| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().text_edit_width = 145.;
+                            string(ui, &label, value);
+                        });
+                    };
+                    field(
+                        text(pt, "Geometry file", "Arquivo de geometria"),
+                        &mut config.spatial.get_or_insert_default().gpkg_path,
+                    );
+                    field(
+                        text(pt, "Engine executable", "Executável MGB"),
+                        &mut config.engine.get_or_insert_default().executable,
+                    );
+                    field(
+                        text(pt, "Baseline Input directory", "Diretório Input base"),
+                        &mut config.engine.get_or_insert_default().input_dir,
+                    );
+                });
+                restore_empty(&original.spatial, &mut config.spatial);
+                restore_empty(&original.engine, &mut config.engine);
+            });
+            if !status.is_empty() {
+                ui.allocate_ui(egui::vec2(435., 0.), |ui| {
+                    ui.add(egui::Label::new(&status).truncate())
+                        .on_hover_text(&status);
+                });
+            }
+        });
+        ui.add_enabled_ui(!busy, |ui| {
+            if super::ribbon_button(ui, "💾", text(pt, "Save", "Salvar")).clicked() {
+                self.start(Action::SaveConfig, ui.ctx());
+            }
+            if super::ribbon_button(ui, "⏪", text(pt, "Revert", "Reverter")).clicked() {
+                self.config = self.baseline.clone();
+            }
+        });
+    }
+
+    pub fn show(&mut self, ui: &mut egui::Ui, form: Form, pt: bool, workspace: Option<&Path>) {
         let ctx = ui.ctx().clone();
         if form == Form::Jobs {
             self.jobs(ui, pt);
@@ -499,76 +633,8 @@ impl Runners {
             egui::ScrollArea::vertical()
                 .id_salt("runner-scroll")
                 .show(ui, |ui| match form {
-                    Form::Workspace => {
-                        if let Some(config) = &mut self.config {
-                            let original=config.clone();
-                            ui.heading(form.label(pt));
-                            string(
-                                ui,
-                                &text(pt, "Geometry file", "Arquivo de geometria"),
-                                &mut config.spatial.get_or_insert_default().gpkg_path,
-                            );
-                            string(
-                                ui,
-                                &text(pt, "Engine executable", "Executável MGB"),
-                                &mut config.engine.get_or_insert_default().executable,
-                            );
-                            string(
-                                ui,
-                                &text(pt, "Baseline Input directory", "Diretório Input base"),
-                                &mut config.engine.get_or_insert_default().input_dir,
-                            );
-                            restore_empty(&original.spatial,&mut config.spatial);
-                            restore_empty(&original.engine,&mut config.engine);
-                            ui.horizontal(|ui| {
-                                if ui.button(text(pt, "Save", "Salvar")).clicked() {
-                                    self.start(Action::SaveConfig, &ctx)
-                                }
-                                if ui.button(text(pt, "Revert", "Reverter")).clicked() {
-                                    self.config = self.baseline.clone();
-                                }
-                            });
-                        }
-                    }
-                    Form::Execute => {
-                        ui.heading(form.label(pt));
-                        ui.label(text(
-                            pt,
-                            "Frozen preparation directory",
-                            "Diretório de preparação congelada",
-                        ));
-                        let mut path = self.prepared.to_string_lossy().to_string();
-                        if ui.text_edit_singleline(&mut path).changed() {
-                            self.prepared = path.into();
-                            self.provenance.clear();
-                        }
-                        ui.horizontal(|ui| {
-                            if ui.button(text(pt, "Browse…", "Procurar…")).clicked()
-                                && let Some(path) = rfd::FileDialog::new().pick_folder()
-                            {
-                                self.prepared = path;
-                                self.provenance.clear();
-                            }
-                            if ui
-                                .button(text(pt, "Inspect provenance", "Inspecionar proveniência"))
-                                .clicked()
-                            {
-                                self.start(Action::Inspect(self.prepared.clone()), &ctx);
-                            }
-                        });
-                        ui.label(&self.provenance);
-                        if ui
-                            .button(text(
-                                pt,
-                                "▶ Execute retained inputs",
-                                "▶ Executar entradas retidas",
-                            ))
-                            .clicked()
-                        {
-                            self.start(Action::Execute(self.prepared.clone()), &ctx)
-                        }
-                    }
-                    Form::Prepare | Form::RunAll => {
+                    Form::NewRun => self.show_operation(ui, pt, workspace),
+                    Form::RunAll => {
                         ui.heading(form.label(pt));
                         ui.horizontal_wrapped(|ui| {
                             if ui
@@ -601,29 +667,133 @@ impl Runners {
                             if before!=draft.document.operation {self.readiness=vec![text(pt,"Settings changed; check readiness and explicitly accept selected inputs","Configurações alteradas; verifique a prontidão e aceite as entradas explicitamente")];}
                             ui.separator();
                             if ui
-                                .button(if form == Form::Prepare {
-                                    text(pt, "▶ Prepare input data", "▶ Preparar entradas")
-                                } else {
-                                    text(pt, "▶ Run all", "▶ Executar tudo")
-                                })
+                                 .button(text(pt, "▶ Run experiment", "▶ Executar experimento"))
                                 .clicked()
                             {
-                                self.start(
-                                    if form == Form::Prepare {
-                                        Action::Prepare
-                                    } else {
-                                        Action::RunAll
-                                    },
-                                    &ctx,
-                                );
+                                self.start(Action::RunAll, &ctx);
                             }
                         }
                     }
-                    Form::Jobs => {}
+                    _ => {}
                 });
         });
         ui.separator();
         ui.label(self.localized_status(pt));
+    }
+    fn show_operation(&mut self, ui: &mut egui::Ui, pt: bool, workspace: Option<&Path>) {
+        ui.heading(Form::NewRun.label(pt));
+        let Some(workspace) = workspace else {
+            ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
+            return;
+        };
+        if ui
+            .button(text(
+                pt,
+                "Select operation TOML…",
+                "Selecionar TOML da operação…",
+            ))
+            .clicked()
+            && let Some(recipe) = rfd::FileDialog::new()
+                .set_directory(workspace)
+                .add_filter("Operation TOML", &["toml"])
+                .pick_file()
+        {
+            self.start(
+                Action::OpenOperation {
+                    workspace: workspace.to_path_buf(),
+                    recipe,
+                },
+                ui.ctx(),
+            );
+            return;
+        }
+        let Some(operation) = &mut self.operation else {
+            return;
+        };
+        ui.label(operation.recipe_path().display().to_string());
+        ui.label(format!(
+            "{} ({})",
+            text(pt, "Reference hour", "Hora de referência"),
+            operation.time_zone()
+        ));
+        let mut reference = operation.reference().to_owned();
+        if ui.text_edit_singleline(&mut reference).changed() {
+            operation.set_reference(reference);
+            self.operational_readiness = None;
+        }
+        let valid_coverage = match operation.coverage() {
+            Ok([observed_first, observed_last, forecast_first, forecast_last]) => {
+                ui.label(text(
+                    pt,
+                    "Observed hourly endpoints",
+                    "Fins dos intervalos horários observados",
+                ));
+                ui.label(format!("{observed_first} → {observed_last}"));
+                ui.label(text(
+                    pt,
+                    "Forecast hourly endpoints",
+                    "Fins dos intervalos horários previstos",
+                ));
+                ui.label(format!("{forecast_first} → {forecast_last}"));
+                true
+            }
+            Err(error) => {
+                ui.colored_label(ui.visuals().warn_fg_color, error);
+                false
+            }
+        };
+        ui.label(text(pt, "Scenarios", "Cenários"));
+        ui.label(operation.scenarios().join(", "));
+        let accepted = operation.has_accepted_inputs();
+        let mut action = None;
+        ui.add_enabled_ui(valid_coverage, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .button(text(pt, "Check readiness", "Verificar prontidão"))
+                    .clicked()
+                {
+                    action = Some(Action::ValidateOperation);
+                }
+                if ui
+                    .button(text(
+                        pt,
+                        "Accept/Refresh selected inputs",
+                        "Aceitar/Atualizar entradas selecionadas",
+                    ))
+                    .clicked()
+                {
+                    action = Some(Action::AcceptOperation);
+                }
+            });
+        });
+        if let Some(findings) = &self.operational_readiness {
+            if findings.is_empty() {
+                ui.label(text(
+                    pt,
+                    "Selected inputs are ready",
+                    "As entradas selecionadas estão prontas",
+                ));
+            }
+            for finding in findings {
+                ui.colored_label(ui.visuals().warn_fg_color, finding);
+            }
+        }
+        let ready = valid_coverage
+            && accepted
+            && self
+                .operational_readiness
+                .as_ref()
+                .is_some_and(Vec::is_empty);
+        ui.add_enabled_ui(ready, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.button(text(pt, "Run All", "Executar tudo")).clicked() {
+                    action = Some(Action::RunOperation);
+                }
+            });
+        });
+        if let Some(action) = action {
+            self.start(action, ui.ctx());
+        }
     }
     pub fn jobs(&mut self, ui: &mut egui::Ui, pt: bool) {
         ui.heading(text(pt, "Jobs", "Tarefas"));
@@ -633,7 +803,7 @@ impl Runners {
         if let Some(progress) = self
             .active
             .as_ref()
-            .and_then(|a| a.control.progress())
+            .and_then(Active::progress)
             .or_else(|| self.progress.clone())
         {
             ui.label(match progress.stage {
@@ -660,7 +830,7 @@ impl Runners {
         if let Some(active) = &self.active
             && ui.button(text(pt, "Cancel", "Cancelar")).clicked()
         {
-            active.control.cancel();
+            active.cancel();
         }
         ui.label(self.localized_status(pt));
         super::section(ui, text(pt, "Logs", "Registros"), |ui| {
@@ -726,9 +896,13 @@ fn read_logs(root: &Path, depth: usize, out: &mut String) {
     }
 }
 fn string(ui: &mut egui::Ui, label: &str, value: &mut Option<String>) {
-    ui.label(label);
+    let label = ui.label(label);
     let mut input = value.clone().unwrap_or_default();
-    if ui.text_edit_singleline(&mut input).changed() {
+    if ui
+        .text_edit_singleline(&mut input)
+        .labelled_by(label.id)
+        .changed()
+    {
         *value = (!input.is_empty()).then_some(input);
     }
 }
@@ -848,33 +1022,45 @@ fn restore_empty<T: Default + PartialEq>(original: &Option<T>, current: &mut Opt
         *current = None;
     }
 }
+pub fn draft_anchor(ui: &mut egui::Ui, draft: &Draft, pt: bool) {
+    let operation = &draft.document.operation;
+    for (label, value) in [
+        (
+            text(pt, "Reference · local time", "Referência · hora local"),
+            operation.reference_time.as_deref(),
+        ),
+        (
+            text(pt, "IANA timezone", "Fuso IANA"),
+            operation.time_zone.as_deref(),
+        ),
+    ] {
+        ui.horizontal_wrapped(|ui| {
+            ui.strong(label);
+            ui.label(value.unwrap_or(if pt { "Indefinido" } else { "Unset" }));
+        });
+    }
+}
+
 fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool) {
     use mgb_ops::app::{DraftObserved, DraftScenario};
     let original = draft.document.operation.clone();
-    let o = &mut draft.document.operation;
     super::section(ui, text(pt, "Period", "Período"), |ui| {
-        string(
-            ui,
-            &text(pt, "Reference · local time", "Referência · hora local"),
-            &mut o.reference_time,
-        );
-        string(
-            ui,
-            &text(pt, "IANA timezone", "Fuso IANA"),
-            &mut o.time_zone,
-        );
-        number(
-            ui,
-            &text(pt, "Observed days before", "Dias observados antes"),
-            &mut o.observed_horizon_days,
-            pt,
-        );
-        number(
-            ui,
-            &text(pt, "Forecast days after", "Dias previstos depois"),
-            &mut o.forecast_horizon_days,
-            pt,
-        );
+        draft_anchor(ui, draft, pt);
+        let o = &mut draft.document.operation;
+        if draft.document.schema_version == 2 {
+            number(
+                ui,
+                &text(pt, "Observed days before", "Dias observados antes"),
+                &mut o.observed_horizon_days,
+                pt,
+            );
+            number(
+                ui,
+                &text(pt, "Forecast days after", "Dias previstos depois"),
+                &mut o.forecast_horizon_days,
+                pt,
+            );
+        }
         match o.coverage() {
             Ok(coverage) => {
                 ui.small(coverage);
@@ -884,6 +1070,7 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
             }
         }
     });
+    let o = &mut draft.document.operation;
     super::section(ui, text(pt, "Observations", "Observações"), |ui| {
         let observed = o.observed.get_or_insert_with(DraftObserved::default);
         path(ui, "SQLite", &mut observed.path);
@@ -912,8 +1099,8 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
         if draft.document.instructions.replacements.is_some() {
             ui.label(text(
                 pt,
-                "Imported ordered instruction values preserved; use CLI to edit",
-                "Valores ordenados importados preservados; edite pela CLI",
+                "Edit staged replacements in Review → Instructions",
+                "Edite substituições em Revisão → Instruções",
             ));
         } else {
             ordered(
@@ -975,8 +1162,8 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
                         {
                             ui.label(text(
                                 pt,
-                                "Imported ordered corrections preserved",
-                                "Correções ordenadas importadas preservadas",
+                                "Edit staged corrections in Review → Instructions",
+                                "Edite correções em Revisão → Instruções",
                             ));
                         } else {
                             ordered(
@@ -1372,7 +1559,7 @@ mod worker_tests {
         let (_temp, mut runner) = fixture();
         let ctx = egui::Context::default();
         let before = runner.draft.as_ref().unwrap().document.clone();
-        runner.start(Action::Prepare, &ctx);
+        runner.start(Action::RunAll, &ctx);
         runner.start(Action::RunAll, &ctx);
         assert!(runner.status.contains("already active"));
         runner.active.as_ref().unwrap().control.cancel();
@@ -1408,14 +1595,7 @@ mod worker_tests {
         assert_eq!(std::fs::read(&path).unwrap(), b"keep destination");
         assert!(runner.dirty());
         runner.overwrite = None;
-        runner.start(
-            Action::Open {
-                path,
-                reference: "2020-01-01T00:00:00".into(),
-                zone: "UTC".into(),
-            },
-            &ctx,
-        );
+        runner.start(Action::Open(path), &ctx);
         wait(&mut runner);
         assert_eq!(runner.draft.as_ref().unwrap().document, before);
     }
@@ -1471,8 +1651,14 @@ mod worker_tests {
         let root = runner.draft.as_ref().unwrap().workspace.clone();
         let config = root.join("workspace.toml");
         mgb_ops::app::write_workspace_config(&config, runner.config.as_ref().unwrap()).unwrap();
-        let mut old = runner.draft.take().unwrap();
-        old.document.operation.reference_time = Some("2020-01-01T00:00:00".into());
+        let mut old = Draft::new_run(
+            root.clone(),
+            &root,
+            runner.config.as_ref(),
+            "2020-01-01T00:00:00",
+            "UTC",
+        )
+        .unwrap();
         old.document
             .operation
             .scenarios
@@ -1487,7 +1673,7 @@ mod worker_tests {
                 workspace: root,
                 config,
                 zone: "UTC".into(),
-                remembered: Some(remembered),
+                remembered: Some(remembered.clone()),
             },
             &egui::Context::default(),
         );
@@ -1502,6 +1688,10 @@ mod worker_tests {
             let unchanged = !(draft.is_dirty());
             assert!(unchanged);
         };
+        runner.start(Action::Open(remembered), &egui::Context::default());
+        wait(&mut runner);
+        let opened = runner.draft.as_ref().unwrap();
+        assert_eq!(opened.document, old.document);
     }
     #[test]
     #[ignore = "explicit synthetic engine fixture; set MGB_DESKTOP_CASE to a disposable workspace under runs"]
@@ -1515,7 +1705,7 @@ mod worker_tests {
         runner.baseline = runner.config.clone();
         runner.draft =
             Some(Draft::open(root.clone(), &root, &root.join("unaccepted.json")).unwrap());
-        runner.start(Action::Prepare, &ctx);
+        runner.start(Action::RunAll, &ctx);
         wait(&mut runner);
         {
             let unchanged = !(runner.status.starts_with("Completed"));
@@ -1538,28 +1728,8 @@ mod worker_tests {
         runner.start(Action::Accept, &ctx);
         wait(&mut runner);
         assert!(runner.status.starts_with("Completed"), "{}", runner.status);
-        let cache = root.join("data/cache");
-        if cache.exists() {
-            std::fs::remove_dir_all(&cache).unwrap();
-        }
-        runner.start(Action::Prepare, &ctx);
-        let prepared = match wait(&mut runner) {
-            Some(Outcome::Prepared(path)) => path,
-            _ => panic!("{}", runner.status),
-        };
-        runner.start(Action::Execute(prepared), &ctx);
-        let completed = match wait(&mut runner) {
-            Some(Outcome::Completed(path)) => path,
-            _ => panic!("{}", runner.status),
-        };
-        assert_eq!(
-            mgb_ops::store::read_retained_manifest(&completed)
-                .unwrap()
-                .state,
-            "completed"
-        );
         runner.start(Action::RunAll, &ctx);
-        let completed = matches!(wait(&mut runner), Some(Outcome::Completed(_)));
+        let completed = matches!(wait(&mut runner), Some(Outcome::Completed));
         assert!(completed, "{}", runner.status);
     }
 }

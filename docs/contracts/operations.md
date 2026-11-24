@@ -1,7 +1,19 @@
 # Saved preparation and execution
 
-The shared library exposes `prepare(PreparationRequest)` and
-`execute_prepared(ExecutionRequest)`, also available through the CLI:
+## Choose an execution path
+
+| Action | Start with | Publishes after success |
+| --- | --- | --- |
+| `operation prepare` | Complete operation TOML | A reusable preparation at the requested path |
+| `operation execute` | Saved preparation | A replacement active run |
+| `draft run` or **Run experiment** | Draft with accepted inputs | A replacement active run |
+| **Processing → New run → Run All** | Operation TOML with inputs accepted for the chosen local reference | A replacement active run |
+| `run replay` | Workspace attempt manifest | A replacement active run |
+
+Use [operation drafts](drafts.md) to edit and preview a recipe, or the
+[desktop run form](desktop.md#controlled-jobs) to run a saved recipe for a selected
+reference. The shared library exposes `prepare(PreparationRequest)` and
+`execute_prepared(ExecutionRequest)`, also available through the CLI.
 
 ```sh
 mgb-ops operation prepare --workspace /regional/workspace --request request.toml --output prepared --json
@@ -27,6 +39,56 @@ can execute after the original sources are removed.
 
 [Editable drafts](drafts.md) provide incomplete JSON recipes, explicit source
 acceptance and unregistered previews over this same typed preparation workflow.
+
+The desktop's [standalone run form](desktop.md#controlled-jobs) uses
+`app::OperationalRun` to load an explicitly selected TOML recipe, substitute
+the selected local reference and require acceptance before preparing or running.
+Version 2 recalculates the day horizons. Version 1 shifts the explicit boundary
+labels by the same number of local hours as the reference. Other selections,
+including asset and correction IDs and any explicit state-capture timestamp,
+retain their saved values and are validated against the chosen reference.
+
+## Active run and rainfall cache
+
+Each workspace has one active run after its first successful execution. The
+pointer at `data/cache/run/active.json` selects the generation that supplies
+model results, rainfall, and any processed inundation masks. Successful
+execution publishes the whole generation together and reclaims the previous
+generation. An unsuccessful or cancelled execution preserves the active run.
+Concurrent executions use the same workspace lock. A later writable execution
+retries cleanup of abandoned staging and superseded generations.
+
+The active generation retains its completed manifest, canonical basin and station
+results, selected engine evidence and logs, and optional flood sources and masks.
+It also retains the observed and selected scenario working rainfall grids,
+prepared basin forcing, and frozen MINI.gtp. Zero scenarios use the working grid
+geometry and verified zero forecast intervals. Rainfall and basin summaries read
+the selected generation. A missing cache returns no rainfall. Missing or corrupt
+members produce findings.
+
+The workspace retains only a small attempt manifest for past executions under
+`data/run-manifests/`. This includes the recipe, recorded input identities,
+outcome, and diagnostic excerpts. To keep full results, export a bundle or copy
+the active run to a user-owned location before another successful run.
+Explicitly saved preparations remain reusable. See
+[sharing and replay](saved-data.md#sharing-and-automation).
+
+### Upgrade an existing workspace
+
+Preview the migration with
+`mgb-ops operation migrate-cache --workspace /region --keep-run <run-id>`.
+The preview lists affected paths and estimates reclaimable space. Move any
+manually kept runs or bundles out of `data/runs/` before applying. Repeat the
+command with `--apply` to activate the selected completed run, preserve the
+legacy manifests, and remove the legacy payloads. Legacy rainfall is adopted
+when its forcing agrees with the selected run. A migrated run without matching
+rainfall has no rainfall overlay until a successful execution supplies it.
+
+Use `--inundation-donor <run-id>` to transfer existing products from a legacy
+copy with matching model outputs. The migration validates provenance against
+the workspace TIFFs at `data/source/HAND_Flood.tif` and
+`data/source/catchments.tif`. Applying the migration also retires that donor's
+legacy entry.
 
 ## Request
 
@@ -98,8 +160,23 @@ plus one hour through reference plus forecast days plus one hour, inclusively.
 Thus the example has 241 historical and 121 forecast labels; a non-midnight
 reference adds historical labels since midnight. These are interval-end labels,
 so covered rainfall begins one hour before the first label.
-Historical and forecast axes are contiguous. Explicit boundary datetimes and
-`step_seconds` cannot be combined with version 2 day horizons.
+Historical and forecast axes are contiguous. In the example, the first history
+interval starts at July 9, 23:00 and ends at the first history label, July 10,
+00:00. July 20, 00:00 is both the final historical label and the reference.
+The forecast labels run from July 20, 01:00 through July 25, 01:00.
+
+```mermaid
+flowchart TD
+    accTitle: Interval endpoints in the example operation
+    accDescr: Rainfall coverage starts at July 9 23:00. The first history label is July 10 00:00, the reference and final history label is July 20 00:00, and forecast labels run from July 20 01:00 through July 25 01:00.
+    start["July 9, 23:00 · coverage starts"] --> history["July 10, 00:00 · first history label"]
+    history --> reference["July 20, 00:00 · reference and last history label"]
+    reference --> forecast["July 20, 01:00 · first forecast label"]
+    forecast --> endLabel["July 25, 01:00 · last forecast label"]
+```
+
+Explicit boundary datetimes and `step_seconds` cannot be combined with version 2
+day horizons.
 
 Version 1 requests with `step_seconds = 3600` and explicit
 `historical_first_end`, `historical_last_end`, `forecast_first_end`, and
@@ -127,8 +204,21 @@ IDs resolve through the explicitly selected forecast catalog. Duplicate/unknown
 instructions and cross-asset corrections fail. Zero scenarios need no forecast
 asset or catalog file. See the [forecast contract](forecasts.md) for normalization
 and correction semantics. Baseline Input must contain compatible geometry,
-metadata, calibration and initial-state dependencies; preparation does not infer
-state compatibility or generate a new hot start.
+metadata, calibration and initial-state dependencies. See the [additional inputs
+and state contract](saved-data.md#forcing-state-and-calibration) for optional
+forcing, calibration selection and state capture.
+
+## Execution lifecycle
+
+Under the workspace lock, execution verifies a snapshot of the preparation and
+runs a history-only worker before launching isolated scenario workers. It then
+joins workers, validates all requested scenarios, stages rainfall from the same
+prepared inputs, and cleans up temporary inputs. The final commit publishes the
+results and rainfall together.
+
+A cancellation before the commit stops and reaps owned engines. Failed
+execution, rainfall preparation, or publication leaves the previous active
+generation available. See [control and cancellation](#controlled-actions-and-cancellation).
 
 ## Prepared dependencies and run files
 
@@ -162,37 +252,32 @@ destination on Linux. Failed or cancelled staging is removed; an existing comple
 preparation is preserved.
 
 Execution takes a nonblocking OS lock on `<workspace>/.operation.lock`, held until
-children and workers stop and all file work finishes. Concurrent execution in that
-workspace returns `Busy`; the lock file's existence alone means nothing. Each
-invocation reserves a fresh disposable trial under `data/runs/`. During execution
-it uses a verified preparation snapshot, shared history worker and isolated
-scenario inputs. Finalization removes those temporary working trees.
+children and workers stop and file work finishes. Concurrent execution in that
+workspace returns `Busy`. Each invocation stages a generation privately under
+`data/cache/run/`. Finalization removes the verified preparation snapshot,
+shared history inputs, and isolated worker inputs.
 
-A trial with successful scenarios retains its recipe, preparation identity,
-validated canonical `results/<id>/basin.nc` and `station.nc`, the four original
-engine streams under `scenarios/<id>/Output/`, and debugging logs. Small
-`results/<id>/engine-inputs/` evidence retains the actual generated metadata and
-rainfall digest. These are comparison caches, not reusable preparations or a run
-registry. The root manifest has no retained input references after cleanup.
-Failed scenarios lose incomplete outputs. Zero successes leaves debugging logs
-without a result manifest. No Save run action, retention policy or automatic cache
-cleanup is provided. Existing saved artifacts are neither rewritten nor removed.
+The active generation supplies validated `results/<id>/basin.nc` and
+`station.nc`, the four original streams in `scenarios/<id>/Output/`, and
+diagnostics. Small `results/<id>/engine-inputs/` files record the actual generated
+metadata and rainfall digest. Supported engines provide an optional flood source
+for each successful scenario. See [inundation processing](inundation.md).
 
-`discover_trials(workspace)` lists retained manifest roots; `read_trial(root)`
-validates successful canonical results and required engine streams. Older saved
-runs remain readable. Copying a recipe does not recover missing source bytes.
-Use an independently saved preparation for source-independent re-execution.
+`discover_trials(workspace)` returns the active root when present.
+`read_trial(root)` validates canonical results and required engine streams
+at an active or explicitly saved root. A manifest can replay a recipe using its
+referenced inputs. An independently saved preparation or a bundle with a
+preparation can reproduce an execution after the original sources are removed.
+Execution reports expose `run_root` for current results and `attempt_manifest`
+for the durable recipe. Automation job status keeps the durable reference.
 
 Scenarios run concurrently in isolated directories with direct executable
 invocation, an explicit working directory, and only `MGB_INPUT_DIR`,
 `MGB_OUTPUT_DIR` and `OMP_NUM_THREADS` in the environment. Stdout and stderr go
 directly to separate files. Execution records include command, environment,
 status and elapsed time. Every launched child is waited for and every worker is
-joined. Failed scenarios preserve validated successful siblings and diagnostics.
-Success requires all selected scenarios and required outputs to validate, cleanup
-to finish and the outcome to persist. Failure returns a structured operation
-error; `BatchFailed` carries the partial `ExecutionReport`. Persistence and cleanup
-errors identify their paths and never claim success.
+joined. Failure returns a structured operation error. `BatchFailed` carries
+per-scenario status. Historical diagnostics are available in the attempt manifest.
 
 ## Controlled actions and cancellation
 
@@ -211,19 +296,19 @@ loading the entire file. JSON stdout contains the result, not progress text.
 
 CLI SIGINT requests cancellation. Controlled cancellation checks preparation
 boundaries, stops and reaps owned engines, joins concurrent workers, and finishes
-cleanup under the lock. It returns an error while preserving validated successful
-scenario caches and logs. Cancellation before the final commit marks the batch
-failed with an explicit cancellation reason; cancellation after that commit
-preserves success. Existing reusable preparations and unrelated attempts survive.
-Hard process termination and engine-created descendant processes are outside this
-normal cancellation guarantee; automatic recovery is not provided.
+cleanup under the lock. Cancellation before the final commit records the
+cancellation reason in the attempt manifest and keeps the previous active run.
+Cancellation after the commit preserves success. After hard process termination,
+the next writable execution cleans up abandoned cache stages. Engine-created
+descendant processes are outside the normal cancellation guarantee.
 
 ## Engine and canonical results
 
 CHUVABIN is little-endian f32, time outermost and basin innermost, without headers
 or record markers. MINI.gtp supplies actual mini IDs, order and centroids.
 Metadata edits preserve unrelated baseline content and calibration. Every private
-Input carries the retained baseline state; engine-written state is not copied back.
+Input carries the retained baseline state. An explicit qualified state request
+retains state under the successful scenario.
 
 The qualified decoder keeps four original streams separate. A history-only run
 recovers levels overwritten by the engine's forecast prefix; historical flow and
@@ -251,7 +336,7 @@ exits 0, operational failure exits 1 and argument errors exit 2. Library errors
 identify invalid requests/preparations, busy workspaces, source/storage failures
 or model failures without embedding binary or full observation contents.
 
-Linux is the qualification platform. Windows, live providers, automatic retries,
-new hot starts and hydrological validity remain unqualified. Scientific evidence
+Linux is the qualification platform. Windows, live providers, warm-state
+consumption and hydrological validity remain unqualified. Scientific evidence
 and the saved case's state caveat live with the
 [regression reference](../../references/regression/rs-hourly/README.md).
