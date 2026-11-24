@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -227,6 +227,15 @@ fn automation_action(
 
 #[derive(Subcommand)]
 enum ObservationCommand {
+    /// Download ANA observations and import the normalized hourly values.
+    Acquire(AcquisitionOptions),
+    /// Import retained legacy-format ANA CSV files.
+    ImportAnaCsv {
+        #[command(flatten)]
+        options: AcquisitionOptions,
+        #[arg(long)]
+        input: Vec<PathBuf>,
+    },
     Init {
         #[arg(long)]
         database: PathBuf,
@@ -261,6 +270,30 @@ enum ObservationCommand {
         #[arg(long)]
         interpolation: PathBuf,
     },
+}
+
+#[derive(Args)]
+struct AcquisitionOptions {
+    #[arg(long)]
+    workspace: PathBuf,
+    #[arg(long)]
+    request: Option<PathBuf>,
+    #[arg(long)]
+    reference_time: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+impl AcquisitionOptions {
+    fn request(self) -> mgb_ops::app::AcquisitionRequest {
+        mgb_ops::app::AcquisitionRequest {
+            workspace: self.workspace,
+            request_file: self
+                .request
+                .unwrap_or_else(|| "config/acquisition.toml".into()),
+            reference_time: self.reference_time,
+        }
+    }
 }
 
 #[derive(ValueEnum, Clone, Copy)]
@@ -762,6 +795,17 @@ enum InundationCommand {
 }
 #[derive(Subcommand)]
 enum OperationCommand {
+    /// Acquire inputs when the recipe enables acquisition, then prepare and execute.
+    RunAll {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        request: PathBuf,
+        #[arg(long)]
+        reference_time: Option<String>,
+        #[arg(long)]
+        json: bool,
+    },
     Prepare {
         #[arg(long)]
         workspace: PathBuf,
@@ -795,6 +839,8 @@ enum OperationCommand {
 }
 #[derive(Subcommand)]
 enum ForecastCommand {
+    /// Download and register the configured forecasts.
+    Acquire(AcquisitionOptions),
     ImportCanonical {
         #[arg(long)]
         workspace: PathBuf,
@@ -809,6 +855,89 @@ enum ForecastCommand {
         #[arg(long)]
         json: bool,
     },
+}
+
+fn acquisition_text(
+    report: &mgb_ops::app::AcquisitionReport,
+    out: &mut impl Write,
+) -> io::Result<()> {
+    writeln!(out, "Reference {}", report.reference_time)?;
+    if let Some(ana) = &report.ana {
+        if let Some(error) = &ana.error {
+            writeln!(out, "ANA: {error}")?;
+        }
+        for station in &ana.stations {
+            writeln!(
+                out,
+                "ANA {}: {} requested days, {} skipped, {} rows, {} changed samples",
+                station.station_code,
+                station.requested_days,
+                station.skipped_days,
+                station.normalized_rows,
+                station.changed_samples
+            )?;
+            if let Some(error) = &station.error {
+                writeln!(out, "  {error}")?;
+            }
+            if let Some(path) = &station.csv {
+                writeln!(out, "  {}", path.display())?;
+            }
+            for path in &station.raw_xml {
+                writeln!(out, "  {}", path.display())?;
+            }
+        }
+    }
+    for forecast in &report.forecasts {
+        if let Some(error) = &forecast.error {
+            writeln!(
+                out,
+                "{:?} ({} cycles tried): {error}",
+                forecast.provider,
+                forecast.attempted_cycles.len()
+            )?;
+        } else if let Some(id) = &forecast.asset_id {
+            let action = if forecast.reused {
+                "reused"
+            } else {
+                "registered"
+            };
+            writeln!(out, "{:?} {action} {id}", forecast.provider)?;
+            for path in [&forecast.retained_source, &forecast.native_artifact]
+                .into_iter()
+                .flatten()
+            {
+                writeln!(out, "  {}", path.display())?;
+            }
+        }
+    }
+    if report.cancelled {
+        writeln!(out, "Acquisition cancelled")?;
+    }
+    Ok(())
+}
+
+fn acquisition_result(
+    result: Result<mgb_ops::app::AcquisitionReport, String>,
+    json: bool,
+    out: &mut impl Write,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    match result {
+        Ok(report) => {
+            if json {
+                serde_json::to_writer(&mut *out, &report)?;
+                writeln!(out)?;
+            } else {
+                acquisition_text(&report, out)?;
+            }
+            Ok(report.is_complete())
+        }
+        Err(error) if json => {
+            serde_json::to_writer(&mut *out, &BTreeMap::from([("error", error)]))?;
+            writeln!(out)?;
+            Ok(false)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 #[derive(Subcommand)]
 enum ConfigCommand {
@@ -856,13 +985,21 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     if matches!(
         &cli.command,
         Command::Operation {
-            command: OperationCommand::Prepare { .. } | OperationCommand::Execute { .. }
+            command: OperationCommand::Prepare { .. }
+                | OperationCommand::Execute { .. }
+                | OperationCommand::RunAll { .. }
         } | Command::Draft {
             command: DraftCommand::Prepare { .. } | DraftCommand::Run { .. },
             ..
         } | Command::Run {
             command: RunCommand::Regenerate { .. } | RunCommand::Replay { .. },
         } | Command::Inundation { .. }
+            | Command::Observation {
+                command: ObservationCommand::Acquire(_) | ObservationCommand::ImportAnaCsv { .. }
+            }
+            | Command::Forecast {
+                command: ForecastCommand::Acquire(_)
+            }
     ) {
         let signal_control = control.clone();
         ctrlc::set_handler(move || signal_control.cancel())?;
@@ -889,6 +1026,26 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         Command::Observation { command } => {
             use mgb_ops::store::ObservationStore;
             let result = match command {
+                ObservationCommand::Acquire(options) => {
+                    let json = options.json;
+                    return acquisition_result(
+                        mgb_ops::app::acquire_inputs(
+                            &options.request(),
+                            mgb_ops::app::AcquisitionKind::Observations,
+                            &control,
+                        ),
+                        json,
+                        &mut out,
+                    );
+                }
+                ObservationCommand::ImportAnaCsv { options, input } => {
+                    let json = options.json;
+                    return acquisition_result(
+                        mgb_ops::app::import_ana_csv(&options.request(), &input, &control),
+                        json,
+                        &mut out,
+                    );
+                }
                 ObservationCommand::Init {
                     database,
                     time_zone,
@@ -1178,6 +1335,56 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         }
         Command::Operation {
             command:
+                OperationCommand::RunAll {
+                    workspace,
+                    request,
+                    reference_time,
+                    json,
+                },
+        } => {
+            let report = (|| {
+                let mut operation =
+                    mgb_ops::app::OperationalRun::open(workspace, &request, chrono::Utc::now())?;
+                if let Some(reference) = reference_time {
+                    operation.set_reference(reference);
+                }
+                if !operation.acquires_inputs() {
+                    operation.accept_inputs()?;
+                }
+                Ok::<_, String>(operation.run_all_report(&control))
+            })();
+            let report = match report {
+                Ok(report) => report,
+                Err(error) if json => {
+                    serde_json::to_writer(&mut out, &BTreeMap::from([("error", error)]))?;
+                    writeln!(out)?;
+                    return Ok(false);
+                }
+                Err(error) => return Err(error.into()),
+            };
+            if json {
+                serde_json::to_writer(&mut out, &report)?;
+                writeln!(out)?;
+            } else {
+                if let Some(acquisition) = &report.acquisition {
+                    acquisition_text(acquisition, &mut out)?;
+                }
+                if let Some(execution) = &report.execution {
+                    writeln!(
+                        out,
+                        "Run: {} ({:?})",
+                        execution.run_root.display(),
+                        execution.status
+                    )?;
+                }
+                if let Some(error) = &report.error {
+                    writeln!(out, "{error}")?;
+                }
+            }
+            Ok(report.error.is_none())
+        }
+        Command::Operation {
+            command:
                 OperationCommand::Prepare {
                     workspace,
                     request,
@@ -1262,6 +1469,20 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
             }
             Ok(true)
+        }
+        Command::Forecast {
+            command: ForecastCommand::Acquire(options),
+        } => {
+            let json = options.json;
+            acquisition_result(
+                mgb_ops::app::acquire_inputs(
+                    &options.request(),
+                    mgb_ops::app::AcquisitionKind::Forecasts,
+                    &control,
+                ),
+                json,
+                &mut out,
+            )
         }
         Command::Forecast {
             command: ForecastCommand::ImportCanonical { workspace, request },

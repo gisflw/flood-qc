@@ -1554,6 +1554,9 @@ impl Monitoring {
                             if response.clicked() {
                                 self.display.layout.form(Form::NewRun);
                             }
+                            if ribbon_button(ui, "⬇", Form::Acquisition.label(pt)).clicked() {
+                                self.display.layout.form(Form::Acquisition);
+                            }
                             if ribbon_button(ui, "📥", Form::Forcing.label(pt)).clicked() {
                                 self.display.layout.form(Form::Forcing);
                             }
@@ -1709,6 +1712,7 @@ impl Monitoring {
                         }
                     }
                     Form::Intake
+                    | Form::Acquisition
                     | Form::Review
                     | Form::RunBundle
                     | Form::Forcing
@@ -1750,6 +1754,22 @@ impl Monitoring {
                         active.cancel();
                     }
                     self.runners.jobs(ui, pt);
+                }
+                if form == Form::Acquisition {
+                    ui.add_enabled_ui(!busy, |ui| {
+                        if let Some(project) = &self.project {
+                            if let Some(task) =
+                                self.workflows.acquisition(ui, pt, &project.workspace)
+                            {
+                                self.runners
+                                    .start(runners::Action::Workflow(task), ui.ctx());
+                            }
+                        } else {
+                            ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
+                        }
+                    });
+                    self.runners.jobs(ui, pt);
+                    return;
                 }
                 ui.add_enabled_ui(!busy, |ui| {
                     let Some(mut snapshot) = self.runners.draft_snapshot() else {

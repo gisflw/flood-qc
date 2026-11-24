@@ -432,6 +432,8 @@ impl<'ast> Visit<'ast> for Gate {
                         "Default",
                         "PartialEq",
                         "Eq",
+                        "PartialOrd",
+                        "Ord",
                         "Serialize",
                         "Deserialize",
                         "Parser",

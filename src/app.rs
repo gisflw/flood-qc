@@ -18,7 +18,7 @@ pub use self::cache_migration::{CacheMigrationReport, migrate_cache};
 mod operation;
 mod operational_run;
 mod rainfall;
-pub use self::operational_run::OperationalRun;
+pub use self::operational_run::{OperationalRun, OperationalRunReport};
 pub use self::rainfall::{
     CachedRainfall, RainfallCacheReader, RainfallPeriod, query_cached_rainfall, rainfall_cache_info,
 };
@@ -41,7 +41,12 @@ pub use self::request::{
 pub use self::sharing::{
     RunBundleReport, export_run, import_run, import_run_to, regenerate_run, replay_run,
 };
+mod acquisition;
 mod forecast;
+pub use self::acquisition::{
+    AcquisitionKind, AcquisitionReport, AcquisitionRequest, AnaAcquisitionReport,
+    AnaStationOutcome, ForecastAcquisitionOutcome, acquire_inputs, import_ana_csv,
+};
 pub use self::forecast::{
     CanonicalForecastDocument, NormalizeForecastDocument, NormalizeForecastError,
     NormalizeForecastReport, NormalizeForecastRequest, import_canonical_forecast,

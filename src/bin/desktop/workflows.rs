@@ -3,9 +3,10 @@ use chrono::NaiveDateTime;
 use eframe::egui;
 use mgb_ops::analysis::ReviewVariable;
 use mgb_ops::app::{
-    AutomationControl, AutomationJobStatus, BulletinPreview, BulletinRequest, CanonicalForcingKind,
-    Draft, ForecastPreview, HydrographReport, ObservationPreview, ObservationReviewReport,
-    ObservationReviewRequest, OperationControl, ReviewWindow, SpatialObservationQcReport,
+    AcquisitionKind, AcquisitionReport, AcquisitionRequest, AutomationControl, AutomationJobStatus,
+    BulletinPreview, BulletinRequest, CanonicalForcingKind, Draft, ForecastPreview,
+    HydrographReport, ObservationPreview, ObservationReviewReport, ObservationReviewRequest,
+    OperationControl, ReviewWindow, SpatialObservationQcReport,
 };
 use mgb_ops::store::{GridFrame, IdwSettings, ObservationSelection};
 use std::path::{Path, PathBuf};
@@ -34,6 +35,8 @@ impl Intake {
 
 #[derive(Clone)]
 pub enum Task {
+    Acquire(AcquisitionRequest, AcquisitionKind),
+    ImportAnaCsv(AcquisitionRequest, PathBuf),
     Init(PathBuf, String),
     Upgrade(PathBuf),
     ObservationBatch(PathBuf, PathBuf),
@@ -68,6 +71,7 @@ pub enum AutomationTask {
 
 pub enum Output {
     Notice(String),
+    Acquisition(Box<AcquisitionReport>),
     Observations(ObservationPreview),
     Forecast(ForecastPreview),
     Availability(ObservationReviewReport),
@@ -104,6 +108,14 @@ impl Task {
         use mgb_ops::store::ObservationStore;
         let resolve = |path: &Path| workspace_path(workspace, path);
         let notice = match self {
+            Self::Acquire(request, kind) => {
+                return mgb_ops::app::acquire_inputs(&request, kind, control)
+                    .map(|report| Output::Acquisition(Box::new(report)));
+            }
+            Self::ImportAnaCsv(request, path) => {
+                return mgb_ops::app::import_ana_csv(&request, &[path], control)
+                    .map(|report| Output::Acquisition(Box::new(report)));
+            }
             Self::Init(path, zone) => {
                 ObservationStore::create(&resolve(&path), &zone).map_err(|e| e.to_string())?;
                 resolve(&path).display().to_string()
@@ -268,6 +280,9 @@ impl AutomationTask {
 
 #[derive(Default)]
 pub struct Forms {
+    acquisition_request: PathBuf,
+    acquisition_reference: String,
+    acquisition_csv: PathBuf,
     intake: Intake,
     input: PathBuf,
     destination: PathBuf,
@@ -341,6 +356,67 @@ fn optional_path(
 }
 
 impl Forms {
+    pub fn acquisition(&mut self, ui: &mut egui::Ui, pt: bool, workspace: &Path) -> Option<Task> {
+        ui.heading(Form::Acquisition.label(pt));
+        if self.acquisition_request.as_os_str().is_empty() {
+            self.acquisition_request = "config/acquisition.toml".into();
+        }
+        path_field(
+            ui,
+            text(pt, "Acquisition TOML", "TOML de aquisição"),
+            &mut self.acquisition_request,
+            false,
+            pt,
+        );
+        ui.label(text(
+            pt,
+            "Reference hour (current if blank)",
+            "Hora de referência (atual se vazia)",
+        ));
+        ui.add(
+            egui::TextEdit::singleline(&mut self.acquisition_reference)
+                .hint_text("YYYY-MM-DDTHH:00:00"),
+        );
+        let request = AcquisitionRequest {
+            workspace: workspace.to_path_buf(),
+            request_file: self.acquisition_request.clone(),
+            reference_time: (!self.acquisition_reference.trim().is_empty())
+                .then(|| self.acquisition_reference.trim().to_owned()),
+        };
+        let mut task = None;
+        ui.horizontal_wrapped(|ui| {
+            if ui.button(text(pt, "Update ANA", "Atualizar ANA")).clicked() {
+                task = Some(Task::Acquire(
+                    request.clone(),
+                    AcquisitionKind::Observations,
+                ));
+            }
+            if ui
+                .button(text(pt, "Update forecasts", "Atualizar previsões"))
+                .clicked()
+            {
+                task = Some(Task::Acquire(request.clone(), AcquisitionKind::Forecasts));
+            }
+        });
+        path_field(
+            ui,
+            text(pt, "Saved ANA CSV", "CSV ANA salvo"),
+            &mut self.acquisition_csv,
+            false,
+            pt,
+        );
+        if ui
+            .add_enabled(
+                !self.acquisition_csv.as_os_str().is_empty(),
+                egui::Button::new(text(pt, "Import ANA CSV", "Importar CSV ANA")),
+            )
+            .clicked()
+        {
+            task = Some(Task::ImportAnaCsv(request, self.acquisition_csv.clone()));
+        }
+        task
+    }
+
     pub fn receive(&mut self, response: Output, context: &egui::Context) {
         match response {
             Output::Notice(text) => {

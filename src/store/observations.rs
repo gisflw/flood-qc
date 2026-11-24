@@ -87,6 +87,7 @@ pub enum ObservationValue {
     FlowM3s(f64),
     LevelCm(i32),
 }
+pub(crate) type ProviderSamples = Vec<(NaiveDateTime, ObservationValue)>;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ObservationSample {
     pub series_id: String,
@@ -309,6 +310,136 @@ impl ObservationStore {
     /// Insert canonical records or accept complete equality with existing records.
     pub fn ingest_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
         self.write_batch_inner(batch, true)
+    }
+
+    pub(crate) fn seed_ana_stations(
+        &mut self,
+        stations: &[Station],
+    ) -> Result<(), ObservationError> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        for station in stations {
+            validate_station(station)?;
+            if station.provider_code != "ana" || tx.execute(
+                "INSERT INTO station VALUES (?1,?2,?3,?4,?5,?6)
+                 ON CONFLICT(station_id) DO UPDATE SET name=excluded.name,
+                 latitude=excluded.latitude,longitude=excluded.longitude
+                 WHERE station.provider_code=excluded.provider_code AND station.station_code=excluded.station_code",
+                params![station.station_id, station.provider_code, station.station_code,
+                    station.name, station.latitude, station.longitude],
+            )? != 1 {
+                return Err(error(format!("conflicting ANA station identity {}", station.station_id)));
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn ana_raw_times(
+        &self,
+        station: &str,
+        variable: &str,
+        start: NaiveDateTime,
+        end: NaiveDateTime,
+    ) -> Result<Vec<NaiveDateTime>, ObservationError> {
+        let Some(series) = ana_raw_series(&self.connection, station, variable)? else {
+            return Ok(Vec::new());
+        };
+        let mut query = self.connection.prepare(
+            "SELECT observed_at FROM observation WHERE series_id=?1 AND value IS NOT NULL
+             AND observed_at>=?2 AND observed_at<?3 ORDER BY observed_at",
+        )?;
+        let labels = query.query_map(params![series, label(start), label(end)], |row| {
+            row.get::<_, String>(0)
+        })?;
+        labels.map(|at| timestamp(&at?, &series)).collect()
+    }
+
+    pub(crate) fn upsert_ana_raw(
+        &mut self,
+        station: &str,
+        created_at: NaiveDateTime,
+        variables: &[(&str, ProviderSamples)],
+    ) -> Result<usize, ObservationError> {
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let zone = Self::verify(&tx)?
+            .parse::<chrono_tz::Tz>()
+            .map_err(|_| error("invalid time zone"))?;
+        let is_ana: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM station WHERE station_id=?1 AND provider_code='ana')",
+            [station],
+            |row| row.get(0),
+        )?;
+        if !is_ana {
+            return Err(error(format!("unknown ANA station {station}")));
+        }
+        let mut written = 0;
+        for (variable, values) in variables {
+            let (unit, interval) = match *variable {
+                "rain" => ("mm", Some(3600)),
+                "level" => ("cm", None),
+                "flow" => ("m3/s", None),
+                _ => return Err(error("unsupported ANA raw variable")),
+            };
+            let id = match ana_raw_series(&tx, station, variable)? {
+                Some(series) => series,
+                None => {
+                    let series = ObservationSeries {
+                        series_id: format!("{station}.{variable}.raw"),
+                        station_id: station.into(),
+                        variable: (*variable).into(),
+                        state: "raw".into(),
+                        unit: unit.into(),
+                        interval_seconds: interval,
+                        created_at,
+                    };
+                    validate_series(&series)?;
+                    tx.execute(
+                        "INSERT INTO observation_series VALUES (?1,?2,?3,'raw',?4,?5,?6)",
+                        params![
+                            series.series_id,
+                            station,
+                            variable,
+                            unit,
+                            interval,
+                            label(created_at)
+                        ],
+                    )?;
+                    series.series_id
+                }
+            };
+            let mut upsert = tx.prepare_cached(
+                "INSERT INTO observation VALUES (?1,?2,?3)
+                 ON CONFLICT(series_id,observed_at) DO UPDATE SET value=excluded.value
+                 WHERE observation.value IS NOT excluded.value",
+            )?;
+            for (at, value) in values {
+                validate_time(*at, &id)?;
+                if zone.from_local_datetime(at).single().is_none() {
+                    return Err(error(format!(
+                        "{id}: ambiguous or nonexistent local time {at}"
+                    )));
+                }
+                let value = match (*variable, *value) {
+                    ("rain", ObservationValue::RainMm(v))
+                    | ("flow", ObservationValue::FlowM3s(v))
+                        if v.is_finite() =>
+                    {
+                        rusqlite::types::Value::Real(v)
+                    }
+                    ("level", ObservationValue::LevelCm(v)) => {
+                        rusqlite::types::Value::Integer(i64::from(v))
+                    }
+                    _ => return Err(error(format!("{id}: invalid ANA raw value at {at}"))),
+                };
+                written += upsert.execute(params![id, label(*at), value])?;
+            }
+        }
+        tx.commit()?;
+        Ok(written)
     }
 
     /// Update station names and coordinates without modifying canonical identities.
@@ -720,6 +851,24 @@ impl ObservationStore {
         tx.commit()?;
         Ok((inputs, offsets))
     }
+}
+
+fn ana_raw_series(
+    connection: &Connection,
+    station: &str,
+    variable: &str,
+) -> Result<Option<String>, ObservationError> {
+    let mut query = connection.prepare(
+        "SELECT series_id FROM observation_series WHERE station_id=?1 AND variable=?2 AND state='raw'",
+    )?;
+    let mut rows = query.query(params![station, variable])?;
+    let first = rows.next()?.map(|row| row.get(0)).transpose()?;
+    if rows.next()?.is_some() {
+        return Err(error(format!(
+            "multiple raw {variable} series for ANA station {station}"
+        )));
+    }
+    Ok(first)
 }
 fn existing_matches(
     connection: &Connection,

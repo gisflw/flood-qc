@@ -2,8 +2,8 @@ use super::{layout::Form, text};
 use chrono::{TimeZone, Timelike};
 use eframe::egui;
 use mgb_ops::app::{
-    Draft, DraftJob, DraftSnapshot, DraftVersion, OperationalRun, RegistrationReport,
-    RegistrationSelection, Session, WorkspaceConfig,
+    AcquisitionReport, Draft, DraftJob, DraftSnapshot, DraftVersion, OperationalRun,
+    OperationalRunReport, RegistrationReport, RegistrationSelection, Session, WorkspaceConfig,
 };
 use std::{
     path::{Path, PathBuf},
@@ -107,6 +107,7 @@ pub enum Outcome {
     Saved(Box<Draft>),
     Config(WorkspaceConfig),
     Completed,
+    AcquiredRun(Box<OperationalRunReport>),
     Operation(Box<OperationalRun>, Option<Vec<String>>),
     OperationalReadiness(Vec<String>),
     Choices(Choices),
@@ -177,6 +178,7 @@ pub struct Runners {
     pub readiness: Vec<String>,
     readiness_checked: bool,
     progress: Option<mgb_ops::app::OperationProgress>,
+    acquisition: Option<Box<AcquisitionReport>>,
 }
 impl Runners {
     pub fn new(session: Session) -> Self {
@@ -219,6 +221,12 @@ impl Runners {
         match self.status.as_str() {
             "Working" => text(pt, "Working", "Em andamento"),
             "Completed" => text(pt, "Completed", "Concluído"),
+            "Acquisition cancelled" => text(pt, "Acquisition cancelled", "Aquisição cancelada"),
+            "Acquisition completed with findings" => text(
+                pt,
+                "Acquisition completed with findings",
+                "Aquisição concluída com ocorrências",
+            ),
             "A job is already active in this workspace" => text(
                 pt,
                 "A job is already active in this workspace",
@@ -290,6 +298,7 @@ impl Runners {
             .filter(|_| reads_draft_settings)
             .map(|snapshot| snapshot.version.clone());
         let draft = snapshot.map(|snapshot| snapshot.draft);
+        let workspace = session.workspace().to_path_buf();
         let operation = self.operation.clone();
         let config = self.config.clone();
         let config_path = self.config_path.clone();
@@ -316,20 +325,23 @@ impl Runners {
         self.saved = false;
         self.cleanup_failed = false;
         self.progress = None;
+        if matches!(
+            action,
+            Action::RunOperation
+                | Action::Workflow(
+                    super::workflows::Task::Acquire(..) | super::workflows::Task::ImportAnaCsv(..)
+                )
+        ) {
+            self.acquisition = None;
+        }
         self.logs.clear();
         let worker = thread::spawn(move || {
             let mut logs = String::new();
             let result = (|| -> Result<Outcome, String> {
                 match action {
-                    Action::Workflow(task) => {
-                        let draft = draft.ok_or("Open a workspace first")?;
-                        task.run(
-                            &draft.workspace,
-                            &operation_control,
-                            automation_control.as_ref(),
-                        )
-                        .map(Outcome::Workflow)
-                    }
+                    Action::Workflow(task) => task
+                        .run(&workspace, &operation_control, automation_control.as_ref())
+                        .map(Outcome::Workflow),
                     Action::MaterializeReplacements | Action::MaterializeCorrections(_) => {
                         let mut draft = draft.ok_or("Open a draft first")?;
                         if let Action::MaterializeCorrections(index) = action {
@@ -489,10 +501,19 @@ impl Runners {
                                     &operation_control,
                                 )
                                 .map(|_| Outcome::Completed),
-                                Action::RunOperation => operation
-                                    .ok_or("Select an operation recipe")?
-                                    .run_all(&operation_control)
-                                    .map(|_| Outcome::Completed),
+                                Action::RunOperation => {
+                                    let operation =
+                                        operation.ok_or("Select an operation recipe")?;
+                                    if operation.acquires_inputs() {
+                                        Ok(Outcome::AcquiredRun(Box::new(
+                                            operation.run_all_report(&operation_control),
+                                        )))
+                                    } else {
+                                        operation
+                                            .run_all(&operation_control)
+                                            .map(|_| Outcome::Completed)
+                                    }
+                                }
                                 _ => unreachable!(),
                             }
                             .map_err(|e| e.to_string())
@@ -642,6 +663,25 @@ impl Runners {
                     Outcome::OperationalReadiness(findings) => {
                         self.operational_readiness = Some(findings);
                         None
+                    }
+                    Outcome::Workflow(super::workflows::Output::Acquisition(report)) => {
+                        if report.cancelled {
+                            self.status = "Acquisition cancelled".into();
+                        } else if !report.is_complete() {
+                            self.status = "Acquisition completed with findings".into();
+                        }
+                        self.acquisition = Some(report);
+                        None
+                    }
+                    Outcome::AcquiredRun(report) => {
+                        self.acquisition = report.acquisition.map(Box::new);
+                        if let Some(error) = report.error {
+                            self.status = error.to_string();
+                            self.cleanup_failed = self.status.to_lowercase().contains("cleanup");
+                            None
+                        } else {
+                            Some(Outcome::Completed)
+                        }
                     }
                     other => Some(other),
                 }
@@ -810,11 +850,7 @@ impl Runners {
             return;
         };
         ui.label(operation.recipe_path().display().to_string());
-        ui.label(format!(
-            "{} ({})",
-            text(pt, "Reference hour", "Hora de referência"),
-            operation.time_zone()
-        ));
+        ui.label(text(pt, "Reference hour", "Hora de referência"));
         let mut reference = operation.reference().to_owned();
         if ui.text_edit_singleline(&mut reference).changed() {
             operation.set_reference(reference);
@@ -844,6 +880,14 @@ impl Runners {
         ui.label(text(pt, "Scenarios", "Cenários"));
         ui.label(operation.scenarios().join(", "));
         let accepted = operation.has_accepted_inputs();
+        let acquires = operation.acquires_inputs();
+        if acquires {
+            ui.label(text(
+                pt,
+                "Run All acquires and accepts the selected inputs.",
+                "Executar tudo adquire e aceita as entradas selecionadas.",
+            ));
+        }
         let mut action = None;
         ui.add_enabled_ui(valid_coverage, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -853,13 +897,14 @@ impl Runners {
                 {
                     action = Some(Action::ValidateOperation);
                 }
-                if ui
-                    .button(text(
-                        pt,
-                        "Accept/Refresh selected inputs",
-                        "Aceitar/Atualizar entradas selecionadas",
-                    ))
-                    .clicked()
+                if !acquires
+                    && ui
+                        .button(text(
+                            pt,
+                            "Accept/Refresh selected inputs",
+                            "Aceitar/Atualizar entradas selecionadas",
+                        ))
+                        .clicked()
                 {
                     action = Some(Action::AcceptOperation);
                 }
@@ -867,22 +912,36 @@ impl Runners {
         });
         if let Some(findings) = &self.operational_readiness {
             if findings.is_empty() {
-                ui.label(text(
-                    pt,
-                    "Selected inputs are ready",
-                    "As entradas selecionadas estão prontas",
-                ));
+                ui.label(if acquires {
+                    text(
+                        pt,
+                        "Acquisition settings are ready",
+                        "As configurações de aquisição estão prontas",
+                    )
+                } else {
+                    text(
+                        pt,
+                        "Selected inputs are ready",
+                        "As entradas selecionadas estão prontas",
+                    )
+                });
             }
             for finding in findings {
                 ui.colored_label(ui.visuals().warn_fg_color, finding);
             }
         }
         let ready = valid_coverage
-            && accepted
-            && self
-                .operational_readiness
-                .as_ref()
-                .is_some_and(Vec::is_empty);
+            && if acquires {
+                self.operational_readiness
+                    .as_ref()
+                    .is_none_or(Vec::is_empty)
+            } else {
+                accepted
+                    && self
+                        .operational_readiness
+                        .as_ref()
+                        .is_some_and(Vec::is_empty)
+            };
         ui.add_enabled_ui(ready, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui.button(text(pt, "Run All", "Executar tudo")).clicked() {
@@ -906,6 +965,7 @@ impl Runners {
             .or_else(|| self.progress.clone())
         {
             ui.label(match progress.stage {
+                mgb_ops::app::OperationStage::Acquisition => text(pt, "Acquisition", "Aquisição"),
                 mgb_ops::app::OperationStage::Preparation => text(pt, "Preparation", "Preparação"),
                 mgb_ops::app::OperationStage::History => text(pt, "History", "Histórico"),
                 mgb_ops::app::OperationStage::Scenarios => text(pt, "Scenarios", "Cenários"),
@@ -913,6 +973,9 @@ impl Runners {
                     text(pt, "Finalization", "Finalização")
                 }
             });
+            if let Some(detail) = progress.detail {
+                ui.label(detail);
+            }
             for scenario in progress.scenarios {
                 ui.label(format!(
                     "{} · {}",
@@ -932,11 +995,78 @@ impl Runners {
             active.cancel();
         }
         ui.label(self.localized_status(pt));
+        if let Some(report) = &self.acquisition {
+            show_acquisition(ui, pt, report);
+        }
         super::section(ui, text(pt, "Logs", "Registros"), |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 ui.add(egui::Label::new(egui::RichText::new(&self.logs).monospace()).wrap());
             });
         });
+    }
+}
+
+fn show_acquisition(ui: &mut egui::Ui, pt: bool, report: &AcquisitionReport) {
+    if let Some(ana) = &report.ana {
+        if let Some(error) = &ana.error {
+            ui.label(error);
+        }
+        for station in &ana.stations {
+            let status = if station.error.is_some() {
+                text(pt, "Failed", "Falhou")
+            } else if station.normalized_rows == 0 {
+                text(pt, "No new data", "Sem dados novos")
+            } else {
+                format!(
+                    "{} · {}",
+                    station.changed_samples,
+                    text(pt, "samples changed", "amostras alteradas")
+                )
+            };
+            ui.collapsing(format!("ANA {} · {status}", station.station_code), |ui| {
+                if let Some(error) = &station.error {
+                    ui.label(error);
+                }
+                for path in station.csv.iter().chain(&station.raw_xml) {
+                    ui.label(path.display().to_string());
+                }
+            });
+        }
+    }
+    for forecast in &report.forecasts {
+        let provider = match forecast.provider {
+            mgb_ops::store::ForecastProvider::Ecmwf => "ECMWF",
+            mgb_ops::store::ForecastProvider::Noaa => "NOAA",
+        };
+        ui.collapsing(
+            format!(
+                "{provider} · {}",
+                if forecast.error.is_some() {
+                    text(pt, "Failed", "Falhou")
+                } else if forecast.reused {
+                    text(pt, "Reused", "Reutilizado")
+                } else {
+                    text(pt, "Registered", "Registrado")
+                }
+            ),
+            |ui| {
+                if let Some(error) = &forecast.error {
+                    ui.label(error);
+                }
+                if let Some(cycle) = forecast.valid_from {
+                    ui.label(cycle.format("%Y-%m-%d %H:%M").to_string());
+                }
+                if let Some(id) = &forecast.asset_id {
+                    ui.label(id);
+                }
+                for path in [&forecast.retained_source, &forecast.native_artifact]
+                    .into_iter()
+                    .flatten()
+                {
+                    ui.label(path.display().to_string());
+                }
+            },
+        );
     }
 }
 fn load_choices(draft: &Draft) -> Choices {

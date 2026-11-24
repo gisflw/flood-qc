@@ -47,6 +47,8 @@ Version 2 recalculates the day horizons. Version 1 shifts the explicit boundary
 labels by the same number of local hours as the reference. Other selections,
 including asset and correction IDs and any explicit state-capture timestamp,
 retain their saved values and are validated against the chosen reference.
+The [acquisition-enabled Run All workflow](acquisition.md#run-all) resolves
+provider scenarios before freezing the inputs.
 
 ## Active run and rainfall cache
 

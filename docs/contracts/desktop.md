@@ -264,6 +264,9 @@ the new active run and its rainfall cache on success. Preparation is temporary. 
 keeps any open draft and its unsaved edits independent. The Draft ribbon’s
 experiment action uses the accepted draft values.
 
+Use [acquisition](acquisition.md) to update ANA and forecast inputs from
+**Processing → Acquire inputs** or as part of Run All.
+
 Operational file work and processing run on a dedicated worker, separately from
 monitoring loading. One operational job runs at a time per workspace, with backend
 workspace locking. Jobs retains stages, per-scenario status, bounded expandable log
@@ -286,6 +289,5 @@ performance, long-session memory behavior, HiDPI/input packaging, Wayland or
 Windows compatibility. Performance/memory thresholds and hardware acceptance
 remain open. Basemap equivalence to the legacy Carto style is unqualified.
 
-The saved-data forms use the same validated workflows as the CLI.
-Live acquisition remains planned. See the [assistant contract](assistant.md)
-for adapter usage and settings.
+The saved-data and acquisition forms use the same validated workflows as the
+CLI. See the [assistant contract](assistant.md) for assistant adapter settings.

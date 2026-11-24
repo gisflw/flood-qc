@@ -24,6 +24,7 @@ use std::{
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationStage {
+    Acquisition,
     Preparation,
     History,
     Scenarios,
@@ -35,6 +36,8 @@ pub struct OperationProgress {
     pub stage: OperationStage,
     pub scenario: Option<String>,
     pub fraction: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
     pub attempt: Option<PathBuf>,
     pub scenarios: Vec<ScenarioProgress>,
 }
@@ -88,8 +91,19 @@ impl OperationControl {
             stage,
             scenario,
             fraction: None,
+            detail: None,
             attempt,
             scenarios,
+        });
+    }
+    pub(super) fn acquisition_progress(&self, detail: String, completed: usize, total: usize) {
+        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(OperationProgress {
+            stage: OperationStage::Acquisition,
+            scenario: None,
+            fraction: (total > 0).then(|| completed as f64 / total as f64),
+            detail: Some(detail),
+            attempt: None,
+            scenarios: Vec::new(),
         });
     }
     fn scenario_state(&self, id: &str, state: &str) {
@@ -582,6 +596,12 @@ pub fn execute_prepared_controlled(
 }
 
 pub(super) fn lock_workspace(workspace: &Path) -> Result<std::fs::File, OperationError> {
+    let lock = lock_workspace_job(workspace)?;
+    recover_run_cache(workspace).map_err(|error| store_error(workspace, error))?;
+    Ok(lock)
+}
+
+pub(super) fn lock_workspace_job(workspace: &Path) -> Result<std::fs::File, OperationError> {
     let lock = OpenOptions::new()
         .read(true)
         .write(true)
@@ -595,7 +615,6 @@ pub(super) fn lock_workspace(workspace: &Path) -> Result<std::fs::File, Operatio
         },
         std::fs::TryLockError::Error(e) => store_error(workspace, e),
     })?;
-    recover_run_cache(workspace).map_err(|error| store_error(workspace, error))?;
     Ok(lock)
 }
 

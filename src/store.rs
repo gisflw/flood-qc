@@ -26,6 +26,7 @@ pub use self::netcdf::{
     write_grid_frame, write_grid_series,
 };
 
+pub(crate) use self::forecast::create_workspace_dir;
 pub use self::forecast::{
     CanonicalForecastMetadata, ForecastAsset, ForecastAssetChoice, ForecastCatalog,
     ForecastSnapshotSelection, check_correction,

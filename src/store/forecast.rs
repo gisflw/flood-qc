@@ -132,7 +132,10 @@ fn resolve(workspace: &Path, p: &Path) -> Result<PathBuf, StoreError> {
     }
     Ok(canonical)
 }
-fn create_workspace_dir(workspace: &Path, relative_path: &Path) -> Result<(), StoreError> {
+pub(crate) fn create_workspace_dir(
+    workspace: &Path,
+    relative_path: &Path,
+) -> Result<(), StoreError> {
     relative(relative_path)?;
     let mut path = PathBuf::new();
     for component in relative_path.components() {
@@ -528,29 +531,74 @@ impl ForecastCatalog {
                 "source changed during normalization".into(),
             ));
         }
+        if self.root.as_os_str().is_empty() {
+            return Err(invalid("native registration requires an artifact root"));
+        }
         let asset_id = forecast_asset_id(&source.source_id);
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let exists: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM asset WHERE asset_id=?1)",
+            [&asset_id],
+            |row| row.get(0),
+        )?;
+        if exists {
+            tx.commit()?;
+            return self.load_native(&asset_id).map(|(asset, _)| asset);
+        }
+        let root = resolve(&self.workspace, &self.root)?;
         let rel_dir = self.root.join(&asset_id);
         let dir = self.workspace.join(&rel_dir);
-        fs::create_dir(&dir)?;
-        resolve(&self.workspace, &rel_dir)?;
         let retained_source = rel_dir.join("source.grib2");
         let native_artifact = rel_dir.join("native.nc");
-        let source_file = self.workspace.join(&retained_source);
-        let native_file = self.workspace.join(&native_artifact);
-        let source_partial = dir.join("source.partial.grib2");
-        copy_source(source_path, &source_partial)?;
-        if digest(&source_partial)? != (source.sha256.clone(), source.byte_length) {
+        let created = if !dir.exists() {
+            let stage = tempfile::Builder::new()
+                .prefix(".native-")
+                .tempdir_in(&root)?;
+            let staged_source = stage.path().join("source.grib2");
+            copy_source(source_path, &staged_source)?;
+            if digest(&staged_source)? != (source.sha256.clone(), source.byte_length) {
+                return Err(StoreError::Integrity(
+                    "retained source hash mismatch".into(),
+                ));
+            }
+            let staged_native = stage.path().join("native.nc");
+            write_grid_series(&staged_native, native)?;
+            File::open(&staged_native)?.sync_all()?;
+            super::sync_directory(stage.path()).map_err(std::io::Error::other)?;
+            match fs::rename(stage.path(), &dir) {
+                Ok(()) => true,
+                Err(_) if dir.is_dir() => false,
+                Err(error) => return Err(error.into()),
+            }
+        } else {
+            false
+        };
+        let source_file = resolve(&self.workspace, &retained_source)?;
+        let native_file = resolve(&self.workspace, &native_artifact)?;
+        if digest(&source_file)? != (source.sha256.clone(), source.byte_length) {
             return Err(StoreError::Integrity(
                 "retained source hash mismatch".into(),
             ));
         }
-        fs::rename(&source_partial, &source_file)?;
-        let temp = dir.join("native.partial.nc");
-        write_grid_series(&temp, native)?;
-        File::open(&temp)?.sync_all()?;
-        fs::rename(&temp, &native_file)?;
-        super::sync_directory(&dir).map_err(std::io::Error::other)?;
-        super::sync_directory(&self.workspace.join(&self.root)).map_err(std::io::Error::other)?;
+        if !created {
+            let prior = read_grid_series(&native_file)?;
+            if prior.timeline != native.timeline
+                || prior.grid != native.grid
+                || prior.provenance != native.provenance
+                || prior.valid != native.valid
+                || prior
+                    .values
+                    .iter()
+                    .zip(&native.values)
+                    .zip(&native.valid)
+                    .any(|((old, next), valid)| *valid && old != next)
+            {
+                return Err(StoreError::Integrity("retained native grid differs".into()));
+            }
+        }
+        super::sync_directory(&root).map_err(std::io::Error::other)?;
         let (native_sha, native_len) = digest(&native_file)?;
         let first = &native
             .timeline
@@ -573,7 +621,7 @@ impl ForecastCatalog {
         let source_len =
             i64::try_from(source.byte_length).map_err(|_| invalid("source too large"))?;
         let native_len = i64::try_from(native_len).map_err(|_| invalid("native too large"))?;
-        self.connection.execute(
+        tx.execute(
             "INSERT INTO asset VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             params![
                 asset_id,
@@ -597,6 +645,7 @@ impl ForecastCatalog {
                 last.format("%Y-%m-%dT%H:%M:%S").to_string()
             ],
         )?;
+        tx.commit()?;
         Ok(ForecastAsset {
             asset_id,
             source_id: source.source_id.clone(),

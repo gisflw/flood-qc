@@ -2710,3 +2710,198 @@ fn replay_from_standalone_recipe_requires_identical_sources() {
     );
     assert!(legacy_replayed.run_root.exists());
 }
+
+#[test]
+fn acquisition_run_all_freezes_cached_provider_selection_and_keeps_active_on_failure() {
+    use chrono::{Datelike, TimeDelta, Timelike};
+    use mgb_ops::adapters::{NormalizationRequest, normalize_saved_forecast};
+    use mgb_ops::store::{ForecastCatalog, ForecastProvider};
+
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    fixture(&workspace);
+    let cycle = time("2026-07-20T00:00:00").and_utc();
+    let reference = time("2026-07-20T02:00:00");
+    let bounds = [0.125, 0.125, 0.25, 0.25];
+    let mut observation_store =
+        ObservationStore::open_writable(&workspace.join("observations.sqlite")).unwrap();
+    observation_store
+        .ingest_batch(&ObservationBatch {
+            samples: [time("2026-07-20T01:00:00"), reference]
+                .into_iter()
+                .map(|observed_at| ObservationSample {
+                    series_id: "r".into(),
+                    observed_at,
+                    value: Some(ObservationValue::RainMm(0.)),
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .unwrap();
+
+    // Expand one fixture message into a complete GFS cycle using its GRIB2
+    // template 4.8 end time and accumulation-duration fields.
+    let grib = include_bytes!("fixtures/forecast/noaa.grib2");
+    let message_end = u64::from_be_bytes(grib[8..16].try_into().unwrap()) as usize;
+    let mut section = 16;
+    while grib[section + 4] != 4 {
+        section += u32::from_be_bytes(grib[section..section + 4].try_into().unwrap()) as usize;
+    }
+    let mut bytes = Vec::new();
+    for lead in (3..=240u32).step_by(3).chain((252..=384).step_by(12)) {
+        let mut message = grib[..message_end].to_vec();
+        let end = cycle + TimeDelta::hours(i64::from(lead));
+        message[section + 34..section + 36].copy_from_slice(&(end.year() as u16).to_be_bytes());
+        message[section + 36] = end.month() as u8;
+        message[section + 37] = end.day() as u8;
+        message[section + 38] = end.hour() as u8;
+        message[section + 49..section + 53].copy_from_slice(&lead.to_be_bytes());
+        bytes.extend(message);
+    }
+    let source = workspace.join("gfs.grib2");
+    fs::write(&source, bytes).unwrap();
+    let forecast = normalize_saved_forecast(
+        &source,
+        &NormalizationRequest {
+            provider: ForecastProvider::Noaa,
+            model: "gfs".into(),
+            product: "fc".into(),
+            cycle_utc: cycle,
+            operation_timezone: chrono_tz::UTC,
+            crop_bbox: bounds,
+        },
+    )
+    .unwrap();
+    let mut catalog = ForecastCatalog::open(
+        &workspace,
+        Path::new("forecasts.sqlite"),
+        Path::new("forecasts"),
+    )
+    .unwrap();
+    let asset = catalog
+        .register_native(&source, &forecast.source, &forecast.native)
+        .unwrap();
+    assert_eq!(
+        catalog
+            .register_native(&source, &forecast.source, &forecast.native)
+            .unwrap()
+            .asset_id,
+        asset.asset_id
+    );
+
+    let request = workspace.join("request.toml");
+    let original = fs::read_to_string(&request).unwrap();
+    let recipe = original
+        .split_once("[[scenarios]]\nid = \"other\"")
+        .unwrap()
+        .0
+        .replace("2026-01-01", "2026-07-20")
+        .replace("[-1.0,-1.0,1.0,1.0]", "[0.125,0.125,0.25,0.25]")
+        .replace("resolution_degrees = 1.0", "resolution_degrees = 0.25")
+        .replace("unused.sqlite", "forecasts.sqlite");
+    let recipe = format!(
+        r#"{recipe}
+[acquisition]
+request = "acquisition.toml"
+[[scenarios]]
+id = "noaa"
+kind = "raw"
+forecast_provider = "noaa"
+"#
+    );
+    fs::write(&request, &recipe).unwrap();
+    fs::write(
+        workspace.join("acquisition.toml"),
+        r#"schema_version = 1
+time_zone = "UTC"
+[forecasts]
+providers = ["noaa"]
+model_bbox = [0.125, 0.125, 0.25, 0.25]
+buffer_fraction = 0.0
+catalog = "forecasts.sqlite"
+artifact_root = "forecasts"
+"#,
+    )
+    .unwrap();
+
+    let operation =
+        mgb_ops::OperationalRun::open(workspace.clone(), &request, reference.and_utc()).unwrap();
+    assert!(operation.acquires_inputs());
+    assert!(
+        operation.validate().is_empty(),
+        "{:?}",
+        operation.validate()
+    );
+    let report = operation.run_all_report(&mgb_ops::OperationControl::default());
+    assert!(report.error.is_none(), "{:?}", report.error);
+    let acquisition = report.acquisition.unwrap();
+    let resolved = &acquisition.forecasts[0];
+    assert!(resolved.reused);
+    assert_eq!(resolved.asset_id.as_deref(), Some(asset.asset_id.as_str()));
+    let execution = report.execution.unwrap();
+    let manifest = mgb_ops::store::read_retained_manifest(&execution.run_root).unwrap();
+    assert_eq!(
+        manifest.recipe["document"]["scenarios"][1]["asset_id"],
+        asset.asset_id
+    );
+    assert!(manifest.recipe["document"].get("acquisition").is_none());
+    assert_eq!(fs::read_to_string(&request).unwrap(), recipe);
+
+    let active = mgb_ops::app::rainfall_cache_info(&workspace).unwrap();
+    let ecmwf_source = workspace.join("ifs.grib2");
+    fs::write(
+        &ecmwf_source,
+        include_bytes!("fixtures/forecast/ecmwf.grib2"),
+    )
+    .unwrap();
+    let ecmwf = normalize_saved_forecast(
+        &ecmwf_source,
+        &NormalizationRequest {
+            provider: ForecastProvider::Ecmwf,
+            model: "ifs".into(),
+            product: "fc".into(),
+            cycle_utc: cycle,
+            operation_timezone: chrono_tz::UTC,
+            crop_bbox: bounds,
+        },
+    )
+    .unwrap();
+    let damaged = catalog
+        .register_native(&ecmwf_source, &ecmwf.source, &ecmwf.native)
+        .unwrap();
+    fs::write(workspace.join(damaged.retained_source), b"damaged source").unwrap();
+    let acquisition_path = workspace.join("acquisition.toml");
+    let config = fs::read_to_string(&acquisition_path).unwrap();
+    fs::write(
+        acquisition_path,
+        config.replace("[\"noaa\"]", "[\"noaa\", \"ecmwf\"]"),
+    )
+    .unwrap();
+    let failed = operation.run_all_report(&mgb_ops::OperationControl::default());
+    assert!(failed.error.is_some());
+    assert!(failed.execution.is_none());
+    let forecasts = failed.acquisition.unwrap().forecasts;
+    assert_eq!(
+        forecasts[0].asset_id.as_deref(),
+        Some(asset.asset_id.as_str())
+    );
+    assert!(forecasts[0].reused && forecasts[1].error.is_some());
+    assert_eq!(
+        mgb_ops::app::rainfall_cache_info(&workspace).unwrap(),
+        active
+    );
+
+    let cancelled = mgb_ops::OperationControl::default();
+    cancelled.cancel();
+    let report = operation.run_all_report(&cancelled);
+    assert!(matches!(
+        report.error,
+        Some(mgb_ops::OperationError::Cancelled { .. })
+    ));
+    assert_eq!(
+        mgb_ops::app::rainfall_cache_info(&workspace).unwrap(),
+        active
+    );
+}

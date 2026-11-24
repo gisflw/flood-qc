@@ -96,8 +96,9 @@ It returns selected inputs, offsets and preparation values. It does not launch
 MGB or finalize a reusable preparation directory. Integrated preparation and
 execution are separate capabilities.
 
-Linux behavior is tested. Windows, live acquisition, general observation-unit
-conversion and hydrological validity remain unverified or outside this increment.
+Linux behavior is tested. The [ANA acquisition contract](acquisition.md#ana-observations)
+defines provider conversion and raw-series revisions. Windows and hydrological
+validity remain unverified.
 
 ## Station reference levels
 

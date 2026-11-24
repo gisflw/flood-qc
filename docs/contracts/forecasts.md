@@ -2,8 +2,8 @@
 
 `forecast normalize` reads an explicitly selected saved GRIB2 file, returns
 canonical native rainfall intervals and retains the original source plus a native
-NetCDF artifact in a separate forecast catalog. It does not acquire forecasts,
-select a latest cycle, open observations or run MGB.
+NetCDF artifact in a separate forecast catalog. Use [forecast acquisition](acquisition.md#forecast-acquisition)
+to fetch and register a provider cycle.
 
 ```sh
 mgb-ops forecast normalize --workspace /regional/workspace --request normalize.toml --json
@@ -104,5 +104,5 @@ remains distinct. Time is i64 seconds from a recorded local origin, without a UT
 suffix. Readers validate values, masks, coordinate metadata, dimensions and schema.
 Transformed frames persist separately because their footprints can differ.
 
-Linux is the qualification platform. Windows, live acquisition and engine
-execution are outside this contract's evidence.
+Linux is the qualification platform for saved normalization and forecast
+forcing. See [acquisition](acquisition.md) for the live provider workflow.
