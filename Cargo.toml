@@ -72,7 +72,7 @@ path = "src/bin/monitor.rs"
 required-features = ["desktop"]
 
 [dependencies.eframe]
-version = "=0.36.0"
+version = "=0.36.2"
 optional = true
 default-features = false
 features = ["accesskit", "default_fonts", "wgpu", "persistence", "x11", "wayland"]

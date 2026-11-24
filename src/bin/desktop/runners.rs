@@ -676,6 +676,7 @@ impl Runners {
     }
 
     pub fn workspace_settings(&mut self, ui: &mut egui::Ui, pt: bool) {
+        ui.heading(Form::Workspace.label(pt));
         let status = self.localized_status(pt);
         let busy = self.busy();
         let Some(config) = &mut self.config else {
@@ -683,45 +684,38 @@ impl Runners {
             return;
         };
         let original = config.clone();
-        ui.vertical(|ui| {
-            ui.add_enabled_ui(!busy, |ui| {
-                ui.horizontal(|ui| {
-                    let mut field = |label: String, value: &mut Option<String>| {
-                        ui.vertical(|ui| {
-                            ui.spacing_mut().text_edit_width = 145.;
-                            string(ui, &label, value);
-                        });
-                    };
-                    field(
-                        text(pt, "Geometry file", "Arquivo de geometria"),
-                        &mut config.spatial.get_or_insert_default().gpkg_path,
-                    );
-                    field(
-                        text(pt, "Engine executable", "Executável MGB"),
-                        &mut config.engine.get_or_insert_default().executable,
-                    );
-                    field(
-                        text(pt, "Baseline Input directory", "Diretório Input base"),
-                        &mut config.engine.get_or_insert_default().input_dir,
-                    );
-                });
-                restore_empty(&original.spatial, &mut config.spatial);
-                restore_empty(&original.engine, &mut config.engine);
-            });
-            if !status.is_empty() {
-                ui.allocate_ui(egui::vec2(435., 0.), |ui| {
-                    ui.add(egui::Label::new(&status).truncate())
-                        .on_hover_text(&status);
-                });
-            }
-        });
         ui.add_enabled_ui(!busy, |ui| {
-            if super::ribbon_button(ui, "💾", text(pt, "Save", "Salvar")).clicked() {
-                self.start(Action::SaveConfig, ui.ctx());
-            }
-            if super::ribbon_button(ui, "⏪", text(pt, "Revert", "Reverter")).clicked() {
-                self.config = self.baseline.clone();
-            }
+            ui.spacing_mut().text_edit_width = ui.available_width();
+            string(
+                ui,
+                &text(pt, "Geometry file", "Arquivo de geometria"),
+                &mut config.spatial.get_or_insert_default().gpkg_path,
+            );
+            string(
+                ui,
+                &text(pt, "Engine executable", "Executável MGB"),
+                &mut config.engine.get_or_insert_default().executable,
+            );
+            string(
+                ui,
+                &text(pt, "Baseline Input directory", "Diretório Input base"),
+                &mut config.engine.get_or_insert_default().input_dir,
+            );
+            restore_empty(&original.spatial, &mut config.spatial);
+            restore_empty(&original.engine, &mut config.engine);
+        });
+        if !status.is_empty() {
+            ui.label(status);
+        }
+        ui.horizontal_wrapped(|ui| {
+            ui.add_enabled_ui(!busy, |ui| {
+                if ui.button(text(pt, "Save", "Salvar")).clicked() {
+                    self.start(Action::SaveConfig, ui.ctx());
+                }
+                if ui.button(text(pt, "Revert", "Reverter")).clicked() {
+                    self.config = self.baseline.clone();
+                }
+            });
         });
     }
 
@@ -939,8 +933,8 @@ impl Runners {
         }
         ui.label(self.localized_status(pt));
         super::section(ui, text(pt, "Logs", "Registros"), |ui| {
-            egui::ScrollArea::both().show(ui, |ui| {
-                ui.monospace(&self.logs);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.add(egui::Label::new(egui::RichText::new(&self.logs).monospace()).wrap());
             });
         });
     }
@@ -1020,7 +1014,7 @@ fn number<T>(ui: &mut egui::Ui, label: &str, value: &mut Option<T>, pt: bool)
 where
     T: egui::emath::Numeric + Default,
 {
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(label);
         let mut enabled = value.is_some();
         let response = ui.checkbox(&mut enabled, text(pt, "Set", "Definir"));
@@ -1082,7 +1076,7 @@ fn ordered(
     };
     let mut change = None;
     for (i, id) in ids.iter().enumerate() {
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.label(id);
             if i > 0
                 && super::icon_button(

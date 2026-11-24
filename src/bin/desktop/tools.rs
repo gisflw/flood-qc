@@ -345,32 +345,14 @@ impl SoilFields {
             ui.add(egui::DragValue::new(&mut self.watershed).range(1..=count));
         });
         let watershed = data.watersheds().get(self.watershed - 1)?;
-        egui::ScrollArea::both()
-            .id_salt("soil_classes")
-            .max_height(200.0)
-            .show(ui, |ui| {
-                egui::Grid::new("soil_class_values")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for label in ["HRC", "Wm", "b", "Kbas", "Kint", "XL", "CAP", "Wc"] {
-                            ui.strong(label);
-                        }
-                        ui.end_row();
-                        for (index, (class, values)) in
-                            classes.iter().zip(&watershed.classes).enumerate()
-                        {
-                            if ui
-                                .selectable_label(self.class == index + 1, &class.name)
-                                .clicked()
-                            {
-                                self.class = index + 1;
-                            }
-                            for value in values {
-                                ui.label(value.to_string());
-                            }
-                            ui.end_row();
-                        }
-                    });
+        ui.label(text(pt, "Soil class", "Classe de solo"));
+        egui::ComboBox::from_id_salt("soil-class")
+            .truncate()
+            .selected_text(&classes[self.class - 1].name)
+            .show_ui(ui, |ui| {
+                for (index, class) in classes.iter().enumerate() {
+                    ui.selectable_value(&mut self.class, index + 1, &class.name);
+                }
             });
         let class = &classes[self.class - 1];
         if !class.description.is_empty() {
@@ -517,7 +499,7 @@ impl CalibrationTools {
                     data.rows().len(),
                     data.block_count()
                 ));
-                geometry_rows(ui, data, &mut self.geometry_fields.mini);
+                geometry_rows(ui, data, &mut self.geometry_fields.mini, pt);
                 if let Some(edit) = self.geometry_fields.show(ui, pt, data) {
                     let result = data.edit(edit).map(Effect::Changed);
                     self.geometry.finish(result, pt);
@@ -703,57 +685,57 @@ fn geometry_value(row: &CalibrationGeometryRow, field: GeometryField) -> f64 {
     }
 }
 
-fn geometry_rows(ui: &mut Ui, data: &CalibrationGeometry, mini: &mut usize) {
-    let row_height = ui
-        .text_style_height(&egui::TextStyle::Body)
-        .max(ui.spacing().interact_size.y);
-    egui::ScrollArea::both()
-        .id_salt("geometry_rows")
-        .max_height(240.0)
-        .show_rows(ui, row_height, data.rows().len() + 1, |ui, visible| {
-            egui::Grid::new("geometry_values")
-                .min_col_width(64.0)
-                .striped(true)
-                .show(ui, |ui| {
-                    for index in visible {
-                        if index == 0 {
-                            for name in [
-                                "MINI", "CatID", "Sub", "AreaM", "Width", "Depth", "NMAN",
-                                "MiniJus", "Hdr",
-                            ] {
-                                ui.strong(name);
-                            }
-                            for class in 1..=data.block_count() {
-                                ui.strong(format!("BLC_{class:02}"));
-                            }
-                        } else {
-                            let row = &data.rows()[index - 1];
-                            if ui
-                                .selectable_label(row.mini == *mini, row.mini.to_string())
-                                .clicked()
-                            {
-                                *mini = row.mini;
-                            }
-                            for value in [
-                                row.cat_id.to_string(),
-                                row.subbasin.to_string(),
-                                row.upstream_area.to_string(),
-                                row.width.to_string(),
-                                row.depth.to_string(),
-                                row.manning.to_string(),
-                                row.downstream.to_string(),
-                                row.hdr.to_string(),
-                            ] {
-                                ui.label(value);
-                            }
-                            for percentage in &row.blocks {
-                                ui.label(percentage.to_string());
-                            }
-                        }
-                        ui.end_row();
-                    }
-                });
+fn geometry_rows(ui: &mut Ui, data: &CalibrationGeometry, mini: &mut usize, pt: bool) {
+    let row_height = ui.spacing().interact_size.y;
+    egui::ScrollArea::vertical()
+        .id_salt("geometry-rows")
+        .max_height(140.)
+        .show_rows(ui, row_height, data.rows().len(), |ui, visible| {
+            for index in visible {
+                let row = &data.rows()[index];
+                let label = format!("MINI {} · CatID {}", row.mini, row.cat_id);
+                if ui
+                    .add_sized(
+                        [ui.available_width(), row_height],
+                        egui::Button::selectable(row.mini == *mini, label).truncate(),
+                    )
+                    .clicked()
+                {
+                    *mini = row.mini;
+                }
+            }
         });
+    if let Some(row) = data.rows().get(mini.saturating_sub(1)) {
+        ui.collapsing(
+            text(pt, "Selected MINI values", "Valores da MINI selecionada"),
+            |ui| {
+                let fields = [
+                    ("Sub", row.subbasin.to_string()),
+                    ("AreaM", row.upstream_area.to_string()),
+                    ("Width", row.width.to_string()),
+                    ("Depth", row.depth.to_string()),
+                    ("NMAN", row.manning.to_string()),
+                    ("MiniJus", row.downstream.to_string()),
+                    ("Hdr", row.hdr.to_string()),
+                ];
+                for (label, value) in fields
+                    .into_iter()
+                    .map(|(label, value)| (label.into(), value))
+                    .chain(row.blocks.iter().enumerate().map(|(index, percentage)| {
+                        (format!("BLC_{:02}", index + 1), percentage.to_string())
+                    }))
+                {
+                    super::theme::fitted_columns(ui, &[0.4, 0.6], |ui, column| {
+                        if column == 0 {
+                            ui.strong(&label);
+                        } else {
+                            ui.label(&value);
+                        }
+                    });
+                }
+            },
+        );
+    }
 }
 
 #[cfg(test)]

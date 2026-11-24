@@ -5,11 +5,13 @@ use mgb_ops::app::{
     AgentPreset, AgentSetting, AgentSettings, AssistantEvent, Conversation, PermissionOption,
     SETUP_NOTICE, Session, SettingKind,
 };
-use pulldown_cmark::{Event, Options, Parser, Tag};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
+    cell::RefCell,
     collections::{BTreeMap, VecDeque},
+    rc::Rc,
     sync::Arc,
     time::Duration,
 };
@@ -17,6 +19,8 @@ use std::{
 const TRANSCRIPT_LIMIT: usize = 256 * 1024;
 const MESSAGE_LIMIT: usize = 80 * 1024;
 const TURN_LIMIT: usize = 128;
+const EDITOR_ROWS: usize = 2;
+const EDITOR_MARGIN: egui::Margin = egui::Margin::symmetric(8, 5);
 
 pub type Preferences = BTreeMap<String, RememberedSettings>;
 
@@ -38,6 +42,7 @@ pub struct Pane {
     agent: Option<AgentPreset>,
     conversation: Option<Conversation>,
     draft_prompt: String,
+    editor_content_height: f32,
     turns: VecDeque<Turn>,
     next_turn: u64,
     status: String,
@@ -101,7 +106,9 @@ struct TurnLayout {
 struct MarkdownReply {
     text: String,
     cache: CommonMarkCache,
-    links_dirty: bool,
+    dirty: bool,
+    fitted: Option<Rc<FittedMarkdown>>,
+    table_cache: Rc<RefCell<CommonMarkCache>>,
 }
 
 fn append_text(message: &mut String, chunk: &str) {
@@ -112,43 +119,159 @@ fn append_text(message: &mut String, chunk: &str) {
     }
 }
 
+#[derive(Default)]
+struct MarkdownTable {
+    headings: Vec<String>,
+    rows: Vec<Vec<String>>,
+}
+
+struct FittedMarkdown {
+    source: String,
+    marker: String,
+    definitions: String,
+    tables: Vec<MarkdownTable>,
+}
+
 impl MarkdownReply {
     fn push(&mut self, chunk: &str) {
         if !chunk.is_empty() {
             append_text(&mut self.text, chunk);
-            self.links_dirty = true;
+            self.dirty = true;
+        }
+    }
+
+    fn prepare(&mut self) {
+        self.cache.link_hooks_clear();
+        let mut table_cache = self.table_cache.borrow_mut();
+        table_cache.link_hooks_clear();
+        self.fitted = None;
+        self.dirty = false;
+        if !self.text.contains(['[', '<', '|']) {
+            return;
+        }
+
+        let options = Options::ENABLE_TABLES
+            | Options::ENABLE_TASKLISTS
+            | Options::ENABLE_STRIKETHROUGH
+            | Options::ENABLE_FOOTNOTES
+            | Options::ENABLE_DEFINITION_LIST;
+        let parser = Parser::new_ext(&self.text, options);
+        let mut fitted = FittedMarkdown {
+            source: String::new(),
+            marker: "mgb-ops-table-".into(),
+            definitions: parser
+                .reference_definitions()
+                .iter()
+                .map(|(_, link)| &self.text[link.span.clone()])
+                .collect::<Vec<_>>()
+                .join("\n"),
+            tables: Vec::new(),
+        };
+        while self.text.contains(&fitted.marker) {
+            fitted.marker.push('-');
+        }
+        let mut last_end = 0;
+        let mut table: Option<MarkdownTable> = None;
+        for (event, span) in parser.into_offset_iter() {
+            match event {
+                Event::Start(Tag::Link { dest_url, .. })
+                    if !dest_url.starts_with("https://") && !dest_url.starts_with("http://") =>
+                {
+                    self.cache.add_link_hook(dest_url.to_string());
+                    table_cache.add_link_hook(dest_url.into_string());
+                }
+                Event::Start(Tag::Table(_)) => {
+                    fitted.source.push_str(&self.text[last_end..span.start]);
+                    fitted.source.push_str(&format!(
+                        "<!--{}{}-->\n\n",
+                        fitted.marker,
+                        fitted.tables.len()
+                    ));
+                    last_end = span.end;
+                    table = Some(MarkdownTable::default());
+                }
+                Event::Start(Tag::TableRow) => {
+                    if let Some(table) = &mut table {
+                        table.rows.push(Vec::new());
+                    }
+                }
+                Event::Start(Tag::TableCell) => {
+                    if let Some(table) = &mut table {
+                        table
+                            .rows
+                            .last_mut()
+                            .unwrap_or(&mut table.headings)
+                            .push(self.text[span].trim().into());
+                    }
+                }
+                Event::End(TagEnd::Table) => {
+                    if let Some(table) = table.take() {
+                        fitted.tables.push(table);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !fitted.tables.is_empty() {
+            fitted.source.push_str(&self.text[last_end..]);
+            self.fitted = Some(Rc::new(fitted));
         }
     }
 
     fn show(&mut self, ui: &mut egui::Ui) {
-        if self.links_dirty {
-            self.cache.link_hooks_clear();
-            let options = Options::ENABLE_TABLES
-                | Options::ENABLE_TASKLISTS
-                | Options::ENABLE_STRIKETHROUGH
-                | Options::ENABLE_FOOTNOTES
-                | Options::ENABLE_DEFINITION_LIST;
-            if self.text.contains(['[', '<']) {
-                for event in Parser::new_ext(&self.text, options) {
-                    if let Event::Start(Tag::Link { dest_url, .. }) = event
-                        && !dest_url.starts_with("https://")
-                        && !dest_url.starts_with("http://")
-                    {
-                        self.cache.add_link_hook(dest_url.into_string());
-                    }
-                }
-            }
-            self.links_dirty = false;
+        if self.dirty {
+            self.prepare();
         }
-        egui::ScrollArea::horizontal()
-            .id_salt("reply-overflow")
-            .min_scrolled_width(0.)
-            .auto_shrink([false, true])
-            .show(ui, |ui| {
-                CommonMarkViewer::new()
-                    .explicit_image_uri_scheme(true)
-                    .show(ui, &mut self.cache, &self.text);
-            });
+        let viewer = CommonMarkViewer::new().explicit_image_uri_scheme(true);
+        if let Some(fitted) = self.fitted.clone() {
+            let tables = fitted.clone();
+            let cache = self.table_cache.clone();
+            let html = move |ui: &mut egui::Ui, html: &str| {
+                let table = html
+                    .trim()
+                    .strip_prefix("<!--")
+                    .and_then(|html| html.strip_prefix(&tables.marker))
+                    .and_then(|html| html.strip_suffix("-->"))
+                    .and_then(|index| index.parse::<usize>().ok())
+                    .and_then(|index| tables.tables.get(index));
+                if let Some(table) = table {
+                    let mut cache = cache.borrow_mut();
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.x = 6.;
+                        theme::fitted_table(
+                            ui,
+                            &table.headings,
+                            &table.rows,
+                            |ui, cell, heading| {
+                                let source = if cell.contains('[') && !tables.definitions.is_empty()
+                                {
+                                    std::borrow::Cow::Owned(format!(
+                                        "{cell}\n\n{}",
+                                        tables.definitions
+                                    ))
+                                } else {
+                                    std::borrow::Cow::Borrowed(cell)
+                                };
+                                if heading {
+                                    ui.visuals_mut().override_text_color =
+                                        Some(ui.visuals().strong_text_color());
+                                }
+                                CommonMarkViewer::new()
+                                    .explicit_image_uri_scheme(true)
+                                    .show(ui, &mut cache, &source);
+                            },
+                        );
+                    });
+                } else {
+                    ui.label(html);
+                }
+            };
+            viewer
+                .render_html_fn(Some(&html))
+                .show(ui, &mut self.cache, &fitted.source);
+        } else {
+            viewer.show(ui, &mut self.cache, &self.text);
+        }
     }
 }
 
@@ -473,12 +596,8 @@ impl Pane {
                 font.family = theme::chat_font();
                 ui.style_mut().text_styles.insert(style, font);
             }
-            self.header(ui, pt, session);
-            let applied = egui::Panel::bottom(ui.id().with("composer"))
-                .resizable(false)
-                .frame(theme::toolbar(ui.style()))
-                .show(ui, |ui| self.composer(ui, pt))
-                .inner;
+            theme::fitted_columns(ui, &[1.], |ui, _| self.header(ui, pt, session));
+            let applied = self.composer(ui, pt);
             egui::ScrollArea::vertical()
                 .id_salt("assistant-transcript")
                 .auto_shrink([false, false])
@@ -560,6 +679,7 @@ impl Pane {
     }
 
     fn transcript(&mut self, ui: &mut egui::Ui, pt: bool) {
+        ui.add_space(4.);
         if self.turns.is_empty() {
             ui.small(text(pt, SETUP_NOTICE, "O agente e seu provedor podem receber as suas solicitações e os resultados das ferramentas do MGB Ops. A configuração do agente instalado controla suas permissões de arquivos, terminal e rede."));
             if self.tools_connected {
@@ -594,14 +714,14 @@ impl Pane {
             ui.push_id(turn.id, |ui| {
                 egui::Frame::new()
                     .fill(ui.visuals().selection.bg_fill)
-                    .inner_margin(8)
-                    .corner_radius(6.)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .corner_radius(9.)
                     .show(ui, |ui| {
-                        ui.small(text(pt, "You", "Você"));
+                        ui.weak(text(pt, "You", "Você"));
                         turn.prompt.show(ui);
                     });
                 ui.add_space(4.);
-                ui.strong(self.agent.map_or("Assistant", AgentPreset::label));
+                ui.strong(text(pt, "Assistant", "Assistente"));
                 if busy || !turn.activity.text.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         let icon = if turn.thinking_open { "−" } else { "+" };
@@ -628,7 +748,7 @@ impl Pane {
                 if !turn.answer.text.is_empty() {
                     turn.answer.show(ui);
                 }
-                ui.add_space(8.);
+                ui.add_space(12.);
             });
             turn.layout = Some(TurnLayout {
                 geometry,
@@ -639,61 +759,110 @@ impl Pane {
     }
 
     fn composer(&mut self, ui: &mut egui::Ui, pt: bool) -> bool {
+        let clip = ui.clip_rect();
+        let available = ui.available_height();
+        let row_height = ui.text_style_height(&egui::TextStyle::Body);
+        let minimum = (row_height + ui.spacing().extra_text_line_spacing) * EDITOR_ROWS as f32
+            + EDITOR_MARGIN.sum().y;
+        let cap = (available * 0.32).min(156.).max(minimum);
+        let height = self.editor_content_height.clamp(minimum, cap);
+        let frame = egui::Frame::new()
+            .fill(ui.visuals().faint_bg_color)
+            .stroke(ui.visuals().window_stroke())
+            .inner_margin(egui::Margin::symmetric(8, 6))
+            .outer_margin(egui::Margin::symmetric(0, 3))
+            .corner_radius(9.);
+        // Bottom panels position their top edge before laying out children.
+        let controls = row_height + ui.spacing().interact_size.y + 2. * ui.spacing().item_spacing.y;
+        egui::Panel::bottom(ui.id().with("composer"))
+            .show_separator_line(false)
+            .exact_size((height + controls + frame.total_margin().sum().y).ceil())
+            .frame(frame)
+            .show(ui, |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(clip));
+                self.editor(ui, pt, height);
+            });
+
         let review = self.conversation.as_ref().and_then(Conversation::review);
-        let applied = if self.permission.is_some() || review.is_some() {
-            egui::ScrollArea::vertical()
-                .id_salt("assistant-actions")
-                .max_height((ui.available_height() * 0.24).min(170.))
-                .show(ui, |ui| self.actions(ui, pt, review))
-                .inner
-        } else {
-            false
-        };
-        let label = ui.label(text(pt, "Message", "Mensagem"));
-        let editor_height = (ui.available_height() * 0.15).clamp(48., 96.);
-        let edit = egui::ScrollArea::vertical()
+        if self.permission.is_none() && review.is_none() {
+            return false;
+        }
+        let frame = theme::toolbar(ui.style());
+        let height = (ui.available_height() * 0.38).min(170.);
+        egui::Panel::bottom(ui.id().with("assistant-actions"))
+            .exact_size(height)
+            .frame(frame)
+            .show(ui, |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(clip));
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .min_scrolled_height(0.)
+                    .show(ui, |ui| self.actions(ui, pt, review))
+                    .inner
+            })
+            .inner
+    }
+
+    fn editor(&mut self, ui: &mut egui::Ui, pt: bool, height: f32) {
+        let label = ui.weak(text(pt, "Message", "Mensagem"));
+        let editor = egui::ScrollArea::vertical()
             .id_salt("message-editor")
             .auto_shrink([false, false])
             .animated(false)
-            .max_height(editor_height)
+            .max_height(height)
             .min_scrolled_height(0.)
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.draft_prompt)
                         .id_salt("draft-prompt")
                         .desired_width(ui.available_width())
-                        .desired_rows(2)
+                        .desired_rows(EDITOR_ROWS)
+                        .margin(EDITOR_MARGIN)
                         .return_key(egui::KeyboardShortcut::new(
                             egui::Modifiers::SHIFT,
                             egui::Key::Enter,
                         )),
                 )
                 .labelled_by(label.id)
-            })
-            .inner;
-        let submit = edit.has_focus() && ui.input(|input| input.events.iter().any(plain_enter));
+            });
+        let edit = editor.inner;
+        let submit = edit.has_focus() && ui.input(|input| submit_shortcut(&input.events));
+        if self.editor_content_height != editor.content_size.y || edit.changed() {
+            self.editor_content_height = editor.content_size.y;
+            ui.request_repaint();
+        }
         let can_send = self.ready
             && !self.active
             && self.pending_setting.is_none()
             && !self.draft_prompt.trim().is_empty();
-        ui.horizontal_wrapped(|ui| {
-            let send = ui.add_enabled(can_send, theme::primary(ui, text(pt, "Send", "Enviar")));
-            if send.clicked() || submit && can_send {
-                self.submit();
-                edit.request_focus();
-                ui.request_repaint();
-            }
-            if self.active
-                && ui.button(text(pt, "Stop", "Parar")).clicked()
-                && let Some(conversation) = &self.conversation
-            {
-                self.status = match conversation.stop() {
-                    Ok(()) => text(pt, "Stopping prompt", "Interrompendo solicitação"),
-                    Err(error) => error,
-                };
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if self.active {
+                if ui.button(text(pt, "Stop", "Parar")).clicked()
+                    && let Some(conversation) = &self.conversation
+                {
+                    self.status = match conversation.stop() {
+                        Ok(()) => text(pt, "Stopping prompt", "Interrompendo solicitação"),
+                        Err(error) => error,
+                    };
+                }
+            } else {
+                let send = ui
+                    .add_enabled(can_send, theme::primary(ui, text(pt, "Send", "Enviar")))
+                    .on_hover_text(text(
+                        pt,
+                        "Enter to send · Shift+Enter for a new line",
+                        "Enter para enviar · Shift+Enter para uma nova linha",
+                    ));
+                if send.clicked() || submit && can_send {
+                    self.submit();
+                    if self.draft_prompt.is_empty() {
+                        self.editor_content_height = 0.;
+                    }
+                    edit.request_focus();
+                    ui.request_repaint();
+                }
             }
         });
-        applied
     }
 
     fn actions(
@@ -806,6 +975,15 @@ fn plain_enter(event: &egui::Event) -> bool {
             ..
         }
     )
+}
+
+fn submit_shortcut(events: &[egui::Event]) -> bool {
+    // Keyboard events handled by the input method are filtered by egui-winit.
+    // A composition update can still share a frame with an ordinary Enter.
+    events.iter().any(plain_enter)
+        && !events
+            .iter()
+            .any(|event| matches!(event, egui::Event::Ime(_)))
 }
 
 fn setting_picker(
@@ -926,10 +1104,10 @@ mod tests {
         };
         let full_extent = frame(&mut pane, 160.);
         // Rebuilding an off-screen reply would clear its link cache's dirty flag.
-        pane.turns[70].answer.links_dirty = true;
+        pane.turns[70].answer.dirty = true;
         let clipped_extent = frame(&mut pane, 160.);
         assert_eq!(clipped_extent, full_extent);
-        assert!(pane.turns[70].answer.links_dirty);
+        assert!(pane.turns[70].answer.dirty);
     }
 
     #[test]
@@ -945,9 +1123,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    egui::Panel::bottom("composer-test")
-                        .resizable(false)
-                        .show(ui, |ui| pane.composer(ui, false));
+                    pane.composer(ui, false);
                 },
             );
             output.textures_delta.clear();
@@ -997,6 +1173,82 @@ mod tests {
         painted(typed, "Immediate");
         painted(multiline, "Immediate\nSecond line");
         assert_eq!(pane.draft_prompt, "Immediate\nSecond line");
+    }
+
+    #[test]
+    fn composer_grows_to_a_cap_then_scrolls_and_shrinks() {
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(260., 400.));
+        let mut pane = Pane::default();
+        let measure = |pane: &mut Pane, draft: &str| {
+            pane.draft_prompt = draft.into();
+            let mut editor = egui::Rect::NOTHING;
+            let mut send = egui::Pos2::ZERO;
+            for _ in 0..2 {
+                let mut frame = ctx.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(screen),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        pane.composer(ui, false);
+                    },
+                );
+                frame.textures_delta.clear();
+                editor = frame
+                    .shapes
+                    .iter()
+                    .find_map(|item| match &item.shape {
+                        egui::Shape::Text(shape) if shape.galley.text() == draft => {
+                            Some(item.clip_rect)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+                send = frame
+                    .shapes
+                    .iter()
+                    .find_map(|item| match &item.shape {
+                        egui::Shape::Text(shape) if shape.galley.text() == "Send" => {
+                            Some(shape.pos)
+                        }
+                        _ => None,
+                    })
+                    .unwrap();
+            }
+            (editor, send)
+        };
+        let (short, short_send) = measure(&mut pane, "Short");
+        let (multiline, _) = measure(&mut pane, "One\nTwo\nThree\nFour");
+        let (long, _) = measure(&mut pane, &"Long message\n".repeat(30));
+        let (longer, long_send) = measure(&mut pane, &"Long message\n".repeat(60));
+        assert!(short.height() < multiline.height());
+        assert!(multiline.height() < long.height());
+        assert!(pane.editor_content_height > longer.height());
+        assert_eq!(long.height(), longer.height());
+        assert!((short_send.y - long_send.y).abs() <= 1.);
+        assert_eq!(measure(&mut pane, "Short").0, short);
+    }
+
+    #[test]
+    fn composer_does_not_submit_during_an_ime_update() {
+        let enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let preedit = egui::Event::Ime(egui::ImeEvent::Preedit {
+            text: "あ".into(),
+            active_range_chars: None,
+        });
+        let ignored = !submit_shortcut(&[enter.clone(), preedit]);
+        assert!(ignored);
+        let commit = egui::Event::Ime(egui::ImeEvent::Commit("あ".into()));
+        let ignored = !submit_shortcut(&[enter.clone(), commit]);
+        assert!(ignored);
+        assert!(submit_shortcut(&[enter]));
     }
 
     #[test]

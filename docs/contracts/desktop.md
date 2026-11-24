@@ -43,8 +43,8 @@ current workspace.
 | Run an editable draft | **Draft → Run experiment** |
 | Run a saved operation TOML at a selected reference | **Processing → New run** |
 | Set forcing and state options | **Processing → Forcing and state** |
-| Start scheduling or monitor and cancel a job | **Processing → Automation** or **Jobs** |
-| Edit workspace settings | **Settings → Workspace Settings** |
+| Schedule jobs or monitor and cancel a job | **Processing → Operation → Automation** or **View → Review and runs → Jobs** |
+| Edit workspace settings | **Project → Workspace → Settings** |
 | Edit geometry or soil | **Processing → Calibration** |
 
 See [saved-data workflows](saved-data.md) for request formats and outputs and
@@ -151,9 +151,9 @@ masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
 checkboxes control chart sources. Plots, legends, and cursor readouts share the
 same source colors, which stay stable when toggling scenarios within a run.
-Hover over a plot to update the readings below the charts. A primary click
-inside a plot pins the shared time across all three plots. Click another point
-to move the pin or choose **Unpin** in the toolbar to resume hover updates.
+Hover over a plot to see the crosshair and its value label and update the
+readings below the charts. The first primary click pins the crosshair and the
+shared time across all three plots. The next primary click resumes hover updates.
 The readings are grouped by variable and remain visible after the pointer
 leaves the plot. Loading a replacement comparison clears the pin.
 The **Export** toolbar control exports the displayed snapshot. CSV keeps model and observation location
@@ -164,8 +164,7 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 
 ## Layout and settings
 
-The ribbon has Project, Draft, View, Processing and Settings tabs with labeled
-groups of actions. The map stays visible in the center with linked basemap
+The ribbon has Project, Draft, View and Processing tabs. The map stays visible in the center with linked basemap
 attribution in the bottom stripe when tiles are enabled. NASA Blue Marble provides a satellite basemap at regional scale.
 **Map view** offers **Single**, **Double**, and **Swipe**. Double synchronizes the
 center and zoom of two side-by-side maps. Swipe compares the overlays at the same
@@ -180,18 +179,21 @@ readable basin results. Unavailable fields in a loaded run show a dash.
 
 The resizable right pane defaults to Map. The Map tab contains Layers and
 Rainfall. Data offers location search, feature actions and the displayed series
-table with resizable columns. Files contains the run selector, provenance, assets and findings. Open
+table. Narrow panes group each row's time, series, value, unit, and variable into
+two columns. Files contains the run selector, provenance, assets and findings. Open
 pages and forms from the ribbon. Closing a tab preserves its page state.
 Drag tabs along a strip to reorder them, onto another strip or group to move
 them, or onto a highlighted edge to split the group. Groups can be stacked,
-side by side, or arranged in a four-cell grid. With three groups, one spans a
-row or column. Ribbon actions open tabs in the most recently focused group
+side by side, or arranged in a four-cell grid. Each group has a rounded border
+and space between it and neighboring groups. With three groups, one spans a row
+or column. Ribbon actions open tabs in the most recently focused group
 or focus the group that already contains the tab. Each page stays within its
-group. When content needs extra width, scroll horizontally inside the group.
+group. Hover over scrollable content to reveal its vertical scrollbar. Wide
+tables can present rows as labeled fields in narrow groups.
 
-The **Settings** ribbon contains the interface and workspace controls. English or
-Brazilian Portuguese and Light or Dark apply immediately and are remembered
-app-wide. Light is the default. Preferences remember each project's right pane, map view, divider position,
+The **Layout** group under **View** has a language button, a Light/Dark control,
+and **Reset layout**. The control highlights the active appearance. Language and appearance changes apply immediately and
+are remembered app-wide. Light is the default. Preferences remember each project's right pane, map view, divider position,
 and applied rainfall settings. Projects saved before map comparisons open in Single
 with their previous rainfall settings. Projects saved with a flat right pane open with their tabs in one group. Reset layout restores the default right
 pane and keeps results, selections and unfinished edits. Tab navigation and ribbon
@@ -200,8 +202,9 @@ Ctrl+S saves the draft, Ctrl+Q requests exit, and F5 refreshes monitoring.
 
 ## Workspace settings and operation drafts
 
-Workspace Settings edits only the supported geometry and engine paths, using the
-shared typed configuration read/save API. Save validates and atomically replaces
+The **Settings** page under **Project → Workspace** edits the supported geometry
+and engine paths using the shared typed configuration read/save API. Save
+validates and atomically replaces
 TOML; Revert restores the loaded/saved baseline. Failed saves retain edits and
 existing destination bytes.
 

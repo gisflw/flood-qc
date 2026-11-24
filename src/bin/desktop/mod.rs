@@ -59,71 +59,71 @@ fn series_table(ui: &mut egui::Ui, report: &mgb_ops::app::SeriesReport, pt: bool
             rows
         })
         .collect();
-    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 2.;
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let series_width = ui.fonts_mut(|fonts| {
-        report
-            .series
-            .iter()
-            .map(|series| {
-                fonts
-                    .layout_no_wrap(
-                        series.scenario_id.as_deref().unwrap_or("OBS").to_owned(),
-                        font.clone(),
-                        egui::Color32::PLACEHOLDER,
-                    )
-                    .size()
-                    .x
-            })
-            .fold(68., f32::max)
-    });
-    egui::ScrollArea::horizontal()
-        .id_salt("series-columns")
-        .show(ui, |ui| {
-            let columns = [142., series_width + 6., 72., 128., 68.];
-            let mut table = TableBuilder::new(ui)
-                .id_salt("series-table")
-                .striped(true)
-                .resizable(true);
-            for width in columns {
-                table = table.column(Column::initial(width).clip(true));
+    let width = ui.available_width() - ui.spacing().scroll.allocated_width();
+    let compact = width < 460.;
+    let line_height = ui.text_style_height(&egui::TextStyle::Body);
+    let spacing = ui.spacing().item_spacing;
+    let mut table = TableBuilder::new(ui)
+        .id_salt("series-table")
+        .striped(true)
+        .cell_layout(egui::Layout::top_down(egui::Align::Min));
+    if compact {
+        table = table
+            .column(Column::exact((width * 0.62).max(0.)).clip(true))
+            .column(Column::remainder().clip(true));
+    } else {
+        let available = width - 4. * spacing.x;
+        for fraction in [0.30, 0.2, 0.16, 0.21] {
+            table = table.column(Column::exact(available * fraction).clip(true));
+        }
+        table = table.column(Column::remainder().clip(true));
+    }
+    let headings = if compact {
+        vec![headers[0], headers[3]]
+    } else {
+        headers.to_vec()
+    };
+    let row_height = if compact {
+        2. * line_height + spacing.y + 4.
+    } else {
+        line_height + 3.
+    };
+    table
+        .header(line_height + 4., |mut header| {
+            for label in headings {
+                header.col(|ui| theme::table_text(ui, egui::RichText::new(label).strong()));
             }
-            table
-                .header(row_height, |mut header| {
-                    for label in headers {
-                        header.col(|ui| {
-                            ui.strong(label);
-                        });
-                    }
-                })
-                .body(|body| {
-                    body.rows(row_height, rows, |mut row| {
-                        let index = row.index();
-                        let series_index = ends.partition_point(|end| *end <= index);
-                        let start = series_index.checked_sub(1).map_or(0, |index| ends[index]);
-                        let series = &report.series[series_index];
-                        let point = &series.points[index - start];
-                        row.col(|ui| {
-                            ui.label(point.timestamp.to_string());
-                        });
-                        row.col(|ui| {
-                            ui.label(series.scenario_id.as_deref().unwrap_or("OBS"));
-                        });
-                        row.col(|ui| {
-                            ui.label(&series.variable);
-                        });
-                        row.col(|ui| {
-                            ui.label(
-                                point
-                                    .value
-                                    .map_or_else(|| "NA".into(), |value| value.to_string()),
-                            );
-                        });
-                        row.col(|ui| {
-                            ui.label(&series.unit);
-                        });
+        })
+        .body(|body| {
+            body.rows(row_height, rows, |mut row| {
+                let index = row.index();
+                let series_index = ends.partition_point(|end| *end <= index);
+                let start = series_index.checked_sub(1).map_or(0, |index| ends[index]);
+                let series = &report.series[series_index];
+                let point = &series.points[index - start];
+                let time = point.timestamp.to_string();
+                let scenario = series.scenario_id.as_deref().unwrap_or("OBS");
+                let value = point
+                    .value
+                    .map_or_else(|| "NA".into(), |value| value.to_string());
+                if compact {
+                    row.col(|ui| {
+                        theme::table_text(ui, egui::RichText::new(time));
+                        theme::table_text(ui, egui::RichText::new(scenario).weak());
                     });
-                });
+                    row.col(|ui| {
+                        theme::table_text(
+                            ui,
+                            egui::RichText::new(format!("{value} {}", series.unit)),
+                        );
+                        theme::table_text(ui, egui::RichText::new(&series.variable).weak());
+                    });
+                } else {
+                    for value in [&time, scenario, &series.variable, &value, &series.unit] {
+                        row.col(|ui| theme::table_text(ui, egui::RichText::new(value)));
+                    }
+                }
+            });
         });
 }
 
@@ -150,7 +150,7 @@ fn footer_box(ui: &mut egui::Ui, contents: impl FnOnce(&mut egui::Ui)) {
 
 fn ribbon_group(ui: &mut egui::Ui, title: String, actions: impl FnOnce(&mut egui::Ui)) {
     ui.vertical(|ui| {
-        ui.horizontal(actions);
+        ui.horizontal_top(actions);
         ui.small(title);
     });
     ui.separator();
@@ -208,7 +208,7 @@ fn ribbon_button(ui: &mut egui::Ui, emoji: &str, label: String) -> egui::Respons
 fn layer_row(ui: &mut egui::Ui, pt: bool, label: &str, color: Color32, visible: &mut bool) -> bool {
     let id = ui.id().with("layer-settings-open");
     let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let action = if open {
             text(pt, "Hide settings", "Ocultar configurações")
         } else {
@@ -242,7 +242,6 @@ enum Ribbon {
     Draft,
     View,
     Processing,
-    Settings,
 }
 
 impl Ribbon {
@@ -252,7 +251,6 @@ impl Ribbon {
             Self::Draft => text(pt, "Draft", "Rascunho"),
             Self::View => text(pt, "View", "Exibir"),
             Self::Processing => text(pt, "Processing", "Processamento"),
-            Self::Settings => text(pt, "Settings", "Configurações"),
         }
     }
 }
@@ -1351,7 +1349,6 @@ impl Monitoring {
                 Ribbon::Draft,
                 Ribbon::View,
                 Ribbon::Processing,
-                Ribbon::Settings,
             ] {
                 ui.selectable_value(
                     &mut self.ribbon,
@@ -1401,6 +1398,9 @@ impl Monitoring {
                                 button_label(&response, &label);
                             }
                             ui.add_enabled_ui(self.project.is_some(), |ui| {
+                                if ribbon_button(ui, "⚙", Form::Workspace.label(pt)).clicked() {
+                                    self.display.layout.form(Form::Workspace);
+                                }
                                 if ribbon_button(
                                     ui,
                                     "🚪",
@@ -1532,6 +1532,7 @@ impl Monitoring {
                             },
                         );
                         ribbon_group(ui, text(pt, "Layout", "Layout"), |ui| {
+                            self.interface_settings(ui);
                             if ribbon_button(ui, "🔁", text(pt, "Reset layout", "Restaurar layout"))
                                 .clicked()
                             {
@@ -1556,8 +1557,6 @@ impl Monitoring {
                             if ribbon_button(ui, "📥", Form::Forcing.label(pt)).clicked() {
                                 self.display.layout.form(Form::Forcing);
                             }
-                        });
-                        ribbon_group(ui, text(pt, "Activity", "Atividade"), |ui| {
                             if ribbon_button(ui, "🕒", Form::Automation.label(pt)).clicked() {
                                 self.display.layout.form(Form::Automation);
                             }
@@ -1570,16 +1569,6 @@ impl Monitoring {
                             }
                         });
                     }
-                    Ribbon::Settings => {
-                        ribbon_group(ui, SideTab::Interface.label(pt), |ui| {
-                            self.interface_settings(ui);
-                        });
-                        ribbon_group(ui, Form::Workspace.label(pt), |ui| {
-                            ui.add_enabled_ui(!self.switching_project, |ui| {
-                                self.runners.workspace_settings(ui, pt);
-                            });
-                        });
-                    }
                 });
             });
     }
@@ -1587,44 +1576,80 @@ impl Monitoring {
         let pt = self.preferences.portuguese;
         let old = self.preferences.portuguese;
         let previous_appearance = self.preferences.appearance;
-        ui.vertical(|ui| {
-            let label = ui.label(text(pt, "Language", "Idioma"));
-            egui::ComboBox::from_id_salt("interface-language")
-                .width(126.)
-                .selected_text(if pt { "Português (Brasil)" } else { "English" })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.preferences.portuguese, false, "English");
-                    ui.selectable_value(
-                        &mut self.preferences.portuguese,
-                        true,
-                        "Português (Brasil)",
-                    );
-                })
-                .response
-                .labelled_by(label.id);
-        });
-        ui.vertical(|ui| {
-            let label = ui.label(text(pt, "Appearance", "Aparência"));
-            ui.horizontal(|ui| {
-                for (value, emoji, name) in [
-                    (1, "☀", text(pt, "Light", "Claro")),
-                    (2, "🌙", text(pt, "Dark", "Escuro")),
-                ] {
-                    let response = ui
-                        .selectable_value(&mut self.preferences.appearance, value, emoji)
-                        .labelled_by(label.id);
-                    response.widget_info(|| {
-                        egui::WidgetInfo::selected(
-                            egui::WidgetType::SelectableLabel,
-                            true,
-                            self.preferences.appearance == value,
-                            &name,
-                        )
-                    });
-                    response.on_hover_text(name);
+        let language = text(pt, "Language", "Idioma");
+        let (response, _) = egui::containers::menu::MenuButton::from_button(ribbon_action(
+            ui, "🌐", &language,
+        ))
+        .ui(ui, |ui| {
+            for (portuguese, name) in [(false, "English"), (true, "Português (Brasil)")] {
+                if ui
+                    .selectable_value(&mut self.preferences.portuguese, portuguese, name)
+                    .clicked()
+                {
+                    ui.close();
                 }
-            });
+            }
         });
+        button_label(&response, &language);
+        let normal = ui.visuals().widgets.inactive;
+        egui::Frame::new()
+            .fill(normal.bg_fill)
+            .stroke(normal.bg_stroke)
+            .corner_radius(normal.corner_radius)
+            .show(ui, |ui| {
+                ui.horizontal_top(|ui| {
+                    ui.spacing_mut().item_spacing.x = 0.;
+                    for (value, icon, label) in [
+                        (1, "☀", text(pt, "Light", "Claro")),
+                        (2, "🌙", text(pt, "Dark", "Escuro")),
+                    ] {
+                        if value == 2 {
+                            ui.add_space(1.);
+                        }
+                        let selected = (self.preferences.appearance == 2) == (value == 2);
+                        let radius = normal.corner_radius.nw.saturating_sub(1);
+                        let corners = if value == 1 {
+                            egui::CornerRadius {
+                                nw: radius,
+                                sw: radius,
+                                ..egui::CornerRadius::ZERO
+                            }
+                        } else {
+                            egui::CornerRadius {
+                                ne: radius,
+                                se: radius,
+                                ..egui::CornerRadius::ZERO
+                            }
+                        };
+                        let mut button = ribbon_action(ui, icon, &label)
+                            .min_size(egui::vec2(48., 0.))
+                            .corner_radius(corners)
+                            .stroke(egui::Stroke::NONE);
+                        if selected {
+                            button = button.fill(ui.visuals().selection.bg_fill);
+                        }
+                        let response = ui.add(button);
+                        if value == 1 {
+                            ui.painter().vline(
+                                response.rect.right() + 0.5,
+                                response.rect.y_range(),
+                                normal.bg_stroke,
+                            );
+                        }
+                        if response.clicked() {
+                            self.preferences.appearance = value;
+                        }
+                        response.widget_info(|| {
+                            egui::WidgetInfo::selected(
+                                egui::WidgetType::Button,
+                                response.enabled(),
+                                selected,
+                                &label,
+                            )
+                        });
+                    }
+                });
+            });
         if previous_appearance != self.preferences.appearance || old != self.preferences.portuguese
         {
             ui.ctx().request_repaint();
@@ -1664,9 +1689,15 @@ impl Monitoring {
             SideTab::Files => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.files(ui));
             }
-            SideTab::Rainfall | SideTab::Interface | SideTab::Form(Form::Workspace) => {}
+            SideTab::Rainfall | SideTab::Interface => {}
             SideTab::Form(form) => {
                 ui.add_enabled_ui(!self.switching_project, |ui| match form {
+                    Form::Workspace => {
+                        egui::ScrollArea::vertical()
+                            .id_salt("workspace-settings")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| self.runners.workspace_settings(ui, pt));
+                    }
                     Form::Assistant => {
                         let applied = self.assistant.show(
                             ui,
@@ -2627,9 +2658,6 @@ impl Monitoring {
                     ui.set_max_width(330.);
                     self.chart_exports(ui);
                 });
-            if self.charts.is_pinned() && ui.button(text(pt, "Unpin", "Desafixar")).clicked() {
-                self.charts.unpin();
-            }
         });
         self.chart_status(ui, pt);
         if self.charts.report.is_some() {
@@ -2897,7 +2925,7 @@ impl Monitoring {
             let mut input = ui
                 .data(|data| data.get_temp::<String>(id))
                 .unwrap_or_else(|| self.display.rain_maximum.to_string());
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let label = ui.label(text(pt, "Maximum (mm)", "Máximo (mm)"));
                 let edit = ui
                     .add(egui::TextEdit::singleline(&mut input).desired_width(72.))
@@ -3346,6 +3374,7 @@ impl eframe::App for Monitoring {
             (single_min, (width * 0.41).max(single_min))
         };
         let response = egui::Panel::right(egui::Id::new(("right-pane", &self.display.config)))
+            .frame(egui::Frame::side_top_panel(ui.style()).fill(ui.visuals().faint_bg_color))
             .resizable(true)
             .default_size(self.display.layout.width)
             .min_size(min)

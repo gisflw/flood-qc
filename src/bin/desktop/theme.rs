@@ -102,6 +102,83 @@ pub fn primary(ui: &egui::Ui, label: String) -> egui::Button<'static> {
     egui::Button::new(egui::RichText::new(label).strong()).fill(ui.visuals().selection.bg_fill)
 }
 
+pub fn table_text(ui: &mut egui::Ui, text: egui::RichText) {
+    ui.add(egui::Label::new(text).truncate());
+}
+
+pub fn fitted_columns(
+    ui: &mut egui::Ui,
+    widths: &[f32],
+    mut cell: impl FnMut(&mut egui::Ui, usize),
+) {
+    if widths.is_empty() {
+        return;
+    }
+    let gap = ui
+        .spacing()
+        .item_spacing
+        .x
+        .min(ui.available_width() / (2. * widths.len() as f32));
+    let width = (ui.available_width() - gap * (widths.len() - 1) as f32).max(0.);
+    let rect = ui.available_rect_before_wrap();
+    let mut row = egui::Rect::from_min_max(rect.min, rect.right_top());
+    let mut x = rect.left();
+    for (index, fraction) in widths.iter().enumerate() {
+        let right = (x + width * fraction).min(rect.right());
+        let column =
+            egui::Rect::from_min_max(egui::pos2(x, rect.top()), egui::pos2(right, rect.bottom()));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .max_rect(column)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        child.set_clip_rect(
+            ui.clip_rect()
+                .intersect(column.with_max_y(ui.clip_rect().bottom())),
+        );
+        cell(&mut child, index);
+        row.max.y = row.max.y.max(child.min_rect().bottom());
+        x = right + gap;
+    }
+    ui.advance_cursor_after_rect(row);
+}
+
+pub fn fitted_table(
+    ui: &mut egui::Ui,
+    columns: &[String],
+    rows: &[Vec<String>],
+    mut cell: impl FnMut(&mut egui::Ui, &str, bool),
+) {
+    if columns.is_empty() {
+        return;
+    }
+    let widths = vec![1. / columns.len() as f32; columns.len()];
+    if !rows.is_empty() && ui.available_width() / (columns.len() as f32) < 75. {
+        for row in rows {
+            ui.separator();
+            for (heading, value) in columns.iter().zip(row) {
+                fitted_columns(ui, &[0.4, 0.6], |ui, index| {
+                    if index == 0 {
+                        cell(ui, heading, true);
+                    } else {
+                        cell(ui, value, false);
+                    }
+                });
+            }
+        }
+    } else {
+        fitted_columns(ui, &widths, |ui, index| cell(ui, &columns[index], true));
+        for row in rows {
+            ui.separator();
+            fitted_columns(ui, &widths, |ui, index| {
+                if let Some(value) = row.get(index) {
+                    cell(ui, value, false);
+                }
+            });
+        }
+    }
+}
+
 pub fn swatch(ui: &mut egui::Ui, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10., 10.), egui::Sense::hover());
     paint_swatch(ui, rect, color);

@@ -309,7 +309,7 @@ pub struct Forms {
 
 pub fn path_field(ui: &mut egui::Ui, label: String, path: &mut PathBuf, directory: bool, pt: bool) {
     ui.label(label);
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         let mut value = path.display().to_string();
         if ui.text_edit_singleline(&mut value).changed() {
             *path = value.into();
@@ -592,22 +592,18 @@ impl Forms {
             }
             for table in &report.content.tables {
                 ui.collapsing(&table.title, |ui| {
-                    egui::ScrollArea::horizontal()
-                        .id_salt(&table.title)
-                        .show(ui, |ui| {
-                            egui::Grid::new(&table.title).striped(true).show(ui, |ui| {
-                                for column in &table.columns {
-                                    ui.strong(column);
-                                }
-                                ui.end_row();
-                                for row in &table.rows {
-                                    for value in row {
-                                        ui.label(value);
-                                    }
-                                    ui.end_row();
-                                }
-                            });
-                        });
+                    super::theme::fitted_table(
+                        ui,
+                        &table.columns,
+                        &table.rows,
+                        |ui, text, heading| {
+                            if heading {
+                                ui.strong(text);
+                            } else {
+                                ui.label(text);
+                            }
+                        },
+                    );
                 });
             }
             for (figure, texture) in report.content.figures.iter().zip(&self.bulletin_textures) {
@@ -973,7 +969,7 @@ impl Forms {
             true,
             pt,
         );
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             let label = ui.label(text(pt, "New folder name", "Nome da nova pasta"));
             ui.text_edit_singleline(&mut self.import_name)
                 .labelled_by(label.id);

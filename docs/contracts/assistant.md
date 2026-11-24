@@ -23,10 +23,13 @@ installed adapter. Set them before sending a prompt or between turns. A model
 change can change the available effort values. The desktop remembers confirmed
 choices per agent and restores them when the adapter still offers them.
 
-Type in the composer at the bottom. Press **Enter** to send, or **Shift+Enter**
-to insert a newline. Replies render Markdown as they stream, including headings,
-lists, code, links, and tables. Wide reply content scrolls horizontally inside
-the transcript. A loading icon appears while waiting for the first reply text.
+Type in the composer at the bottom. It grows with the draft up to a height limit
+and scrolls within the editor after that. Press **Enter** to send, or
+**Shift+Enter** to insert a newline. Replies appear under **Assistant** and render
+Markdown as they stream, including headings, lists, code, links, and tables.
+Wide tables wrap within the transcript and show their rows as labeled fields
+when columns would be too
+narrow. A loading icon appears while waiting for the first reply text.
 Expand **Thinking** to read available adapter activity for that turn.
 The assistant uses the open workspace, the run source selected
 in **Files**, and the working draft. **Stop** cancels the active prompt.

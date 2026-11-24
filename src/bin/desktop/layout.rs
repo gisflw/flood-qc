@@ -1,9 +1,12 @@
 use eframe::egui;
 use serde::{Deserialize, Serialize};
 
+const GROUP_GAP: f32 = 10.;
+const GROUP_PADDING: f32 = 8.;
+const GROUP_RADIUS: f32 = 10.;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Form {
-    #[serde(skip_serializing)]
     Workspace,
     #[serde(alias = "Execute", alias = "UpdateRainfall")]
     NewRun,
@@ -25,11 +28,7 @@ pub enum Form {
 impl Form {
     pub fn label(self, pt: bool) -> String {
         match self {
-            Self::Workspace => super::text(
-                pt,
-                "Workspace Settings",
-                "Configurações da área de trabalho",
-            ),
+            Self::Workspace => super::text(pt, "Settings", "Configurações"),
             Self::NewRun => super::text(pt, "New run", "Nova execução"),
             Self::RunAll => super::text(pt, "Run experiment", "Executar experimento"),
             Self::Jobs => super::text(pt, "Jobs", "Tarefas"),
@@ -187,11 +186,7 @@ impl From<SavedLayout> for Layout {
         let mut seen = Vec::new();
         layout.dock.visit_mut(&mut |group| {
             group.tabs.retain(|tab| {
-                if matches!(
-                    tab,
-                    SideTab::Rainfall | SideTab::Interface | SideTab::Form(Form::Workspace)
-                ) || seen.contains(tab)
-                {
+                if matches!(tab, SideTab::Rainfall | SideTab::Interface) || seen.contains(tab) {
                     return false;
                 }
                 seen.push(*tab);
@@ -357,7 +352,7 @@ impl Layout {
                 let visuals = ui.visuals();
                 ui.painter().rect(
                     feedback.shrink(1.),
-                    3.,
+                    GROUP_RADIUS,
                     visuals.selection.bg_fill.gamma_multiply(0.55),
                     egui::Stroke::new(2., visuals.hyperlink_color),
                     egui::StrokeKind::Inside,
@@ -381,13 +376,28 @@ impl Layout {
         pt: bool,
         page: &mut impl FnMut(&mut egui::Ui, SideTab),
     ) -> Strip {
+        let bounds = rect.intersect(parent.clip_rect());
+        parent.painter().rect(
+            rect,
+            GROUP_RADIUS,
+            parent.visuals().window_fill(),
+            parent.visuals().window_stroke(),
+            egui::StrokeKind::Inside,
+        );
+        let content = bounds.shrink(GROUP_PADDING);
+        if !content.is_positive() {
+            return Strip {
+                rect: egui::Rect::NOTHING,
+                tabs: Vec::new(),
+                action: None,
+            };
+        }
         let mut ui = parent.new_child(
             egui::UiBuilder::new()
                 .id_salt(("dock-group", group.id))
-                .max_rect(rect),
+                .max_rect(content),
         );
-        ui.set_clip_rect(rect.intersect(parent.clip_rect()));
-        ui.painter().rect_filled(rect, 3., ui.visuals().panel_fill);
+        ui.set_clip_rect(content);
         let mut action = None;
         let mut tabs = Vec::with_capacity(group.tabs.len());
         let id = ui.id().with("active-tab");
@@ -484,15 +494,22 @@ impl Layout {
                 .rect
             });
         ui.separator();
-        let page_rect = ui.available_rect_before_wrap().intersect(rect);
-        let id = parent.id().with(("dock-page", group.active.label(false)));
-        let mut page_ui = ui.new_child(egui::UiBuilder::new().id(id).max_rect(page_rect));
-        page_ui.set_clip_rect(page_rect.intersect(ui.clip_rect()));
-        egui::ScrollArea::horizontal()
-            .id_salt("page-overflow")
-            .min_scrolled_width(0.)
-            .auto_shrink([false, false])
-            .show(&mut page_ui, |ui| page(ui, group.active));
+        let page_rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
+        if page_rect.is_positive() {
+            let id = parent.id().with(("dock-page", group.active.label(false)));
+            let mut page_ui = ui.new_child(egui::UiBuilder::new().id(id).max_rect(page_rect));
+            page_ui.set_clip_rect(page_rect);
+            page_ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+            page_ui.spacing_mut().scroll = egui::style::ScrollStyle {
+                bar_width: 12.,
+                floating_width: 12.,
+                floating_allocated_width: 17.,
+                handle_min_length: 24.,
+                active_handle_opacity: 1.,
+                ..egui::style::ScrollStyle::floating()
+            };
+            page(&mut page_ui, group.active);
+        }
         Strip {
             rect: egui::Rect::from_min_max(
                 egui::pos2(scroll.inner_rect.left(), scroll.inner.top()),
@@ -739,7 +756,7 @@ impl Dock {
                 first,
                 second,
             } => {
-                let (a, b) = split_rect(rect, *axis, 6.);
+                let (a, b) = split_rect(rect, *axis, GROUP_GAP);
                 first.cells(a, cells);
                 second.cells(b, cells);
             }
@@ -775,10 +792,21 @@ mod tests {
         let group = layout.dock.group(layout.focused.unwrap()).unwrap();
         assert_eq!(
             group.tabs,
-            [SideTab::Data, SideTab::Form(Form::NewRun), SideTab::Files]
+            [
+                SideTab::Data,
+                SideTab::Form(Form::Workspace),
+                SideTab::Form(Form::NewRun),
+                SideTab::Files,
+            ]
         );
-        assert_eq!(group.active, SideTab::Data);
+        assert_eq!(group.active, SideTab::Form(Form::Workspace));
         assert_eq!(layout.width, 428.);
+        let restored: Layout =
+            serde_json::from_str(&serde_json::to_string(&layout).unwrap()).unwrap();
+        assert_eq!(
+            restored.dock.with_tab(SideTab::Form(Form::Workspace)),
+            layout.focused
+        );
         for tab in group.tabs.clone() {
             layout.close(tab);
         }
@@ -873,8 +901,9 @@ mod tests {
     }
 
     #[test]
-    fn wide_page_content_scrolls_inside_its_dock_cell() {
+    fn dock_pages_clip_wide_content_and_only_scroll_vertically() {
         let ctx = egui::Context::default();
+        ctx.global_style_mut(|style| style.animation_time = 0.);
         let dock = egui::Rect::from_min_size(egui::pos2(340., 35.), egui::vec2(360., 300.));
         let screen = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(720., 370.));
         let mut layout = Layout::default();
@@ -886,7 +915,7 @@ mod tests {
                 before: false,
             },
         ));
-        let (left, right) = split_rect(dock, Axis::Horizontal, 6.);
+        let (left, right) = split_rect(dock, Axis::Horizontal, GROUP_GAP);
         let run = |events| {
             let mut origin = egui::Pos2::ZERO;
             let mut output = ctx.run_ui(
@@ -902,7 +931,12 @@ mod tests {
                         } else {
                             (left, egui::Color32::RED)
                         };
-                        assert!(cell.contains_rect(ui.clip_rect()));
+                        assert!(cell.shrink(GROUP_PADDING).contains_rect(ui.clip_rect()));
+                        assert_eq!(ui.spacing().scroll.bar_width, 12.);
+                        assert!(ui.spacing().scroll.floating);
+                        assert_eq!(ui.spacing().scroll.dormant_handle_opacity, 0.);
+                        assert_eq!(ui.spacing().scroll.active_handle_opacity, 1.);
+                        assert_eq!(ui.wrap_mode(), egui::TextWrapMode::Wrap);
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             let (content, _) = ui
                                 .allocate_exact_size(egui::vec2(440., 530.), egui::Sense::hover());
@@ -923,11 +957,27 @@ mod tests {
                         |item| matches!(&item.shape, egui::Shape::Rect(rect) if rect.fill == color),
                     )
                     .unwrap();
-                assert!(cell.contains_rect(item.clip_rect));
+                assert!(cell.shrink(GROUP_PADDING).contains_rect(item.clip_rect));
             }
-            origin
+            let visible_bar = output.shapes.iter().any(|item| {
+                let egui::Shape::Rect(rect) = &item.shape else {
+                    return false;
+                };
+                let edge = right.right() - GROUP_PADDING;
+                right.contains_rect(rect.rect)
+                    && rect.rect.right() == edge
+                    && rect.rect.width() == 12.
+                    && rect.fill.a() != 0
+            });
+            (origin, visible_bar)
         };
-        let start = run(Vec::new());
+        let (start, _) = run(Vec::new());
+        let hidden = !run(Vec::new()).1;
+        assert!(hidden);
+        let (_, visible) = run(vec![egui::Event::PointerMoved(right.center())]);
+        assert!(visible);
+        let hidden = !run(vec![egui::Event::PointerMoved(left.center())]).1;
+        assert!(hidden);
         run(vec![
             egui::Event::PointerMoved(right.center()),
             egui::Event::MouseWheel {
@@ -937,8 +987,9 @@ mod tests {
                 phase: egui::TouchPhase::Move,
             },
         ]);
-        let scrolled = run(Vec::new());
-        assert!(scrolled.x < start.x && scrolled.y < start.y);
+        let (scrolled, _) = run(Vec::new());
+        assert_eq!(scrolled.x, start.x);
+        assert!(scrolled.y < start.y);
     }
 
     #[test]

@@ -1,12 +1,11 @@
 use eframe::egui::{self, Color32};
 use mgb_ops::app::{ChartSeries, Location, SeriesPoint, SeriesReport};
 use mgb_ops::store::LevelReference;
-use rsplot::{CurveSpec, ItemHandle, LineStyle, Plot1D, TickMode, YAxis};
+use rsplot::{CurveSpec, LineStyle, Plot1D, PlotView, TickMode, Transform, YAxis};
 
 pub struct Charts {
     pub state: eframe::egui_wgpu::RenderState,
     pub plots: [Plot1D; 3],
-    cursors: [ItemHandle; 3],
     cursor: Cursor,
     pub report: Option<SeriesReport>,
     pub comparison_station: Option<String>,
@@ -21,26 +20,28 @@ pub struct Charts {
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 struct Cursor {
-    time: Option<f64>,
+    point: Option<CursorPoint>,
     pinned: bool,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CursorPoint {
+    plot: usize,
+    time: f64,
+    value: f64,
+}
+
 impl Cursor {
-    fn hover(&mut self, time: f64) {
-        if !self.pinned {
-            self.time = Some(time);
+    fn update(&mut self, point: CursorPoint, clicked: bool) {
+        if clicked {
+            self.pinned = !self.pinned;
+            self.point = Some(point);
+        } else if !self.pinned {
+            self.point = Some(point);
         }
     }
-
-    fn pin(&mut self, time: f64) {
-        self.time = Some(time);
-        self.pinned = true;
-    }
-
-    fn unpin(&mut self) {
-        self.pinned = false;
-    }
 }
+
 pub fn location_label(location: &Location, portuguese: bool) -> String {
     match location {
         Location::Station(id) => {
@@ -125,11 +126,9 @@ impl Charts {
             plot.plot_mut().set_x_tick_mode(TickMode::TimeSeries);
             plot.set_auto_reset_zoom(false);
         }
-        let cursors = std::array::from_fn(|i| cursor_marker(&mut plots[i]));
         Self {
             state: state.clone(),
             plots,
-            cursors,
             cursor: Cursor::default(),
             report: None,
             comparison_station: None,
@@ -156,14 +155,6 @@ impl Charts {
         self.labels.clear();
     }
 
-    pub fn is_pinned(&self) -> bool {
-        self.cursor.pinned
-    }
-
-    pub fn unpin(&mut self) {
-        self.cursor.unpin();
-    }
-
     pub fn relabel(&mut self, portuguese: bool) -> Result<(), String> {
         let Some(report) = self.report.clone() else {
             return Ok(());
@@ -181,7 +172,6 @@ impl Charts {
             self.plots[2].set_graph_y_limits(min, max, YAxis::Right);
         }
         self.cursor = cursor;
-        apply_cursor(&mut self.plots, self.cursors, cursor, self.origin);
         Ok(())
     }
     pub fn location_caption(&self, report: &SeriesReport, portuguese: bool) -> String {
@@ -349,7 +339,6 @@ impl Charts {
                 plot.set_graph_y_limits(min, max, YAxis::Right);
             }
         }
-        self.cursors = std::array::from_fn(|i| cursor_marker(&mut self.plots[i]));
         self.report = Some(report);
         Ok(())
     }
@@ -412,44 +401,95 @@ impl Charts {
         let header_height = ui.cursor().min.y - top;
         let gap = ui.spacing().item_spacing.y;
         let height = ((available_height - header_height - 3. * gap) / 3.).max(210.);
+        let width = ui.available_width();
+        let right_gutter = ui
+            .painter()
+            .layout_no_wrap(
+                "2000-00-00 00:00:00".into(),
+                egui::FontId::proportional(11.),
+                Color32::WHITE,
+            )
+            .size()
+            .x
+            * 0.5;
+        let mut responses = Vec::with_capacity(self.plots.len());
         let mut limits = None;
-        let previous = self.cursor;
-        for plot in &mut self.plots {
+        let mut hovered = None;
+        for (index, plot) in self.plots.iter_mut().enumerate() {
             plot.drain_events();
-        }
-        for plot in &mut self.plots {
+            let before = plot.plot().limits;
             let response = ui
-                .allocate_ui(egui::vec2(ui.available_width(), height), |ui| plot.show(ui))
+                .allocate_ui(egui::vec2(width, height), |ui| {
+                    if !ui.is_rect_visible(ui.max_rect()) {
+                        ui.add_space(height);
+                        return None;
+                    }
+                    // The plotting widget centers end tick labels. Leave room on the right
+                    // for the overhang before laying out the plot.
+                    plot.plot_mut().margins.right = if plot.plot().y2.is_some() {
+                        0.
+                    } else {
+                        ((right_gutter - 12.) / (width - 80.).max(1.)).clamp(0., 0.8)
+                    };
+                    // The view already supplies the pointer transform and plot controls.
+                    // Plot1D's extra item picking scans series on each pointer move.
+                    let mode = plot.interaction_mode();
+                    let backend = plot.backend_mut();
+                    backend.flush_scene();
+                    let response =
+                        PlotView::new().show_with_interaction(ui, backend.plot_mut(), mode);
+                    backend.set_plot_bounds_in_pixels(response.transform.area);
+                    Some(response)
+                })
                 .inner;
+            let Some(response) = response else { continue };
             let widget = &response.response;
-            if widget.hovered() || widget.dragged() {
-                let (a, b, _, _) = plot.plot().limits;
-                limits = Some((a, b));
+            let after = plot.plot().limits;
+            if before.0 != after.0 || before.1 != after.1 {
+                limits = Some((after.0, after.1));
             }
-            if widget.clicked_by(egui::PointerButton::Primary)
-                && let Some(pointer) = widget.interact_pointer_pos()
-                && response.transform.area.contains(pointer)
+            let clicked = widget.clicked_by(egui::PointerButton::Primary);
+            let pointer = if clicked {
+                widget.interact_pointer_pos()
+            } else {
+                widget.hover_pos()
+            };
+            if let Some(pointer) = pointer
+                && response
+                    .transform
+                    .area
+                    .intersect(ui.clip_rect())
+                    .contains(pointer)
             {
-                self.cursor
-                    .pin(response.transform.pixel_to_data(pointer).0 + self.origin);
-            } else if let Some(pointer) = widget.hover_pos()
-                && response.transform.area.contains(pointer)
-            {
-                self.cursor
-                    .hover(response.transform.pixel_to_data(pointer).0 + self.origin);
+                hovered = Some(index);
+                let (time, value) = response.transform.pixel_to_data(pointer);
+                self.cursor.update(
+                    CursorPoint {
+                        plot: index,
+                        time: time + self.origin,
+                        value,
+                    },
+                    clicked,
+                );
             }
+            responses.push((index, response.transform, response.response.rect));
         }
         if let Some((a, b)) = limits {
             for plot in &mut self.plots {
-                plot.set_graph_x_limits(a, b);
+                let (current_a, current_b, _, _) = plot.plot().limits;
+                if (current_a, current_b) != (a, b) {
+                    plot.set_graph_x_limits(a, b);
+                }
             }
-        }
-        if self.cursor != previous {
-            apply_cursor(&mut self.plots, self.cursors, self.cursor, self.origin);
             ui.request_repaint();
         }
-        if let Some(x) = self.cursor.time {
-            self.cursor_readings(ui, report, x, portuguese);
+        if let Some(point) = self.cursor.point {
+            for (index, transform, rect) in responses {
+                let crosshair =
+                    index == point.plot && (self.cursor.pinned || hovered == Some(index));
+                paint_cursor(ui, transform, rect, point, self.origin, crosshair);
+            }
+            self.cursor_readings(ui, report, point.time, portuguese);
         }
     }
 
@@ -506,26 +546,61 @@ impl Charts {
     }
 }
 
-fn cursor_marker(plot: &mut Plot1D) -> ItemHandle {
-    let handle = plot.add_x_marker(0., Color32::GRAY);
-    plot.set_item_visible(handle, false);
-    handle
+fn paint_cursor(
+    ui: &egui::Ui,
+    transform: Transform,
+    rect: egui::Rect,
+    point: CursorPoint,
+    origin: f64,
+    crosshair: bool,
+) {
+    let pos = transform.data_to_pixel(point.time - origin, point.value);
+    let area = transform.area;
+    if !area.x_range().contains(pos.x) {
+        return;
+    }
+    let ink = ui.visuals().weak_text_color();
+    let stroke = egui::Stroke::new(1., ink);
+    let plot = ui.painter().with_clip_rect(area);
+    plot.vline(pos.x, area.y_range(), stroke);
+    if crosshair && area.contains(pos) {
+        plot.hline(area.x_range(), pos.y, stroke);
+        let time = chrono::DateTime::from_timestamp(point.time as i64, 0)
+            .map(|time| time.format("%m-%d %H:%M:%S").to_string())
+            .unwrap_or_default();
+        let painter = ui.painter().with_clip_rect(rect);
+        let galley = painter.layout(
+            format!("{time}\n{:.2}", point.value),
+            egui::TextStyle::Small.resolve(ui.style()),
+            ui.visuals().text_color(),
+            (rect.width() - 8.).max(1.),
+        );
+        let pad = egui::vec2(4., 2.);
+        let size = galley.size() + 2. * pad;
+        let anchor = (pos + egui::vec2(8., 8.))
+            .min(rect.max - size)
+            .max(rect.min);
+        painter.rect_filled(
+            egui::Rect::from_min_size(anchor, size),
+            3.,
+            ui.visuals().extreme_bg_color,
+        );
+        painter.galley(anchor + pad, galley, ui.visuals().text_color());
+    }
 }
 
 fn nearest_reading(points: &[SeriesPoint], time: f64) -> Option<&SeriesPoint> {
-    points.iter().min_by(|a, b| {
-        (seconds(a.timestamp) - time)
-            .abs()
-            .total_cmp(&(seconds(b.timestamp) - time).abs())
-    })
-}
-
-fn apply_cursor(plots: &mut [Plot1D; 3], handles: [ItemHandle; 3], cursor: Cursor, origin: f64) {
-    for (plot, handle) in plots.iter_mut().zip(handles) {
-        plot.set_item_visible(handle, cursor.time.is_some());
-        if let Some(time) = cursor.time {
-            plot.set_marker_position(handle, time - origin, 0.);
+    let after = points.partition_point(|point| seconds(point.timestamp) < time);
+    match (
+        after.checked_sub(1).and_then(|index| points.get(index)),
+        points.get(after),
+    ) {
+        (Some(before), Some(next))
+            if time - seconds(before.timestamp) <= seconds(next.timestamp) - time =>
+        {
+            Some(before)
         }
+        (before, next) => next.or(before),
     }
 }
 
@@ -599,7 +674,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn pin_holds_the_reading_until_repin_or_unpin() {
+    fn clicks_pin_and_release_the_crosshair() {
         let start = super::super::data::timestamp("2026-01-01T00:00:00").unwrap();
         let points = [Some(0.), None, Some(2.)]
             .into_iter()
@@ -611,21 +686,28 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let mut cursor = Cursor::default();
-        let time = |index: usize| seconds(points[index].timestamp);
+        let at = |index: usize| CursorPoint {
+            plot: index,
+            time: seconds(points[index].timestamp),
+            value: index as f64,
+        };
         let reading = |cursor: Cursor| {
-            nearest_reading(&points, cursor.time.unwrap())
+            nearest_reading(&points, cursor.point.unwrap().time)
                 .unwrap()
                 .value
         };
-        cursor.hover(time(0));
+        cursor.update(at(0), false);
         assert_eq!(reading(cursor), Some(0.));
-        cursor.pin(time(1));
-        cursor.hover(time(2));
+        cursor.update(at(1), true);
+        cursor.update(at(2), false);
+        let pinned = Some(at(1));
+        assert_eq!(cursor.point, pinned);
         assert_eq!(reading(cursor), None);
-        cursor.pin(time(2));
+        cursor.update(at(2), true);
+        let released = !cursor.pinned;
+        assert!(released);
         assert_eq!(reading(cursor), Some(2.));
-        cursor.unpin();
-        cursor.hover(time(0));
+        cursor.update(at(0), false);
         assert_eq!(reading(cursor), Some(0.));
     }
 
