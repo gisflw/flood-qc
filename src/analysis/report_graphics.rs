@@ -4,7 +4,7 @@ use crate::store::{MiniMapFeature, TimeInterval};
 
 use super::{HydrographPoint, HydrographThreshold};
 
-pub(super) const FONT: &[u8] = include_bytes!("assets/NotoSans-Regular.ttf");
+pub(super) const FONT: &[u8] = include_bytes!("../../assets/typography/NotoSans-Regular.ttf");
 
 pub(super) fn markup(text: &str) -> String {
     text.replace('&', "&amp;")

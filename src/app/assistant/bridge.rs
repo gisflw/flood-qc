@@ -1,4 +1,4 @@
-use super::{AssistantEvent, Tools, bounded_line, commands};
+use super::{AssistantEvent, Events, Tools, bounded_line, commands};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -9,7 +9,6 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::SyncSender,
     },
     thread,
     time::Duration,
@@ -25,10 +24,7 @@ pub(super) struct Bridge {
 }
 
 impl Bridge {
-    pub(super) fn start(
-        tools: Arc<Tools>,
-        events: SyncSender<AssistantEvent>,
-    ) -> Result<Self, String> {
+    pub(super) fn start(tools: Arc<Tools>, events: Events) -> Result<Self, String> {
         let listener =
             TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).map_err(|error| error.to_string())?;
         listener
@@ -82,10 +78,7 @@ impl Bridge {
     }
 
     #[cfg(test)]
-    pub(super) fn disconnected(
-        tools: Arc<Tools>,
-        _: SyncSender<AssistantEvent>,
-    ) -> Result<Self, String> {
+    pub(super) fn disconnected(tools: Arc<Tools>, _: Events) -> Result<Self, String> {
         // Fake ACP agents exercise startup and presentation without opening a socket.
         Ok(Self {
             endpoint: "127.0.0.1:1".into(),
@@ -98,7 +91,7 @@ impl Bridge {
     pub(super) fn fixture_tool(
         &self,
         credential: &str,
-        events: SyncSender<AssistantEvent>,
+        events: Events,
         params: &Value,
     ) -> Option<Result<Value, commands::Finding>> {
         let turn = self.tools.state().turn?;
@@ -163,7 +156,7 @@ impl Drop for Bridge {
 struct Request {
     tools: Arc<Tools>,
     credential: String,
-    events: SyncSender<AssistantEvent>,
+    events: Events,
     connected: Arc<AtomicBool>,
     id: u64,
     turn: Option<u64>,

@@ -351,6 +351,7 @@ struct Preferences {
     portuguese: bool,
     appearance: usize,
     recent: Vec<Display>,
+    assistant: assistant::Preferences,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ComparisonFields {
@@ -431,7 +432,6 @@ struct Monitoring {
     ribbon: Ribbon,
     map_menu: Option<Location>,
     upstream_basin: Option<(i64, map::BasinPaths)>,
-    chart_exports: bool,
     export_scale: u32,
 }
 impl Monitoring {
@@ -449,7 +449,6 @@ impl Monitoring {
             if display.basemap > 3 {
                 display.basemap = 1;
             }
-            display.layout.restore_tabs();
             display.restore_layers();
             display.set_map_mode(display.map_mode);
             display.swipe = if display.swipe.is_finite() {
@@ -501,7 +500,6 @@ impl Monitoring {
             ribbon: Ribbon::Project,
             map_menu: None,
             upstream_basin: None,
-            chart_exports: false,
             export_scale: 1,
         };
         let arguments: Vec<_> = std::env::args_os().skip(1).collect();
@@ -1428,6 +1426,9 @@ impl Monitoring {
                                     self.display.layout.open(tab);
                                 }
                             }
+                            if ribbon_button(ui, "💬", Form::Assistant.label(pt)).clicked() {
+                                self.display.layout.form(Form::Assistant);
+                            }
                         });
                         ribbon_group(
                             ui,
@@ -1439,7 +1440,6 @@ impl Monitoring {
                                     (Form::Bulletin, "📰"),
                                     (Form::RunBundle, "📦"),
                                     (Form::Jobs, "📋"),
-                                    (Form::Assistant, "💬"),
                                 ] {
                                     if ribbon_button(ui, emoji, form.label(pt)).clicked() {
                                         self.display.layout.form(form);
@@ -1546,121 +1546,36 @@ impl Monitoring {
             ui.ctx().request_repaint();
         }
         if old != self.preferences.portuguese
-            && let Some(report) = self.charts.report.clone()
+            && let Err(error) = self.charts.relabel(self.preferences.portuguese)
         {
-            let limits: Vec<_> = self.charts.plots.iter().map(|p| p.plot().limits).collect();
-            let references = self.charts.references.clone();
-            let right = self.charts.plots[2].plot().y2;
-            if let Err(error) = self
-                .charts
-                .load(report, &references, self.preferences.portuguese)
-            {
-                self.status = error;
-            }
-            for (plot, (a, b, c, d)) in self.charts.plots.iter_mut().zip(limits) {
-                plot.set_graph_x_limits(a, b);
-                plot.set_graph_y_limits(c, d, rsplot::YAxis::Left);
-            }
-            if let Some((min, max)) = right {
-                self.charts.plots[2].set_graph_y_limits(min, max, rsplot::YAxis::Right);
-            }
+            self.status = error;
         }
     }
 
     fn right_pane(&mut self, ui: &mut egui::Ui) {
+        let size = ui.available_size();
+        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+        if let Some(pointer) = ui.input(|input| {
+            input
+                .pointer
+                .button_pressed(egui::PointerButton::Primary)
+                .then(|| input.pointer.interact_pos())
+                .flatten()
+        }) {
+            self.display.layout.focus_group_at(rect, pointer);
+        }
+        let snapshot = self.display.layout.clone();
         let pt = self.preferences.portuguese;
-        let active = self.display.layout.active;
-        let active_id = ui.id().with("active-tab");
-        let changed = ui.data_mut(|data| {
-            let previous = data.get_temp::<SideTab>(active_id);
-            data.insert_temp(active_id, active);
-            previous != Some(active)
-        });
-        ui.scope(|ui| {
-            ui.spacing_mut().scroll = egui::style::ScrollStyle {
-                bar_width: 4.,
-                bar_inner_margin: 2.,
-                ..egui::style::ScrollStyle::solid()
-            };
-            egui::ScrollArea::horizontal()
-                .id_salt("right-pane-tabs")
-                .auto_shrink([false, true])
-                .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.;
-                        for tab in self.display.layout.tabs.clone() {
-                            ui.push_id(tab.label(false), |ui| {
-                                let selected = self.display.layout.active == tab;
-                                let visuals = ui.visuals();
-                                let frame = egui::Frame::new()
-                                    .corner_radius(4.)
-                                    .stroke(if selected {
-                                        egui::Stroke::new(1., visuals.hyperlink_color)
-                                    } else {
-                                        visuals.widgets.inactive.bg_stroke
-                                    })
-                                    .fill(if selected {
-                                        visuals.selection.bg_fill
-                                    } else {
-                                        visuals.widgets.inactive.bg_fill
-                                    });
-                                let entry = frame.show(ui, |ui| {
-                                    ui.spacing_mut().item_spacing.x = 0.;
-                                    ui.horizontal(|ui| {
-                                        let label = tab.label(pt);
-                                        let title = egui::RichText::new(&label);
-                                        let response = ui.add(
-                                            egui::Button::new(if selected {
-                                                title.strong()
-                                            } else {
-                                                title
-                                            })
-                                            .selected(selected)
-                                            .frame_when_inactive(false),
-                                        );
-                                        if response.clicked() {
-                                            self.display.layout.open(tab);
-                                        }
-                                        if response.gained_focus() {
-                                            response.scroll_to_me(None);
-                                        }
-                                        if matches!(tab, SideTab::Form(_)) {
-                                            let close = ui.add(
-                                                egui::Button::new("×").frame_when_inactive(false),
-                                            );
-                                            let name =
-                                                format!("{} {label}", text(pt, "Close", "Fechar"));
-                                            button_label(&close, &name);
-                                            if close.on_hover_text(name).clicked() {
-                                                self.display.layout.close(tab);
-                                            }
-                                        }
-                                    });
-                                });
-                                if changed && tab == active {
-                                    ui.scroll_to_rect(
-                                        entry.response.rect,
-                                        Some(egui::Align::Center),
-                                    );
-                                }
-                            });
-                        }
-                    });
-                });
-        });
-        ui.separator();
-        let tab = self.display.layout.active;
-        ui.push_id(("right-pane-content", tab.label(false)), |ui| match tab {
+        if let Some(action) = snapshot.show(ui, rect, pt, |ui, tab| self.right_tab(ui, tab, pt)) {
+            self.display.layout.apply(action);
+            ui.request_repaint();
+        }
+    }
+
+    fn right_tab(&mut self, ui: &mut egui::Ui, tab: SideTab, pt: bool) {
+        match tab {
             SideTab::Map => self.map_controls(ui),
-            SideTab::Charts => {
-                self.chart_controls(ui);
-                if self.charts.report.is_some() {
-                    let available_height = ui.available_height();
-                    egui::ScrollArea::vertical()
-                        .id_salt("chart-plots")
-                        .show(ui, |ui| self.charts.show(ui, pt, available_height));
-                }
-            }
+            SideTab::Charts => self.chart_page(ui, pt),
             SideTab::Data => self.data_page(ui),
             SideTab::Files => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.files(ui));
@@ -1698,7 +1613,7 @@ impl Monitoring {
                     ),
                 });
             }
-        });
+        }
     }
 
     fn workflow_form(&mut self, ui: &mut egui::Ui, form: Form, pt: bool) {
@@ -2597,8 +2512,7 @@ impl Monitoring {
         }
     }
 
-    fn chart_controls(&mut self, ui: &mut egui::Ui) {
-        let pt = self.preferences.portuguese;
+    fn chart_page(&mut self, ui: &mut egui::Ui, pt: bool) {
         if self.project.is_none() {
             theme::inset(ui.style()).show(ui, |ui| {
                 ui.strong(text(pt, "Time series", "Séries temporais"));
@@ -2611,6 +2525,40 @@ impl Monitoring {
             return;
         }
 
+        ui.horizontal_wrapped(|ui| {
+            let settings = ui.button(text(pt, "Settings", "Configurações"));
+            egui::Popup::from_toggle_button_response(&settings)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.set_max_width(365.);
+                    egui::ScrollArea::vertical()
+                        .max_height(300.)
+                        .show(ui, |ui| self.chart_settings(ui, pt));
+                });
+            let export = ui.add_enabled(
+                self.charts.report.is_some(),
+                egui::Button::new(text(pt, "Export", "Exportar")),
+            );
+            egui::Popup::from_toggle_button_response(&export)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    ui.set_max_width(330.);
+                    self.chart_exports(ui);
+                });
+            if self.charts.is_pinned() && ui.button(text(pt, "Unpin", "Desafixar")).clicked() {
+                self.charts.unpin();
+            }
+        });
+        self.chart_status(ui, pt);
+        if self.charts.report.is_some() {
+            let available_height = ui.available_height();
+            egui::ScrollArea::vertical()
+                .id_salt("chart-plots")
+                .show(ui, |ui| self.charts.show(ui, pt, available_height));
+        }
+    }
+
+    fn chart_settings(&mut self, ui: &mut egui::Ui, pt: bool) {
         let mut apply = false;
         ui.horizontal_wrapped(|ui| {
             for (name, value) in [
@@ -2633,68 +2581,48 @@ impl Monitoring {
                 .clicked();
         });
         ui.horizontal_wrapped(|ui| {
-            ui.selectable_value(
-                &mut self.chart_exports,
-                false,
-                text(pt, "Window and sources", "Período e fontes"),
-            );
-            ui.selectable_value(
-                &mut self.chart_exports,
-                true,
-                text(pt, "Export", "Exportar"),
-            );
+            for (name, value) in [
+                (text(pt, "From", "Início"), &mut self.display.chart_start),
+                (text(pt, "To", "Fim"), &mut self.display.chart_end),
+            ] {
+                ui.horizontal(|ui| {
+                    let label = ui.label(name);
+                    let input = ui
+                        .add(egui::TextEdit::singleline(value).desired_width(145.))
+                        .labelled_by(label.id);
+                    apply |= input.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                });
+            }
         });
-        egui::ScrollArea::vertical()
-            .id_salt("chart-controls")
-            .max_height((ui.available_height() * 0.30).clamp(45., 110.))
-            .show(ui, |ui| {
-                if self.chart_exports {
-                    self.chart_exports(ui);
-                } else {
-                    ui.horizontal_wrapped(|ui| {
-                        for (name, value) in [
-                            (text(pt, "From", "Início"), &mut self.display.chart_start),
-                            (text(pt, "To", "Fim"), &mut self.display.chart_end),
-                        ] {
-                            ui.horizontal(|ui| {
-                                let label = ui.label(name);
-                                let input = ui
-                                    .add(egui::TextEdit::singleline(value).desired_width(145.))
-                                    .labelled_by(label.id);
-                                apply |= input.lost_focus()
-                                    && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                            });
+        ui.horizontal_wrapped(|ui| {
+            apply |= ui
+                .checkbox(
+                    &mut self.display.observations,
+                    text(pt, "Observed series", "Séries observadas"),
+                )
+                .changed();
+            if let Some(run) = &self.run {
+                ui.separator();
+                ui.label(text(pt, "Model scenarios", "Cenários do modelo"));
+                for id in &run.scenarios {
+                    let mut selected = self.display.overlays.contains(id);
+                    if ui.checkbox(&mut selected, id).changed() {
+                        self.display.overlays.retain(|scenario| scenario != id);
+                        if selected {
+                            self.display.overlays.push(id.clone());
                         }
-                    });
-                    ui.horizontal_wrapped(|ui| {
-                        apply |= ui
-                            .checkbox(
-                                &mut self.display.observations,
-                                text(pt, "Observed series", "Séries observadas"),
-                            )
-                            .changed();
-                        if let Some(run) = &self.run {
-                            ui.separator();
-                            ui.label(text(pt, "Model scenarios", "Cenários do modelo"));
-                            for id in &run.scenarios {
-                                let mut selected = self.display.overlays.contains(id);
-                                if ui.checkbox(&mut selected, id).changed() {
-                                    self.display.overlays.retain(|scenario| scenario != id);
-                                    if selected {
-                                        self.display.overlays.push(id.clone());
-                                    }
-                                    apply = true;
-                                }
-                            }
-                        }
-                    });
+                        apply = true;
+                    }
                 }
-            });
+            }
+        });
         if apply {
             self.display.comparison = Some(self.chart_fields.clone());
             self.request_chart();
         }
-        ui.separator();
+    }
+
+    fn chart_status(&mut self, ui: &mut egui::Ui, pt: bool) {
         if self.loading[CHART_SLOT] {
             theme::inset(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
@@ -2712,8 +2640,8 @@ impl Monitoring {
                 ui.strong(text(pt, "Choose a location", "Escolha uma localização"));
                 ui.label(text(
                     pt,
-                    "Enter an ID above or right-click a station or MINI on the map and choose View time series.",
-                    "Informe um ID acima ou clique com o botão direito em uma estação ou MINI no mapa e escolha Ver séries temporais.",
+                    "Choose a location in Settings or right-click a station or MINI on the map and choose View time series.",
+                    "Escolha uma localização em Configurações ou clique com o botão direito em uma estação ou MINI no mapa e escolha Ver séries temporais.",
                 ));
                 if let Some(location) = self.display.selection.clone()
                     && ui.button(text(pt, "Chart selected feature", "Mostrar séries da feição selecionada")).clicked()
@@ -3273,7 +3201,11 @@ impl eframe::App for Monitoring {
             ctx.request_repaint_after(self.run_check.saturating_duration_since(Instant::now()));
         }
         self.poll(&ctx);
-        self.assistant.poll(&ctx);
+        self.assistant.poll(
+            &ctx,
+            &mut self.preferences.assistant,
+            self.preferences.portuguese,
+        );
         if let Some(outcome) = self.runners.poll() {
             match outcome {
                 runners::Outcome::Completed => {
@@ -3355,12 +3287,18 @@ impl eframe::App for Monitoring {
             })
             .inner;
         let width = ui.available_width();
-        let min = (width * 0.30).clamp(190., 290.);
+        let single_min = (width * 0.30).clamp(190., 290.);
+        let (min, max) = if self.display.layout.has_columns() {
+            let max = (width * 0.60).max(single_min);
+            ((single_min * 2.).min(max), max)
+        } else {
+            (single_min, (width * 0.41).max(single_min))
+        };
         let response = egui::Panel::right(egui::Id::new(("right-pane", &self.display.config)))
             .resizable(true)
             .default_size(self.display.layout.width)
             .min_size(min)
-            .max_size((width * 0.41).max(min))
+            .max_size(max)
             .show(ui, |ui| self.right_pane(ui));
         self.display.layout.width = response.response.rect.width();
         let map_hover = egui::CentralPanel::default()
@@ -3526,8 +3464,8 @@ mod interface_tests {
         assert_eq!(legacy.config, PathBuf::from("region/config/workspace.toml"));
         assert!(serde_json::to_value(&legacy).unwrap().get("run").is_none());
         assert_eq!(legacy.basemap, 2);
-        assert_eq!(legacy.layout.active, SideTab::Map);
-        assert!(legacy.layout.tabs.contains(&SideTab::Data));
+        assert_eq!(legacy.layout.focused_tab(), Some(SideTab::Map));
+        assert!(legacy.layout.is_open(SideTab::Data));
     }
     #[test]
     fn rainfall_preferences_copy_applied_left_settings_only_on_first_comparison() {

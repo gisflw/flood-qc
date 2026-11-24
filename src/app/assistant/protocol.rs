@@ -1,6 +1,8 @@
 use super::{
-    AssistantEvent, AssistantStage, Input, PermissionOption, QUEUE, Tools, bounded_line,
+    AssistantEvent, AssistantStage, Events, Input, PermissionOption, QUEUE, SettingKind, Tools,
+    bounded_line,
     bridge::{Bridge, rpc_error, rpc_result, write_message},
+    settings::Configuration,
 };
 use serde_json::Value;
 use std::{
@@ -18,6 +20,11 @@ use std::{
 
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const STOP_TIMEOUT: Duration = Duration::from_secs(3);
+const SETTINGS_TIMEOUT: Duration = if cfg!(test) {
+    Duration::from_secs(1)
+} else {
+    STARTUP_TIMEOUT
+};
 
 pub(super) struct Launch {
     pub(super) executable: OsString,
@@ -85,8 +92,8 @@ pub(super) fn supervise(
     helper: PathBuf,
     tools: Arc<Tools>,
     input: Receiver<Input>,
-    events: SyncSender<AssistantEvent>,
-    connect: impl FnOnce(Arc<Tools>, SyncSender<AssistantEvent>) -> std::result::Result<Bridge, String>,
+    events: Events,
+    connect: impl FnOnce(Arc<Tools>, Events) -> std::result::Result<Bridge, String>,
 ) {
     let result = run(&launch, &helper, tools.clone(), input, &events, connect);
     tools.close();
@@ -104,8 +111,8 @@ fn run(
     helper: &Path,
     tools: Arc<Tools>,
     input: Receiver<Input>,
-    events: &SyncSender<AssistantEvent>,
-    connect: impl FnOnce(Arc<Tools>, SyncSender<AssistantEvent>) -> std::result::Result<Bridge, String>,
+    events: &Events,
+    connect: impl FnOnce(Arc<Tools>, Events) -> std::result::Result<Bridge, String>,
 ) -> Result<()> {
     let executable = discover(&launch.executable).ok_or_else(|| {
         Failure::new(
@@ -194,6 +201,8 @@ fn run(
         bridge_environment,
         tools: &tools,
         session: None,
+        configuration: Configuration::default(),
+        setting_change: None,
         next_id: 3,
         turn: None,
         startup: (1, Instant::now() + STARTUP_TIMEOUT),
@@ -231,6 +240,16 @@ fn run(
             ));
         }
         if client
+            .setting_change
+            .as_ref()
+            .is_some_and(|change| Instant::now() >= change.deadline)
+        {
+            return Err(Failure::new(
+                AssistantStage::Configuration,
+                "The agent did not confirm the settings change. Reconnect to continue.",
+            ));
+        }
+        if client
             .turn
             .as_ref()
             .and_then(|turn| turn.stop)
@@ -246,15 +265,25 @@ fn run(
 }
 
 struct Client<'a> {
-    events: &'a SyncSender<AssistantEvent>,
+    events: &'a Events,
     output: SyncSender<Value>,
     bridge: &'a Bridge,
     bridge_environment: Value,
     tools: &'a Tools,
     session: Option<Value>,
+    configuration: Configuration,
+    setting_change: Option<SettingChange>,
     next_id: u64,
     turn: Option<Turn>,
     startup: (u64, Instant),
+}
+
+struct SettingChange {
+    id: u64,
+    kind: SettingKind,
+    value: String,
+    legacy: bool,
+    deadline: Instant,
 }
 
 struct Turn {
@@ -293,6 +322,7 @@ impl Client<'_> {
             Input::Prompt(text) => {
                 if let Some(session) = &self.session
                     && self.turn.is_none()
+                    && self.setting_change.is_none()
                 {
                     let id = self.next_id;
                     self.next_id += 1;
@@ -314,6 +344,7 @@ impl Client<'_> {
                     })?;
                 }
             }
+            Input::Setting { kind, value } => self.set_option(kind, value)?,
             Input::Permission { request, option } => {
                 if let Some(turn) = &mut self.turn
                     && let Some(permission) = &turn.permission
@@ -333,6 +364,77 @@ impl Client<'_> {
             Input::Stop => self.cancel()?,
         }
         Ok(())
+    }
+
+    fn set_option(&mut self, kind: SettingKind, value: String) -> Result<()> {
+        if self.setting_change.is_some() {
+            return self.emit(AssistantEvent::Failed {
+                stage: AssistantStage::Configuration,
+                message: "Wait for the pending settings change".into(),
+                closed: false,
+            });
+        }
+        let Some(session) = self.session.as_ref().filter(|_| self.turn.is_none()) else {
+            return self.setting_result(Some("Wait for the agent to become idle".into()));
+        };
+        let target = match self.configuration.target(kind, &value) {
+            Ok(target) => target,
+            Err(error) => return self.setting_result(Some(error)),
+        };
+        let id = self.next_id;
+        self.next_id += 1;
+        let (method, params) = if let Some(config_id) = target {
+            (
+                "session/set_config_option",
+                serde_json::json!({"sessionId":session,"configId":config_id,"value":value}),
+            )
+        } else {
+            (
+                "session/set_model",
+                serde_json::json!({"sessionId":session,"modelId":value}),
+            )
+        };
+        self.write(serde_json::json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))?;
+        self.setting_change = Some(SettingChange {
+            id,
+            kind,
+            value,
+            legacy: target.is_none(),
+            deadline: Instant::now() + SETTINGS_TIMEOUT,
+        });
+        Ok(())
+    }
+
+    fn setting_result(&self, error: Option<String>) -> Result<()> {
+        self.emit(AssistantEvent::SettingChanged {
+            settings: self.configuration.snapshot(),
+            error,
+        })
+    }
+
+    fn finish_setting(&mut self, message: &Value) -> Result<()> {
+        let change = self.setting_change.take().unwrap();
+        if let Some(error) = message.get("error") {
+            return self.setting_result(Some(self.detail(error)));
+        }
+        let result = &message["result"];
+        if change.legacy && result.is_object() {
+            self.configuration
+                .confirm_legacy_model(change.value.clone());
+        } else if let Some(options) = result["configOptions"].as_array() {
+            self.configuration.update(options);
+        } else {
+            return Err(Failure::new(
+                AssistantStage::Configuration,
+                "The agent returned no confirmed settings. Reconnect to continue.",
+            ));
+        }
+        let settings = self.configuration.snapshot();
+        let error = (!settings
+            .get(change.kind)
+            .is_some_and(|setting| setting.selected == change.value))
+        .then(|| "The agent selected a different value".into());
+        self.emit(AssistantEvent::SettingChanged { settings, error })
     }
 
     fn cancel(&mut self) -> Result<()> {
@@ -403,6 +505,8 @@ impl Client<'_> {
                     ));
                 }
                 self.session = Some(session.clone());
+                self.configuration = Configuration::load(&message["result"]);
+                self.emit(AssistantEvent::Settings(self.configuration.snapshot()))?;
                 self.emit(AssistantEvent::Ready)
             }
             _ if self.session.is_none() => Err(Failure::new(
@@ -410,6 +514,13 @@ impl Client<'_> {
                 "ACP startup returned an unexpected request ID",
             )),
             _ if self.turn.as_ref().is_some_and(|turn| turn.id == id) => self.finish(&message),
+            _ if self
+                .setting_change
+                .as_ref()
+                .is_some_and(|change| change.id == id) =>
+            {
+                self.finish_setting(&message)
+            }
             _ => Ok(()),
         }
     }
@@ -482,12 +593,25 @@ impl Client<'_> {
             .is_some_and(|session| params["sessionId"] == *session);
         let accepting = current && self.turn.as_ref().is_some_and(|turn| turn.stop.is_none());
         if method == "session/update" {
+            let update = &params["update"];
+            if current
+                && update["sessionUpdate"] == "config_option_update"
+                && let Some(options) = update["configOptions"].as_array()
+            {
+                self.configuration.update(options);
+                return self.emit(AssistantEvent::Settings(self.configuration.snapshot()));
+            }
             if accepting {
-                let update = &params["update"];
                 match update["sessionUpdate"].as_str() {
-                    Some("agent_message_chunk") => {
+                    Some("agent_message_chunk" | "agent_thought_chunk") => {
                         if let Some(text) = update["content"]["text"].as_str() {
-                            self.emit(AssistantEvent::Text(self.bridge.redact(text)))?;
+                            let text = self.bridge.redact(text);
+                            let event = if update["sessionUpdate"] == "agent_thought_chunk" {
+                                AssistantEvent::Thought(text)
+                            } else {
+                                AssistantEvent::Text(text)
+                            };
+                            self.emit(event)?;
                         }
                     }
                     Some("tool_call" | "tool_call_update") => {

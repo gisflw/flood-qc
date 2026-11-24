@@ -1,9 +1,11 @@
 mod bridge;
 mod commands;
 mod protocol;
+mod settings;
 
 pub use self::bridge::assistant_mcp_stdio;
 pub use self::commands::{FieldChange, ProposalReview};
+pub use self::settings::{AgentSetting, AgentSettings, SettingChoice, SettingKind};
 
 use super::{DraftConflict, Session};
 use serde_json::Value;
@@ -14,6 +16,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
         mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
     },
     thread,
@@ -60,6 +63,7 @@ pub enum AssistantStage {
     Protocol,
     SignIn,
     ToolConnection,
+    Configuration,
     Prompt,
     Cancellation,
 }
@@ -72,6 +76,7 @@ impl fmt::Display for AssistantStage {
             Self::Protocol => "ACP negotiation",
             Self::SignIn => "sign-in",
             Self::ToolConnection => "tool connection",
+            Self::Configuration => "agent settings",
             Self::Prompt => "prompt",
             Self::Cancellation => "cancellation",
         })
@@ -84,7 +89,13 @@ pub enum AssistantEvent {
     Ready,
     ToolConnected,
     Text(String),
+    Thought(String),
     ToolStatus(String),
+    Settings(AgentSettings),
+    SettingChanged {
+        settings: AgentSettings,
+        error: Option<String>,
+    },
     Permission {
         request: String,
         operation: Value,
@@ -110,8 +121,34 @@ pub struct PermissionOption {
 
 enum Input {
     Prompt(String),
+    Setting { kind: SettingKind, value: String },
     Permission { request: String, option: String },
     Stop,
+}
+
+type Wake = Arc<dyn Fn() + Send + Sync>;
+
+#[derive(Clone)]
+struct Events {
+    sender: SyncSender<AssistantEvent>,
+    wake: Option<Wake>,
+}
+
+impl Events {
+    fn try_send(&self, event: AssistantEvent) -> Result<(), ()> {
+        self.sender.try_send(event).map_err(|_| ())?;
+        if let Some(wake) = &self.wake {
+            wake();
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+impl From<SyncSender<AssistantEvent>> for Events {
+    fn from(sender: SyncSender<AssistantEvent>) -> Self {
+        Self { sender, wake: None }
+    }
 }
 
 pub struct Conversation {
@@ -119,6 +156,7 @@ pub struct Conversation {
     events: Receiver<AssistantEvent>,
     tools: Arc<Tools>,
     disconnected: bool,
+    worker_done: Arc<AtomicBool>,
     worker: Option<thread::JoinHandle<()>>,
 }
 
@@ -126,6 +164,25 @@ impl Conversation {
     /// Start the installed ACP adapter on a worker. The supplied executable re-enters
     /// the host with the private MCP stdio argument when the ACP agent needs a helper.
     pub fn start(session: Session, agent: AgentPreset, helper: PathBuf) -> Self {
+        Self::start_agent(session, agent, helper, None)
+    }
+
+    /// Start a conversation and notify the interface when events become available.
+    pub fn start_with_wake(
+        session: Session,
+        agent: AgentPreset,
+        helper: PathBuf,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self::start_agent(session, agent, helper, Some(Arc::new(wake)))
+    }
+
+    fn start_agent(
+        session: Session,
+        agent: AgentPreset,
+        helper: PathBuf,
+        wake: Option<Wake>,
+    ) -> Self {
         let (executable, args) = agent.executable();
         Self::launch(
             session,
@@ -135,6 +192,7 @@ impl Conversation {
                 args: args.iter().map(|arg| (*arg).into()).collect(),
             },
             bridge::Bridge::start,
+            wake,
         )
     }
 
@@ -142,22 +200,32 @@ impl Conversation {
         session: Session,
         helper: PathBuf,
         launch: protocol::Launch,
-        connect: impl FnOnce(Arc<Tools>, SyncSender<AssistantEvent>) -> Result<bridge::Bridge, String>
-        + Send
-        + 'static,
+        connect: impl FnOnce(Arc<Tools>, Events) -> Result<bridge::Bridge, String> + Send + 'static,
+        wake: Option<Wake>,
     ) -> Self {
         let (send_input, input) = sync_channel(16);
         let (send_event, events) = sync_channel(QUEUE);
         let tools = Arc::new(Tools::new(session));
         let worker = tools.clone();
+        let worker_done = Arc::new(AtomicBool::new(false));
+        let done = worker_done.clone();
         let worker = thread::spawn(move || {
-            protocol::supervise(launch, helper, worker, input, send_event, connect)
+            let events = Events {
+                sender: send_event,
+                wake: wake.clone(),
+            };
+            protocol::supervise(launch, helper, worker, input, events, connect);
+            done.store(true, Ordering::Release);
+            if let Some(wake) = wake {
+                wake();
+            }
         });
         Self {
             input: send_input,
             events,
             tools,
             disconnected: false,
+            worker_done,
             worker: Some(worker),
         }
     }
@@ -167,6 +235,10 @@ impl Conversation {
             return Err(format!("Enter a prompt of 1 to {MAX_PROMPT} bytes"));
         }
         self.send(Input::Prompt(text))
+    }
+
+    pub fn set_option(&self, kind: SettingKind, value: String) -> Result<(), String> {
+        self.send(Input::Setting { kind, value })
     }
 
     pub fn answer(&self, request: String, option: String) -> Result<(), String> {
@@ -199,7 +271,11 @@ impl Conversation {
                 }
                 Some(event)
             }
-            Err(TryRecvError::Disconnected) if !self.disconnected => {
+            Err(error)
+                if !self.disconnected
+                    && (error == TryRecvError::Disconnected
+                        || self.worker_done.load(Ordering::Acquire)) =>
+            {
                 self.disconnected = true;
                 Some(AssistantEvent::Failed {
                     stage: AssistantStage::Process,

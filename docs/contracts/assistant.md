@@ -17,10 +17,18 @@ conversation closes. The agent starts in a separate local working directory.
 
 ## Desktop and CLI
 
-In the desktop, open **View → Assistant**, select an agent, and send a prompt.
-The assistant uses the open workspace, the run source selected in **Files**,
-and the working draft. **Stop** cancels the active prompt. **Reset conversation**
-closes the agent connection and keeps the working draft.
+In the desktop, open **View → Pages → Assistant** and select an agent. The
+**Model** and **Reasoning effort** controls show the values offered by the
+installed adapter. Set them before sending a prompt or between turns. A model
+change can change the available effort values. The desktop remembers confirmed
+choices per agent and restores them when the adapter still offers them.
+
+Type in the composer at the bottom. Press **Enter** to send, or **Shift+Enter**
+to insert a newline. Expand **Thinking** to read available adapter activity
+for that turn. The assistant uses the open workspace, the run source selected
+in **Files**, and the working draft. **Stop** cancels the active prompt.
+Closing the tab keeps the conversation open. **Reset conversation** starts
+a fresh connection and keeps the working draft.
 
 Start the interactive CLI with an explicit workspace and agent.
 

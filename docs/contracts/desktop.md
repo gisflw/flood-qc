@@ -28,7 +28,7 @@ remain independent of runner work.
 
 ## Common tasks
 
-Use **View → Assistant** to open an [agent conversation](assistant.md) in the
+Use **View → Pages → Assistant** to open an [agent conversation](assistant.md) in the
 current workspace.
 
 | Task | Control |
@@ -105,7 +105,8 @@ Refresh/F5 after generating a mask for an open run. Refresh resets the scenario
 and inundation frame. See
 [inundation processing](inundation.md) for the command and regional inputs.
 
-Choose model scenario overlays in Charts. Chart timestamps use
+Open **Settings** on the Charts toolbar to edit the location, date window,
+and model scenario overlays. Chart timestamps use
 the run or project observation timezone. Without a run, the initial chart window
 uses the current project-local hour and the preceding week. Chart loading runs independently of map and layer reads. Charts
 reports loading, data availability, and errors for the requested pair. If a
@@ -150,9 +151,12 @@ masks break curves, and zero and signed values remain valid. Level thresholds
 and forecast reference markers are shown. The observed-series control and scenario
 checkboxes control chart sources. Plots, legends, and cursor readouts share the
 same source colors, which stay stable when toggling scenarios within a run.
-Hover over a plot to update the readings below the charts. They are grouped by
-variable and remain visible after the pointer leaves the plot.
-Charts exports the displayed snapshot. CSV keeps model and observation location
+Hover over a plot to update the readings below the charts. A primary click
+inside a plot pins the shared time across all three plots. Click another point
+to move the pin or choose **Unpin** in the toolbar to resume hover updates.
+The readings are grouped by variable and remain visible after the pointer
+leaves the plot. Loading a replacement comparison clears the pin.
+The **Export** toolbar control exports the displayed snapshot. CSV keeps model and observation location
 IDs on each row using the [shared series export](series.md) format. Complete PNG
 export identifies the pair and combines all three panels,
 localized titles, local-time axes, units, reference/threshold annotations and
@@ -174,19 +178,21 @@ the loaded run and its frozen recipe. Day horizons appear only when the saved
 hourly boundaries convert losslessly. Available scenarios have successful,
 readable basin results. Unavailable fields in a loaded run show a dash.
 
-The resizable right pane defaults to Map. Its permanent Map tab contains Layers
-and Rainfall. Charts, Data, and Files are also available. Data
-offers location search, feature actions and the displayed series table. Files
-contains the run selector, provenance, assets and findings. Use the
-ribbon to open New run, experiment forms and Jobs in the same pane. Closing a form
-tab preserves its inputs. Jobs opens from the View ribbon.
+The resizable right pane defaults to Map. The Map tab contains Layers and
+Rainfall. Data offers location search, feature actions and the displayed series
+table. Files contains the run selector, provenance, assets and findings. Open
+pages and forms from the ribbon. Closing a tab preserves its page state.
+Drag tabs along a strip to reorder them, onto another strip or group to move
+them, or onto a highlighted edge to split the group. Groups can be stacked,
+side by side, or arranged in a four-cell grid. With three groups, one spans a
+row or column. Ribbon actions open tabs in the most recently focused group
+or focus the group that already contains the tab.
 
 The **Settings** ribbon contains the interface and workspace controls. English or
 Brazilian Portuguese and Light or Dark apply immediately and are remembered
 app-wide. Light is the default. Preferences remember each project's right pane, map view, divider position,
 and applied rainfall settings. Projects saved before map comparisons open in Single
-with their previous rainfall settings. Projects saved with the previous docking
-layout open with the default right pane. Reset layout restores the default right
+with their previous rainfall settings. Projects saved with a flat right pane open with their tabs in one group. Reset layout restores the default right
 pane and keeps results, selections and unfinished edits. Tab navigation and ribbon
 actions are keyboard accessible. Ctrl+1 focuses **Map view**, Ctrl+2/3 opens Charts/Data,
 Ctrl+S saves the draft, Ctrl+Q requests exit, and F5 refreshes monitoring.
@@ -277,4 +283,5 @@ Windows compatibility. Performance/memory thresholds and hardware acceptance
 remain open. Basemap equivalence to the legacy Carto style is unqualified.
 
 The saved-data forms use the same validated workflows as the CLI.
-Live acquisition and the assistant are later capabilities.
+Live acquisition remains planned. See the [assistant contract](assistant.md)
+for adapter usage and settings.

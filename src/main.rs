@@ -1452,6 +1452,9 @@ mod assistant {
                     }
                     AssistantEvent::ToolConnected => writeln!(out, "MGB Ops tools connected.")?,
                     AssistantEvent::Text(text) => write!(out, "{text}")?,
+                    AssistantEvent::Thought(_)
+                    | AssistantEvent::Settings(_)
+                    | AssistantEvent::SettingChanged { .. } => {}
                     AssistantEvent::ToolStatus(status) => writeln!(out, "\n{status}")?,
                     AssistantEvent::Permission {
                         request,

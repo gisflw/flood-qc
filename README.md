@@ -40,7 +40,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Edit, preview, or run an experiment | `draft` commands or **Draft → Run experiment** | [Draft workflow](docs/contracts/drafts.md#editing-source-acceptance-and-previews) |
 | Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
 | Generate and view an inundation mask | `inundation process`, then desktop **Map → Inundation** | [Inundation inputs and processing](docs/contracts/inundation.md) |
-| Inspect a workspace or review a draft edit with an installed agent | `assistant` or desktop **View → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
+| Inspect a workspace or review a draft edit with an installed agent | `assistant` or desktop **View → Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
 | Review observations, export a bulletin, share runs, or schedule a job | CLI or desktop workflows | [Saved-data workflows](docs/contracts/saved-data.md) |
 
 ### Inspect a workspace

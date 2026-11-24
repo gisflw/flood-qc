@@ -569,6 +569,7 @@ pub use self::session::{
 
 mod assistant;
 pub use self::assistant::{
-    AgentPreset, AssistantEvent, AssistantStage, Conversation, FieldChange, PermissionOption,
-    ProposalReview, SETUP_NOTICE, assistant_mcp_stdio,
+    AgentPreset, AgentSetting, AgentSettings, AssistantEvent, AssistantStage, Conversation,
+    FieldChange, PermissionOption, ProposalReview, SETUP_NOTICE, SettingChoice, SettingKind,
+    assistant_mcp_stdio,
 };

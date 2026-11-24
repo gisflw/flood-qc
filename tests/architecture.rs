@@ -321,12 +321,19 @@ impl<'ast> Visit<'ast> for Gate {
         }
         if name == "include_bytes" {
             let asset = syn::parse2::<syn::LitStr>(mac.tokens.clone());
+            let font = match (self.owner.as_str(), self.source.as_deref()) {
+                ("analysis", Some(path)) if path == Path::new("analysis/report_graphics.rs") => {
+                    Some("../../assets/typography/NotoSans-Regular.ttf")
+                }
+                ("interface", Some(path)) if path == Path::new("bin/desktop/theme.rs") => {
+                    Some("../../../assets/typography/NotoSans-Regular.ttf")
+                }
+                _ => None,
+            };
             let valid = mac.path.is_ident("include_bytes")
-                && self.owner == "analysis"
-                && self.source.as_deref() == Some(Path::new("analysis/report_graphics.rs"))
-                && asset.is_ok_and(|literal| literal.value() == "assets/NotoSans-Regular.ttf");
+                && font.is_some_and(|font| asset.is_ok_and(|literal| literal.value() == font));
             if !valid {
-                self.error("include_bytes permits only the owned bulletin font");
+                self.error("include_bytes permits only the shared font at its approved uses");
             }
             return;
         }
@@ -857,9 +864,10 @@ fn nested_interfaces_keep_relative_paths_inside_the_interface() {
 }
 
 #[test]
-fn bulletin_font_inclusion_is_limited_to_its_owner_and_static_path() {
+fn shared_font_inclusion_is_limited_to_its_static_paths() {
     let source = Path::new("analysis/report_graphics.rs");
-    let accepted = r#"const FONT: &[u8] = include_bytes!("assets/NotoSans-Regular.ttf");"#;
+    let accepted =
+        r#"const FONT: &[u8] = include_bytes!("../../assets/typography/NotoSans-Regular.ttf");"#;
     assert!(check_source("analysis", accepted, 1, Some(source)).is_empty());
     assert!(!check_source("store", accepted, 1, Some(source)).is_empty());
     assert!(
@@ -873,6 +881,20 @@ fn bulletin_font_inclusion_is_limited_to_its_owner_and_static_path() {
     );
     let escaped = r#"const FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");"#;
     assert!(!check_source("analysis", escaped, 1, Some(source)).is_empty());
+    let desktop =
+        r#"const FONT: &[u8] = include_bytes!("../../../assets/typography/NotoSans-Regular.ttf");"#;
+    let theme = Path::new("bin/desktop/theme.rs");
+    assert!(check_source("interface", desktop, 2, Some(theme)).is_empty());
+    assert!(!check_source("interface", accepted, 2, Some(theme)).is_empty());
+    assert!(
+        !check_source(
+            "interface",
+            desktop,
+            2,
+            Some(Path::new("bin/desktop/mod.rs"))
+        )
+        .is_empty()
+    );
 }
 
 #[test]

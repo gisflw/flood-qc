@@ -1,6 +1,23 @@
 use eframe::egui::{self, Color32, Stroke, Theme};
 
+pub fn chat_font() -> egui::FontFamily {
+    egui::FontFamily::Name("Assistant".into())
+}
+
 pub fn install(context: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    let name = "Noto Sans".to_owned();
+    fonts.font_data.insert(
+        name.clone(),
+        egui::FontData::from_static(include_bytes!(
+            "../../../assets/typography/NotoSans-Regular.ttf"
+        ))
+        .into(),
+    );
+    let mut chat = fonts.families[&egui::FontFamily::Proportional].clone();
+    chat.insert(0, name);
+    fonts.families.insert(chat_font(), chat);
+    context.set_fonts(fonts);
     for theme in [Theme::Light, Theme::Dark] {
         context.style_mut_of(theme, |style| {
             let dark = theme == Theme::Dark;

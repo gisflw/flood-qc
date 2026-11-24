@@ -259,7 +259,7 @@ fn endpoint_revokes_old_credentials_and_cancels_waiting_requests() {
     draft(&session);
     let (events, received) = sync_channel(8);
     let tools = Arc::new(Tools::new(session.clone()));
-    let bridge = Bridge::start(tools.clone(), events.clone()).unwrap();
+    let bridge = Bridge::start(tools.clone(), events.clone().into()).unwrap();
     let (endpoint, token) = bridge.connection();
     let initialize = serde_json::json!({"jsonrpc":"2.0","method":"initialize","id":1,"params":{"protocolVersion":"2025-06-18"}});
     assert!(call(endpoint, "wrong", initialize.clone()).is_none());
@@ -318,7 +318,7 @@ fn endpoint_revokes_old_credentials_and_cancels_waiting_requests() {
     let token = token.to_owned();
     drop(bridge);
 
-    let replacement = Bridge::start(Arc::new(Tools::new(session)), events).unwrap();
+    let replacement = Bridge::start(Arc::new(Tools::new(session)), events.into()).unwrap();
     let (next_endpoint, _) = replacement.connection();
     assert!(call(next_endpoint, &token, initialize.clone()).is_none());
     assert!(call(&endpoint, &token, initialize).is_none());
@@ -381,6 +381,7 @@ done
                 args: vec![script.clone().into_os_string(), mode.into()],
             },
             Bridge::disconnected,
+            None,
         )
     };
     let mut conversation = launch("normal");
@@ -466,6 +467,149 @@ done
             |event| matches!(event, AssistantEvent::Failed { stage, closed:true,..} if *stage == expected),
         );
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn acp_settings_are_confirmed_and_refresh_dependent_choices() {
+    let root = temp();
+    let workspace = session(root.path());
+    let script = root.path().join("settings-agent.sh");
+    fs::write(&script, r#"
+IFS= read -r line || exit
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+IFS= read -r line || exit
+model_a='{"id":"choose_model","category":"model","type":"select","currentValue":"a","options":[{"group":"all","options":[{"value":"a","name":"Model A"},{"value":"b","name":"Model B"}]}]}'
+model_b='{"id":"choose_model","category":"model","type":"select","currentValue":"b","options":[{"value":"a","name":"Model A"},{"value":"b","name":"Model B"}]}'
+effort_a='{"id":"choose_effort","category":"thought_level","type":"select","currentValue":"low","options":[{"value":"low","name":"Low"}]}'
+effort_b='{"id":"choose_effort","category":"thought_level","type":"select","currentValue":"high","options":[{"value":"high","name":"High"},{"value":"xhigh","name":"Extra high"}]}'
+case "$1" in
+  legacy)
+    printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture","models":{"currentModelId":"legacy-a","availableModels":[{"modelId":"legacy-a","name":"Legacy A"},{"modelId":"legacy-b","name":"Legacy B"}]}}}';;
+  *)
+    printf '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture","configOptions":[%s,%s]}}\n' "$model_a" "$effort_a";;
+esac
+while IFS= read -r line; do
+  id=${line#*\"id\":}; id=${id%%,*}
+  case "$line" in
+    *session/set_config_option*choose_model*)
+      if [ "$1" = timeout ]; then continue; fi
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[%s,%s]}}\n' "$id" "$model_b" "$effort_b"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"other","update":{"sessionUpdate":"config_option_update","configOptions":[%s,%s]}}}\n' "$model_a" "$effort_a";;
+    *session/set_config_option*choose_effort*)
+      printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"Effort rejected"}}\n' "$id"
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"config_option_update","configOptions":[%s,%s]}}}\n' "$model_a" "$effort_a";;
+    *session/set_model*legacy-b*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id";;
+    *session/prompt*)
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"adapter summary test-credential"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"answer"}}}}'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id";;
+    *) exit 1;;
+  esac
+done
+"#).unwrap();
+    let script = script.canonicalize().unwrap();
+    let helper = std::env::current_exe().unwrap();
+    let (wake, woke) = std::sync::mpsc::channel();
+    let launch = |mode: &str| {
+        let wake = wake.clone();
+        Conversation::launch(
+            workspace.clone(),
+            helper.clone(),
+            protocol::Launch {
+                executable: "sh".into(),
+                args: vec![script.clone().into_os_string(), mode.into()],
+            },
+            Bridge::disconnected,
+            Some(Arc::new(move || {
+                let _ = wake.send(());
+            })),
+        )
+    };
+    let mut modern = launch("modern");
+    woke.recv_timeout(Duration::from_secs(4)).unwrap();
+    let AssistantEvent::Settings(initial) = event(&mut modern, |event| {
+        matches!(event, AssistantEvent::Settings(_))
+    }) else {
+        unreachable!()
+    };
+    assert_eq!(initial.model.unwrap().choices[1].label, "Model B");
+    assert_eq!(initial.effort.unwrap().selected, "low");
+    event(&mut modern, |event| matches!(event, AssistantEvent::Ready));
+    modern.set_option(SettingKind::Model, "b".into()).unwrap();
+    let AssistantEvent::SettingChanged {
+        settings,
+        error: None,
+    } = event(&mut modern, |event| {
+        matches!(event, AssistantEvent::SettingChanged { .. })
+    })
+    else {
+        unreachable!()
+    };
+    assert_eq!(settings.model.unwrap().selected, "b");
+    assert_eq!(settings.effort.unwrap().selected, "high");
+    modern
+        .set_option(SettingKind::Effort, "low".into())
+        .unwrap();
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::SettingChanged { error: Some(error), .. } if error == "The agent no longer offers that value"),
+    );
+    modern
+        .set_option(SettingKind::Effort, "xhigh".into())
+        .unwrap();
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::SettingChanged { settings, error: Some(error) } if error == "Effort rejected" && settings.effort.as_ref().is_some_and(|value| value.selected == "high")),
+    );
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::Settings(settings) if settings.effort.as_ref().is_some_and(|value| value.selected == "low")),
+    );
+    modern.prompt("question".into()).unwrap();
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::Thought(thought) if thought == "adapter summary [redacted]"),
+    );
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::Text(answer) if answer == "answer"),
+    );
+    event(&mut modern, |event| {
+        matches!(event, AssistantEvent::Finished { cancelled: false })
+    });
+
+    let mut legacy = launch("legacy");
+    let AssistantEvent::Settings(initial) = event(&mut legacy, |event| {
+        matches!(event, AssistantEvent::Settings(_))
+    }) else {
+        unreachable!()
+    };
+    assert!(initial.effort.is_none());
+    assert_eq!(initial.model.unwrap().selected, "legacy-a");
+    event(&mut legacy, |event| matches!(event, AssistantEvent::Ready));
+    legacy
+        .set_option(SettingKind::Model, "legacy-b".into())
+        .unwrap();
+    event(
+        &mut legacy,
+        |event| matches!(event, AssistantEvent::SettingChanged { settings, error: None } if settings.model.as_ref().is_some_and(|value| value.selected == "legacy-b")),
+    );
+
+    let mut stalled = launch("timeout");
+    event(&mut stalled, |event| matches!(event, AssistantEvent::Ready));
+    stalled.set_option(SettingKind::Model, "b".into()).unwrap();
+    event(&mut stalled, |event| {
+        matches!(
+            event,
+            AssistantEvent::Failed {
+                stage: AssistantStage::Configuration,
+                closed: true,
+                ..
+            }
+        )
+    });
 }
 
 #[cfg(unix)]
@@ -887,7 +1031,7 @@ fn pending_review_tracks_its_origin_without_a_socket() {
     draft(&session);
     let (events, observed) = sync_channel(8);
     let tools = Arc::new(Tools::new(session.clone()));
-    let bridge = Bridge::disconnected(tools.clone(), events.clone()).unwrap();
+    let bridge = Bridge::disconnected(tools.clone(), events.clone().into()).unwrap();
     let (_, credential) = bridge.connection();
     let environment = bridge.environment(session.workspace()).unwrap();
     let hidden_credential = !environment.to_string().contains(credential);
@@ -895,7 +1039,8 @@ fn pending_review_tracks_its_origin_without_a_socket() {
     let args =
         serde_json::json!({"version":session.draft_version().unwrap(),"forecast_horizon_days":4});
     let message = tool("draft.propose_edit", args);
-    let call = |credential| bridge.fixture_tool(credential, events.clone(), &message["params"]);
+    let call =
+        |credential| bridge.fixture_tool(credential, events.clone().into(), &message["params"]);
     tools.begin(3);
     assert!(call("wrong").is_none());
     assert_eq!(call(credential).unwrap().unwrap()["status"], "staged");

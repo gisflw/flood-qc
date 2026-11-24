@@ -7,7 +7,7 @@ pub struct Charts {
     pub state: eframe::egui_wgpu::RenderState,
     pub plots: [Plot1D; 3],
     cursors: [ItemHandle; 3],
-    cursor_time: Option<f64>,
+    cursor: Cursor,
     pub report: Option<SeriesReport>,
     pub comparison_station: Option<String>,
     pub source_labels: Vec<String>,
@@ -17,6 +17,29 @@ pub struct Charts {
     portuguese: bool,
     pub origin: f64,
     pub line_scale: f32,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Cursor {
+    time: Option<f64>,
+    pinned: bool,
+}
+
+impl Cursor {
+    fn hover(&mut self, time: f64) {
+        if !self.pinned {
+            self.time = Some(time);
+        }
+    }
+
+    fn pin(&mut self, time: f64) {
+        self.time = Some(time);
+        self.pinned = true;
+    }
+
+    fn unpin(&mut self) {
+        self.pinned = false;
+    }
 }
 pub fn location_label(location: &Location, portuguese: bool) -> String {
     match location {
@@ -100,15 +123,14 @@ impl Charts {
         for (i, plot) in plots.iter_mut().enumerate() {
             plot.set_graph_y_label(["mm", "m³/s", "cm"][i], YAxis::Left);
             plot.plot_mut().set_x_tick_mode(TickMode::TimeSeries);
-            plot.set_graph_cursor(true);
             plot.set_auto_reset_zoom(false);
         }
-        let cursors = std::array::from_fn(|i| plots[i].add_x_marker(0., Color32::GRAY));
+        let cursors = std::array::from_fn(|i| cursor_marker(&mut plots[i]));
         Self {
             state: state.clone(),
             plots,
             cursors,
-            cursor_time: None,
+            cursor: Cursor::default(),
             report: None,
             comparison_station: None,
             source_labels: vec![],
@@ -126,12 +148,41 @@ impl Charts {
             plot.backend().flush_scene();
         }
         self.report = None;
-        self.cursor_time = None;
+        self.cursor = Cursor::default();
         self.comparison_station = None;
         self.source_labels.clear();
         self.scenario_order.clear();
         self.references.clear();
         self.labels.clear();
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.cursor.pinned
+    }
+
+    pub fn unpin(&mut self) {
+        self.cursor.unpin();
+    }
+
+    pub fn relabel(&mut self, portuguese: bool) -> Result<(), String> {
+        let Some(report) = self.report.clone() else {
+            return Ok(());
+        };
+        let limits = self.plots.each_ref().map(|plot| plot.plot().limits);
+        let right = self.plots[2].plot().y2;
+        let references = self.references.clone();
+        let cursor = self.cursor;
+        self.load(report, &references, portuguese)?;
+        for (plot, (a, b, c, d)) in self.plots.iter_mut().zip(limits) {
+            plot.set_graph_x_limits(a, b);
+            plot.set_graph_y_limits(c, d, YAxis::Left);
+        }
+        if let Some((min, max)) = right {
+            self.plots[2].set_graph_y_limits(min, max, YAxis::Right);
+        }
+        self.cursor = cursor;
+        apply_cursor(&mut self.plots, self.cursors, cursor, self.origin);
+        Ok(())
     }
     pub fn location_caption(&self, report: &SeriesReport, portuguese: bool) -> String {
         let mini = location_label(&report.location, portuguese);
@@ -152,7 +203,7 @@ impl Charts {
         portuguese: bool,
     ) -> Result<(), String> {
         self.labels.clear();
-        self.cursor_time = None;
+        self.cursor = Cursor::default();
         self.portuguese = portuguese;
         self.origin = seconds(report.window.start);
         for plot in &mut self.plots {
@@ -298,7 +349,7 @@ impl Charts {
                 plot.set_graph_y_limits(min, max, YAxis::Right);
             }
         }
-        self.cursors = std::array::from_fn(|i| self.plots[i].add_x_marker(0., Color32::GRAY));
+        self.cursors = std::array::from_fn(|i| cursor_marker(&mut self.plots[i]));
         self.report = Some(report);
         Ok(())
     }
@@ -362,7 +413,7 @@ impl Charts {
         let gap = ui.spacing().item_spacing.y;
         let height = ((available_height - header_height - 3. * gap) / 3.).max(210.);
         let mut limits = None;
-        let mut cursor = None;
+        let previous = self.cursor;
         for plot in &mut self.plots {
             plot.drain_events();
         }
@@ -370,12 +421,22 @@ impl Charts {
             let response = ui
                 .allocate_ui(egui::vec2(ui.available_width(), height), |ui| plot.show(ui))
                 .inner;
-            if response.response.hovered() {
-                if let Some(pointer) = response.response.hover_pos() {
-                    cursor = Some(response.transform.pixel_to_data(pointer).0);
-                }
+            let widget = &response.response;
+            if widget.hovered() || widget.dragged() {
                 let (a, b, _, _) = plot.plot().limits;
                 limits = Some((a, b));
+            }
+            if widget.clicked_by(egui::PointerButton::Primary)
+                && let Some(pointer) = widget.interact_pointer_pos()
+                && response.transform.area.contains(pointer)
+            {
+                self.cursor
+                    .pin(response.transform.pixel_to_data(pointer).0 + self.origin);
+            } else if let Some(pointer) = widget.hover_pos()
+                && response.transform.area.contains(pointer)
+            {
+                self.cursor
+                    .hover(response.transform.pixel_to_data(pointer).0 + self.origin);
             }
         }
         if let Some((a, b)) = limits {
@@ -383,13 +444,11 @@ impl Charts {
                 plot.set_graph_x_limits(a, b);
             }
         }
-        if let Some(x) = cursor {
-            for (plot, handle) in self.plots.iter_mut().zip(self.cursors) {
-                plot.set_marker_position(handle, x, 0.);
-            }
-            self.cursor_time = Some(x + self.origin);
+        if self.cursor != previous {
+            apply_cursor(&mut self.plots, self.cursors, self.cursor, self.origin);
+            ui.request_repaint();
         }
-        if let Some(x) = self.cursor_time {
+        if let Some(x) = self.cursor.time {
             self.cursor_readings(ui, report, x, portuguese);
         }
     }
@@ -426,11 +485,7 @@ impl Charts {
                     .iter()
                     .filter(|series| series.variable == variable)
                 {
-                    let Some(point) = series.points.iter().min_by(|a, b| {
-                        (seconds(a.timestamp) - cursor)
-                            .abs()
-                            .total_cmp(&(seconds(b.timestamp) - cursor).abs())
-                    }) else {
+                    let Some(point) = nearest_reading(&series.points, cursor) else {
                         continue;
                     };
                     let value = point
@@ -448,6 +503,29 @@ impl Charts {
                 }
             }
         });
+    }
+}
+
+fn cursor_marker(plot: &mut Plot1D) -> ItemHandle {
+    let handle = plot.add_x_marker(0., Color32::GRAY);
+    plot.set_item_visible(handle, false);
+    handle
+}
+
+fn nearest_reading(points: &[SeriesPoint], time: f64) -> Option<&SeriesPoint> {
+    points.iter().min_by(|a, b| {
+        (seconds(a.timestamp) - time)
+            .abs()
+            .total_cmp(&(seconds(b.timestamp) - time).abs())
+    })
+}
+
+fn apply_cursor(plots: &mut [Plot1D; 3], handles: [ItemHandle; 3], cursor: Cursor, origin: f64) {
+    for (plot, handle) in plots.iter_mut().zip(handles) {
+        plot.set_item_visible(handle, cursor.time.is_some());
+        if let Some(time) = cursor.time {
+            plot.set_marker_position(handle, time - origin, 0.);
+        }
     }
 }
 
@@ -519,6 +597,37 @@ impl Drop for Charts {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pin_holds_the_reading_until_repin_or_unpin() {
+        let start = super::super::data::timestamp("2026-01-01T00:00:00").unwrap();
+        let points = [Some(0.), None, Some(2.)]
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| SeriesPoint {
+                timestamp: start + chrono::Duration::hours(index as i64),
+                value,
+                time_segment: None,
+            })
+            .collect::<Vec<_>>();
+        let mut cursor = Cursor::default();
+        let time = |index: usize| seconds(points[index].timestamp);
+        let reading = |cursor: Cursor| {
+            nearest_reading(&points, cursor.time.unwrap())
+                .unwrap()
+                .value
+        };
+        cursor.hover(time(0));
+        assert_eq!(reading(cursor), Some(0.));
+        cursor.pin(time(1));
+        cursor.hover(time(2));
+        assert_eq!(reading(cursor), None);
+        cursor.pin(time(2));
+        assert_eq!(reading(cursor), Some(2.));
+        cursor.unpin();
+        cursor.hover(time(0));
+        assert_eq!(reading(cursor), Some(0.));
+    }
 
     #[test]
     fn default_y_bounds_pad_signed_and_constant_data() {
