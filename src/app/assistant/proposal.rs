@@ -274,10 +274,15 @@ fn validate(session: &Session, args: ProposalArgs) -> Result<Candidate, CommandF
             DraftConflict::Stale => stale(),
             error => invalid(error.to_string()),
         })?;
-    if !changes.is_empty()
-        && let Err(error) = draft.preparation_document()
-    {
-        readiness.push(error);
+    if !changes.is_empty() {
+        if draft.document.operation.reference_time.is_none() {
+            readiness.push("Set the draft reference time before preparing.".into());
+        } else if draft.preparation_document().is_err() {
+            readiness.push(
+                "Complete the remaining operation settings and check readiness before preparing."
+                    .into(),
+            );
+        }
     }
     Ok(Candidate {
         version: args.version,

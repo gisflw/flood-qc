@@ -169,6 +169,16 @@ baseline. Discard restores the saved document or the initial never-saved documen
 it does not reverse catalog writes or remove results. Linux filesystem behavior
 is qualified; Windows remains unverified.
 
+### Working draft in a session
+
+Opening or creating a draft gives it a new identity. Editing its working
+document, accepting changed sources, discarding changes, or fixing the anchor
+on Save changes the working revision. Map and chart presentation does not
+change it. An update produced from a snapshot conflicts if its session, draft,
+or revision changed, or if a draft job is pending. A successful working update
+stays in memory until Save. Incomplete drafts can still be edited and validated
+independently of preparation readiness.
+
 ## Explicit registration
 
 Registration writes only the selected draft instructions. It does not register

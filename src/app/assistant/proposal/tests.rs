@@ -85,7 +85,7 @@ fn incomplete_draft_reviews_all_changed_fields_and_only_a_save_writes() {
         review
             .readiness
             .iter()
-            .any(|message| message.contains("reference_time"))
+            .any(|message| message.contains("Set the draft reference time"))
     );
     assert_eq!(session.draft().unwrap().draft.document, original);
     assert_eq!(state.apply(&session, &review), ProposalOutcome::Applied);

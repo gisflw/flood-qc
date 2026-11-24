@@ -42,6 +42,20 @@ supplied directory without capturing or validating it; a relative directory does
 not provide the absolute report-path guarantee. Resource overrides remain relative
 to the workspace, just like CLI overrides.
 
+## Workspace sessions
+
+The desktop opens a fresh app session for each workspace open. Headless callers
+can create an independent `mgb_ops::app::Session` with the same
+`InspectionRequest` used by one-shot inspection. The session keeps the
+explicit workspace and configuration selection. Opening a draft preserves
+that selection even if the draft records a different workspace.
+
+A session follows the active run by default. Each read returns the generation
+identity alongside its result and keeps it stable through the read. A missing
+active run is valid. Selecting an independently saved run directory or bundle
+keeps that selection across active-run publications. Managed generation
+directories and aliases to them cannot be selected as saved runs.
+
 ## Configuration
 
 Rust reads TOML, never Python's `config/custom.yaml`. Generate an editable example:

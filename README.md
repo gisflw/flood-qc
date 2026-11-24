@@ -41,6 +41,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
 | Generate and view an inundation mask | `inundation process`, then desktop **Map → Inundation** | [Inundation inputs and processing](docs/contracts/inundation.md) |
 | Review observations, export a bulletin, share runs, or schedule a job | CLI or desktop workflows | [Saved-data workflows](docs/contracts/saved-data.md) |
+| Ask about a workspace or review a suggested draft edit | Desktop **Assistant** or interactive `mgb-ops assistant` | [Assistant setup and controls](docs/contracts/assistant.md) |
 
 ### Inspect a workspace
 

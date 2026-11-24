@@ -34,6 +34,7 @@ remain independent of runner work.
 | Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
 | Step through modeled inundation | Use **Map → Inundation** |
 | Inspect location data or a run | **View → Charts**, **Data**, or **Files** |
+| Ask about the selected workspace or review a draft proposal | [**Assistant**](assistant.md) |
 | Review observation availability and QC | **View → Observation review** |
 | Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
 | Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |

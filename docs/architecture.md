@@ -66,6 +66,21 @@ configuration/report types. App assembles inspection findings from model's expli
 prerequisite checks. The root facade declares modules and re-exports intended APIs;
 composition lives in app. Prefer deep modules with narrow APIs and private internals.
 
+App owns each process-local workspace session, including workspace selection,
+the selected run, and the working draft. An active-run read holds the shared
+cache guard from generation resolution through artifact access. A saved run
+has an independent selection. App coordinates draft changes and draft jobs
+against the same working revision. Interfaces own their forms, chart overlays,
+and departure decisions. See the [workspace](contracts/workspace.md#workspace-sessions)
+and [draft](contracts/drafts.md) contracts for supported behavior.
+
+App also owns assistant conversations, the shared command catalog, and draft
+proposal review state. Each conversation connects an installed agent through
+ACP and binds its MCP tools to the originating session. Command handlers
+delegate to existing app workflows. The host controls applying proposed
+changes, and the interfaces render the conversation and present operator
+choices. See the [assistant contract](contracts/assistant.md).
+
 Define concrete schemas, units, interval bounds, and missing-value semantics when
 first used. Do not equate missing values with zero or silently discard timezones.
 
