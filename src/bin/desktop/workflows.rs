@@ -392,7 +392,7 @@ impl Forms {
         form: Form,
         pt: bool,
         draft: &Draft,
-        run: Option<&super::data::Run>,
+        run: Option<&mgb_ops::app::RunSummary>,
     ) -> Result<Option<Task>, String> {
         ui.heading(form.label(pt));
         let default_db = draft
@@ -488,7 +488,7 @@ impl Forms {
         ui: &mut egui::Ui,
         pt: bool,
         draft: &Draft,
-        run: Option<&super::data::Run>,
+        run: Option<&mgb_ops::app::RunSummary>,
     ) -> Option<Task> {
         if let Some(run) = run {
             ui.label(run.root.display().to_string());

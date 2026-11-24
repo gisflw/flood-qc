@@ -17,6 +17,18 @@ pub(crate) fn run_cache_root(workspace: &Path) -> PathBuf {
     workspace.join("data/cache/run")
 }
 
+pub(crate) fn is_managed_run_path(workspace: &Path, resolved: &Path) -> bool {
+    let cache = run_cache_root(workspace);
+    resolved.starts_with(cache.canonicalize().unwrap_or(cache))
+        || resolved.ancestors().any(|path| {
+            path.ends_with("data/cache/run")
+                || (run_stage_id(path).is_ok()
+                    && path
+                        .parent()
+                        .is_some_and(|parent| parent.join("access.lock").is_file()))
+        })
+}
+
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 struct ActiveRun {

@@ -69,6 +69,22 @@ composition lives in app. Prefer deep modules with narrow APIs and private inter
 Define concrete schemas, units, interval bounds, and missing-value semantics when
 first used. Do not equate missing values with zero or silently discard timezones.
 
+## Application sessions and the assistant
+
+App owns the process-local session for an explicitly selected workspace. It
+holds the resolved configuration selection, run source, and working draft.
+Reads that follow the active run hold the cache's shared guard through artifact
+access. Retained selections are independent of publication. Draft changes
+from snapshots require the same session, draft identity and revision. App
+serializes the update with job admission. Interfaces own display and departure
+decisions.
+
+The assistant uses ACP for agent interaction and an MCP connection scoped to
+the conversation. App owns tool dispatch and uses the same data workflows as
+operators. Operator review applies a draft proposal to the working copy.
+Durable actions continue to use the explicit application workflows. See the
+[assistant contract](contracts/assistant.md).
+
 ## Operational data decisions
 
 Saved operations use Rust-owned canonical formats. SQLite holds

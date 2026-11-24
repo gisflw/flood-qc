@@ -84,7 +84,7 @@ fn names(v: &Variable) -> (&'static str, &'static str) {
         Variable::Level => ("level", "cm"),
     }
 }
-fn valid_id(id: &str) -> bool {
+pub(super) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()

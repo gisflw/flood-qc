@@ -28,7 +28,7 @@ const BATCH_SIZE: usize = 4;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Source {
-    pub active: Option<super::data::ActiveRun>,
+    pub selection: Option<super::data::SelectedRun>,
     pub root: PathBuf,
     pub scenario: String,
 }
@@ -261,8 +261,8 @@ struct OpenMask {
 
 impl OpenMask {
     fn load(source: &Source) -> Result<(Self, Grid), Finding> {
-        if let Some(active) = &source.active {
-            active
+        if let Some(selection) = &source.selection {
+            selection
                 .read(|| Ok(Self::open(source)))
                 .map_err(Finding::Invalid)?
         } else {
@@ -354,22 +354,34 @@ impl Worker {
                     Job::Open(source) => {
                         open = None;
                         Loaded::Open(OpenMask::load(&source).map(|(mask, grid)| {
-                            open = Some(mask);
+                            open = Some((mask, source));
                             Box::new(grid)
                         }))
                     }
                     Job::Tiles { frame, tiles } => {
-                        let mut results = Vec::new();
-                        for tile in tiles {
-                            if revision != active.load(Ordering::Relaxed) {
-                                break;
+                        let results = match &open {
+                            Some((mask, source)) => {
+                                let read = || {
+                                    Ok(tiles
+                                        .iter()
+                                        .copied()
+                                        .take_while(|_| revision == active.load(Ordering::Relaxed))
+                                        .map(|tile| (tile, mask.tile(frame, tile)))
+                                        .collect())
+                                };
+                                match &source.selection {
+                                    Some(selection) => selection.read(read),
+                                    None => read(),
+                                }
                             }
-                            let result = open
-                                .as_ref()
-                                .ok_or_else(|| "No inundation mask is open".to_owned())
-                                .and_then(|mask| mask.tile(frame, tile));
-                            results.push((tile, result));
+                            None => Err("No inundation mask is open".into()),
                         }
+                        .unwrap_or_else(|error| {
+                            tiles
+                                .into_iter()
+                                .map(|tile| (tile, Err(error.clone())))
+                                .collect()
+                        });
                         Loaded::Tiles(results)
                     }
                 };
@@ -543,13 +555,13 @@ impl Inundation {
             let display_format = text(pt, "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M");
             ui.label(format!(
                 "{} · {current}",
-                meta.timeline.bounds[frame].end.format(display_format),
+                meta.timeline.bounds[frame].end.format(&display_format),
             ));
             if let Some(forecast) = forecast {
                 ui.small(format!(
                     "{} · {}",
                     text(pt, "Forecast starts", "Início da previsão"),
-                    forecast.start.format(display_format),
+                    forecast.start.format(&display_format),
                 ));
             } else {
                 ui.small(text(pt, "No forecast hours", "Sem horas de previsão"));
@@ -996,7 +1008,7 @@ mod tests {
         let context = egui::Context::default();
         let mut state = Inundation::new(context.clone());
         let source = Source {
-            active: None,
+            selection: None,
             root: directory.path().into(),
             scenario: "old".into(),
         };
@@ -1028,7 +1040,7 @@ mod tests {
     fn a_same_named_scenario_requires_the_selected_manifest_digest() {
         let directory = tempfile::tempdir().unwrap();
         let source = Source {
-            active: None,
+            selection: None,
             root: directory.path().into(),
             scenario: "test".into(),
         };
@@ -1059,7 +1071,7 @@ mod tests {
             in_flight: false,
         };
         let source = Source {
-            active: None,
+            selection: None,
             root: PathBuf::from("run-a"),
             scenario: "test".into(),
         };
@@ -1069,7 +1081,7 @@ mod tests {
         assert!(closing);
         let (opening, _) = pending.try_recv().unwrap();
         state.select(Some(Source {
-            active: None,
+            selection: None,
             root: PathBuf::from("run-b"),
             ..source
         }));

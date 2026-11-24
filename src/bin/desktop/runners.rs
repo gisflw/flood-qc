@@ -2,7 +2,8 @@ use super::{layout::Form, text};
 use chrono::{TimeZone, Timelike};
 use eframe::egui;
 use mgb_ops::app::{
-    Draft, OperationalRun, RegistrationReport, RegistrationSelection, WorkspaceConfig,
+    Draft, DraftJob, DraftSnapshot, DraftVersion, OperationalRun, RegistrationReport,
+    RegistrationSelection, Session, WorkspaceConfig,
 };
 use std::{
     path::{Path, PathBuf},
@@ -125,6 +126,8 @@ struct Reply {
     logs: String,
 }
 pub struct Active {
+    draft_job: Option<DraftJob>,
+    draft_read: Option<DraftVersion>,
     pub control: mgb_ops::app::OperationControl,
     pub automation: Option<mgb_ops::app::AutomationControl>,
     receiver: mpsc::Receiver<Reply>,
@@ -156,7 +159,7 @@ impl Drop for Active {
 }
 #[derive(Default)]
 pub struct Runners {
-    pub draft: Option<Draft>,
+    session: Option<Session>,
     operation: Option<OperationalRun>,
     operational_readiness: Option<Vec<String>>,
     pub config: Option<WorkspaceConfig>,
@@ -176,6 +179,38 @@ pub struct Runners {
     progress: Option<mgb_ops::app::OperationProgress>,
 }
 impl Runners {
+    pub fn new(session: Session) -> Self {
+        Self {
+            session: Some(session),
+            ..Self::default()
+        }
+    }
+
+    pub fn draft_snapshot(&self) -> Option<DraftSnapshot> {
+        self.session.as_ref()?.draft()
+    }
+
+    pub fn draft(&self) -> Option<Draft> {
+        self.draft_snapshot().map(|snapshot| snapshot.draft)
+    }
+
+    pub fn draft_edited(&mut self, pt: bool) {
+        self.readiness = vec![text(
+            pt,
+            "Settings changed; check readiness and explicitly accept selected inputs",
+            "Configurações alteradas; verifique a prontidão e aceite as entradas explicitamente",
+        )];
+        self.readiness_checked = false;
+    }
+
+    pub fn update_draft(&mut self, snapshot: DraftSnapshot) {
+        if let Some(session) = &self.session
+            && let Err(error) = session.update_draft(snapshot)
+        {
+            self.status = error.to_string();
+        }
+    }
+
     pub fn localized_status(&self, pt: bool) -> String {
         match self.status.as_str() {
             "Working" => text(pt, "Working", "Em andamento"),
@@ -192,12 +227,12 @@ impl Runners {
         self.active.is_some()
     }
     pub fn dirty(&self) -> bool {
-        self.config != self.baseline || self.draft.as_ref().is_some_and(Draft::is_dirty)
+        self.config != self.baseline || self.draft().is_some_and(|draft| draft.is_dirty())
     }
     pub fn discard(&mut self) {
         self.config = self.baseline.clone();
-        if let Some(draft) = &mut self.draft {
-            draft.discard();
+        if let Some(session) = &self.session {
+            let _ = session.edit_draft(Draft::discard);
         }
     }
     pub fn config_dirty(&self) -> bool {
@@ -208,7 +243,49 @@ impl Runners {
             self.status = "A job is already active in this workspace".into();
             return;
         }
-        let draft = self.draft.clone();
+        let Some(session) = self.session.clone() else {
+            self.status = "Open a workspace first".into();
+            return;
+        };
+        let changes_draft = matches!(
+            action,
+            Action::Initialize { .. }
+                | Action::New(_)
+                | Action::Open(_)
+                | Action::Save(..)
+                | Action::Accept
+                | Action::RunAll
+                | Action::MaterializeReplacements
+                | Action::MaterializeCorrections(_)
+                | Action::RegisterInstructions(_)
+        );
+        let draft_job = if changes_draft {
+            match session.start_draft_job() {
+                Ok(job) => Some(job),
+                Err(error) => {
+                    self.status = error.to_string();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let snapshot = match &draft_job {
+            Some(job) => job.snapshot.clone(),
+            None => session.draft(),
+        };
+        let reads_draft_settings = matches!(
+            action,
+            Action::Choices
+                | Action::Readiness
+                | Action::PreviewObservations
+                | Action::PreviewForecast(_)
+        );
+        let draft_read = snapshot
+            .as_ref()
+            .filter(|_| reads_draft_settings)
+            .map(|snapshot| snapshot.version.clone());
+        let draft = snapshot.map(|snapshot| snapshot.draft);
         let operation = self.operation.clone();
         let config = self.config.clone();
         let config_path = self.config_path.clone();
@@ -330,8 +407,7 @@ impl Runners {
                         Ok(Outcome::OpenedDraft(Box::new(new)))
                     }
                     Action::Open(path) => {
-                        let old = draft.ok_or("Open a workspace first")?;
-                        let opened = Draft::open(old.workspace.clone(), &old.workspace, &path)?;
+                        let opened = session.open_draft(&path)?;
                         Ok(Outcome::OpenedDraft(Box::new(opened)))
                     }
                     Action::Save(path, overwrite) => {
@@ -432,6 +508,8 @@ impl Runners {
             context.request_repaint();
         });
         self.active = Some(Active {
+            draft_job,
+            draft_read,
             control,
             automation,
             receiver,
@@ -467,6 +545,12 @@ impl Runners {
             return None;
         }
         self.logs = reply.logs;
+        if active.draft_read.is_some()
+            && active.draft_read != self.session.as_ref().and_then(Session::draft_version)
+        {
+            self.status = "Working draft changed. Refresh the draft view.".into();
+            return None;
+        }
         match reply.result {
             Err(error) => {
                 self.cleanup_failed = error.to_lowercase().contains("cleanup");
@@ -474,26 +558,43 @@ impl Runners {
                 None
             }
             Ok(outcome) => {
+                let update = match &outcome {
+                    Outcome::Initialized(draft, _) | Outcome::OpenedDraft(draft) => {
+                        Some((draft, true))
+                    }
+                    Outcome::Accepted(draft, _)
+                    | Outcome::Draft(draft)
+                    | Outcome::Registered(draft, _, _)
+                    | Outcome::Saved(draft) => Some((draft, false)),
+                    _ => None,
+                };
+                if let Some((draft, opened)) = update
+                    && let Err(error) = active
+                        .draft_job
+                        .as_ref()
+                        .ok_or(mgb_ops::app::DraftConflict::Stale)
+                        .and_then(|job| job.commit((**draft).clone(), opened))
+                {
+                    self.status = error.to_string();
+                    return None;
+                }
                 self.status = "Completed".into();
                 match outcome {
                     Outcome::Initialized(draft, config) => {
                         self.last_saved = draft.path.clone();
-                        self.draft = Some(*draft);
                         self.baseline = Some(config.clone());
                         self.config = Some(config);
                         self.initialized = true;
                         None
                     }
-                    Outcome::Accepted(draft, readiness) => {
+                    Outcome::Accepted(_, readiness) => {
                         self.readiness_checked = true;
-                        self.draft = Some(*draft);
                         self.readiness = readiness;
                         None
                     }
                     Outcome::Draft(draft) => {
                         self.last_saved = draft.path.clone();
                         self.readiness.clear();
-                        self.draft = Some(*draft);
                         None
                     }
                     Outcome::OpenedDraft(draft) => {
@@ -501,16 +602,13 @@ impl Runners {
                         self.readiness.clear();
                         self.readiness_checked = false;
                         self.choices = Choices::default();
-                        self.draft = Some(*draft);
                         Some(Outcome::DraftChanged)
                     }
-                    Outcome::Registered(draft, report, origin_errors) => {
-                        self.draft = Some(*draft);
+                    Outcome::Registered(_, report, origin_errors) => {
                         Some(Outcome::RegistrationReport(report, origin_errors))
                     }
                     Outcome::Saved(draft) => {
                         self.last_saved = draft.path.clone();
-                        self.draft = Some(*draft);
                         self.saved = true;
                         None
                     }
@@ -558,8 +656,8 @@ impl Runners {
         }
     }
     pub fn save_path(&self) -> Result<PathBuf, String> {
-        let draft = self.draft.as_ref().ok_or("No draft")?;
-        let name = anchored_name(draft)?;
+        let draft = self.draft().ok_or("No draft")?;
+        let name = anchored_name(&draft)?;
         if let Some(path) = &draft.path
             && path
                 .file_name()
@@ -629,7 +727,8 @@ impl Runners {
             self.jobs(ui, pt);
             return;
         }
-        ui.add_enabled_ui(!self.busy(), |ui| {
+        let busy = self.busy();
+        ui.add_enabled_ui(!busy, |ui| {
             egui::ScrollArea::vertical()
                 .id_salt("runner-scroll")
                 .show(ui, |ui| match form {
@@ -661,10 +760,12 @@ impl Runners {
                         });
                         for finding in &self.readiness{ui.colored_label(ui.visuals().warn_fg_color,finding);}
                         if self.readiness.is_empty(){ui.small(text(pt,"Use Check readiness to validate current selected inputs","Use Verificar prontidão para validar as entradas selecionadas"));}
-                        if let Some(draft) = &mut self.draft {
-                            let before=draft.document.operation.clone();
-                            draft_form(ui, draft, &self.choices, pt);
-                            if before!=draft.document.operation {self.readiness=vec![text(pt,"Settings changed; check readiness and explicitly accept selected inputs","Configurações alteradas; verifique a prontidão e aceite as entradas explicitamente")];}
+                        if let Some(mut snapshot) = self.draft_snapshot() {
+                            let before = snapshot.draft.document.operation.clone();
+                            draft_form(ui, &mut snapshot.draft, &self.choices, pt);
+                            let changed = before != snapshot.draft.document.operation;
+                            if changed && !busy { self.update_draft(snapshot); }
+                            if changed {self.readiness=vec![text(pt,"Settings changed; check readiness and explicitly accept selected inputs","Configurações alteradas; verifique a prontidão e aceite as entradas explicitamente")];}
                             ui.separator();
                             if ui
                                  .button(text(pt, "▶ Run experiment", "▶ Executar experimento"))
@@ -1334,6 +1435,18 @@ fn draft_form(ui: &mut egui::Ui, draft: &mut Draft, choices: &Choices, pt: bool)
     });
 }
 #[cfg(test)]
+fn test_session(root: &Path) -> Session {
+    Session::new(mgb_ops::InspectionRequest {
+        workspace: root.into(),
+        invocation_dir: root.into(),
+        config: None,
+        gpkg_path: None,
+        engine_executable: None,
+        engine_input_dir: None,
+    })
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
@@ -1363,26 +1476,29 @@ mod tests {
     #[test]
     fn new_run_never_restores_saved_choices_and_hidden_work_is_dirty() {
         let config = WorkspaceConfig::default();
-        let mut runner = Runners::default();
+        let mut runner = Runners::new(test_session(Path::new("/workspace/test")));
         let draft = fresh("/workspace/test".into(), &config, "America/Sao_Paulo").unwrap();
         assert!(draft.document.operation.scenarios.is_empty());
         assert!(draft.document.sources == Default::default());
-        runner.draft = Some(draft);
+        runner
+            .session
+            .as_ref()
+            .unwrap()
+            .replace_draft(draft)
+            .unwrap();
         runner.config = Some(config.clone());
         runner.baseline = Some(config);
         runner
-            .draft
-            .as_mut()
+            .session
+            .as_ref()
             .unwrap()
-            .document
-            .operation
-            .forecast_horizon_days = Some(5);
+            .edit_draft(|draft| draft.document.operation.forecast_horizon_days = Some(5))
+            .unwrap();
         assert!(runner.dirty());
         runner.discard();
         assert_eq!(
             runner
-                .draft
-                .as_ref()
+                .draft()
                 .unwrap()
                 .document
                 .operation
@@ -1417,24 +1533,26 @@ mod worker_tests {
             }),
             engine: None,
         };
-        let runner = Runners {
-            draft: Some(fresh(root, &config, "UTC").unwrap()),
-            config: Some(config.clone()),
-            baseline: Some(config),
-            ..Default::default()
-        };
+        let mut runner = Runners::new(test_session(&root));
+        runner
+            .session
+            .as_ref()
+            .unwrap()
+            .replace_draft(fresh(root, &config, "UTC").unwrap())
+            .unwrap();
+        runner.config = Some(config.clone());
+        runner.baseline = Some(config);
         (temp, runner)
     }
     #[test]
     fn committed_project_switch_blocks_keyboard_save_but_monitoring_refresh_does_not() {
         let (_temp, mut runner) = fixture();
         runner
-            .draft
-            .as_mut()
+            .session
+            .as_ref()
             .unwrap()
-            .document
-            .operation
-            .observed_horizon_days = Some(0);
+            .edit_draft(|draft| draft.document.operation.observed_horizon_days = Some(0))
+            .unwrap();
         let path = runner.save_path().unwrap();
         let context = egui::Context::default();
         let modifiers = egui::Modifiers {
@@ -1498,8 +1616,8 @@ mod worker_tests {
     }
     #[test]
     fn catalog_choices_survive_an_unrelated_source_failure() {
-        let (_temp, mut runner) = fixture();
-        let draft = runner.draft.as_mut().unwrap();
+        let (_temp, runner) = fixture();
+        let draft = &mut runner.draft().unwrap();
         let root = draft.workspace.clone();
         let observations = root.join("history.sqlite");
         let mut store = mgb_ops::store::ObservationStore::create(&observations, "UTC").unwrap();
@@ -1558,13 +1676,13 @@ mod worker_tests {
     fn one_worker_failed_preparation_and_cancel_keep_draft_and_sources() {
         let (_temp, mut runner) = fixture();
         let ctx = egui::Context::default();
-        let before = runner.draft.as_ref().unwrap().document.clone();
+        let before = runner.draft().unwrap().document.clone();
         runner.start(Action::RunAll, &ctx);
         runner.start(Action::RunAll, &ctx);
         assert!(runner.status.contains("already active"));
         runner.active.as_ref().unwrap().control.cancel();
         wait(&mut runner);
-        assert_eq!(runner.draft.as_ref().unwrap().document, before);
+        assert_eq!(runner.draft().unwrap().document, before);
         {
             let unchanged = !(runner.status.starts_with("Completed"));
             assert!(unchanged);
@@ -1579,13 +1697,12 @@ mod worker_tests {
         let (_temp, mut runner) = fixture();
         let ctx = egui::Context::default();
         runner
-            .draft
-            .as_mut()
+            .session
+            .as_ref()
             .unwrap()
-            .document
-            .operation
-            .forecast_horizon_days = Some(5);
-        let before = runner.draft.as_ref().unwrap().document.clone();
+            .edit_draft(|draft| draft.document.operation.forecast_horizon_days = Some(5))
+            .unwrap();
+        let before = runner.draft().unwrap().document.clone();
         let path = runner.save_path().unwrap();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, b"keep destination").unwrap();
@@ -1597,12 +1714,12 @@ mod worker_tests {
         runner.overwrite = None;
         runner.start(Action::Open(path), &ctx);
         wait(&mut runner);
-        assert_eq!(runner.draft.as_ref().unwrap().document, before);
+        assert_eq!(runner.draft().unwrap().document, before);
     }
     #[test]
     fn independent_nonproject_zone_restores_only_its_current_hour() {
         let (_temp, mut runner) = fixture();
-        let root = runner.draft.as_ref().unwrap().workspace.clone();
+        let root = runner.draft().unwrap().workspace.clone();
         let config = root.join("workspace.toml");
         mgb_ops::app::write_workspace_config(&config, runner.config.as_ref().unwrap()).unwrap();
         let mut selected =
@@ -1628,15 +1745,14 @@ mod worker_tests {
         );
         wait(&mut runner);
         assert_eq!(
-            runner.draft.as_ref().unwrap().document.operation.scenarios[0]
+            runner.draft().unwrap().document.operation.scenarios[0]
                 .id
                 .as_deref(),
             Some("remembered")
         );
         assert_eq!(
             runner
-                .draft
-                .as_ref()
+                .draft()
                 .unwrap()
                 .document
                 .operation
@@ -1648,7 +1764,7 @@ mod worker_tests {
     #[test]
     fn stale_remembered_file_does_not_determine_new_reference() {
         let (_temp, mut runner) = fixture();
-        let root = runner.draft.as_ref().unwrap().workspace.clone();
+        let root = runner.draft().unwrap().workspace.clone();
         let config = root.join("workspace.toml");
         mgb_ops::app::write_workspace_config(&config, runner.config.as_ref().unwrap()).unwrap();
         let mut old = Draft::new_run(
@@ -1678,7 +1794,7 @@ mod worker_tests {
             &egui::Context::default(),
         );
         wait(&mut runner);
-        let draft = runner.draft.as_ref().unwrap();
+        let draft = runner.draft().unwrap();
         assert!(draft.document.operation.scenarios.is_empty());
         assert_eq!(
             draft.document.operation.reference_time.as_deref(),
@@ -1690,7 +1806,7 @@ mod worker_tests {
         };
         runner.start(Action::Open(remembered), &egui::Context::default());
         wait(&mut runner);
-        let opened = runner.draft.as_ref().unwrap();
+        let opened = runner.draft().unwrap();
         assert_eq!(opened.document, old.document);
     }
     #[test]
@@ -1699,32 +1815,34 @@ mod worker_tests {
         let root = PathBuf::from(std::env::var_os("MGB_DESKTOP_CASE").expect("fixture workspace"));
         let root = root.canonicalize().unwrap();
         let ctx = egui::Context::default();
-        let mut runner = Runners::default();
+        let mut runner = Runners::new(test_session(&root));
         runner.config =
             Some(mgb_ops::app::read_workspace_config(&root.join("config/workspace.toml")).unwrap());
         runner.baseline = runner.config.clone();
-        runner.draft =
-            Some(Draft::open(root.clone(), &root, &root.join("unaccepted.json")).unwrap());
+        runner
+            .session
+            .as_ref()
+            .unwrap()
+            .replace_draft(Draft::open(root.clone(), &root, &root.join("unaccepted.json")).unwrap())
+            .unwrap();
         runner.start(Action::RunAll, &ctx);
         wait(&mut runner);
         {
             let unchanged = !(runner.status.starts_with("Completed"));
             assert!(unchanged);
         };
-        assert!(
-            runner
-                .draft
-                .as_ref()
-                .unwrap()
-                .document
-                .sources
-                .accepted
-                .is_empty()
-        );
-        let operation = &mut runner.draft.as_mut().unwrap().document.operation;
-        operation.observed.as_mut().unwrap().station_ids = Some(parse_list(""));
-        operation.observed.as_mut().unwrap().replacement_ids = Some(Vec::new());
-        operation.levels.as_mut().unwrap().station_ids = Some(parse_list(""));
+        assert!(runner.draft().unwrap().document.sources.accepted.is_empty());
+        runner
+            .session
+            .as_ref()
+            .unwrap()
+            .edit_draft(|draft| {
+                let operation = &mut draft.document.operation;
+                operation.observed.as_mut().unwrap().station_ids = Some(parse_list(""));
+                operation.observed.as_mut().unwrap().replacement_ids = Some(Vec::new());
+                operation.levels.as_mut().unwrap().station_ids = Some(parse_list(""));
+            })
+            .unwrap();
         runner.start(Action::Accept, &ctx);
         wait(&mut runner);
         assert!(runner.status.starts_with("Completed"), "{}", runner.status);

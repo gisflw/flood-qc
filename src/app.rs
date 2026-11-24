@@ -117,7 +117,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InspectionRequest {
     pub workspace: PathBuf,
     pub invocation_dir: PathBuf,
@@ -559,4 +559,16 @@ pub use self::hydrograph::{
 mod inundation;
 pub use self::inundation::{
     InundationProcessReport, InundationProcessRequest, InundationProcessStatus, process_inundation,
+};
+
+mod session;
+pub use self::session::{
+    DraftConflict, DraftJob, DraftSnapshot, DraftVersion, RunSelection, RunSnapshot, RunSummary,
+    Session, read_run_summary,
+};
+
+mod assistant;
+pub use self::assistant::{
+    AgentPreset, AssistantEvent, AssistantStage, Conversation, FieldChange, PermissionOption,
+    ProposalReview, SETUP_NOTICE, assistant_mcp_stdio,
 };

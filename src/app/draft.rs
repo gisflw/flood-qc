@@ -346,6 +346,16 @@ pub struct DraftDocument {
     pub visualization: Option<DraftVisualization>,
 }
 
+impl DraftDocument {
+    fn differs_from(&self, other: &Self) -> bool {
+        self.workspace != other.workspace
+            || self.schema_version != other.schema_version
+            || self.sources != other.sources
+            || self.operation != other.operation
+            || self.instructions != other.instructions
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawDraftDocument {
@@ -1085,6 +1095,25 @@ impl Draft {
         }
         Ok(())
     }
+    pub(super) fn same_working_state(&self, other: &Self) -> bool {
+        let mut document = self.document.clone();
+        document
+            .visualization
+            .clone_from(&other.document.visualization);
+        document == other.document && self.anchor == other.anchor
+    }
+
+    /// Validate an in-memory edit using the ordinary boundary for incomplete drafts.
+    pub fn validate_working_document(&self, document: DraftDocument) -> Result<Self, String> {
+        if document.workspace != self.document.workspace {
+            return Err("The working draft workspace is fixed".into());
+        }
+        let mut candidate = self.clone();
+        candidate.document = document;
+        candidate.validate_boundary()?;
+        Ok(candidate)
+    }
+
     pub fn save(&mut self, path: &Path, include_visualization: bool) -> Result<(), String> {
         self.validate_boundary()?;
         let mut saved = self.document.clone();
@@ -2072,11 +2101,7 @@ impl Draft {
         }
     }
     pub fn is_dirty(&self) -> bool {
-        self.document.workspace != self.baseline.workspace
-            || self.document.schema_version != self.baseline.schema_version
-            || self.document.sources != self.baseline.sources
-            || self.document.operation != self.baseline.operation
-            || self.document.instructions != self.baseline.instructions
+        self.document.differs_from(&self.baseline)
     }
 }
 

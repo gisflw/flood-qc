@@ -28,6 +28,9 @@ remain independent of runner work.
 
 ## Common tasks
 
+Use **View → Assistant** to open an [agent conversation](assistant.md) in the
+current workspace.
+
 | Task | Control |
 | --- | --- |
 | Open a workspace or import saved data | **Project → Open TOML** or **Import data** |

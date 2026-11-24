@@ -41,6 +41,7 @@ pub use self::operation::{
 mod sharing;
 pub(crate) use self::sharing::{BundleManifest, copy_member, payload_index, validate_bundle};
 
+pub(crate) use self::netcdf::read_result_timeline;
 pub use self::netcdf::{
     read_result_series, read_station_results, write_result_series, write_station_results,
 };
@@ -71,9 +72,9 @@ pub(crate) use self::automation::{automation_documents, write_automation_documen
 
 mod run_cache;
 pub(crate) use self::run_cache::{
-    RunAttemptManifest, active_run, collect_run_diagnostics, new_run_stage, new_run_stage_for,
-    publish_run, publish_run_checked, read_run_attempt, recover_run_cache, run_cache_root,
-    run_stage_id, with_active_run, write_run_attempt, write_run_journal,
+    RunAttemptManifest, active_run, collect_run_diagnostics, is_managed_run_path, new_run_stage,
+    new_run_stage_for, publish_run, publish_run_checked, read_run_attempt, recover_run_cache,
+    run_cache_root, run_stage_id, with_active_run, write_run_attempt, write_run_journal,
 };
 
 mod rainfall;

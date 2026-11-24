@@ -3356,6 +3356,7 @@ dependencies = [
  "ctrlc",
  "eframe",
  "geo",
+ "getrandom 0.4.3",
  "krilla",
  "lettre",
  "lyon_tessellation",

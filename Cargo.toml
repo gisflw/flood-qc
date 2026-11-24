@@ -10,6 +10,7 @@ chrono-tz = { version = "0.10.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 csv = "1"
 ctrlc = "3"
+getrandom = "0.4.3"
 netcdf = { version = "=0.12.1", optional = true, default-features = false }
 lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "rustls", "ring", "webpki-roots"] }
 krilla = "=0.8.2"
@@ -18,13 +19,13 @@ rusqlite = { version = "0.42.0", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10.9"
+tempfile = "3"
 terrio = { git = "https://github.com/opengeos/terrio", rev = "29fd6e78ba290e37e58aac16df61883e8ed4aed3", version = "0.8.0", default-features = false, features = ["grib", "netcdf-hdf5", "sqlite"] }
 toml = "0.9"
 
 [dev-dependencies]
 pollster = "0.4"
 proc-macro2 = "1"
-tempfile = "3"
 syn = { version = "2", features = ["full", "visit"] }
 
 [lints.rust]
@@ -37,7 +38,7 @@ todo = "warn"
 unimplemented = "warn"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-rustix = { version = "1.1.6", features = ["fs"] }
+rustix = { version = "1.1.6", features = ["fs", "process"] }
 
 [target.'cfg(windows)'.dependencies]
 atomicwrites = "0.4.4"

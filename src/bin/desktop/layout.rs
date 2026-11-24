@@ -19,6 +19,7 @@ pub enum Form {
     Analysis,
     Bulletin,
     Automation,
+    Assistant,
 }
 impl Form {
     pub fn label(self, pt: bool) -> String {
@@ -40,6 +41,7 @@ impl Form {
             Self::Soil => super::text(pt, "Soil editor", "Editor de solo"),
             Self::Analysis => super::text(pt, "Run comparison", "Comparar execuções"),
             Self::Bulletin => super::text(pt, "Bulletins", "Boletins"),
+            Self::Assistant => super::text(pt, "Assistant", "Assistente"),
             Self::Automation => super::text(pt, "Automation", "Automação"),
         }
     }

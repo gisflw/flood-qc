@@ -190,6 +190,33 @@ impl Gate {
         }
     }
 }
+// Handle the JSON literal grammar and visit every embedded Rust expression.
+fn json_value(input: syn::parse::ParseStream<'_>, gate: &mut Gate) -> syn::Result<()> {
+    if input.peek(syn::token::Brace) {
+        let fields;
+        syn::braced!(fields in input);
+        while !fields.is_empty() {
+            fields.parse::<syn::LitStr>()?;
+            fields.parse::<syn::Token![:]>()?;
+            json_value(&fields, gate)?;
+            if !fields.is_empty() {
+                fields.parse::<syn::Token![,]>()?;
+            }
+        }
+    } else if input.peek(syn::token::Bracket) {
+        let items;
+        syn::bracketed!(items in input);
+        while !items.is_empty() {
+            json_value(&items, gate)?;
+            if !items.is_empty() {
+                items.parse::<syn::Token![,]>()?;
+            }
+        }
+    } else {
+        gate.visit_expr(&input.parse::<syn::Expr>()?);
+    }
+    Ok(())
+}
 impl<'ast> Visit<'ast> for Gate {
     fn visit_visibility(&mut self, _: &'ast syn::Visibility) {}
     fn visit_expr_path(&mut self, path: &'ast syn::ExprPath) {
@@ -243,6 +270,32 @@ impl<'ast> Visit<'ast> for Gate {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         self.visit_path(&mac.path);
         let name = mac.path.segments.last().unwrap().ident.to_string();
+        if name == "json" {
+            let path = mac
+                .path
+                .segments
+                .iter()
+                .map(|s| s.ident.to_string())
+                .collect::<Vec<_>>();
+            if self.owner != "app" || path != ["serde_json", "json"] {
+                self.error("JSON literals require serde_json::json in app");
+            }
+            let parse = |input: syn::parse::ParseStream<'_>| json_value(input, self);
+            if parse.parse2(mac.tokens.clone()).is_err() {
+                self.error("unsupported JSON literal syntax");
+            }
+            return;
+        }
+        if name == "env" {
+            if !mac.path.is_ident("env")
+                || self.source.as_deref() != Some(Path::new("app/assistant.rs"))
+                || !syn::parse2::<syn::LitStr>(mac.tokens.clone())
+                    .is_ok_and(|literal| literal.value() == "CARGO_PKG_VERSION")
+            {
+                self.error("env permits only the assistant's Cargo package version");
+            }
+            return;
+        }
         if name == "params" {
             let path = mac
                 .path
@@ -375,6 +428,7 @@ impl<'ast> Visit<'ast> for Gate {
                         "Serialize",
                         "Deserialize",
                         "Parser",
+                        "Args",
                         "Subcommand",
                         "ValueEnum",
                     ]
@@ -819,4 +873,31 @@ fn bulletin_font_inclusion_is_limited_to_its_owner_and_static_path() {
     );
     let escaped = r#"const FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");"#;
     assert!(!check_source("analysis", escaped, 1, Some(source)).is_empty());
+}
+
+#[test]
+fn json_literals_check_embedded_rust_paths() {
+    assert!(
+        check(
+            "app",
+            r#"fn f() { serde_json::json!({"key":[1, read(crate::store::thing())]}); }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "app",
+            r#"fn f() { serde_json::json!({"key": crate::outside::private()}); }"#
+        )
+        .is_empty()
+    );
+    assert!(!check("app", r#"fn f() { serde_json::json!({key: 1}); }"#).is_empty());
+    assert!(
+        !check(
+            "app",
+            r#"fn f() { serde_json::json!({"key": include!("generated.rs")}); }"#
+        )
+        .is_empty()
+    );
+    assert!(!check("app", r#"fn f() { json!({"key":1}); }"#).is_empty());
 }
