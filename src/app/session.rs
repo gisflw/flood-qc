@@ -122,6 +122,17 @@ impl Session {
         self.state().draft.clone()
     }
 
+    pub fn draft_time_zone(&self) -> Option<String> {
+        self.state()
+            .draft
+            .as_ref()?
+            .draft
+            .document
+            .operation
+            .time_zone
+            .clone()
+    }
+
     pub fn draft_version(&self) -> Option<DraftVersion> {
         self.state()
             .draft

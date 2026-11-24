@@ -42,6 +42,91 @@ fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str) -> egui::Response {
     response.on_hover_text(name)
 }
 
+fn series_table(ui: &mut egui::Ui, report: &mgb_ops::app::SeriesReport, pt: bool) {
+    use egui_extras::{Column, TableBuilder};
+
+    let headers = if pt {
+        ["Hora", "Série", "Variável", "Valor", "Unidade"]
+    } else {
+        ["Time", "Series", "Variable", "Value", "Unit"]
+    };
+    let mut rows = 0;
+    let ends: Vec<_> = report
+        .series
+        .iter()
+        .map(|series| {
+            rows += series.points.len();
+            rows
+        })
+        .collect();
+    let row_height = ui.text_style_height(&egui::TextStyle::Body) + 2.;
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let series_width = ui.fonts_mut(|fonts| {
+        report
+            .series
+            .iter()
+            .map(|series| {
+                fonts
+                    .layout_no_wrap(
+                        series.scenario_id.as_deref().unwrap_or("OBS").to_owned(),
+                        font.clone(),
+                        egui::Color32::PLACEHOLDER,
+                    )
+                    .size()
+                    .x
+            })
+            .fold(68., f32::max)
+    });
+    egui::ScrollArea::horizontal()
+        .id_salt("series-columns")
+        .show(ui, |ui| {
+            let columns = [142., series_width + 6., 72., 128., 68.];
+            let mut table = TableBuilder::new(ui)
+                .id_salt("series-table")
+                .striped(true)
+                .resizable(true);
+            for width in columns {
+                table = table.column(Column::initial(width).clip(true));
+            }
+            table
+                .header(row_height, |mut header| {
+                    for label in headers {
+                        header.col(|ui| {
+                            ui.strong(label);
+                        });
+                    }
+                })
+                .body(|body| {
+                    body.rows(row_height, rows, |mut row| {
+                        let index = row.index();
+                        let series_index = ends.partition_point(|end| *end <= index);
+                        let start = series_index.checked_sub(1).map_or(0, |index| ends[index]);
+                        let series = &report.series[series_index];
+                        let point = &series.points[index - start];
+                        row.col(|ui| {
+                            ui.label(point.timestamp.to_string());
+                        });
+                        row.col(|ui| {
+                            ui.label(series.scenario_id.as_deref().unwrap_or("OBS"));
+                        });
+                        row.col(|ui| {
+                            ui.label(&series.variable);
+                        });
+                        row.col(|ui| {
+                            ui.label(
+                                point
+                                    .value
+                                    .map_or_else(|| "NA".into(), |value| value.to_string()),
+                            );
+                        });
+                        row.col(|ui| {
+                            ui.label(&series.unit);
+                        });
+                    });
+                });
+        });
+}
+
 fn section(ui: &mut egui::Ui, title: String, content: impl FnOnce(&mut egui::Ui)) {
     ui.separator();
     ui.strong(title);
@@ -559,8 +644,7 @@ impl Monitoring {
         if self.runners.initialized
             && let Some(zone) = self
                 .runners
-                .draft()
-                .and_then(|d| d.document.operation.time_zone.clone())
+                .draft_time_zone()
                 .filter(|z| z.parse::<chrono_tz::Tz>().is_ok())
         {
             self.display.operation_zone = Some(zone);
@@ -1618,11 +1702,9 @@ impl Monitoring {
 
     fn workflow_form(&mut self, ui: &mut egui::Ui, form: Form, pt: bool) {
         let busy = self.runners.busy();
-        let width = ui.available_width();
-        egui::ScrollArea::both()
+        egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                ui.set_max_width(width);
                 if form == Form::Automation
                     && let Some(active) = self
                         .runners
@@ -2943,41 +3025,11 @@ impl Monitoring {
                 ui.horizontal_wrapped(|ui| self.feature_actions(ui, &location));
             }
         }
-        egui::ScrollArea::both().show(ui, |ui| {
-            if let Some(report) = self.charts.report.as_ref() {
-                ui.label(
-                    self.charts
-                        .location_caption(report, self.preferences.portuguese),
-                );
-                egui::Grid::new("series-table")
-                    .striped(true)
-                    .show(ui, |ui| {
-                        for label in if self.preferences.portuguese {
-                            ["Hora", "Série", "Variável", "Valor", "Unidade"]
-                        } else {
-                            ["Time", "Series", "Variable", "Value", "Unit"]
-                        } {
-                            ui.strong(label);
-                        }
-                        ui.end_row();
-                        for series in &report.series {
-                            for point in &series.points {
-                                ui.label(point.timestamp.to_string());
-                                ui.label(series.scenario_id.as_deref().unwrap_or("OBS"));
-                                ui.label(&series.variable);
-                                ui.label(
-                                    point
-                                        .value
-                                        .map(|v| v.to_string())
-                                        .unwrap_or_else(|| "NA".into()),
-                                );
-                                ui.label(&series.unit);
-                                ui.end_row();
-                            }
-                        }
-                    });
-            }
-        });
+        if let Some(report) = self.charts.report.as_ref() {
+            let pt = self.preferences.portuguese;
+            ui.label(self.charts.location_caption(report, pt));
+            series_table(ui, report, pt);
+        }
     }
     fn depart(&mut self, departure: Departure) {
         if self.pending.is_none() {
@@ -3230,8 +3282,7 @@ impl eframe::App for Monitoring {
             self.display.draft = self.runners.last_saved.clone();
             if let Some(zone) = self
                 .runners
-                .draft()
-                .and_then(|d| d.document.operation.time_zone.clone())
+                .draft_time_zone()
                 .filter(|z| z.parse::<chrono_tz::Tz>().is_ok())
             {
                 self.display.operation_zone = Some(zone);
@@ -3363,6 +3414,76 @@ pub fn run() -> eframe::Result {
 #[cfg(test)]
 mod interface_tests {
     use super::*;
+    #[test]
+    fn data_table_builds_widgets_only_for_visible_rows() {
+        use mgb_ops::app::{ChartSeries, SeriesPoint, SeriesReport};
+        use mgb_ops::store::TimeInterval;
+
+        let start = data::timestamp("2026-01-01T00:00:00").unwrap();
+        let points = (0..10_000)
+            .map(|index| SeriesPoint {
+                timestamp: start + chrono::Duration::hours(index),
+                value: Some(index as f64),
+                time_segment: None,
+            })
+            .collect();
+        let report = SeriesReport {
+            location: Location::Mini(1),
+            time_zone: "UTC".into(),
+            window: TimeInterval {
+                start,
+                end: start + chrono::Duration::hours(10_000),
+            },
+            series: vec![ChartSeries {
+                selection_index: 0,
+                series_kind: "fixture".into(),
+                run_id: None,
+                scenario_id: None,
+                forecast_reference_time: None,
+                variable: "rain".into(),
+                unit: "mm".into(),
+                points,
+            }],
+            findings: Vec::new(),
+        };
+        let ctx = egui::Context::default();
+        let frame = |events, time| {
+            let mut frame = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(400., 220.),
+                    )),
+                    events,
+                    time: Some(time),
+                    ..Default::default()
+                },
+                |ui| series_table(ui, &report, false),
+            );
+            frame.textures_delta.clear();
+            frame
+        };
+        let has_first_row = |frame: &egui::FullOutput| {
+            frame.shapes.iter().any(|item| {
+                matches!(&item.shape, egui::Shape::Text(shape) if shape.galley.text() == "2026-01-01 00:00:00")
+            })
+        };
+        let initial = frame(vec![egui::Event::PointerMoved(egui::pos2(120., 130.))], 0.);
+        assert!(has_first_row(&initial));
+        assert!(initial.shapes.len() < 150);
+        let wheel = egui::Event::MouseWheel {
+            unit: egui::MouseWheelUnit::Point,
+            delta: egui::vec2(0., -1500.),
+            phase: egui::TouchPhase::Move,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![wheel], 0.04);
+        let scrolled = frame(Vec::new(), 0.08);
+        let moved = !has_first_row(&scrolled);
+        assert!(moved);
+        assert!(scrolled.shapes.len() < 150);
+    }
+
     #[test]
     fn rainfall_scale_accepts_finite_maxima_and_defaults_for_saved_projects() {
         assert_eq!(rainfall_maximum("27,5"), Some(27.5));

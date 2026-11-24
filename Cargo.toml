@@ -22,6 +22,9 @@ sha2 = "0.10.9"
 tempfile = "3"
 terrio = { git = "https://github.com/opengeos/terrio", rev = "29fd6e78ba290e37e58aac16df61883e8ed4aed3", version = "0.8.0", default-features = false, features = ["grib", "netcdf-hdf5", "sqlite"] }
 toml = "0.9"
+egui_commonmark = { version = "=0.25.0", default-features = false, features = ["pulldown_cmark"], optional = true }
+egui_extras = { version = "=0.36.2", default-features = false, optional = true }
+pulldown-cmark = { version = "=0.13.6", default-features = false, optional = true }
 
 [dev-dependencies]
 pollster = "0.4"
@@ -49,7 +52,19 @@ version = "=0.1.6"
 [features]
 default = []
 inundation-write = ["dep:netcdf"]
-desktop = ["dep:eframe", "dep:rsplot", "dep:walkers", "dep:rfd", "dep:lyon_tessellation", "dep:ab_glyph", "dep:png", "dep:geo"]
+desktop = [
+    "dep:eframe",
+    "dep:rsplot",
+    "dep:walkers",
+    "dep:rfd",
+    "dep:lyon_tessellation",
+    "dep:ab_glyph",
+    "dep:png",
+    "dep:geo",
+    "dep:egui_commonmark",
+    "dep:egui_extras",
+    "dep:pulldown-cmark",
+]
 
 [[bin]]
 name = "mgb-ops-desktop"

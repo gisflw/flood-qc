@@ -194,6 +194,10 @@ impl Runners {
         self.draft_snapshot().map(|snapshot| snapshot.draft)
     }
 
+    pub fn draft_time_zone(&self) -> Option<String> {
+        self.session.as_ref()?.draft_time_zone()
+    }
+
     pub fn draft_edited(&mut self, pt: bool) {
         self.readiness = vec![text(
             pt,

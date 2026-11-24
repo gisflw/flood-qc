@@ -488,7 +488,11 @@ impl Layout {
         let id = parent.id().with(("dock-page", group.active.label(false)));
         let mut page_ui = ui.new_child(egui::UiBuilder::new().id(id).max_rect(page_rect));
         page_ui.set_clip_rect(page_rect.intersect(ui.clip_rect()));
-        page(&mut page_ui, group.active);
+        egui::ScrollArea::horizontal()
+            .id_salt("page-overflow")
+            .min_scrolled_width(0.)
+            .auto_shrink([false, false])
+            .show(&mut page_ui, |ui| page(ui, group.active));
         Strip {
             rect: egui::Rect::from_min_max(
                 egui::pos2(scroll.inner_rect.left(), scroll.inner.top()),
@@ -866,6 +870,75 @@ mod tests {
             layout.dock.group(0).unwrap().tabs,
             [SideTab::Charts, SideTab::Data, SideTab::Files]
         );
+    }
+
+    #[test]
+    fn wide_page_content_scrolls_inside_its_dock_cell() {
+        let ctx = egui::Context::default();
+        let dock = egui::Rect::from_min_size(egui::pos2(340., 35.), egui::vec2(360., 300.));
+        let screen = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(720., 370.));
+        let mut layout = Layout::default();
+        layout.apply(Action::Drop(
+            SideTab::Charts,
+            Destination::Split {
+                group: 0,
+                axis: Axis::Horizontal,
+                before: false,
+            },
+        ));
+        let (left, right) = split_rect(dock, Axis::Horizontal, 6.);
+        let run = |events| {
+            let mut origin = egui::Pos2::ZERO;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    layout.show(ui, dock, false, |ui, tab| {
+                        let (cell, color) = if tab == SideTab::Charts {
+                            (right, egui::Color32::BLUE)
+                        } else {
+                            (left, egui::Color32::RED)
+                        };
+                        assert!(cell.contains_rect(ui.clip_rect()));
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            let (content, _) = ui
+                                .allocate_exact_size(egui::vec2(440., 530.), egui::Sense::hover());
+                            ui.painter().rect_filled(content, 0., color);
+                            if tab == SideTab::Charts {
+                                origin = content.min;
+                            }
+                        });
+                    });
+                },
+            );
+            output.textures_delta.clear();
+            for (color, cell) in [(egui::Color32::RED, left), (egui::Color32::BLUE, right)] {
+                let item = output
+                    .shapes
+                    .iter()
+                    .find(
+                        |item| matches!(&item.shape, egui::Shape::Rect(rect) if rect.fill == color),
+                    )
+                    .unwrap();
+                assert!(cell.contains_rect(item.clip_rect));
+            }
+            origin
+        };
+        let start = run(Vec::new());
+        run(vec![
+            egui::Event::PointerMoved(right.center()),
+            egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(-160., -80.),
+                modifiers: egui::Modifiers::NONE,
+                phase: egui::TouchPhase::Move,
+            },
+        ]);
+        let scrolled = run(Vec::new());
+        assert!(scrolled.x < start.x && scrolled.y < start.y);
     }
 
     #[test]

@@ -180,13 +180,14 @@ readable basin results. Unavailable fields in a loaded run show a dash.
 
 The resizable right pane defaults to Map. The Map tab contains Layers and
 Rainfall. Data offers location search, feature actions and the displayed series
-table. Files contains the run selector, provenance, assets and findings. Open
+table with resizable columns. Files contains the run selector, provenance, assets and findings. Open
 pages and forms from the ribbon. Closing a tab preserves its page state.
 Drag tabs along a strip to reorder them, onto another strip or group to move
 them, or onto a highlighted edge to split the group. Groups can be stacked,
 side by side, or arranged in a four-cell grid. With three groups, one spans a
 row or column. Ribbon actions open tabs in the most recently focused group
-or focus the group that already contains the tab.
+or focus the group that already contains the tab. Each page stays within its
+group. When content needs extra width, scroll horizontally inside the group.
 
 The **Settings** ribbon contains the interface and workspace controls. English or
 Brazilian Portuguese and Light or Dark apply immediately and are remembered

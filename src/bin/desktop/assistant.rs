@@ -1,14 +1,17 @@
 use super::{text, theme};
 use eframe::egui;
+use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 use mgb_ops::app::{
     AgentPreset, AgentSetting, AgentSettings, AssistantEvent, Conversation, PermissionOption,
     SETUP_NOTICE, Session, SettingKind,
 };
+use pulldown_cmark::{Event, Options, Parser, Tag};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::{BTreeMap, VecDeque},
     sync::Arc,
+    time::Duration,
 };
 
 const TRANSCRIPT_LIMIT: usize = 256 * 1024;
@@ -61,14 +64,91 @@ struct Permission {
 struct Turn {
     id: u64,
     prompt: Message,
-    answer: Message,
+    answer: MarkdownReply,
     activity: Message,
     thinking_open: bool,
+    layout: Option<TurnLayout>,
 }
 
 impl Turn {
+    fn invalidate_layout(&mut self) {
+        if let Some(layout) = &mut self.layout {
+            layout.dirty = true;
+        }
+    }
+
     fn len(&self) -> usize {
         self.prompt.text.len() + self.answer.text.len() + self.activity.text.len()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq)]
+struct TurnGeometry {
+    width: f32,
+    scale: f32,
+    dark: bool,
+    pt: bool,
+    busy: bool,
+}
+
+struct TurnLayout {
+    geometry: TurnGeometry,
+    height: f32,
+    dirty: bool,
+}
+
+#[derive(Default)]
+struct MarkdownReply {
+    text: String,
+    cache: CommonMarkCache,
+    links_dirty: bool,
+}
+
+fn append_text(message: &mut String, chunk: &str) {
+    message.push_str(chunk);
+    if message.len() > MESSAGE_LIMIT {
+        let start = message.ceil_char_boundary(message.len() - MESSAGE_LIMIT);
+        message.drain(..start);
+    }
+}
+
+impl MarkdownReply {
+    fn push(&mut self, chunk: &str) {
+        if !chunk.is_empty() {
+            append_text(&mut self.text, chunk);
+            self.links_dirty = true;
+        }
+    }
+
+    fn show(&mut self, ui: &mut egui::Ui) {
+        if self.links_dirty {
+            self.cache.link_hooks_clear();
+            let options = Options::ENABLE_TABLES
+                | Options::ENABLE_TASKLISTS
+                | Options::ENABLE_STRIKETHROUGH
+                | Options::ENABLE_FOOTNOTES
+                | Options::ENABLE_DEFINITION_LIST;
+            if self.text.contains(['[', '<']) {
+                for event in Parser::new_ext(&self.text, options) {
+                    if let Event::Start(Tag::Link { dest_url, .. }) = event
+                        && !dest_url.starts_with("https://")
+                        && !dest_url.starts_with("http://")
+                    {
+                        self.cache.add_link_hook(dest_url.into_string());
+                    }
+                }
+            }
+            self.links_dirty = false;
+        }
+        egui::ScrollArea::horizontal()
+            .id_salt("reply-overflow")
+            .min_scrolled_width(0.)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                CommonMarkViewer::new()
+                    .explicit_image_uri_scheme(true)
+                    .show(ui, &mut self.cache, &self.text);
+            });
     }
 }
 
@@ -90,13 +170,7 @@ impl Message {
         if text.is_empty() {
             return;
         }
-        self.text.push_str(text);
-        if self.text.len() > MESSAGE_LIMIT {
-            let start = self
-                .text
-                .ceil_char_boundary(self.text.len() - MESSAGE_LIMIT);
-            self.text.drain(..start);
-        }
+        append_text(&mut self.text, text);
         self.layout = None;
     }
 
@@ -167,9 +241,10 @@ impl Pane {
                         text: std::mem::take(&mut self.draft_prompt),
                         layout: None,
                     },
-                    answer: Message::default(),
+                    answer: MarkdownReply::default(),
                     activity: Message::default(),
                     thinking_open: false,
+                    layout: None,
                 });
                 self.next_turn += 1;
                 self.trim_transcript();
@@ -314,12 +389,14 @@ impl Pane {
                 AssistantEvent::Text(chunk) => {
                     if let Some(turn) = self.turns.back_mut() {
                         turn.answer.push(&chunk);
+                        turn.invalidate_layout();
                         transcript_changed = true;
                     }
                 }
                 AssistantEvent::Thought(chunk) => {
                     if let Some(turn) = self.turns.back_mut() {
                         turn.activity.push(&chunk);
+                        turn.invalidate_layout();
                         transcript_changed = true;
                     }
                 }
@@ -330,6 +407,7 @@ impl Pane {
                             turn.activity.push("\n\n");
                         }
                         turn.activity.push(&status);
+                        turn.invalidate_layout();
                         turn.activity.push("\n\n");
                         transcript_changed = true;
                     }
@@ -467,7 +545,7 @@ impl Pane {
         }
         if self.conversation.is_some() && (!self.ready || self.pending_setting.is_some()) {
             ui.horizontal(|ui| {
-                ui.spinner();
+                loading_icon(ui);
                 if self.ready {
                     ui.small(text(pt, "Updating settings…", "Atualizando configurações…"));
                 } else {
@@ -493,8 +571,26 @@ impl Pane {
             }
         }
         let latest = self.turns.back().map(|turn| turn.id);
+        let width = ui.available_width();
         for turn in &mut self.turns {
             let busy = self.active && latest == Some(turn.id);
+            let geometry = TurnGeometry {
+                width,
+                scale: ui.pixels_per_point(),
+                dark: ui.visuals().dark_mode,
+                pt,
+                busy,
+            };
+            let top = ui.cursor().min.y;
+            let clip = ui.clip_rect();
+            if let Some(layout) = &turn.layout
+                && layout.geometry == geometry
+                && (top > clip.bottom() || !layout.dirty && top + layout.height < clip.top())
+            {
+                // Keep the full scroll extent while skipping off-screen widgets.
+                ui.add_space(layout.height);
+                continue;
+            }
             ui.push_id(turn.id, |ui| {
                 egui::Frame::new()
                     .fill(ui.visuals().selection.bg_fill)
@@ -507,7 +603,7 @@ impl Pane {
                 ui.add_space(4.);
                 ui.strong(self.agent.map_or("Assistant", AgentPreset::label));
                 if busy || !turn.activity.text.is_empty() {
-                    ui.horizontal(|ui| {
+                    ui.horizontal_wrapped(|ui| {
                         let icon = if turn.thinking_open { "−" } else { "+" };
                         let label = text(pt, "Thinking", "Raciocínio");
                         let title = format!("{icon} {label}");
@@ -518,7 +614,11 @@ impl Pane {
                             turn.thinking_open = !turn.thinking_open;
                         }
                         if busy && self.permission.is_none() {
-                            ui.spinner();
+                            if turn.answer.text.is_empty() {
+                                loading_icon(ui);
+                            } else {
+                                ui.weak(text(pt, "Responding…", "Respondendo…"));
+                            }
                         }
                     });
                     if turn.thinking_open {
@@ -530,33 +630,38 @@ impl Pane {
                 }
                 ui.add_space(8.);
             });
+            turn.layout = Some(TurnLayout {
+                geometry,
+                height: ui.cursor().min.y - top,
+                dirty: false,
+            });
         }
     }
 
     fn composer(&mut self, ui: &mut egui::Ui, pt: bool) -> bool {
-        let has_review = self
-            .conversation
-            .as_ref()
-            .is_some_and(|conversation| conversation.review().is_some());
-        let applied = if self.permission.is_some() || has_review {
+        let review = self.conversation.as_ref().and_then(Conversation::review);
+        let applied = if self.permission.is_some() || review.is_some() {
             egui::ScrollArea::vertical()
                 .id_salt("assistant-actions")
                 .max_height((ui.available_height() * 0.24).min(170.))
-                .show(ui, |ui| self.actions(ui, pt))
+                .show(ui, |ui| self.actions(ui, pt, review))
                 .inner
         } else {
             false
         };
         let label = ui.label(text(pt, "Message", "Mensagem"));
-        let editor_height = (ui.available_height() * 0.22).clamp(42., 120.);
+        let editor_height = (ui.available_height() * 0.15).clamp(48., 96.);
         let edit = egui::ScrollArea::vertical()
             .id_salt("message-editor")
-            .auto_shrink([false, true])
+            .auto_shrink([false, false])
+            .animated(false)
             .max_height(editor_height)
+            .min_scrolled_height(0.)
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.draft_prompt)
-                        .desired_width(f32::INFINITY)
+                        .id_salt("draft-prompt")
+                        .desired_width(ui.available_width())
                         .desired_rows(2)
                         .return_key(egui::KeyboardShortcut::new(
                             egui::Modifiers::SHIFT,
@@ -591,7 +696,12 @@ impl Pane {
         applied
     }
 
-    fn actions(&mut self, ui: &mut egui::Ui, pt: bool) -> bool {
+    fn actions(
+        &mut self,
+        ui: &mut egui::Ui,
+        pt: bool,
+        review: Option<mgb_ops::app::ProposalReview>,
+    ) -> bool {
         let mut applied = false;
         if let (Some(permission), Some(conversation)) = (&self.permission, &self.conversation) {
             ui.separator();
@@ -615,7 +725,7 @@ impl Pane {
             });
         }
         if let Some(conversation) = &self.conversation
-            && let Some(review) = conversation.review()
+            && let Some(review) = review
         {
             ui.separator();
             ui.strong(text(pt, "Draft proposal", "Proposta de rascunho"));
@@ -660,6 +770,28 @@ impl Pane {
             });
         }
         applied
+    }
+}
+
+fn loading_icon(ui: &mut egui::Ui) {
+    const INTERVAL: Duration = Duration::from_millis(50);
+    let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(14.), egui::Sense::hover());
+    response.widget_info(|| egui::WidgetInfo::new(egui::WidgetType::ProgressIndicator));
+    if ui.is_rect_visible(rect) {
+        // The map and dock share this frame. Only the waiting indicator needs a timer.
+        ui.ctx().request_repaint_after(INTERVAL);
+        let angle =
+            ui.input(|input| (input.time * 0.75).rem_euclid(1.) as f32) * std::f32::consts::TAU;
+        let points = (0..=8)
+            .map(|step| {
+                let at = angle + step as f32 * 0.45;
+                rect.center() + egui::vec2(at.cos(), at.sin()) * 5.
+            })
+            .collect();
+        ui.painter().add(egui::Shape::line(
+            points,
+            egui::Stroke::new(1.7, ui.visuals().strong_text_color()),
+        ));
     }
 }
 
@@ -717,6 +849,184 @@ fn setting_picker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn markdown_reply_formats_streamed_chunks_and_blocks_local_link_targets() {
+        let mut reply = MarkdownReply::default();
+        reply.push("## Summary\n\n**");
+        reply.push("Bold** and `sample`.\n\n| Item | Value |\n| --- | --- |\n| Flow | 5 |\n\n[local](file:///project/report)");
+        let ctx = egui::Context::default();
+        let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| reply.show(ui));
+        frame.textures_delta.clear();
+        let mut painted = Vec::new();
+        for item in &frame.shapes {
+            text_shapes(&item.shape, &mut painted);
+        }
+        for expected in ["Summary", "Bold", "sample", "Item", "Flow", "5"] {
+            assert!(
+                painted.iter().any(|label| label.contains(expected)),
+                "{expected} in {painted:?}"
+            );
+        }
+        let raw_markup = painted
+            .iter()
+            .any(|label| label.contains("##") || label.contains("**"));
+        let formatted = !raw_markup;
+        assert!(formatted, "{painted:?}");
+        assert_eq!(
+            reply.cache.get_link_hook("file:///project/report"),
+            Some(false)
+        );
+    }
+
+    fn text_shapes(shape: &egui::Shape, output: &mut Vec<String>) {
+        match shape {
+            egui::Shape::Text(shape) => output.push(shape.galley.text().into()),
+            egui::Shape::Vec(shapes) => {
+                for shape in shapes {
+                    text_shapes(shape, output);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn transcript_reuses_offscreen_turn_heights_on_followup_frames() {
+        let mut pane = Pane::default();
+        for id in 0..80 {
+            let mut answer = MarkdownReply::default();
+            answer.push("A **reply** with `formatting`.\n\n- A second line");
+            pane.turns.push_back(Turn {
+                id,
+                prompt: Message {
+                    text: "A prompt".into(),
+                    layout: None,
+                },
+                answer,
+                activity: Message::default(),
+                thinking_open: false,
+                layout: None,
+            });
+        }
+        let ctx = egui::Context::default();
+        let frame = |pane: &mut Pane, height| {
+            let mut extent = 0.;
+            let mut frame = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let start = ui.cursor().min;
+                ui.set_clip_rect(egui::Rect::from_min_size(
+                    start,
+                    egui::vec2(ui.available_width(), height),
+                ));
+                pane.transcript(ui, false);
+                extent = ui.cursor().min.y - start.y;
+            });
+            frame.textures_delta.clear();
+            extent
+        };
+        let full_extent = frame(&mut pane, 160.);
+        // Rebuilding an off-screen reply would clear its link cache's dirty flag.
+        pane.turns[70].answer.links_dirty = true;
+        let clipped_extent = frame(&mut pane, 160.);
+        assert_eq!(clipped_extent, full_extent);
+        assert!(pane.turns[70].answer.links_dirty);
+    }
+
+    #[test]
+    fn composer_paints_typing_and_shift_enter_in_the_input_frame() {
+        let mut pane = Pane::default();
+        let ctx = egui::Context::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(220., 360.));
+        let mut frame = |events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Panel::bottom("composer-test")
+                        .resizable(false)
+                        .show(ui, |ui| pane.composer(ui, false));
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(Vec::new());
+        frame(Vec::new());
+        let empty = frame(Vec::new());
+        let editor = empty
+            .shapes
+            .iter()
+            .find_map(|item| match &item.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == "Message" => {
+                    Some(egui::pos2(28., shape.pos.y + 24.))
+                }
+                _ => None,
+            })
+            .unwrap();
+        let click = |pressed| egui::Event::PointerButton {
+            pos: editor,
+            pressed,
+            button: egui::PointerButton::Primary,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(vec![egui::Event::PointerMoved(editor)]);
+        frame(vec![click(true)]);
+        frame(vec![click(false)]);
+        assert!(ctx.memory(|memory| memory.focused().is_some()));
+        let typed = frame(vec![egui::Event::Text("Immediate".into())]);
+        let multiline = frame(vec![
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::SHIFT,
+            },
+            egui::Event::Text("Second line".into()),
+        ]);
+        let painted = |output: egui::FullOutput, expected| {
+            let mut texts = Vec::new();
+            for shape in &output.shapes {
+                text_shapes(&shape.shape, &mut texts);
+            }
+            assert!(texts.iter().any(|text| text == expected), "{texts:?}");
+        };
+        painted(typed, "Immediate");
+        painted(multiline, "Immediate\nSecond line");
+        assert_eq!(pane.draft_prompt, "Immediate\nSecond line");
+    }
+
+    #[test]
+    fn waiting_icon_limits_repaints_and_streaming_uses_no_animation_timer() {
+        let ctx = egui::Context::default();
+        let mut pane = Pane {
+            active: true,
+            turns: VecDeque::from([Turn {
+                id: 0,
+                prompt: Message::default(),
+                answer: MarkdownReply::default(),
+                activity: Message::default(),
+                thinking_open: false,
+                layout: None,
+            }]),
+            ..Default::default()
+        };
+        let frame = |pane: &mut Pane| {
+            let mut output = ctx.run_ui(egui::RawInput::default(), |ui| pane.transcript(ui, false));
+            output.textures_delta.clear();
+            output.viewport_output[&egui::ViewportId::ROOT].repaint_delay
+        };
+        frame(&mut pane);
+        frame(&mut pane);
+        let waiting = frame(&mut pane);
+        assert!(waiting >= Duration::from_millis(30) && waiting <= Duration::from_millis(50));
+        pane.turns[0].answer.push("**Streaming**");
+        frame(&mut pane);
+        assert!(frame(&mut pane) > waiting);
+    }
 
     #[test]
     fn composer_distinguishes_plain_enter_from_newlines_and_key_repeat() {

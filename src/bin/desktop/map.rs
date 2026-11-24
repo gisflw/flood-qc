@@ -1,6 +1,6 @@
 use super::data::{Project, Rain, RainSide};
 use super::inundation;
-use eframe::egui::{self, Color32, Pos2, Stroke};
+use eframe::egui::{self, Color32, Pos2, Stroke, Vec2};
 use lyon_tessellation::{
     BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers, math::point,
     path::Path,
@@ -697,13 +697,48 @@ pub fn prepare_basin(paths: Vec<Vec<Point>>) -> BasinPaths {
 struct BasinOverlay {
     paths: BasinPaths,
     opacity: f32,
-    outline: Vec<Arc<egui::Mesh>>,
+    outline: Vec<OverlayMesh>,
 }
+
+struct OverlayMesh {
+    anchor: Arc<egui::Mesh>,
+    shifted: Option<(Vec2, Arc<egui::Mesh>)>,
+}
+
+impl OverlayMesh {
+    fn new(mesh: egui::Mesh) -> Self {
+        Self {
+            anchor: Arc::new(mesh),
+            shifted: None,
+        }
+    }
+
+    fn at_offset(&mut self, offset: Vec2) -> Arc<egui::Mesh> {
+        if offset == Vec2::ZERO {
+            return self.anchor.clone();
+        }
+        if self
+            .shifted
+            .as_ref()
+            .is_none_or(|(cached, _)| *cached != offset)
+        {
+            let mut translated = (*self.anchor).clone();
+            translated.translate(offset);
+            self.shifted = Some((offset, Arc::new(translated)));
+        }
+        self.shifted.as_ref().unwrap().1.clone()
+    }
+
+    fn paint(&mut self, ui: &egui::Ui, offset: Vec2) {
+        ui.painter().add(egui::Shape::Mesh(self.at_offset(offset)));
+    }
+}
+
 fn line_meshes(
     context: &egui::Context,
     clip: egui::Rect,
     shapes: Vec<egui::Shape>,
-) -> Vec<Arc<egui::Mesh>> {
+) -> Vec<OverlayMesh> {
     context
         .tessellate(
             shapes
@@ -717,7 +752,7 @@ fn line_meshes(
         )
         .into_iter()
         .filter_map(|primitive| match primitive.primitive {
-            egui::epaint::Primitive::Mesh(mesh) => Some(Arc::new(mesh)),
+            egui::epaint::Primitive::Mesh(mesh) => Some(OverlayMesh::new(mesh)),
             egui::epaint::Primitive::Callback(_) => None,
         })
         .collect()
@@ -727,10 +762,10 @@ pub struct StaticCache {
     key: Option<CameraKey>,
     anchor: Option<ScreenTransform>,
     offset: egui::Vec2,
-    tinted_rivers: Option<(f32, Vec<Arc<egui::Mesh>>)>,
+    tinted_rivers: Option<(f32, Vec<OverlayMesh>)>,
     basin: Option<BasinOverlay>,
     hits: Vec<RiverHit>,
-    tinted_catchments: Option<(f32, Arc<egui::Mesh>)>,
+    tinted_catchments: Option<(f32, OverlayMesh)>,
 }
 impl StaticCache {
     pub fn clear(&mut self) {
@@ -855,17 +890,7 @@ impl StaticCache {
         {
             combined.append(mesh(&feature.fill, transform, tint));
         }
-        self.tinted_catchments = Some((opacity, Arc::new(combined)));
-    }
-
-    fn paint(&self, ui: &egui::Ui, mesh: &Arc<egui::Mesh>) {
-        if self.offset == egui::Vec2::ZERO {
-            ui.painter().add(egui::Shape::Mesh(mesh.clone()));
-        } else {
-            let mut translated = (**mesh).clone();
-            translated.translate(self.offset);
-            ui.painter().add(egui::Shape::mesh(translated));
-        }
+        self.tinted_catchments = Some((opacity, OverlayMesh::new(combined)));
     }
     fn basin(&mut self, paths: &BasinPaths, opacity: f32, context: &egui::Context) {
         if self
@@ -1032,16 +1057,16 @@ impl Overlay<'_> {
                 }
                 "catchments" => {
                     self.cache.catchments(self.project, layer.opacity);
-                    if let Some((_, mesh)) = &self.cache.tinted_catchments {
-                        self.cache.paint(ui, mesh);
+                    if let Some((_, mesh)) = &mut self.cache.tinted_catchments {
+                        mesh.paint(ui, self.cache.offset);
                     }
                 }
                 "upstream" => {
                     if let Some(paths) = self.upstream {
                         self.cache.basin(paths, layer.opacity, ui.ctx());
-                        if let Some(basin) = &self.cache.basin {
-                            for mesh in &basin.outline {
-                                self.cache.paint(ui, mesh);
+                        if let Some(basin) = &mut self.cache.basin {
+                            for mesh in &mut basin.outline {
+                                mesh.paint(ui, self.cache.offset);
                             }
                         }
                     } else {
@@ -1050,9 +1075,9 @@ impl Overlay<'_> {
                 }
                 "rivers" => {
                     self.cache.rivers(self.project, layer.opacity, ui.ctx());
-                    if let Some((_, meshes)) = &self.cache.tinted_rivers {
+                    if let Some((_, meshes)) = &mut self.cache.tinted_rivers {
                         for mesh in meshes {
-                            self.cache.paint(ui, mesh);
+                            mesh.paint(ui, self.cache.offset);
                         }
                     }
                 }
@@ -1694,7 +1719,7 @@ mod tests {
         let mut cache = StaticCache::default();
         let boundary = prepare_basin(upstream_boundary(&project, &[1]));
         let mut previous = None;
-        for longitude in [0.5, 1.0, 4.0] {
+        for (step, longitude) in [0.5, 1.0, 1.0, 4.0].into_iter().enumerate() {
             let mut frame = context.run_ui(
                 egui::RawInput {
                     screen_rect: Some(rect),
@@ -1718,19 +1743,21 @@ mod tests {
                 },
             );
             frame.textures_delta.clear();
-            let mesh = cache.basin.as_ref().unwrap().outline[0].clone();
-            let outlined = cache
-                .basin
-                .as_ref()
-                .unwrap()
-                .outline
-                .iter()
-                .any(|m| !m.indices.is_empty());
+            let outline = &mut cache.basin.as_mut().unwrap().outline;
+            let outlined = outline.iter().any(|m| !m.anchor.indices.is_empty());
             assert!(outlined);
-            if let Some(previous) = previous {
-                assert_eq!(Arc::ptr_eq(&previous, &mesh), longitude == 1.0);
+            let mesh = &mut outline[0];
+            let anchor = mesh.anchor.clone();
+            let shifted = mesh.at_offset(cache.offset);
+            assert_eq!(
+                shifted.vertices[0].pos,
+                anchor.vertices[0].pos + cache.offset
+            );
+            if let Some((previous_anchor, previous_shifted)) = previous {
+                assert_eq!(Arc::ptr_eq(&previous_anchor, &anchor), longitude == 1.0);
+                assert_eq!(Arc::ptr_eq(&previous_shifted, &shifted), step == 2);
             }
-            previous = Some(mesh);
+            previous = Some((anchor, shifted));
         }
         cache.clear();
         assert!(cache.basin.is_none());
