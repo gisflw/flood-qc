@@ -41,7 +41,7 @@ adapters, discover registry data, or load global configuration.
 Model owns engine serialization, private execution directories, process handling,
 decoding into staged canonical results, and fixed station-reference level
 conversion. Preserve raw basin levels and produce referenced station levels using
-the [agreed offset contract](../../docs/architecture.md#level-reference-and-analysis-corrections).
+the [agreed offset contract](../architecture.md#level-reference-and-analysis-corrections).
 Numerical data and output contracts belong to store. Model may use explicit staged
 files for large outputs; canonical
 data does not have to be registered in a database before processing. App

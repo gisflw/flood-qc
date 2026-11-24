@@ -118,12 +118,13 @@ alongside Layers and the right-hand tabs and forms. See the
 - [Series and CSV](docs/contracts/series.md): rainfall summaries, chart queries and selected-series exports.
 - [Local geometry](docs/contracts/spatial.md): mini topology, map coordinates and station links.
 - [Canonical observations](docs/contracts/observations.md): SQLite, review selection, and observed forcing APIs.
-- [Migration summary](.dev/migration/summary.md): temporary capability tracking, validation status, and next work.
+- [Migration summary](docs/migration/summary.md): temporary capability tracking, validation status, and next work.
 - [Agent guidance](AGENTS.md): change and documentation rules.
 - [Legacy worktree record](references/retirement_record.md), [Python map](references/python_map.md),
   and [VB.NET/plugin map](references/vbnet_map.md): retained source references.
 - [RS regression case](references/regression/rs-hourly/README.md): frozen evidence and reproduction.
 
-Temporary migration tracking, plans, specifications, and implementation results
-live under `.dev/`. Current behavior lives in contracts, lasting decisions in
-architecture, and scientific evidence/provenance in references.
+Temporary migration tracking lives under `docs/migration/`. Plans, specifications,
+and implementation results live under `.dev/`. Current behavior lives in
+contracts, lasting decisions in architecture, and scientific evidence/provenance
+in references.

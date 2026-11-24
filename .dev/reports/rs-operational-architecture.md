@@ -24,7 +24,7 @@ The latest operational specifications describe a Rust-owned preparation and exec
 
 The current CLI offers `config example` and `workspace inspect`, with text/JSON findings. It does not open SQLite, acquire data, prepare forcing, or launch MGB. Current production owners are `app` and `model`; the other owners arrive with their behavior.
 
-Sources: [Current inspection contract](../../docs/contracts/workspace.md) · [Migration status](../migration/summary.md)
+Sources: [Current inspection contract](../../docs/contracts/workspace.md) · [Migration status](../../docs/migration/summary.md)
 
 ## One library, explicit responsibilities
 
@@ -408,7 +408,7 @@ The architecture preserves frozen working inputs and controlled failure handling
 
 Later product scope Live acquisition, desktop framework, hot-start generation/chaining, calibration editors, AR(1), bulletins, completed-run sharing, scheduling and email are outside these four specifications. The broader architecture commits to those capabilities without prescribing their full implementation here.
 
-Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md) · [Migration status](../migration/summary.md)
+Sources: [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md) · [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md) · [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md) · [Migration status](../../docs/migration/summary.md)
 
 ## Trace every view to its specification
 
@@ -419,7 +419,7 @@ This is a disposable visualization of the current specifications, including the 
 - [Step 2b · Forecast forcing](../../docs/contracts/forecasts.md)
 - [Step 3 · Execution and run artifacts](../../docs/contracts/operations.md)
 - [Step 1 · Reference qualification](../../references/regression/rs-hourly/README.md)
-- [Migration status](../migration/summary.md)
+- [Migration status](../../docs/migration/summary.md)
 - [Current inspection contract](../../docs/contracts/workspace.md)
 
 Code baseline: [library facade](../../src/lib.rs) · [current CLI](../../src/main.rs) · [architecture gate](../../tests/architecture.rs).

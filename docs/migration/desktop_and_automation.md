@@ -22,7 +22,7 @@ handling, export, and run outcomes. Interface controls may call intended
 public core APIs but do not duplicate operational lifecycle rules. Hydrological
 algorithms stay in analysis/model; database and file-lifecycle implementations
 stay in store. Monitoring keeps the map visible between the run and Layers column
-and the tabbed right pane. The [desktop contract](../../docs/contracts/desktop.md)
+and the tabbed right pane. The [desktop contract](../contracts/desktop.md)
 records the interface and open hardware qualification. Shared
 core now produces disposable trial caches without run registration, retaining
 successful scenarios and debugging logs on failure/cancellation.

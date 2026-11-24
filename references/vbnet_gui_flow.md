@@ -138,4 +138,4 @@ automation each have separate backend work or product decisions in the
 migration plan. The legacy screens identify where their supported actions
 belong in the desktop workflow.
 
-[Current desktop contract](../docs/contracts/desktop.md) · [Migration status](../.dev/migration/summary.md)
+[Current desktop contract](../docs/contracts/desktop.md) · [Migration status](../docs/migration/summary.md)

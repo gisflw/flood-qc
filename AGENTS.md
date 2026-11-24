@@ -3,7 +3,7 @@
 Read [README.md](README.md) for setup, [the architecture](docs/architecture.md)
 for ownership rules, [the workspace contract](docs/contracts/workspace.md) for
 supported behavior, and, while migration is active,
-[the migration summary](.dev/migration/summary.md) for current status and next work.
+[the migration summary](docs/migration/summary.md) for current status and next work.
 The external MGB executable remains the numerical engine.
 
 ## Desktop conventions
@@ -21,7 +21,7 @@ each fact one authoritative home and link to it elsewhere.
 - `docs/architecture.md`: lasting product scope, ownership, dependency, lifecycle,
   and enforcement decisions.
 - `docs/contracts/`: externally supported behavior, configuration, and formats.
-- `.dev/migration/`: temporary migration scope, capability progress, evidence, gaps,
+- `docs/migration/`: temporary migration scope, capability progress, evidence, gaps,
   and next work; the checklist lives in `summary.md`. Retire it after migration.
 - `references/`: legacy source maps, frozen expectations, provenance, and reproduction.
 - `.dev/plans/`: broader functionality plans spanning multiple implementation
