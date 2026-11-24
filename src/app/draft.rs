@@ -701,7 +701,7 @@ impl Draft {
     }
     /// Convert an explicit-boundary recipe only when all inclusive hourly labels are unchanged.
     pub fn use_day_horizons(&mut self) -> Result<(), String> {
-        self.validate_anchor()?;
+        self.validate_anchor(&self.document)?;
         if self.document.schema_version == 2 {
             return Ok(());
         }
@@ -1027,12 +1027,11 @@ impl Draft {
         }
         Ok(draft)
     }
-    fn validate_anchor(&self) -> Result<(), String> {
-        let proposed = DraftAnchor::from_operation(&self.document.operation);
+    fn validate_anchor(&self, document: &DraftDocument) -> Result<(), String> {
+        let proposed = DraftAnchor::from_operation(&document.operation);
         self.anchor.check_edit(&proposed)?;
         if self.anchor != proposed
-            && (!self.document.sources.accepted.is_empty()
-                || !self.baseline.sources.accepted.is_empty())
+            && (!document.sources.accepted.is_empty() || !self.baseline.sources.accepted.is_empty())
         {
             return Err(
                 "Initialize the draft anchor explicitly before accepting sources again".into(),
@@ -1041,13 +1040,54 @@ impl Draft {
         Ok(())
     }
 
+    pub(super) fn validate_working_document(
+        &self,
+        proposed: &DraftDocument,
+        allow_clear_acceptance: bool,
+    ) -> Result<(), String> {
+        if proposed.workspace != self.document.workspace {
+            return Err("The draft workspace cannot be changed by a working update".into());
+        }
+        let sources = &self.document.sources;
+        if proposed.sources != *sources
+            && !(allow_clear_acceptance
+                && proposed.sources.generation == sources.generation
+                && proposed
+                    .sources
+                    .accepted
+                    .iter()
+                    .all(|(key, value)| sources.accepted.get(key) == Some(value)))
+        {
+            return Err("Accept sources through the explicit source workflow".into());
+        }
+        self.validate_document(proposed)
+    }
+
+    pub(super) fn same_edit_state(&self, other: &Self) -> bool {
+        fn same_document(left: &DraftDocument, right: &DraftDocument) -> bool {
+            left.schema_version == right.schema_version
+                && left.workspace == right.workspace
+                && left.sources == right.sources
+                && left.operation == right.operation
+                && left.instructions == right.instructions
+        }
+        same_document(&self.document, &other.document)
+            && same_document(&self.baseline, &other.baseline)
+            && self.anchor == other.anchor
+            && self.path == other.path
+    }
+
     fn validate_boundary(&self) -> Result<(), String> {
-        self.validate_anchor()?;
-        if !matches!(self.document.schema_version, 1 | 2) {
+        self.validate_document(&self.document)
+    }
+
+    fn validate_document(&self, document: &DraftDocument) -> Result<(), String> {
+        self.validate_anchor(document)?;
+        if !matches!(document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
-        let operation = &self.document.operation;
-        operation.validate_period_format(self.document.schema_version)?;
+        let operation = &document.operation;
+        operation.validate_period_format(document.schema_version)?;
         let mut numbers = Vec::new();
         if let Some(grid) = &operation.grid {
             numbers.extend(grid.bbox.into_iter().flatten());
@@ -1067,10 +1107,10 @@ impl Draft {
                 .flatten(),
             );
         }
-        if let Some(replacements) = &self.document.instructions.replacements {
+        if let Some(replacements) = &document.instructions.replacements {
             numbers.extend(replacements.iter().filter_map(|v| v.value.value));
         }
-        for values in self.document.instructions.corrections.iter().flatten() {
+        for values in document.instructions.corrections.iter().flatten() {
             for item in values {
                 numbers.extend([
                     item.value.shift_lat_pixels,
@@ -1555,7 +1595,7 @@ impl Draft {
         Ok(valid.forecast)
     }
     pub fn materialize_replacements(&mut self) -> Result<(), String> {
-        self.validate_anchor()?;
+        self.validate_anchor(&self.document)?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1590,7 +1630,7 @@ impl Draft {
         Ok(())
     }
     pub fn materialize_corrections(&mut self, index: usize) -> Result<(), String> {
-        self.validate_anchor()?;
+        self.validate_anchor(&self.document)?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1655,7 +1695,7 @@ impl Draft {
         &mut self,
         mapping: &RegistrationMapping,
     ) -> Result<(), String> {
-        self.validate_anchor()?;
+        self.validate_anchor(&self.document)?;
         if !matches!(self.document.schema_version, 1 | 2) {
             return Err("unsupported draft schema version".into());
         }
@@ -1749,7 +1789,7 @@ impl Draft {
             if selection.replacements.is_empty() {
                 return Ok(Vec::new());
             }
-            self.validate_anchor()?;
+            self.validate_anchor(&self.document)?;
             if !self.workspace_matches() {
                 return Err("saved workspace differs from selected workspace".into());
             }
@@ -1817,7 +1857,7 @@ impl Draft {
             if selection.corrections.is_empty() {
                 return Ok(Vec::new());
             }
-            self.validate_anchor()?;
+            self.validate_anchor(&self.document)?;
             if !self.workspace_matches() {
                 return Err("saved workspace differs from selected workspace".into());
             }

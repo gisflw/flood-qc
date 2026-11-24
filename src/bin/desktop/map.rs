@@ -1653,7 +1653,12 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let config = dir.path().join("workspace.toml");
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
-        let mut project = super::super::data::open(config, dir.path().into(), None).unwrap();
+        let session = super::super::data::session(
+            dir.path().into(),
+            config,
+            std::env::current_dir().unwrap(),
+        );
+        let mut project = super::super::data::open(session, None).unwrap();
         let ring = vec![(0., 0.), (1., 0.), (1., 1.), (0., 1.), (0., 0.)];
         let hole = vec![(0.2, 0.2), (0.8, 0.2), (0.8, 0.8), (0.2, 0.8), (0.2, 0.2)];
         let polygon = MapPolygon {

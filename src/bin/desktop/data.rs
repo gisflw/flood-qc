@@ -3,8 +3,8 @@ use chrono::NaiveDateTime;
 use mgb_ops::analysis::HourlyWindow;
 use mgb_ops::analysis::{RainSummary, upstream_minis};
 use mgb_ops::app::{
-    Location, RainfallCacheReader, RainfallPeriod, SeriesQuery, SeriesReport, SeriesSelection,
-    Variable,
+    Location, RainfallCacheReader, RainfallPeriod, RunIdentity, RunRead, RunSnapshot, SeriesQuery,
+    SeriesReport, SeriesSelection, Session, Variable,
 };
 use mgb_ops::store::{
     self as canonical, LevelReference, MiniMapFeature, MiniTopology, StationLocation,
@@ -17,7 +17,11 @@ use std::sync::{
 };
 use std::thread::{self, JoinHandle};
 
+use mgb_ops::app::SelectedRun as Run;
+
 pub struct Project {
+    pub session: Session,
+    pub settings: mgb_ops::app::WorkspaceConfig,
     pub fills: Arc<Vec<super::map::PreparedMini>>,
     pub config: PathBuf,
     pub workspace: PathBuf,
@@ -70,27 +74,46 @@ fn retain_geometry(project: &mut Project, previous: &Project) {
     project.geometry_source = previous.geometry_source.clone();
     project.static_version = previous.static_version.clone();
 }
-pub fn open(
-    config: PathBuf,
-    workspace: PathBuf,
-    previous: Option<&Project>,
-) -> Result<Arc<Project>, String> {
-    let settings = mgb_ops::app::read_workspace_config(&config)
-        .map_err(|e| format!("{}: {e}", config.display()))?;
+pub fn session(workspace: PathBuf, config: PathBuf, invocation_dir: PathBuf) -> Session {
+    Session::new(mgb_ops::app::InspectionRequest {
+        workspace,
+        config: Some(config),
+        invocation_dir,
+        gpkg_path: None,
+        engine_executable: None,
+        engine_input_dir: None,
+    })
+}
+
+pub fn open(session: Session, previous: Option<&Project>) -> Result<Arc<Project>, String> {
+    let selection = session.workspace();
+    let settings = selection.read_config()?;
+    let workspace = selection.workspace().to_path_buf();
+    let config = selection.config().to_path_buf();
+    let inspection = selection.inspect();
+    if let Some(failure) = inspection.findings.iter().find(|finding| {
+        finding.check == "workspace" && finding.status == mgb_ops::app::FindingStatus::Fail
+    }) {
+        return Err(format!("{}: {}", workspace.display(), failure.message));
+    }
     let previous = previous.filter(|p| p.config == config && p.workspace == workspace);
     let input = settings
         .engine
-        .and_then(|e| e.input_dir)
-        .unwrap_or_else(|| "mgb_runner/Input".into());
+        .as_ref()
+        .and_then(|e| e.input_dir.as_deref())
+        .unwrap_or("mgb_runner/Input");
     let mini = workspace.join(input).join("MINI.gtp");
     let geometry_source = settings
         .spatial
-        .and_then(|s| s.gpkg_path)
+        .as_ref()
+        .and_then(|s| s.gpkg_path.as_deref())
         .map(|p| workspace.join(p));
     let static_version = geometry_source
         .as_ref()
         .and_then(|path| geometry_versions(&mini, path));
     let mut project = Project {
+        session,
+        settings,
         fills: Arc::new(vec![]),
         config,
         workspace,
@@ -108,14 +131,6 @@ pub fn open(
         geometry_source,
         static_version,
     };
-    let inspection = mgb_ops::app::inspect(mgb_ops::app::InspectionRequest {
-        workspace: project.workspace.clone(),
-        invocation_dir: std::env::current_dir().map_err(|e| e.to_string())?,
-        config: Some(project.config.clone()),
-        gpkg_path: None,
-        engine_executable: None,
-        engine_input_dir: None,
-    });
     for finding in inspection.findings {
         if finding.status == mgb_ops::app::FindingStatus::Fail {
             project
@@ -269,102 +284,20 @@ pub fn open(
     Ok(Arc::new(project))
 }
 
-/// The exact generation selected in the UI, held against retirement while files are read.
+/// Keep a queued read tied to the source and generation already displayed.
 #[derive(Clone, PartialEq, Eq)]
-pub struct ActiveRun {
-    pub workspace: PathBuf,
-    pub root: PathBuf,
+pub struct RunReader {
+    pub snapshot: RunSnapshot,
+    pub identity: RunIdentity,
 }
 
-impl ActiveRun {
+impl RunReader {
     pub fn read<T>(&self, read: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
-        mgb_ops::app::with_active_run(&self.workspace, |root| {
-            if root != self.root {
-                return Err("Active run changed while loading".into());
-            }
-            read()
-        })?
-        .ok_or_else(|| "Active run is no longer available".into())
+        self.snapshot
+            .read(Some(&self.identity), |_| read())?
+            .map(|loaded| loaded.data)
+            .ok_or_else(|| "Selected run is no longer available".into())
     }
-}
-
-pub struct Run {
-    pub root: PathBuf,
-    pub manifest: canonical::OperationManifest,
-    pub day_horizons: Option<(u32, u32)>,
-    pub scenarios: Vec<String>,
-    pub findings: Vec<String>,
-    pub reference: String,
-    pub start: String,
-    pub end: String,
-    pub time_zone: String,
-}
-pub fn read_run(root: PathBuf) -> Result<Arc<Run>, String> {
-    let manifest =
-        canonical::read_retained_manifest(&root).map_err(|e| format!("{}: {e}", root.display()))?;
-    if manifest.scenarios.iter().any(|s| {
-        s.id.is_empty()
-            || !s
-                .id
-                .bytes()
-                .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
-    }) {
-        return Err("invalid scenario ID in retained manifest".into());
-    }
-    let mut scenarios = Vec::new();
-    let mut findings = Vec::new();
-    let mut first = None;
-    for scenario in manifest.scenarios.iter().filter(|s| s.state == "completed") {
-        match canonical::read_result_series(
-            &root.join("results").join(&scenario.id).join("basin.nc"),
-        ) {
-            Ok(basin) => {
-                scenarios.push(scenario.id.clone());
-                if first.is_none() {
-                    first = Some(basin);
-                }
-            }
-            Err(error) => findings.push(format!("{}: {error}", scenario.id)),
-        }
-    }
-    let (reference, start, end, time_zone) = if let Some(basin) = first {
-        let bounds = &basin.timeline.bounds;
-        (
-            basin
-                .provenance
-                .processing
-                .get("reference_time")
-                .and_then(|value| value.as_str())
-                .unwrap_or("")
-                .into(),
-            bounds
-                .first()
-                .ok_or("empty result timeline")?
-                .start
-                .to_string()
-                .replace(' ', "T"),
-            bounds
-                .last()
-                .ok_or("empty result timeline")?
-                .end
-                .to_string()
-                .replace(' ', "T"),
-            basin.timeline.time_zone,
-        )
-    } else {
-        (String::new(), String::new(), String::new(), String::new())
-    };
-    Ok(Arc::new(Run {
-        root,
-        day_horizons: mgb_ops::app::retained_day_horizons(&manifest),
-        manifest,
-        scenarios,
-        findings,
-        reference,
-        start,
-        end,
-        time_zone,
-    }))
 }
 
 #[derive(Clone)]
@@ -450,7 +383,7 @@ fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View
 }
 
 pub struct ChartRequest {
-    pub active: Option<ActiveRun>,
+    pub run: Option<RunReader>,
     pub query: SeriesQuery,
     pub comparison_station: Option<String>,
     pub notices: Vec<String>,
@@ -462,8 +395,8 @@ impl ChartRequest {
             Some(station) => mgb_ops::app::query_comparison(&self.query, station),
             None => mgb_ops::app::query_series(&self.query),
         };
-        let report = if let Some(active) = &self.active {
-            active.read(query)?
+        let report = if let Some(run) = &self.run {
+            run.read(query)?
         } else {
             query()?
         };
@@ -533,8 +466,9 @@ pub fn timestamp(value: &str) -> Result<NaiveDateTime, String> {
 }
 
 pub enum Job {
-    Open(PathBuf, PathBuf),
-    Run(PathBuf, Option<ActiveRun>),
+    Open(Session),
+    Run(RunSnapshot, Option<RunIdentity>),
+    SelectRun(RunSnapshot, PathBuf),
     View(RainSide, ViewRequest),
     Local(Vec<PathBuf>),
     Export(SeriesReport, Option<String>, PathBuf),
@@ -547,6 +481,7 @@ impl Job {
         match self {
             Self::Open(..) => 0,
             Self::Run(..) => RUN_SLOT,
+            Self::SelectRun(..) => RUN_SELECTION_SLOT,
             Self::View(side, _) => side.slot(),
             Self::Local(..) => 3,
             Self::Export(..) | Self::Png(..) => 4,
@@ -557,7 +492,8 @@ impl Job {
 }
 pub enum Loaded {
     Project(Arc<Project>),
-    Run(Arc<Run>),
+    Run(RunSnapshot, Option<Box<RunRead<Run>>>),
+    RunSelection(RunSnapshot),
     View(Box<View>),
     Local(Vec<super::map::LocalLayer>, Vec<String>),
     Export(PathBuf),
@@ -580,7 +516,8 @@ pub struct Reply {
 pub const RUN_SLOT: usize = 1;
 pub const UPSTREAM_SLOT: usize = 5;
 pub const CHART_SLOT: usize = 6;
-pub const SLOTS: usize = 8;
+pub const RUN_SELECTION_SLOT: usize = 8;
+pub const SLOTS: usize = 9;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RainSide {
@@ -634,15 +571,17 @@ impl Worker {
                 }
                 let slot = job.slot();
                 let result = match job {
-                    Job::Open(config, workspace) => {
-                        open(config, workspace, last_project.as_deref()).map(|project| {
-                            last_project = Some(project.clone());
-                            rainfall_reader = RainfallCacheReader::default();
-                            Loaded::Project(project)
-                        })
+                    Job::Open(session) => open(session, last_project.as_deref()).map(|project| {
+                        last_project = Some(project.clone());
+                        rainfall_reader = RainfallCacheReader::default();
+                        Loaded::Project(project)
+                    }),
+                    Job::Run(snapshot, expected) => snapshot
+                        .summary(expected.as_ref())
+                        .map(|result| Loaded::Run(snapshot, result.map(Box::new))),
+                    Job::SelectRun(snapshot, root) => {
+                        snapshot.select_saved(&root).map(Loaded::RunSelection)
                     }
-                    Job::Run(root, Some(active)) => active.read(|| read_run(root)).map(Loaded::Run),
-                    Job::Run(root, None) => read_run(root).map(Loaded::Run),
                     Job::View(_, request) => {
                         Ok(Loaded::View(Box::new(view(request, &mut rainfall_reader))))
                     }
@@ -803,6 +742,10 @@ pub fn infer_workspace(config: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_session(config: PathBuf, workspace: PathBuf) -> Session {
+        session(workspace, config, std::env::current_dir().unwrap())
+    }
+
     #[test]
     fn chart_worker_completes_latest_request_while_map_lane_is_busy() {
         let mut chart = Worker::new(eframe::egui::Context::default());
@@ -812,7 +755,7 @@ mod tests {
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         let request = |id| {
             Job::Chart(ChartRequest {
-                active: None,
+                run: None,
                 query: SeriesQuery {
                     location: Location::Mini(id),
                     time_zone: "UTC".into(),
@@ -826,7 +769,7 @@ mod tests {
                 notices: vec![],
             })
         };
-        map.submit(Job::Run("slow-map-lane".into(), None));
+        map.submit(Job::Local(vec!["slow-map-lane".into()]));
         assert!(map.poll().is_empty());
         assert!(in_flight.try_recv().is_ok());
         chart.submit(request(1));
@@ -884,7 +827,10 @@ mod tests {
             thread: Some(thread),
             in_flight: None,
         };
-        worker.submit(Job::Run("delayed".into(), None));
+        worker.submit(Job::Run(
+            test_session("config.toml".into(), ".".into()).run(),
+            None,
+        ));
         assert!(worker.is_busy());
         assert!(worker.poll().is_empty());
         start.recv().unwrap();
@@ -984,12 +930,21 @@ mod tests {
     fn partial_runs_keep_usable_siblings_and_reject_unsafe_scenario_paths() {
         let dir = tempfile::tempdir().unwrap();
         saved_trial(dir.path(), 0., 0.);
-        let run = read_run(dir.path().into()).unwrap();
+        let session = test_session(dir.path().join("workspace.toml"), dir.path().into());
+        let selected = session.run().select_saved(dir.path()).unwrap();
+        session.select_run(selected).unwrap();
+        let summary = || {
+            session
+                .run()
+                .summary(None)
+                .map(|result| result.unwrap().data)
+        };
+        let run = summary().unwrap();
         assert_eq!(run.scenarios, ["good"]);
         assert_eq!(run.findings.len(), 1);
         assert_eq!(run.manifest.state, "failed");
         std::fs::remove_file(dir.path().join("results/good/basin.nc")).unwrap();
-        let no_results = read_run(dir.path().into()).unwrap();
+        let no_results = summary().unwrap();
         assert_eq!(no_results.manifest.state, "failed");
         assert!(no_results.scenarios.is_empty());
         assert!(no_results.start.is_empty());
@@ -1002,7 +957,7 @@ mod tests {
             serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
-        assert!(read_run(dir.path().into()).is_err());
+        assert!(summary().is_err());
     }
     #[test]
     #[ignore = "requires read-only regional geometry; creates a disposable synthetic display fixture under runs"]
@@ -1070,8 +1025,8 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         }
         let config = std::path::absolute(root.join("config/workspace.toml")).unwrap();
         let workspace = std::path::absolute(root).unwrap();
-        let first = open(config.clone(), workspace.clone(), None).unwrap();
-        let second = open(config, workspace, Some(&first)).unwrap();
+        let first = open(test_session(config.clone(), workspace.clone()), None).unwrap();
+        let second = open(first.session.clone(), Some(&first)).unwrap();
         assert_eq!(first.topology.len(), 8649);
         assert_eq!(first.stations[0].station.station_id, "002");
         assert!(Arc::ptr_eq(&first.segments, &second.segments));
@@ -1100,7 +1055,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         let root = dir.path();
         let config = root.join("workspace.toml");
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
-        let mut project = open(config, root.into(), None).unwrap();
+        let mut project = open(test_session(config, root.into()), None).unwrap();
         Arc::get_mut(&mut project).unwrap().topology = vec![
             MiniTopology {
                 mini_id: 1,
@@ -1134,7 +1089,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         let root = dir.path();
         let config = root.join("workspace.toml");
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
-        let mut previous = open(config.clone(), root.into(), None).unwrap();
+        let mut previous = open(test_session(config.clone(), root.into()), None).unwrap();
         let old = Arc::get_mut(&mut previous).unwrap();
         old.topology = vec![MiniTopology {
             mini_id: 1,
@@ -1163,7 +1118,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             })
             .unwrap();
         drop(database);
-        let refreshed = open(config, root.into(), Some(&previous)).unwrap();
+        let refreshed = open(previous.session.clone(), Some(&previous)).unwrap();
         assert!(Arc::ptr_eq(&previous.segments, &refreshed.segments));
         assert!(Arc::ptr_eq(&previous.fills, &refreshed.fills));
         assert_eq!(refreshed.topology, previous.topology);
@@ -1215,7 +1170,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             })
             .unwrap();
         drop(database);
-        let project = open(config.clone(), root.into(), None).unwrap();
+        let project = open(test_session(config.clone(), root.into()), None).unwrap();
         assert_eq!(project.stations.len(), 1);
         let window = HourlyWindow::Explicit {
             start,
@@ -1265,10 +1220,13 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
     #[test]
     fn newer_requests_replace_pending_work_and_old_replies() {
         let mut worker = Worker::new(eframe::egui::Context::default());
-        worker.submit(Job::Run("first".into(), None));
-        worker.submit(Job::Run("second".into(), None));
+        let snapshot = test_session("config.toml".into(), ".".into()).run();
+        let first = RunIdentity::Active("first".into());
+        let second = RunIdentity::Active("second".into());
+        worker.submit(Job::Run(snapshot.clone(), Some(first)));
+        worker.submit(Job::Run(snapshot, Some(second.clone())));
         assert_eq!(worker.generations[1], 2);
-        let latest = matches!(&worker.pending[1], Some((2, Job::Run(path, None))) if path == Path::new("second"));
+        let latest = matches!(&worker.pending[1], Some((2, Job::Run(_, Some(identity)))) if *identity == second);
         assert!(latest);
         let (sender, receiver) = mpsc::channel();
         worker.receiver = receiver;

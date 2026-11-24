@@ -1284,7 +1284,7 @@ pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
     read_trial_artifacts(root)
 }
 
-fn read_trial_artifacts(root: &Path) -> Result<TrialCache, OperationError> {
+pub(super) fn read_trial_artifacts(root: &Path) -> Result<TrialCache, OperationError> {
     let manifest = crate::store::read_retained_manifest(root).map_err(|e| store_error(root, e))?;
     if manifest.state == "prepared" {
         return Err(store_error(root, "expected trial cache"));

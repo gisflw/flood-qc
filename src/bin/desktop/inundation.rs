@@ -28,7 +28,7 @@ const BATCH_SIZE: usize = 4;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Source {
-    pub active: Option<super::data::ActiveRun>,
+    pub reader: Option<super::data::RunReader>,
     pub root: PathBuf,
     pub scenario: String,
 }
@@ -256,12 +256,13 @@ fn tile_geometry(
 
 struct OpenMask {
     reader: InundationMask,
+    source: Option<super::data::RunReader>,
     to_wgs84: Transformer,
 }
 
 impl OpenMask {
     fn load(source: &Source) -> Result<(Self, Grid), Finding> {
-        if let Some(active) = &source.active {
+        if let Some(active) = &source.reader {
             active
                 .read(|| Ok(Self::open(source)))
                 .map_err(Finding::Invalid)?
@@ -288,7 +289,14 @@ impl OpenMask {
         };
         let to_wgs84 = transform(meta.epsg as u32, 4326)?;
         let to_source = transform(4326, meta.epsg as u32)?;
-        Ok((Self { reader, to_wgs84 }, Grid { meta, to_source }))
+        Ok((
+            Self {
+                reader,
+                source: source.reader.clone(),
+                to_wgs84,
+            },
+            Grid { meta, to_source },
+        ))
     }
 
     fn tile(&self, frame: usize, tile: Tile) -> Result<Option<TileImage>, String> {
@@ -359,17 +367,27 @@ impl Worker {
                         }))
                     }
                     Job::Tiles { frame, tiles } => {
-                        let mut results = Vec::new();
-                        for tile in tiles {
-                            if revision != active.load(Ordering::Relaxed) {
-                                break;
+                        let results = (|| {
+                            let mask = open.as_ref().ok_or("No inundation mask is open")?;
+                            let read = || {
+                                Ok(tiles
+                                    .iter()
+                                    .copied()
+                                    .take_while(|_| revision == active.load(Ordering::Relaxed))
+                                    .map(|tile| (tile, mask.tile(frame, tile)))
+                                    .collect())
+                            };
+                            match &mask.source {
+                                Some(source) => source.read(read),
+                                None => read(),
                             }
-                            let result = open
-                                .as_ref()
-                                .ok_or_else(|| "No inundation mask is open".to_owned())
-                                .and_then(|mask| mask.tile(frame, tile));
-                            results.push((tile, result));
-                        }
+                        })()
+                        .unwrap_or_else(|error: String| {
+                            tiles
+                                .into_iter()
+                                .map(|tile| (tile, Err(error.clone())))
+                                .collect()
+                        });
                         Loaded::Tiles(results)
                     }
                 };
@@ -996,7 +1014,7 @@ mod tests {
         let context = egui::Context::default();
         let mut state = Inundation::new(context.clone());
         let source = Source {
-            active: None,
+            reader: None,
             root: directory.path().into(),
             scenario: "old".into(),
         };
@@ -1028,7 +1046,7 @@ mod tests {
     fn a_same_named_scenario_requires_the_selected_manifest_digest() {
         let directory = tempfile::tempdir().unwrap();
         let source = Source {
-            active: None,
+            reader: None,
             root: directory.path().into(),
             scenario: "test".into(),
         };
@@ -1059,7 +1077,7 @@ mod tests {
             in_flight: false,
         };
         let source = Source {
-            active: None,
+            reader: None,
             root: PathBuf::from("run-a"),
             scenario: "test".into(),
         };
@@ -1069,7 +1087,7 @@ mod tests {
         assert!(closing);
         let (opening, _) = pending.try_recv().unwrap();
         state.select(Some(Source {
-            active: None,
+            reader: None,
             root: PathBuf::from("run-b"),
             ..source
         }));

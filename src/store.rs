@@ -70,6 +70,7 @@ mod automation;
 pub(crate) use self::automation::{automation_documents, write_automation_document};
 
 mod run_cache;
+pub(crate) use self::run_cache::saved_run_root;
 pub(crate) use self::run_cache::{
     RunAttemptManifest, active_run, collect_run_diagnostics, new_run_stage, new_run_stage_for,
     publish_run, publish_run_checked, read_run_attempt, recover_run_cache, run_cache_root,

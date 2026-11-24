@@ -52,6 +52,40 @@ pub(crate) fn active_run(workspace: &Path) -> Result<Option<PathBuf>, String> {
     Ok(Some(root.join(pointer.generation)))
 }
 
+/// Resolve saved runs without treating a managed generation or its aliases as retained data.
+pub(crate) fn saved_run_root(workspace: &Path, path: &Path) -> Result<PathBuf, String> {
+    let managed = run_cache_root(workspace);
+    let resolved_managed = managed.canonicalize().ok();
+    let managed_generation = |candidate: &Path| {
+        candidate.ancestors().any(|ancestor| {
+            let Some(parent) = ancestor.parent() else {
+                return false;
+            };
+            run_stage_id(ancestor).is_ok()
+                && (parent == managed
+                    || resolved_managed.as_deref() == Some(parent)
+                    || parent.ends_with(Path::new("data/cache/run")))
+        })
+    };
+    let managed_error = "Managed generations must be opened through the active run selection";
+    if managed_generation(path) {
+        return Err(managed_error.into());
+    }
+    let resolved = path
+        .canonicalize()
+        .map_err(|error| format!("{}: {error}", path.display()))?;
+    if managed_generation(&resolved) {
+        return Err(managed_error.into());
+    }
+    if !resolved.is_dir() {
+        return Err(format!(
+            "{}: expected a saved run directory",
+            path.display()
+        ));
+    }
+    Ok(resolved)
+}
+
 pub(crate) fn new_run_stage(workspace: &Path) -> Result<PathBuf, String> {
     new_run_stage_for(
         workspace,

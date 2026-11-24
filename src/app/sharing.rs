@@ -1,4 +1,4 @@
-use super::{ExecutionReport, ExecutionRequest, OperationControl, OperationError};
+use super::{ExecutionReport, ExecutionRequest, OperationControl, OperationError, RunIdentity};
 use crate::store::{
     BundleManifest, InputReference, OperationManifest, PREPARED_ENGINE, copy_member, copy_tree,
     digest_file, payload_index, publish_directory, read_draft, read_operation_manifest,
@@ -156,6 +156,26 @@ pub fn export_run(
     export_run_directory(run, name, preparation, destination)
 }
 
+pub(super) fn export_selected_run(
+    workspace: &Path,
+    identity: &RunIdentity,
+    root: &Path,
+    preparation: Option<&Path>,
+    destination: &Path,
+) -> Result<RunBundleReport, String> {
+    let run_id = match identity {
+        RunIdentity::Active(_) => {
+            check_detached_destination(workspace, destination)?;
+            crate::store::run_stage_id(root)?
+        }
+        RunIdentity::Saved(_) => root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or("expected a run directory name")?,
+    };
+    export_run_directory(root, run_id, preparation, destination)
+}
+
 fn export_run_directory(
     run: &Path,
     run_id: &str,
@@ -169,7 +189,7 @@ fn export_run_directory(
     if !fs::symlink_metadata(run).is_ok_and(|metadata| metadata.is_dir()) {
         return Err("expected a real run directory".into());
     }
-    let trial = super::read_trial(run).map_err(|error| error.to_string())?;
+    let trial = super::operation::read_trial_artifacts(run).map_err(|error| error.to_string())?;
     let manifest = read_retained_manifest(run)?;
     let prepared = preparation
         .map(|root| -> Result<_, String> {

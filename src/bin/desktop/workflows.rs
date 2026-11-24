@@ -42,7 +42,7 @@ pub enum Task {
     Forcing(PathBuf, PathBuf, CanonicalForcingKind),
     Availability(ObservationReviewRequest),
     Spatial(ObservationReviewRequest, Option<String>, IdwSettings),
-    Export(PathBuf, Option<PathBuf>, PathBuf),
+    Export(Option<PathBuf>, PathBuf),
     Import(PathBuf, PathBuf),
     Regenerate(PathBuf, PathBuf),
     Analyze(PathBuf, Option<PathBuf>),
@@ -100,6 +100,7 @@ impl Task {
         workspace: &Path,
         control: &OperationControl,
         automation: Option<&AutomationControl>,
+        selected_run: Option<&super::data::RunReader>,
     ) -> Result<Output, String> {
         use mgb_ops::store::ObservationStore;
         let resolve = |path: &Path| workspace_path(workspace, path);
@@ -150,9 +151,16 @@ impl Task {
                     .map(Output::Spatial)
                     .map_err(|e| e.to_string());
             }
-            Self::Export(run, preparation, destination) => {
+            Self::Export(preparation, destination) => {
+                let selected = selected_run.ok_or("Select a run")?;
                 let preparation = preparation.as_deref().map(resolve);
-                mgb_ops::app::export_run(&run, preparation.as_deref(), &resolve(&destination))?
+                selected
+                    .snapshot
+                    .export(
+                        &selected.identity,
+                        preparation.as_deref(),
+                        &resolve(&destination),
+                    )?
                     .root
                     .display()
                     .to_string()
@@ -187,14 +195,15 @@ impl Task {
                 request.map_geometry = request.map_geometry.as_deref().map(resolve);
                 request.profile = resolve(&request.profile);
                 request.output = resolve(&request.output);
-                if export {
-                    mgb_ops::app::generate_bulletin(&request)?
-                        .output
-                        .display()
-                        .to_string()
-                } else {
-                    return mgb_ops::app::preview_bulletin(&request).map(Output::Bulletin);
-                }
+                let selected = selected_run.ok_or("Select a run")?;
+                return selected.read(|| {
+                    if export {
+                        mgb_ops::app::generate_bulletin(&request)
+                            .map(|result| Output::Notice(result.output.display().to_string()))
+                    } else {
+                        mgb_ops::app::preview_bulletin(&request).map(Output::Bulletin)
+                    }
+                });
             }
             Self::ReturnPeriod(path) => {
                 mgb_ops::app::export_return_period(&json(&resolve(&path))?)?
@@ -392,7 +401,7 @@ impl Forms {
         form: Form,
         pt: bool,
         draft: &Draft,
-        run: Option<&super::data::Run>,
+        run: Option<&mgb_ops::app::SelectedRun>,
     ) -> Result<Option<Task>, String> {
         ui.heading(form.label(pt));
         let default_db = draft
@@ -488,7 +497,7 @@ impl Forms {
         ui: &mut egui::Ui,
         pt: bool,
         draft: &Draft,
-        run: Option<&super::data::Run>,
+        run: Option<&mgb_ops::app::SelectedRun>,
     ) -> Option<Task> {
         if let Some(run) = run {
             ui.label(run.root.display().to_string());
@@ -1042,7 +1051,7 @@ impl Forms {
         .then(|| {
             let prepared =
                 (!self.preparation.as_os_str().is_empty()).then(|| self.preparation.clone());
-            Task::Export(run.into(), prepared, self.export.clone())
+            Task::Export(prepared, self.export.clone())
         })
     }
 

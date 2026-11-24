@@ -1,3 +1,9 @@
+mod session;
+pub use self::session::{
+    DraftConflict, DraftJob, DraftSnapshot, DraftVersion, RunIdentity, RunRead, RunSelection,
+    RunSnapshot, SavedRun, SelectedRun, Session, SessionId, WorkspaceSelection,
+};
+
 mod observation_review;
 pub use self::observation_review::{
     AvailabilityHour, ObservationReviewReport, ObservationReviewRequest, ReviewWindow,
@@ -117,7 +123,7 @@ use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct InspectionRequest {
     pub workspace: PathBuf,
     pub invocation_dir: PathBuf,
@@ -328,11 +334,13 @@ fn valid_path(path: &Option<PathBuf>) -> bool {
 }
 
 pub fn inspect(request: InspectionRequest) -> InspectionReport {
-    let workspace = absolute(&request.invocation_dir, &request.workspace);
-    let config_path = request.config.as_ref().map_or_else(
-        || workspace.join("config/workspace.toml"),
-        |p| absolute(&request.invocation_dir, p),
-    );
+    WorkspaceSelection::new(request).inspect()
+}
+
+fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
+    let request = selection.request();
+    let workspace = selection.workspace().to_path_buf();
+    let config_path = selection.config().to_path_buf();
     let mut findings = Vec::new();
     let workspace_check = match fs::metadata(&workspace) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some((
@@ -428,14 +436,14 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     };
     let spatial = parsed.spatial.unwrap_or_default();
     let engine = parsed.engine.unwrap_or_default();
-    let gpkg = optional_path(request.gpkg_path, spatial.gpkg_path, None);
+    let gpkg = optional_path(request.gpkg_path.clone(), spatial.gpkg_path, None);
     let executable = optional_path(
-        request.engine_executable,
+        request.engine_executable.clone(),
         engine.executable,
         Some(default_engine()),
     );
     let input_dir = optional_path(
-        request.engine_input_dir,
+        request.engine_input_dir.clone(),
         engine.input_dir,
         Some("mgb_runner/Input"),
     );

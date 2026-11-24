@@ -11,12 +11,12 @@ mod workflows;
 use self::layout::{Form, SideTab};
 
 use self::data::{
-    ActiveRun, CHART_SLOT, ChartRequest, Job, Loaded, Project, RUN_SLOT, RainSide, Run, SLOTS,
-    UPSTREAM_SLOT, View, ViewRequest, Worker,
+    CHART_SLOT, ChartRequest, Job, Loaded, Project, RUN_SELECTION_SLOT, RUN_SLOT, RainSide, Run,
+    RunReader, SLOTS, UPSTREAM_SLOT, View, ViewRequest, Worker,
 };
 use eframe::egui::{self, Color32};
 use mgb_ops::analysis::HourlyWindow;
-use mgb_ops::app::{Location, RainfallPeriod, SeriesQuery, SeriesSelection};
+use mgb_ops::app::{Location, RainfallPeriod, SelectedRun as Run, SeriesQuery, SeriesSelection};
 use mgb_ops::store::RainfallCacheInfo;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -397,8 +397,8 @@ struct Monitoring {
     project: Option<Arc<Project>>,
     run: Option<Arc<Run>>,
     active_run: Result<Option<PathBuf>, String>,
-    comparison_runs: Vec<PathBuf>,
-    run_target: Option<PathBuf>,
+    comparison_runs: Vec<mgb_ops::app::SavedRun>,
+    run_identity: Option<mgb_ops::app::RunIdentity>,
     run_check: Instant,
     rainfall: [RainfallView; 2],
     rainfall_info: Result<Option<RainfallCacheInfo>, String>,
@@ -463,7 +463,7 @@ impl Monitoring {
             run: None,
             active_run: Ok(None),
             comparison_runs: Vec::new(),
-            run_target: None,
+            run_identity: None,
             run_check: Instant::now(),
             rainfall: Default::default(),
             rainfall_info: Ok(None),
@@ -507,10 +507,7 @@ impl Monitoring {
             let config = std::path::absolute(&config).unwrap_or(config);
             app.open_path(config);
         } else if !app.display.config.as_os_str().is_empty() {
-            app.submit(Job::Open(
-                app.display.config.clone(),
-                app.display.workspace.clone(),
-            ));
+            app.open_workspace(app.display.config.clone(), app.display.workspace.clone());
         }
         app
     }
@@ -536,15 +533,19 @@ impl Monitoring {
                 self.worker.invalidate(dependent);
                 self.loading[dependent] = false;
             }
-            self.worker.invalidate(RainSide::Right.slot());
-            self.loading[RainSide::Right.slot()] = false;
+            for dependent in [RainSide::Right.slot(), RUN_SELECTION_SLOT] {
+                self.worker.invalidate(dependent);
+                self.loading[dependent] = false;
+            }
         }
         self.loading[slot] = true;
         self.worker.submit(job);
         let pt = self.preferences.portuguese;
         match slot {
             UPSTREAM_SLOT => {}
-            RUN_SLOT => self.status = text(pt, "Loading run…", "Carregando execução…"),
+            RUN_SLOT | RUN_SELECTION_SLOT => {
+                self.status = text(pt, "Loading run…", "Carregando execução…")
+            }
             _ => {
                 self.status = text(
                     pt,
@@ -558,7 +559,7 @@ impl Monitoring {
         if self.runners.initialized
             && let Some(zone) = self
                 .runners
-                .draft
+                .draft()
                 .as_ref()
                 .and_then(|d| d.document.operation.time_zone.clone())
                 .filter(|z| z.parse::<chrono_tz::Tz>().is_ok())
@@ -600,6 +601,19 @@ impl Monitoring {
             self.depart(Departure::Project(config, workspace));
         }
     }
+    fn open_workspace(&mut self, config: PathBuf, workspace: PathBuf) {
+        let invocation_dir = match std::env::current_dir() {
+            Ok(path) => path,
+            Err(error) => {
+                self.status = error.to_string();
+                return;
+            }
+        };
+        let session = data::session(workspace, config, invocation_dir);
+        self.switching_project = true;
+        self.submit(Job::Open(session));
+    }
+
     fn check_active_run(&mut self, refresh: bool) {
         let Some(project) = &self.project else {
             return;
@@ -609,30 +623,35 @@ impl Monitoring {
             .map(|roots| roots.into_iter().next())
             .map_err(|error| error.to_string());
         let changed = self.active_run != active;
-        let following_active =
-            self.run_target.as_ref() == self.active_run.as_ref().ok().and_then(Option::as_ref);
+        let following_active = matches!(
+            project.session.run().selection(),
+            mgb_ops::app::RunSelection::Active
+        );
         self.active_run = active;
-        if changed && following_active {
-            let target = self.active_run.as_ref().ok().cloned().flatten();
-            if target.is_none() {
-                self.status = self.active_run.as_ref().err().cloned().unwrap_or_else(|| {
-                    text(
-                        self.preferences.portuguese,
-                        "No active run.",
-                        "Nenhuma execução ativa.",
-                    )
-                });
-            }
-            self.load_run(target);
-        } else if refresh {
-            self.load_run(self.run_target.clone());
+        if refresh || (changed && following_active) {
+            self.load_run();
         }
         if changed && self.check_rainfall_cache() {
             self.request_view();
         }
     }
 
-    fn load_run(&mut self, root: Option<PathBuf>) {
+    fn load_run(&mut self) {
+        let Some(project) = &self.project else {
+            return;
+        };
+        let snapshot = project.session.run();
+        let expected = match snapshot.selection() {
+            mgb_ops::app::RunSelection::Active => self
+                .active_run
+                .as_ref()
+                .ok()
+                .and_then(|root| root.clone())
+                .map(mgb_ops::app::RunIdentity::Active),
+            mgb_ops::app::RunSelection::Saved(saved) => {
+                Some(mgb_ops::app::RunIdentity::Saved(saved.root().into()))
+            }
+        };
         self.invalidate_chart();
         self.worker.invalidate(RUN_SLOT);
         self.loading[RUN_SLOT] = false;
@@ -643,21 +662,14 @@ impl Monitoring {
         self.display.inundation_scenario.clear();
         self.inundation.select(None);
         self.run = None;
-        self.run_target = root.clone();
-        if let Some(root) = root {
-            let active = self.active_source(&root);
-            self.submit(Job::Run(root, active));
-        } else {
-            self.request_chart();
-        }
+        self.run_identity = None;
+        self.submit(Job::Run(snapshot, expected));
     }
 
-    fn active_source(&self, root: &std::path::Path) -> Option<ActiveRun> {
-        let project = self.project.as_ref()?;
-        let active = self.active_run.as_ref().ok()?.as_ref()?;
-        (root == active).then(|| ActiveRun {
-            workspace: project.workspace.clone(),
-            root: active.clone(),
+    fn run_reader(&self) -> Option<RunReader> {
+        Some(RunReader {
+            snapshot: self.project.as_ref()?.session.run(),
+            identity: self.run_identity.clone()?,
         })
     }
 
@@ -884,7 +896,7 @@ impl Monitoring {
             ));
         }
         self.submit(Job::Chart(ChartRequest {
-            active: run.and_then(|run| self.active_source(&run.root)),
+            run: run.and_then(|_| self.run_reader()),
             query: SeriesQuery {
                 location,
                 time_zone: zone,
@@ -928,6 +940,7 @@ impl Monitoring {
             match reply.result {
                 Err(error) if reply.slot == CHART_SLOT => self.chart_message = error,
                 Err(error) if reply.slot == UPSTREAM_SLOT => self.status = error,
+                Err(error) if reply.slot == RUN_SELECTION_SLOT => self.status = error,
                 Err(error) if reply.slot == RUN_SLOT => {
                     self.status = error;
                     self.request_chart();
@@ -949,9 +962,10 @@ impl Monitoring {
                     );
                 }
                 Ok(Loaded::Project(project)) => {
-                    let same = self.project.as_ref().is_some_and(|p| {
-                        p.config == project.config && p.workspace == project.workspace
-                    });
+                    let same = self
+                        .project
+                        .as_ref()
+                        .is_some_and(|p| p.session.id() == project.session.id());
                     if !same {
                         self.remember();
                         self.display = self
@@ -969,7 +983,7 @@ impl Monitoring {
                         self.run = None;
                         self.active_run = Ok(None);
                         self.comparison_runs.clear();
-                        self.run_target = None;
+                        self.run_identity = None;
                         self.rainfall = Default::default();
                         self.rainfall_info = Ok(None);
                         for side in RainSide::BOTH {
@@ -981,10 +995,11 @@ impl Monitoring {
                         self.worker.invalidate(3);
                         self.loading[1..4].fill(false);
                     }
-                    if self
-                        .project
-                        .as_ref()
-                        .is_none_or(|old| !Arc::ptr_eq(&old.fills, &project.fills))
+                    if !same
+                        || self
+                            .project
+                            .as_ref()
+                            .is_none_or(|old| !Arc::ptr_eq(&old.fills, &project.fills))
                     {
                         self.cache.iter_mut().for_each(map::StaticCache::clear);
                         self.clear_upstream();
@@ -997,8 +1012,8 @@ impl Monitoring {
                         self.instructions = tools::InstructionTools::default();
                         self.runners.start(
                             runners::Action::Initialize {
-                                workspace: project.workspace.clone(),
-                                config: project.config.clone(),
+                                session: project.session.clone(),
+                                config: project.settings.clone(),
                                 zone: self
                                     .display
                                     .selected_operation_zone(&project.time_zone)
@@ -1078,12 +1093,38 @@ impl Monitoring {
                     self.check_active_run(true);
                     self.request_view();
                 }
-                Ok(Loaded::Run(run)) => {
-                    if self.active_run.as_ref().ok().and_then(Option::as_ref) != Some(&run.root)
-                        && !self.comparison_runs.contains(&run.root)
-                    {
-                        self.comparison_runs.push(run.root.clone());
+                Ok(Loaded::RunSelection(candidate)) => {
+                    if let Some(project) = &self.project {
+                        if let Err(error) = project.session.select_run(candidate) {
+                            self.status = error;
+                        } else {
+                            self.load_run();
+                        }
                     }
+                }
+                Ok(Loaded::Run(snapshot, loaded)) => {
+                    let Some(project) = &self.project else {
+                        continue;
+                    };
+                    if !project.session.is_current_run(&snapshot) {
+                        continue;
+                    }
+                    let Some(loaded) = loaded else {
+                        self.status = text(
+                            self.preferences.portuguese,
+                            "No active run.",
+                            "Nenhuma execução ativa.",
+                        );
+                        self.request_chart();
+                        continue;
+                    };
+                    let run = loaded.data;
+                    if let mgb_ops::app::RunSelection::Saved(saved) = snapshot.selection()
+                        && !self.comparison_runs.contains(saved)
+                    {
+                        self.comparison_runs.push(saved.clone());
+                    }
+                    self.run_identity = Some(loaded.identity);
                     if !run.start.is_empty() {
                         self.display.chart_start.clone_from(&run.start);
                         self.display.chart_end.clone_from(&run.end);
@@ -1098,7 +1139,7 @@ impl Monitoring {
                         ),
                         run.root.display(),
                     );
-                    self.run = Some(run);
+                    self.run = Some(Arc::new(run));
                     self.request_chart();
                 }
                 Ok(Loaded::Chart {
@@ -1341,10 +1382,7 @@ impl Monitoring {
                                     .clicked()
                                         && let Some(project) = &self.project
                                     {
-                                        self.submit(Job::Open(
-                                            project.config.clone(),
-                                            project.workspace.clone(),
-                                        ));
+                                        self.submit(Job::Open(project.session.clone()));
                                     }
                                 },
                             );
@@ -1709,10 +1747,12 @@ impl Monitoring {
                     self.runners.jobs(ui, pt);
                 }
                 ui.add_enabled_ui(!busy, |ui| {
-                    let Some(draft) = self.runners.draft.as_mut() else {
+                    let Some(mut snapshot) = self.runners.draft_snapshot() else {
                         ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
                         return;
                     };
+                    let before = snapshot.draft.document.clone();
+                    let draft = &mut snapshot.draft;
                     if matches!(
                         form,
                         Form::Forcing | Form::Geometry | Form::Soil | Form::Instructions
@@ -1798,13 +1838,19 @@ impl Monitoring {
                             .workflows
                             .show(ui, form, pt, draft, self.run.as_deref())
                         {
-                            Ok(task) => task.map(runners::Action::Workflow),
+                            Ok(task) => {
+                                task.map(|task| runners::Action::Workflow(task, self.run_reader()))
+                            }
                             Err(error) => {
                                 self.runners.status = error;
                                 None
                             }
                         },
                     };
+                    if before != snapshot.draft.document && !self.runners.commit_form_edit(snapshot)
+                    {
+                        return;
+                    }
                     if let Some(action) = action {
                         self.runners.start(action, ui.ctx());
                     }
@@ -1830,32 +1876,29 @@ impl Monitoring {
                 ),
             );
         }
-        let active = self.active_run.as_ref().ok().cloned().flatten();
+        use mgb_ops::app::RunSelection;
+        let snapshot = project.session.run();
         let active_label = text(pt, "Active run", "Execução ativa");
         if let Err(error) = &self.active_run {
             ui.colored_label(ui.visuals().error_fg_color, error);
         }
-        let mut selected = self.run_target.clone();
-        let showing_active = selected == active;
-        let mut open_comparison = false;
+        let mut selected = snapshot.selection().clone();
+        let mut comparison_path = None;
         ui.horizontal_wrapped(|ui| {
             egui::ComboBox::from_label(text(pt, "Run source", "Fonte da execução"))
                 .width(180.)
                 .truncate()
-                .selected_text(if showing_active {
-                    active_label.clone()
-                } else {
-                    selected
-                        .as_deref()
-                        .map_or(String::new(), |path| path.display().to_string())
+                .selected_text(match &selected {
+                    RunSelection::Active => active_label.clone(),
+                    RunSelection::Saved(saved) => saved.root().display().to_string(),
                 })
                 .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut selected, active, active_label);
-                    for root in &self.comparison_runs {
+                    ui.selectable_value(&mut selected, RunSelection::Active, active_label);
+                    for saved in &self.comparison_runs {
                         ui.selectable_value(
                             &mut selected,
-                            Some(root.clone()),
-                            root.display().to_string(),
+                            RunSelection::Saved(saved.clone()),
+                            saved.root().display().to_string(),
                         );
                     }
                 });
@@ -1866,16 +1909,32 @@ impl Monitoring {
                     "Abrir execução para comparação…",
                 ))
                 .clicked()
-                && let Some(root) = rfd::FileDialog::new().pick_folder()
             {
-                selected = Some(root);
-                open_comparison = true;
+                comparison_path = rfd::FileDialog::new().pick_folder();
             }
         });
-        if !self.loading[0] && (selected != self.run_target || open_comparison) {
-            self.load_run(selected);
+        if !self.loading[0] {
+            if let Some(root) = comparison_path {
+                self.submit(Job::SelectRun(snapshot, root));
+            } else if &selected != snapshot.selection() {
+                match selected {
+                    RunSelection::Active => {
+                        self.worker.invalidate(RUN_SELECTION_SLOT);
+                        self.loading[RUN_SELECTION_SLOT] = false;
+                        match project.session.select_run(snapshot.follow_active()) {
+                            Ok(()) => self.load_run(),
+                            Err(error) => self.status = error,
+                        }
+                    }
+                    RunSelection::Saved(saved) => {
+                        self.submit(Job::SelectRun(snapshot, saved.root().into()));
+                    }
+                }
+            }
         }
-        if self.run_target.is_none() {
+        if matches!(project.session.run().selection(), RunSelection::Active)
+            && matches!(self.active_run, Ok(None))
+        {
             ui.label(text(pt, "No active run.", "Nenhuma execução ativa."));
         }
 
@@ -2015,14 +2074,14 @@ impl Monitoring {
             .run
             .as_deref()
             .filter(|_| !self.switching_project && !self.loading[0]);
-        let active = run.and_then(|run| self.active_source(&run.root));
+        let reader = run.and_then(|_| self.run_reader());
         let scenario = &mut self.display.inundation_scenario;
         let source = run.and_then(|run| {
             if !run.scenarios.contains(scenario) {
                 scenario.clone_from(run.scenarios.first()?);
             }
             Some(inundation::Source {
-                active,
+                reader,
                 root: run.root.clone(),
                 scenario: scenario.clone(),
             })
@@ -3046,8 +3105,7 @@ impl Monitoring {
         self.leaving_job = false;
         match departure {
             Departure::Project(config, workspace) => {
-                self.switching_project = true;
-                self.submit(Job::Open(config, workspace));
+                self.open_workspace(config, workspace);
             }
             Departure::New => {
                 if let Some(project) = &self.project {
@@ -3073,7 +3131,7 @@ impl Monitoring {
                 self.project = None;
                 self.run = None;
                 self.active_run = Ok(None);
-                self.run_target = None;
+                self.run_identity = None;
                 self.comparison_runs.clear();
                 self.inundation.select(None);
                 self.rainfall = Default::default();
@@ -3196,7 +3254,7 @@ impl Monitoring {
                 return;
             } else if self
                 .runners
-                .draft
+                .draft()
                 .as_ref()
                 .is_some_and(mgb_ops::app::Draft::is_dirty)
             {
@@ -3281,7 +3339,7 @@ impl eframe::App for Monitoring {
             self.display.draft = self.runners.last_saved.clone();
             if let Some(zone) = self
                 .runners
-                .draft
+                .draft()
                 .as_ref()
                 .and_then(|d| d.document.operation.time_zone.clone())
                 .filter(|z| z.parse::<chrono_tz::Tz>().is_ok())
@@ -3321,7 +3379,7 @@ impl eframe::App for Monitoring {
             && ui.input(|i| i.key_pressed(egui::Key::F5))
             && let Some(p) = &self.project
         {
-            self.submit(Job::Open(p.config.clone(), p.workspace.clone()));
+            self.submit(Job::Open(p.session.clone()));
         }
         let toolbar_frame = theme::toolbar(ui.style());
         egui::Panel::top("ribbon")
