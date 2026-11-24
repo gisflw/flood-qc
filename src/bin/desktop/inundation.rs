@@ -543,13 +543,13 @@ impl Inundation {
             let display_format = text(pt, "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M");
             ui.label(format!(
                 "{} · {current}",
-                meta.timeline.bounds[frame].end.format(display_format),
+                meta.timeline.bounds[frame].end.format(&display_format),
             ));
             if let Some(forecast) = forecast {
                 ui.small(format!(
                     "{} · {}",
                     text(pt, "Forecast starts", "Início da previsão"),
-                    forecast.start.format(display_format),
+                    forecast.start.format(&display_format),
                 ));
             } else {
                 ui.small(text(pt, "No forecast hours", "Sem horas de previsão"));
