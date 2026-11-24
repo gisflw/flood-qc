@@ -1,3 +1,11 @@
+mod assistant;
+pub use self::assistant::{
+    ASSISTANT_MCP_ARG, AgentPreset, Assistant, AssistantEvent, AssistantFailure, AssistantOptions,
+    AssistantPermission, AssistantPermissionKind, AssistantPermissionOption, AssistantStage,
+    AssistantStopReason, DraftEdit, ProposalOutcome, ProposalReview, assist_mcp_entry,
+    assist_mcp_stdio,
+};
+
 mod session;
 pub use self::session::{
     DraftConflict, DraftJob, DraftSnapshot, DraftVersion, RunIdentity, RunRead, RunSelection,

@@ -762,6 +762,11 @@ pub fn write_result_series(path: &Path, results: &ResultSeries) -> Result<(), St
     )?;
     write(root, path)
 }
+pub(crate) fn read_result_timeline(path: &Path) -> Result<IntervalAxis, StoreError> {
+    let (dataset, timeline, provenance) = open(path, "basin_results", "mm")?;
+    check_result_attributes(&dataset, &provenance)?;
+    Ok(timeline)
+}
 pub fn read_result_series(path: &Path) -> Result<ResultSeries, StoreError> {
     let (ds, timeline, provenance) = open(path, "basin_results", "mm")?;
     check_result_attributes(&ds, &provenance)?;

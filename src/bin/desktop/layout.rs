@@ -52,6 +52,7 @@ pub enum SideTab {
     #[serde(skip_serializing)]
     Rainfall,
     Files,
+    Assistant,
     #[serde(skip_serializing)]
     Interface,
     Form(Form),
@@ -65,6 +66,7 @@ impl SideTab {
             Self::Data => super::text(pt, "Data", "Dados"),
             Self::Rainfall => super::text(pt, "Rainfall", "Chuva"),
             Self::Files => super::text(pt, "Files", "Arquivos"),
+            Self::Assistant => super::text(pt, "Assistant", "Assistente"),
             Self::Interface => super::text(pt, "Interface Settings", "Configurações da interface"),
             Self::Form(form) => form.label(pt),
         }
@@ -127,7 +129,7 @@ impl Layout {
     }
 
     pub fn close(&mut self, tab: SideTab) {
-        if !matches!(tab, SideTab::Form(_)) {
+        if !matches!(tab, SideTab::Form(_) | SideTab::Assistant) {
             return;
         }
         self.tabs.retain(|item| *item != tab);

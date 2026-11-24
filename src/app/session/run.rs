@@ -163,6 +163,14 @@ impl RunSnapshot {
         .ok_or_else(|| "Selected run is no longer available".into())
     }
 
+    /// Produce an application-specific summary while the selected artifacts remain guarded.
+    pub(in crate::app) fn map_summary<T>(
+        &self,
+        project: impl FnOnce(SelectedRun) -> T,
+    ) -> Result<Option<RunRead<T>>, String> {
+        self.read(None, |root| read_run(root).map(project))
+    }
+
     pub fn summary(
         &self,
         expected: Option<&RunIdentity>,

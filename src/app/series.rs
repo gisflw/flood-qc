@@ -84,7 +84,7 @@ fn names(v: &Variable) -> (&'static str, &'static str) {
         Variable::Level => ("level", "cm"),
     }
 }
-fn valid_id(id: &str) -> bool {
+pub(super) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id
             .bytes()
@@ -205,6 +205,18 @@ pub(super) fn read_model(
     })
 }
 
+pub(super) fn model_interval_in_window(
+    variable: &Variable,
+    interval: &TimeInterval,
+    window: &TimeInterval,
+) -> bool {
+    let after_start = match variable {
+        Variable::Rain => interval.start >= window.start,
+        _ => interval.end >= window.start,
+    };
+    after_start && interval.end <= window.end
+}
+
 fn model(
     source: &ModelSource,
     scenario: &str,
@@ -269,12 +281,7 @@ fn model(
         {
             return Err("partial or non-hourly rainfall interval".into());
         }
-        let include = if matches!(variable, Variable::Rain) {
-            interval.start >= window.start && interval.end <= window.end
-        } else {
-            interval.end >= window.start && interval.end <= window.end
-        };
-        if !include {
+        if !model_interval_in_window(variable, interval, window) {
             continue;
         }
         let i = t * basin.basins.mini_ids.len() + bi;

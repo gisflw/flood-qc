@@ -3,7 +3,7 @@
 //! attribute strings are checked; unknown attributes and generated source fail.
 use std::fs;
 use std::path::{Path, PathBuf};
-use syn::parse::Parser;
+use syn::parse::{ParseStream, Parser};
 use syn::visit::{self, Visit};
 use syn::{Attribute, Item, ItemUse, Path as SynPath, UseTree};
 
@@ -171,6 +171,65 @@ impl Gate {
             self.error("re-exports must use self::private_module::item");
         }
     }
+    fn json_value(&mut self, input: ParseStream<'_>) -> syn::Result<()> {
+        if input.peek(syn::token::Brace) {
+            let object;
+            syn::braced!(object in input);
+            while !object.is_empty() {
+                object.parse::<syn::LitStr>()?;
+                object.parse::<syn::Token![:]>()?;
+                self.json_value(&object)?;
+                if !object.is_empty() {
+                    object.parse::<syn::Token![,]>()?;
+                }
+            }
+        } else if input.peek(syn::token::Bracket) {
+            let array;
+            syn::bracketed!(array in input);
+            while !array.is_empty() {
+                self.json_value(&array)?;
+                if !array.is_empty() {
+                    array.parse::<syn::Token![,]>()?;
+                }
+            }
+        } else {
+            self.visit_expr(&input.parse::<syn::Expr>()?);
+        }
+        Ok(())
+    }
+    fn tokio_select(&mut self, input: ParseStream<'_>) -> syn::Result<()> {
+        if input.peek(syn::Ident) && input.peek2(syn::Token![;]) {
+            let mode = input.parse::<syn::Ident>()?;
+            if mode != "biased" {
+                return Err(syn::Error::new(mode.span(), "unsupported select mode"));
+            }
+            input.parse::<syn::Token![;]>()?;
+        }
+        while !input.is_empty() {
+            self.visit_pat(&syn::Pat::parse_multi_with_leading_vert(input)?);
+            input.parse::<syn::Token![=]>()?;
+            self.visit_expr(&input.parse::<syn::Expr>()?);
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+                input.parse::<syn::Token![if]>()?;
+                self.visit_expr(&input.parse::<syn::Expr>()?);
+            }
+            input.parse::<syn::Token![=>]>()?;
+            let body = input.parse::<syn::Expr>()?;
+            self.visit_expr(&body);
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+            } else if !input.is_empty()
+                && !matches!(
+                    body,
+                    syn::Expr::Block(_) | syn::Expr::If(_) | syn::Expr::Match(_)
+                )
+            {
+                return Err(input.error("expected select branch separator"));
+            }
+        }
+        Ok(())
+    }
     fn token_paths(&mut self, text: &str) {
         // Token display separates punctuation; strings are parsed separately below.
         let mut words = Vec::new();
@@ -243,6 +302,46 @@ impl<'ast> Visit<'ast> for Gate {
     fn visit_macro(&mut self, mac: &'ast syn::Macro) {
         self.visit_path(&mac.path);
         let name = mac.path.segments.last().unwrap().ident.to_string();
+        if name == "json" || name == "select" {
+            let path = mac
+                .path
+                .segments
+                .iter()
+                .map(|segment| segment.ident.to_string())
+                .collect::<Vec<_>>();
+            let supported = self.owner == "app"
+                && match name.as_str() {
+                    "json" => {
+                        matches!(path.as_slice(), [word] if word == "json")
+                            || path == ["serde_json", "json"]
+                    }
+                    _ => path == ["tokio", "select"],
+                };
+            if !supported {
+                self.error(format!("unsupported macro path for {name}"));
+                return;
+            }
+            let parser = |input: ParseStream<'_>| {
+                if name == "json" {
+                    self.json_value(input)
+                } else {
+                    self.tokio_select(input)
+                }
+            };
+            if let Err(error) = parser.parse2(mac.tokens.clone()) {
+                self.error(format!("unsupported {name} syntax: {error}"));
+            }
+            return;
+        }
+        if name == "env"
+            && mac.path.is_ident("env")
+            && self.owner == "app"
+            && syn::parse2::<syn::LitStr>(mac.tokens.clone()).is_ok_and(|value| {
+                ["CARGO_MANIFEST_DIR", "CARGO_PKG_VERSION"].contains(&value.value().as_str())
+            })
+        {
+            return;
+        }
         if name == "params" {
             let path = mac
                 .path
@@ -372,9 +471,12 @@ impl<'ast> Visit<'ast> for Gate {
                         "Default",
                         "PartialEq",
                         "Eq",
+                        "PartialOrd",
+                        "Ord",
                         "Serialize",
                         "Deserialize",
                         "Parser",
+                        "Args",
                         "Subcommand",
                         "ValueEnum",
                     ]
@@ -819,4 +921,46 @@ fn bulletin_font_inclusion_is_limited_to_its_owner_and_static_path() {
     );
     let escaped = r#"const FONT: &[u8] = include_bytes!("../assets/NotoSans-Regular.ttf");"#;
     assert!(!check_source("analysis", escaped, 1, Some(source)).is_empty());
+}
+
+#[test]
+fn assistant_macros_check_embedded_rust_paths() {
+    assert!(
+        check(
+            "app",
+            r#"fn run() { json!({"data": [inner(json!({})), self::Thing]}); }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "app",
+            r#"fn run() { json!({"data": crate::interface::Thing}); }"#
+        )
+        .is_empty()
+    );
+    assert!(!check("app", r#"fn run() { json!({"data": include!("path")}); }"#).is_empty());
+    assert!(check("app", r#"async fn run() { tokio::select! { biased; Some(item) = input(), if ready() => use_item(item), _ = wait() => {} } }"#).is_empty());
+    assert!(
+        !check(
+            "app",
+            r#"async fn run() { tokio::select! { _ = crate::interface::wait() => {} } }"#
+        )
+        .is_empty()
+    );
+    assert!(!check("app", r#"async fn run() { tokio::select! { _ = wait(), if crate::interface::ready() => {} } }"#).is_empty());
+    assert!(
+        !check(
+            "app",
+            r#"async fn run() { tokio::select! { _ = wait() => crate::interface::Thing } }"#
+        )
+        .is_empty()
+    );
+    assert!(
+        !check(
+            "app",
+            r#"async fn run() { other::select! { _ = wait() => {} } }"#
+        )
+        .is_empty()
+    );
 }

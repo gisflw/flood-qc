@@ -89,6 +89,7 @@ fn next_id() -> u64 {
 
 /// Identifies the exact working revision, including across draft and workspace opens.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DraftVersion {
     session: u64,
     draft: u64,
@@ -269,6 +270,21 @@ impl Session {
             proposed
                 .visualization
                 .clone_from(&draft.document.visualization);
+            for (index, (previous, candidate)) in draft
+                .document
+                .operation
+                .scenarios
+                .iter()
+                .zip(&proposed.operation.scenarios)
+                .enumerate()
+            {
+                if previous.asset_id != candidate.asset_id {
+                    proposed
+                        .sources
+                        .accepted
+                        .remove(&format!("forecast:{index}"));
+                }
+            }
         }
         draft.document = proposed;
         Self::replace(&mut state, expected, draft)

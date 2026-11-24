@@ -41,6 +41,7 @@ pub use self::operation::{
 mod sharing;
 pub(crate) use self::sharing::{BundleManifest, copy_member, payload_index, validate_bundle};
 
+pub(crate) use self::netcdf::read_result_timeline;
 pub use self::netcdf::{
     read_result_series, read_station_results, write_result_series, write_station_results,
 };

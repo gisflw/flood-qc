@@ -229,6 +229,14 @@ impl Runners {
         }
     }
 
+    pub fn draft_edited(&mut self, pt: bool) {
+        self.readiness = vec![text(
+            pt,
+            "Settings changed. Check readiness and explicitly accept selected inputs.",
+            "Configurações alteradas. Verifique a prontidão e aceite as entradas explicitamente.",
+        )];
+    }
+
     pub fn start(&mut self, action: Action, ctx: &egui::Context) {
         if self.busy() {
             self.status = "A job is already active in this workspace".into();
@@ -716,7 +724,12 @@ impl Runners {
                             {
                                 self.start(Action::Accept, &ctx);
                             }
-                            if ui.button(text(pt,"Check readiness","Verificar prontidão")).clicked(){self.start(Action::Readiness,&ctx);}
+                            if ui
+                                .button(text(pt, "Check readiness", "Verificar prontidão"))
+                                .clicked()
+                            {
+                                self.start(Action::Readiness, &ctx);
+                            }
                             if ui
                                 .button(text(
                                     pt,
@@ -728,17 +741,26 @@ impl Runners {
                                 self.start(Action::Choices, &ctx);
                             }
                         });
-                        for finding in &self.readiness{ui.colored_label(ui.visuals().warn_fg_color,finding);}
-                        if self.readiness.is_empty(){ui.small(text(pt,"Use Check readiness to validate current selected inputs","Use Verificar prontidão para validar as entradas selecionadas"));}
+                        for finding in &self.readiness {
+                            ui.colored_label(ui.visuals().warn_fg_color, finding);
+                        }
+                        if self.readiness.is_empty() {
+                            ui.small(text(
+                                pt,
+                                "Use Check readiness to validate current selected inputs",
+                                "Use Verificar prontidão para validar as entradas selecionadas",
+                            ));
+                        }
                         if let Some(mut snapshot) = self.draft_snapshot() {
                             let before = snapshot.draft.document.clone();
                             draft_form(ui, &mut snapshot.draft, &self.choices, pt);
-                            if before != snapshot.draft.document && self.commit_form_edit(snapshot) {
-                                self.readiness = vec![text(pt, "Settings changed; check readiness and explicitly accept selected inputs", "Configurações alteradas; verifique a prontidão e aceite as entradas explicitamente")];
+                            if before != snapshot.draft.document && self.commit_form_edit(snapshot)
+                            {
+                                self.draft_edited(pt);
                             }
                             ui.separator();
                             if ui
-                                 .button(text(pt, "▶ Run experiment", "▶ Executar experimento"))
+                                .button(text(pt, "▶ Run experiment", "▶ Executar experimento"))
                                 .clicked()
                             {
                                 self.start(Action::RunAll, &ctx);

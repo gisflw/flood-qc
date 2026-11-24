@@ -1,3 +1,8 @@
+mod bin {
+    pub(super) mod cli;
+}
+
+use self::bin::cli;
 use clap::{Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -11,6 +16,8 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Start an interactive conversation in an explicitly selected workspace.
+    Assistant(cli::Arguments),
     Automation {
         #[command(subcommand)]
         command: AutomationCommand,
@@ -846,6 +853,10 @@ fn operation_result<T>(
     }
 }
 fn run() -> Result<bool, Box<dyn std::error::Error>> {
+    if let Some(result) = mgb_ops::app::assist_mcp_entry() {
+        result?;
+        return Ok(true);
+    }
     let cli = Cli::parse();
     let control = mgb_ops::OperationControl::default();
     if matches!(
@@ -865,6 +876,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let stdout = io::stdout();
     let mut out = stdout.lock();
     match cli.command {
+        Command::Assistant(arguments) => cli::assistant(arguments, &mut out),
         Command::Automation { command } => automation_action(command, &mut out),
         Command::Report { command } => {
             match command {

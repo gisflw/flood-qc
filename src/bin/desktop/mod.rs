@@ -1,3 +1,4 @@
+mod assistant;
 mod charts;
 mod data;
 mod export;
@@ -420,6 +421,7 @@ struct Monitoring {
     workflows: workflows::Forms,
     calibration: tools::CalibrationTools,
     instructions: tools::InstructionTools,
+    assistant: assistant::AssistantPane,
     pending: Option<Departure>,
     saving_departure: bool,
     leaving_job: bool,
@@ -490,6 +492,7 @@ impl Monitoring {
             workflows: workflows::Forms::default(),
             calibration: tools::CalibrationTools::default(),
             instructions: tools::InstructionTools::default(),
+            assistant: assistant::AssistantPane::default(),
             pending: None,
             saving_departure: false,
             leaving_job: false,
@@ -967,6 +970,7 @@ impl Monitoring {
                         .as_ref()
                         .is_some_and(|p| p.session.id() == project.session.id());
                     if !same {
+                        self.assistant.reset();
                         self.remember();
                         self.display = self
                             .preferences
@@ -1457,6 +1461,7 @@ impl Monitoring {
                                 (SideTab::Charts, "📈"),
                                 (SideTab::Data, "📊"),
                                 (SideTab::Files, "📁"),
+                                (SideTab::Assistant, "💬"),
                             ] {
                                 if ribbon_button(ui, emoji, tab.label(pt)).clicked() {
                                     self.display.layout.open(tab);
@@ -1657,7 +1662,7 @@ impl Monitoring {
                                         if response.gained_focus() {
                                             response.scroll_to_me(None);
                                         }
-                                        if matches!(tab, SideTab::Form(_)) {
+                                        if matches!(tab, SideTab::Form(_) | SideTab::Assistant) {
                                             let close = ui.add(
                                                 egui::Button::new("×").frame_when_inactive(false),
                                             );
@@ -1665,6 +1670,9 @@ impl Monitoring {
                                                 format!("{} {label}", text(pt, "Close", "Fechar"));
                                             button_label(&close, &name);
                                             if close.on_hover_text(name).clicked() {
+                                                if tab == SideTab::Assistant {
+                                                    self.assistant.reset();
+                                                }
                                                 self.display.layout.close(tab);
                                             }
                                         }
@@ -1697,6 +1705,16 @@ impl Monitoring {
             SideTab::Data => self.data_page(ui),
             SideTab::Files => {
                 egui::ScrollArea::vertical().show(ui, |ui| self.files(ui));
+            }
+            SideTab::Assistant => {
+                let session = self.project.as_ref().map(|project| &project.session);
+                let available = !self.switching_project && self.pending.is_none();
+                let applied = ui
+                    .add_enabled_ui(available, |ui| self.assistant.show(ui, session, pt))
+                    .inner;
+                if applied {
+                    self.runners.draft_edited(pt);
+                }
             }
             SideTab::Rainfall | SideTab::Interface | SideTab::Form(Form::Workspace) => {}
             SideTab::Form(form) => {
@@ -3115,10 +3133,12 @@ impl Monitoring {
             }
             Departure::Draft(path) => self.runners.start(runners::Action::Open(path), ctx),
             Departure::Quit => {
+                self.assistant.reset();
                 self.allow_quit = true;
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
             Departure::Close => {
+                self.assistant.reset();
                 self.remember();
                 for slot in 0..4 {
                     self.worker.invalidate(slot);
@@ -3315,6 +3335,7 @@ impl eframe::App for Monitoring {
             ctx.request_repaint_after(self.run_check.saturating_duration_since(Instant::now()));
         }
         self.poll(&ctx);
+        self.assistant.poll(&ctx, self.preferences.portuguese);
         if let Some(outcome) = self.runners.poll() {
             match outcome {
                 runners::Outcome::Completed => {
