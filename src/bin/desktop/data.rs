@@ -87,15 +87,20 @@ pub fn session(workspace: PathBuf, config: PathBuf, invocation_dir: PathBuf) -> 
 
 pub fn open(session: Session, previous: Option<&Project>) -> Result<Arc<Project>, String> {
     let selection = session.workspace();
-    let settings = selection.read_config()?;
-    let workspace = selection.workspace().to_path_buf();
-    let config = selection.config().to_path_buf();
-    let inspection = selection.inspect();
-    if let Some(failure) = inspection.findings.iter().find(|finding| {
-        finding.check == "workspace" && finding.status == mgb_ops::app::FindingStatus::Fail
-    }) {
-        return Err(format!("{}: {}", workspace.display(), failure.message));
-    }
+    let (inspection, settings) = selection.inspect_with_config();
+    let workspace = inspection.workspace;
+    let config = inspection.config;
+    let settings = settings.ok_or_else(|| {
+        let failure = inspection
+            .findings
+            .iter()
+            .find(|f| f.status == mgb_ops::app::FindingStatus::Fail)
+            .expect("missing parsed workspace configuration has a prerequisite finding");
+        match &failure.path {
+            Some(path) => format!("{}: {}", path.display(), failure.message),
+            None => failure.message.clone(),
+        }
+    })?;
     let previous = previous.filter(|p| p.config == config && p.workspace == workspace);
     let input = settings
         .engine
@@ -744,6 +749,49 @@ mod tests {
     use super::*;
     fn test_session(config: PathBuf, workspace: PathBuf) -> Session {
         session(workspace, config, std::env::current_dir().unwrap())
+    }
+
+    #[test]
+    fn failed_workspace_open_keeps_the_previous_project_available() {
+        std::fs::create_dir_all("runs").unwrap();
+        let dir = tempfile::tempdir_in("runs").unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let config = root.join("outside.toml");
+        let workspace = root.join("workspace");
+        std::fs::create_dir(&workspace).unwrap();
+        std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
+        let first = test_session(config.clone(), workspace.clone());
+        let mut worker = Worker::new(eframe::egui::Context::default());
+        let mut dispatch = |session| {
+            worker.submit(Job::Open(session));
+            let limit = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                if let Some(reply) = worker.poll().pop() {
+                    return reply.result;
+                }
+                assert!(std::time::Instant::now() < limit);
+                std::thread::yield_now();
+            }
+        };
+        let Loaded::Project(project) = dispatch(first.clone()).unwrap() else {
+            panic!("expected a workspace");
+        };
+        let rejected = test_session(root.join("missing.toml"), workspace.clone());
+        let (inspection, loaded) = rejected.workspace().inspect_with_config();
+        assert!(loaded.is_none());
+        let error = match dispatch(rejected) {
+            Err(error) => error,
+            Ok(_) => panic!("expected missing configuration to fail"),
+        };
+        assert!(error.contains(&inspection.findings[1].message));
+        let Loaded::Project(refreshed) = dispatch(first.clone()).unwrap() else {
+            panic!("expected the original workspace to refresh");
+        };
+        assert_eq!(project.session.id(), first.id());
+        assert_eq!(project.workspace, workspace);
+        assert_eq!(project.config, config);
+        assert_eq!(refreshed.session.id(), first.id());
+        assert_eq!(refreshed.findings, project.findings);
     }
 
     #[test]

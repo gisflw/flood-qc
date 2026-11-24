@@ -469,6 +469,20 @@ impl DraftAnchor {
         Ok(())
     }
 
+    fn validate_time(&self) -> Result<(), String> {
+        let (Some(reference), Some(zone)) = (&self.reference, &self.zone) else {
+            return Ok(());
+        };
+        let time = timestamp("reference_time", reference).map_err(|e| e.to_string())?;
+        let timezone: chrono_tz::Tz = zone.parse().map_err(|_| "expected IANA timezone")?;
+        use chrono::TimeZone;
+        timezone
+            .from_local_datetime(&time)
+            .single()
+            .ok_or("ambiguous or absent local reference")?;
+        Ok(())
+    }
+
     fn apply(&self, operation: &mut DraftOperation) {
         operation.reference_time.clone_from(&self.reference);
         operation.time_zone.clone_from(&self.zone);
@@ -522,6 +536,20 @@ impl Draft {
             findings: Vec::new(),
         }
     }
+    pub(super) fn with_engine_overrides(
+        mut self,
+        executable: Option<PathBuf>,
+        input_dir: Option<PathBuf>,
+    ) -> Self {
+        if executable.is_some() || input_dir.is_some() {
+            let engine = self.document.operation.engine.get_or_insert_default();
+            engine.executable = executable.or_else(|| engine.executable.take());
+            engine.input_dir = input_dir.or_else(|| engine.input_dir.take());
+            self.baseline = self.document.clone();
+        }
+        self
+    }
+
     /// Initialize a fresh fixed-reference run without selecting operational sources.
     pub fn new_run(
         workspace: PathBuf,
@@ -575,13 +603,7 @@ impl Draft {
             zone: Some(zone.into()),
         };
         self.anchor.check_edit(&proposed)?;
-        let time = timestamp("reference_time", reference).map_err(|e| e.to_string())?;
-        let timezone: chrono_tz::Tz = zone.parse().map_err(|_| "expected IANA timezone")?;
-        use chrono::TimeZone;
-        timezone
-            .from_local_datetime(&time)
-            .single()
-            .ok_or("ambiguous or absent local reference")?;
+        proposed.validate_time()?;
         if self.anchor != proposed {
             self.document.sources = DraftSources::default();
         }
@@ -1059,6 +1081,10 @@ impl Draft {
                     .all(|(key, value)| sources.accepted.get(key) == Some(value)))
         {
             return Err("Accept sources through the explicit source workflow".into());
+        }
+        let anchor = DraftAnchor::from_operation(&proposed.operation);
+        if anchor != self.anchor {
+            anchor.validate_time()?;
         }
         self.validate_document(proposed)
     }

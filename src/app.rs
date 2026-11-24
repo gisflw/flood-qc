@@ -337,7 +337,9 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     WorkspaceSelection::new(request).inspect()
 }
 
-fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
+fn inspect_selection(
+    selection: &WorkspaceSelection,
+) -> (InspectionReport, Option<WorkspaceConfig>) {
     let request = selection.request();
     let workspace = selection.workspace().to_path_buf();
     let config_path = selection.config().to_path_buf();
@@ -361,7 +363,7 @@ fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
     if let Some((code, message)) = workspace_check {
         findings.push(failure("workspace", code, workspace.clone(), message));
         dependent(&mut findings);
-        return finish(workspace, config_path, findings);
+        return (finish(workspace, config_path, findings), None);
     }
     findings.push(finding(
         "workspace",
@@ -402,7 +404,7 @@ fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
         Err((code, message)) => {
             findings.push(failure("config", code, config_path.clone(), message));
             dependent(&mut findings);
-            return finish(workspace, config_path, findings);
+            return (finish(workspace, config_path, findings), None);
         }
     };
     let parsed: Config = match toml::from_str(&contents) {
@@ -431,11 +433,11 @@ fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
                 .unwrap_or_default();
             findings.push(failure("config", FindingCode::InvalidConfig, config_path.clone(), &format!("Invalid TOML configuration{location};{detail} correct its syntax, keys, or value types")));
             dependent(&mut findings);
-            return finish(workspace, config_path, findings);
+            return (finish(workspace, config_path, findings), None);
         }
     };
-    let spatial = parsed.spatial.unwrap_or_default();
-    let engine = parsed.engine.unwrap_or_default();
+    let spatial = parsed.spatial.clone().unwrap_or_default();
+    let engine = parsed.engine.clone().unwrap_or_default();
     let gpkg = optional_path(request.gpkg_path.clone(), spatial.gpkg_path, None);
     let executable = optional_path(
         request.engine_executable.clone(),
@@ -462,7 +464,7 @@ fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
             &format!("Set {key} to a nonempty path"),
         ));
         dependent(&mut findings);
-        return finish(workspace, config_path, findings);
+        return (finish(workspace, config_path, findings), Some(parsed));
     }
     findings.push(finding(
         "config",
@@ -528,7 +530,7 @@ fn inspect_selection(selection: &WorkspaceSelection) -> InspectionReport {
             message,
         ));
     }
-    finish(workspace, config_path, findings)
+    (finish(workspace, config_path, findings), Some(parsed))
 }
 
 mod draft;

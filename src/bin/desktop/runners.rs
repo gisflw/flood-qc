@@ -128,6 +128,7 @@ struct Reply {
 pub struct Active {
     draft_job: Option<DraftJob>,
     session: mgb_ops::app::SessionId,
+    preview_run: Option<mgb_ops::app::RunSnapshot>,
     pub control: mgb_ops::app::OperationControl,
     pub automation: Option<mgb_ops::app::AutomationControl>,
     receiver: mpsc::Receiver<Reply>,
@@ -253,6 +254,12 @@ impl Runners {
         let config = self.config.clone();
         let control = mgb_ops::app::OperationControl::default();
         let operation_control = control.clone();
+        let preview_run = match &action {
+            Action::Workflow(super::workflows::Task::Report(_, false), Some(run)) => {
+                Some(run.snapshot.clone())
+            }
+            _ => None,
+        };
         let automation = match &action {
             Action::Workflow(task, _) if task.needs_automation_control() => {
                 Some(mgb_ops::app::AutomationControl::default())
@@ -471,6 +478,7 @@ impl Runners {
         self.active = Some(Active {
             draft_job: Some(draft_job),
             session: session_id,
+            preview_run,
             control,
             automation,
             receiver,
@@ -507,6 +515,14 @@ impl Runners {
         }
         let session = self.session.as_ref()?;
         if session.id() != active.session {
+            return None;
+        }
+        if active
+            .preview_run
+            .as_ref()
+            .is_some_and(|run| !session.is_current_run(run))
+        {
+            self.status = "Selected run changed while loading".into();
             return None;
         }
         self.logs = reply.logs;
@@ -1493,6 +1509,53 @@ mod worker_tests {
         };
         (temp, runner)
     }
+    #[test]
+    fn late_run_preview_is_discarded_while_durable_outcomes_stay_visible() {
+        let (root, mut runner) = fixture();
+        let session = runner.session.clone().unwrap();
+        let active = session.run();
+        let saved = session
+            .run()
+            .select_saved(&root.path().canonicalize().unwrap())
+            .unwrap();
+        session.select_run(saved).unwrap();
+        for preview_run in [Some(active), None] {
+            let is_preview = preview_run.is_some();
+            let (sender, receiver) = mpsc::channel();
+            sender
+                .send(Reply {
+                    result: Ok(Outcome::Workflow(super::super::workflows::Output::Notice(
+                        "published output".into(),
+                    ))),
+                    logs: String::new(),
+                })
+                .unwrap();
+            runner.active = Some(Active {
+                draft_job: Some(session.begin_draft_job().unwrap()),
+                session: session.id(),
+                preview_run,
+                control: mgb_ops::app::OperationControl::default(),
+                automation: None,
+                receiver,
+                thread: None,
+                logs: Arc::new(Mutex::new(String::new())),
+            });
+            let result = runner.poll();
+            if is_preview {
+                assert!(result.is_none());
+                assert_eq!(runner.status, "Selected run changed while loading");
+            } else {
+                let notice = match result {
+                    Some(Outcome::Workflow(super::super::workflows::Output::Notice(notice))) => {
+                        notice
+                    }
+                    _ => panic!("expected durable workflow outcome"),
+                };
+                assert_eq!(notice, "published output");
+            }
+        }
+    }
+
     #[test]
     fn committed_project_switch_blocks_keyboard_save_but_monitoring_refresh_does_not() {
         let (_temp, mut runner) = fixture();

@@ -46,6 +46,11 @@ impl WorkspaceSelection {
     }
 
     pub fn inspect(&self) -> InspectionReport {
+        self.inspect_with_config().0
+    }
+
+    /// Return the same findings and the parsed TOML used to produce them.
+    pub fn inspect_with_config(&self) -> (InspectionReport, Option<WorkspaceConfig>) {
         super::inspect_selection(self)
     }
 
@@ -60,19 +65,15 @@ impl WorkspaceSelection {
 
     pub fn new_draft(&self) -> Result<Draft, String> {
         self.read_config().map(|config| {
-            let mut draft = Draft::new_with_workspace_config(
+            Draft::new_with_workspace_config(
                 self.workspace.clone(),
                 &self.request.invocation_dir,
                 Some(&config),
-            );
-            let engine = draft.document.operation.engine.get_or_insert_default();
-            if let Some(path) = &self.request.engine_executable {
-                engine.executable = Some(path.clone());
-            }
-            if let Some(path) = &self.request.engine_input_dir {
-                engine.input_dir = Some(path.clone());
-            }
-            draft
+            )
+            .with_engine_overrides(
+                self.request.engine_executable.clone(),
+                self.request.engine_input_dir.clone(),
+            )
         })
     }
 }
@@ -234,21 +235,9 @@ impl Session {
     pub fn apply_draft_update(
         &self,
         expected: DraftVersion,
-        mut proposed: DraftDocument,
+        proposed: DraftDocument,
     ) -> Result<DraftVersion, DraftConflict> {
-        let mut state = self.state();
-        let mut draft = Self::current(&state, expected)?.draft.clone();
-        if state.job_pending {
-            return Err(DraftConflict::JobPending);
-        }
-        draft
-            .validate_working_document(&proposed, false)
-            .map_err(DraftConflict::Invalid)?;
-        proposed
-            .visualization
-            .clone_from(&draft.document.visualization);
-        draft.document = proposed;
-        Self::replace(&mut state, expected, draft)
+        self.update_document(expected, proposed, false)
     }
 
     /// Commit a local form edit against the snapshot the form displayed.
@@ -257,14 +246,30 @@ impl Session {
         expected: DraftVersion,
         proposed: DraftDocument,
     ) -> Result<DraftVersion, DraftConflict> {
+        self.update_document(expected, proposed, true)
+    }
+
+    fn update_document(
+        &self,
+        expected: DraftVersion,
+        mut proposed: DraftDocument,
+        from_form: bool,
+    ) -> Result<DraftVersion, DraftConflict> {
         let mut state = self.state();
-        let mut draft = Self::current(&state, expected)?.draft.clone();
+        let current = Self::current(&state, expected)?;
         if state.job_pending {
             return Err(DraftConflict::JobPending);
         }
-        draft
-            .validate_working_document(&proposed, true)
+        current
+            .draft
+            .validate_working_document(&proposed, from_form)
             .map_err(DraftConflict::Invalid)?;
+        let mut draft = current.draft.clone();
+        if !from_form {
+            proposed
+                .visualization
+                .clone_from(&draft.document.visualization);
+        }
         draft.document = proposed;
         Self::replace(&mut state, expected, draft)
     }

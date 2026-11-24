@@ -11,7 +11,7 @@ mod workflows;
 use self::layout::{Form, SideTab};
 
 use self::data::{
-    CHART_SLOT, ChartRequest, Job, Loaded, Project, RUN_SELECTION_SLOT, RUN_SLOT, RainSide, Run,
+    CHART_SLOT, ChartRequest, Job, Loaded, Project, RUN_SELECTION_SLOT, RUN_SLOT, RainSide,
     RunReader, SLOTS, UPSTREAM_SLOT, View, ViewRequest, Worker,
 };
 use eframe::egui::{self, Color32};

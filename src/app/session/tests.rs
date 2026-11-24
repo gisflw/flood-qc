@@ -48,6 +48,22 @@ fn explicit_paths_and_findings_match_one_shot_inspection() {
         Some(workspace.join("area.gpkg").as_path())
     );
 
+    let mut with_overrides = request(&root, Some("region.toml".into()));
+    with_overrides.gpkg_path = Some("override.gpkg".into());
+    with_overrides.engine_input_dir = Some("override-inputs".into());
+    let session = Session::new(with_overrides);
+    let draft = session.workspace().new_draft().unwrap();
+    let clean = !draft.is_dirty();
+    assert!(clean);
+    assert_eq!(
+        draft.document.operation.engine.unwrap().input_dir,
+        Some("override-inputs".into())
+    );
+    assert_eq!(
+        session.workspace().inspect().findings[2].path.as_deref(),
+        Some(workspace.join("override.gpkg").as_path())
+    );
+
     #[cfg(unix)]
     {
         let alias = root.join("alias.toml");
@@ -134,6 +150,13 @@ fn save_fixes_the_anchor_and_job_admission_keeps_rejected_updates_in_memory_only
     let mut proposal = snapshot.draft.document.clone();
     proposal.operation.reference_time = Some("2026-10-03T00:00:00".into());
     proposal.operation.time_zone = Some("UTC".into());
+    let mut invalid = proposal.clone();
+    invalid.operation.time_zone = Some("Unavailable/Timezone".into());
+    let conflict_1 = matches!(
+        session.validate_draft_update(snapshot.version, &invalid),
+        Err(DraftConflict::Invalid(_))
+    );
+    assert!(conflict_1);
     // This incomplete draft is editable even though it still cannot be prepared.
     session
         .validate_draft_update(snapshot.version, &proposal)
@@ -161,10 +184,11 @@ fn save_fixes_the_anchor_and_job_admission_keeps_rejected_updates_in_memory_only
     assert!(saved_version.revision > before_save.revision);
     let mut reanchor = proposed_edit.clone();
     reanchor.operation.reference_time = Some("2026-10-03T01:00:00".into());
-    assert!(matches!(
+    let conflict_2 = matches!(
         session.validate_draft_update(saved_version, &reanchor),
         Err(DraftConflict::Invalid(_))
-    ));
+    );
+    assert!(conflict_2);
     assert_eq!(
         session.apply_draft_update(before_save, proposed_edit.clone()),
         Err(DraftConflict::Stale)
@@ -256,7 +280,8 @@ fn active_artifacts_stay_in_one_generation_during_publication() {
         assert_eq!(result.data, ("first".into(), "first".into()));
     });
 
-    assert!(!first.exists());
+    let retired = !first.exists();
+    assert!(retired);
     assert!(snapshot.read(Some(&expected), |_| Ok(())).is_err());
     let result = snapshot
         .read(None, |path| {
@@ -290,7 +315,8 @@ fn saved_selection_stays_fixed_and_rejects_managed_directories_and_aliases() {
         .select_run(session.run().select_saved(&saved).unwrap())
         .unwrap();
     let snapshot = session.run();
-    assert!(!session.is_current_run(&active_snapshot));
+    let replaced = !session.is_current_run(&active_snapshot);
+    assert!(replaced);
     let expected = RunIdentity::Saved(saved.clone());
     let next = stage(&session, "published");
     crate::store::publish_run(workspace, &next).unwrap();
@@ -306,5 +332,6 @@ fn saved_selection_stays_fixed_and_rejects_managed_directories_and_aliases() {
     assert!(session.select_run(active_snapshot).is_err());
     session.select_run(snapshot.follow_active()).unwrap();
     assert!(session.run().read(Some(&expected), |_| Ok(())).is_err());
-    assert!(!active.exists());
+    let retired = !active.exists();
+    assert!(retired);
 }
