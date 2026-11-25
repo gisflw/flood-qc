@@ -35,6 +35,8 @@ Merge validation passed formatting, both Clippy configurations, both full test
 suites, the standalone architecture gate and the desktop build on Linux. Tests
 were serialized after concurrent runs encountered intermittent NetCDF/HDF5
 errors in the existing inundation tests; concurrent test reliability remains open.
+The explicit PNG graphics check could not acquire a graphics adapter in this
+environment.
 
 The strict frozen engine-stream check does not pass on the current host. Direct
 execution of the frozen engine and byte-identical frozen inputs reproduces the
