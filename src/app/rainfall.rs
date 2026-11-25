@@ -7,7 +7,7 @@ use crate::analysis::{
 };
 use crate::store::{
     BasinForcing, DecodedRainfallFile, GridSeries, InputReference, MiniTopology, RainfallCacheInfo,
-    RegularGridSpec, TimeInterval, copy_tree, read_basin_forcing, read_grid_series,
+    RegularGridSpec, TimeInterval, copy_staged_tree, read_basin_forcing, read_grid_series,
     read_mini_topology, read_rainfall_cache, stage_rainfall, verify_inputs,
 };
 use std::path::{Path, PathBuf};
@@ -320,7 +320,7 @@ pub(super) fn stage(
                         .ok_or("Missing rainfall member directory")?,
                 )
                 .map_err(|error| error.to_string())?;
-                copy_tree(&prepared.join(relative), &destination)?;
+                copy_staged_tree(&prepared.join(relative), &destination)?;
                 verify_inputs(root, std::slice::from_ref(entry))?;
                 Ok(destination)
             };

@@ -2113,6 +2113,7 @@ fn run_uses_current_draft_and_cleans_temporary_preparation() {
     let control = mgb_ops::OperationControl::default();
     let first = mgb_ops::run_draft(&draft, &control).unwrap();
     let cache = mgb_ops::read_trial(&first.run_root).unwrap();
+    assert!(!first.run_root.join("preparation").exists());
     assert!(!root.join("cache/preparations").exists());
     assert!(fs::read_dir(&root).unwrap().all(|entry| {
         !entry

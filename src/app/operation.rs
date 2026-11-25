@@ -5,10 +5,10 @@ use crate::model::{
 };
 use crate::store::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
-    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_tree,
-    copy_working_inputs, digest_file, new_run_stage, publish_run_checked, read_basin_forcing,
-    read_operation_manifest, recover_run_cache, retire_legacy_rainfall, run_cache_root,
-    run_stage_id, sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
+    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_staged_tree,
+    digest_file, new_run_stage, publish_run_checked, read_basin_forcing, read_operation_manifest,
+    recover_run_cache, retire_legacy_rainfall, run_cache_root, run_stage_id, stage_working_inputs,
+    sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
     write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
@@ -478,7 +478,7 @@ fn prepare_worker(
         .join(if history { ".history" } else { scenario });
     fs::create_dir(&worker).map_err(|e| e.to_string())?;
     let input = worker.join("Input");
-    copy_working_inputs(&snapshot.join("baseline/Input"), &input)?;
+    stage_working_inputs(&snapshot.join("baseline/Input"), &input)?;
     let mut forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{scenario}.nc")))
         .map_err(|e| e.to_string())?;
     let total = recipe
@@ -827,8 +827,13 @@ fn execute_in_stage(
     attempt.operation = Some(manifest.clone());
     write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
 
-    let snapshot = run_root.join("snapshot");
-    copy_tree(prepared, &snapshot).map_err(|error| store_error(run_root, error))?;
+    let snapshot = if temporary_preparation {
+        prepared.to_path_buf()
+    } else {
+        let snapshot = run_root.join("snapshot");
+        copy_staged_tree(prepared, &snapshot).map_err(|error| store_error(run_root, error))?;
+        snapshot
+    };
     control.check()?;
     verify_inputs(&snapshot, &manifest.inputs).map_err(|error| store_error(run_root, error))?;
     if digest_file(&snapshot.join("manifest.json")).map_err(|error| store_error(run_root, error))?
@@ -838,9 +843,6 @@ fn execute_in_stage(
             run_root,
             "prepared manifest changed while freezing",
         ));
-    }
-    if temporary_preparation {
-        fs::remove_dir_all(prepared).map_err(|error| store_error(prepared, error))?;
     }
     fs::create_dir(run_root.join("scenarios"))
         .and_then(|()| fs::create_dir(run_root.join("results")))
@@ -1062,19 +1064,13 @@ fn execute_scenarios(
     for item in requested {
         control.scenario_state(&item.id, "pending");
     }
-    let plans: Vec<_> = requested
-        .iter()
-        .map(|item| prepare_worker(snapshot, root, &item.id, false, recipe))
-        .collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = requested
             .iter()
-            .zip(plans)
-            .map(|(item, plan)| {
+            .map(|item| {
                 let history = &history;
-                scope.spawn(move || {
-                    run_scenario(root, snapshot, recipe, &item.id, plan, history, control)
-                })
+                scope
+                    .spawn(move || run_scenario(root, snapshot, recipe, &item.id, history, control))
             })
             .collect();
         handles
@@ -1104,7 +1100,6 @@ fn run_scenario(
     snapshot: &Path,
     recipe: &ExecutionRecipe,
     id: &str,
-    plan: Result<EnginePlan, String>,
     history: &SharedHistory,
     control: &OperationControl,
 ) -> ScenarioRecord {
@@ -1114,7 +1109,8 @@ fn run_scenario(
     record.started_at = Some(now(recipe));
     let result = (|| -> Result<(), String> {
         control.check().map_err(|e| e.to_string())?;
-        let plan = plan?;
+        let plan = prepare_worker(snapshot, root, id, false, recipe)?;
+        control.check().map_err(|e| e.to_string())?;
         record.stdout = Some(Path::new("scenarios").join(id).join("logs/stdout.log"));
         record.stderr = Some(Path::new("scenarios").join(id).join("logs/stderr.log"));
         let outcome = run_engine(&plan, &control.cancelled)?;
