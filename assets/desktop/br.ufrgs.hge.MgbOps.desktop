@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=MGB Ops
+Comment=Hydrological workspace monitoring and operations
+Comment[pt_BR]=Monitoramento e operação de projetos hidrológicos
+Exec=mgb-ops-desktop
+TryExec=mgb-ops-desktop
+Icon=br.ufrgs.hge.MgbOps
+Terminal=false
+Categories=Science;Geography;
+StartupWMClass=br.ufrgs.hge.MgbOps

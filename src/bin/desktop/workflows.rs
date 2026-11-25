@@ -338,7 +338,14 @@ pub struct Forms {
     email_attachment: PathBuf,
 }
 
-pub fn path_field(ui: &mut egui::Ui, label: String, path: &mut PathBuf, directory: bool, pt: bool) {
+pub fn path_field(
+    ui: &mut egui::Ui,
+    purpose: &str,
+    label: String,
+    path: &mut PathBuf,
+    directory: bool,
+    pt: bool,
+) {
     ui.label(label);
     ui.horizontal_wrapped(|ui| {
         let mut value = path.display().to_string();
@@ -346,11 +353,10 @@ pub fn path_field(ui: &mut egui::Ui, label: String, path: &mut PathBuf, director
             *path = value.into();
         }
         if ui.button(text(pt, "Browse…", "Procurar…")).clicked() {
-            let dialog = rfd::FileDialog::new();
             let selected = if directory {
-                dialog.pick_folder()
+                super::dialogs::folder(ui.ctx(), purpose, path)
             } else {
-                dialog.pick_file()
+                super::dialogs::file(ui.ctx(), purpose, path, "", &[])
             };
             if let Some(selected) = selected {
                 *path = selected;
@@ -361,13 +367,14 @@ pub fn path_field(ui: &mut egui::Ui, label: String, path: &mut PathBuf, director
 
 fn optional_path(
     ui: &mut egui::Ui,
+    purpose: &str,
     label: String,
     target: &mut Option<PathBuf>,
     directory: bool,
     pt: bool,
 ) {
     let mut path = target.clone().unwrap_or_default();
-    path_field(ui, label, &mut path, directory, pt);
+    path_field(ui, purpose, label, &mut path, directory, pt);
     *target = (!path.as_os_str().is_empty()).then_some(path);
 }
 
@@ -405,6 +412,7 @@ impl Forms {
         });
         path_field(
             ui,
+            "acquisition-csv",
             text(pt, "Saved ANA CSV", "CSV ANA salvo"),
             &mut self.acquisition_csv,
             false,
@@ -502,6 +510,7 @@ impl Forms {
     fn analysis(&mut self, ui: &mut egui::Ui, pt: bool) -> Option<Task> {
         path_field(
             ui,
+            "analysis-request",
             text(
                 pt,
                 "Hydrograph request JSON",
@@ -583,6 +592,7 @@ impl Forms {
                 });
             path_field(
                 ui,
+                "bulletin-profile",
                 text(
                     pt,
                     "Regional bulletin profile",
@@ -594,6 +604,7 @@ impl Forms {
             );
             path_field(
                 ui,
+                "database",
                 text(pt, "Observation database", "Banco de observações"),
                 &mut self.database,
                 false,
@@ -604,6 +615,7 @@ impl Forms {
             }
             path_field(
                 ui,
+                "bulletin-geometry",
                 text(pt, "MINI topology", "Topologia MINI"),
                 &mut self.bulletin_geometry,
                 false,
@@ -611,6 +623,7 @@ impl Forms {
             );
             path_field(
                 ui,
+                "bulletin-map",
                 text(
                     pt,
                     "Catchment geometry (optional)",
@@ -692,6 +705,7 @@ impl Forms {
         ui.separator();
         path_field(
             ui,
+            "gis-request",
             text(
                 pt,
                 "Return-period map request JSON",
@@ -719,6 +733,7 @@ impl Forms {
         }
         path_field(
             ui,
+            "job-path",
             text(pt, "Local automation TOML", "TOML local de automação"),
             &mut self.job_path,
             false,
@@ -805,6 +820,7 @@ impl Forms {
         ui.text_edit_multiline(&mut self.email_body);
         path_field(
             ui,
+            "email-attachment",
             text(pt, "Attachment (optional)", "Anexo (opcional)"),
             &mut self.email_attachment,
             false,
@@ -845,6 +861,13 @@ impl Forms {
             });
         path_field(
             ui,
+            match self.intake {
+                Intake::Observations => "intake-observations",
+                Intake::Inventory => "intake-inventory",
+                Intake::Forecast => "intake-forecast",
+                Intake::Reservoirs => "intake-reservoirs",
+                Intake::Wind => "intake-wind",
+            },
             text(pt, "Canonical input", "Entrada canônica"),
             &mut self.input,
             false,
@@ -870,6 +893,7 @@ impl Forms {
         if matches!(self.intake, Intake::Observations | Intake::Inventory) {
             path_field(
                 ui,
+                "database",
                 text(pt, "Observation database", "Banco de observações"),
                 &mut self.database,
                 false,
@@ -955,6 +979,7 @@ impl Forms {
     ) -> Result<Option<Task>, String> {
         path_field(
             ui,
+            "database",
             text(pt, "Observation database", "Banco de observações"),
             &mut self.database,
             false,
@@ -1143,6 +1168,7 @@ impl Forms {
     fn share(&mut self, ui: &mut egui::Ui, pt: bool, run: Option<&Path>) -> Option<Task> {
         path_field(
             ui,
+            "bundle",
             text(pt, "Run bundle", "Pacote de execução"),
             &mut self.bundle,
             true,
@@ -1150,6 +1176,7 @@ impl Forms {
         );
         path_field(
             ui,
+            "import-parent",
             text(
                 pt,
                 "Import location (outside managed storage)",
@@ -1185,6 +1212,7 @@ impl Forms {
         }
         path_field(
             ui,
+            "engine",
             text(
                 pt,
                 "Local matching engine",
@@ -1210,6 +1238,7 @@ impl Forms {
         }
         path_field(
             ui,
+            "preparation",
             text(
                 pt,
                 "Matching retained preparation (optional)",
@@ -1289,6 +1318,7 @@ impl Forms {
         }
         optional_path(
             ui,
+            "initial-state-bundle",
             text(
                 pt,
                 "Initial state bundle (optional)",

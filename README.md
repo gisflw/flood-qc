@@ -38,14 +38,14 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Task | Start with | Details |
 | --- | --- | --- |
 | Inspect a regional workspace | `workspace inspect` | [Configuration and checks](docs/contracts/workspace.md) |
-| Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Operation → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
+| Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Operation → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
 | Acquire standalone IMERG, BNDMET rain and wind, or ONS hourly flow files | `acquisition` | [Standalone acquisition](docs/contracts/acquisition.md#standalone-source-acquisition) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
 | Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#run-from-a-workspace) |
-| Run an operation and update the rainfall display | Desktop **Operation → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
-| Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **Review and runs → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
+| Run an operation and update the rainfall display | Desktop **Processing → Operation → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
+| Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **Processing → Review and runs → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
 | Generate and view an inundation mask | `inundation process`, then desktop **Map → Inundation** | [Inundation inputs and processing](docs/contracts/inundation.md) |
-| Inspect a workspace or review a run parameter change with an installed agent | `assistant` or desktop **Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
+| Inspect a workspace or review a run parameter change with an installed agent | `assistant` or desktop **Workspace → Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
 | Review observations, export a bulletin, share runs, or schedule a job | CLI or desktop workflows | [Saved-data workflows](docs/contracts/saved-data.md) |
 
 ### Inspect a workspace
@@ -109,6 +109,33 @@ Use **Open workspace** to open another project. The desktop keeps the map visibl
 alongside Layers and the right-hand tabs and forms. See the
 [desktop task index](docs/contracts/desktop.md#common-tasks) and
 [qualification limits](docs/contracts/desktop.md#current-qualification-limits).
+
+### Linux application launcher
+
+The desktop registers the HGE icons and an application entry for your account on
+its first launch, including when run directly or through Cargo. It repairs icon
+associations in an existing entry while retaining custom launch commands. The
+application draws its own title bar and window controls in Light and Dark modes.
+Windows desktop builds embed the HGE executable icon.
+
+For a fixed installation path, build the release desktop and install the binary,
+HGE icons, and application entry:
+
+```sh
+install -Dm755 target/release/mgb-ops-desktop "$HOME/.local/bin/mgb-ops-desktop"
+install -Dm644 assets/desktop/br.ufrgs.hge.MgbOps.desktop \
+  "$HOME/.local/share/applications/br.ufrgs.hge.MgbOps.desktop"
+for size in 32 48 64 128 256; do
+  install -Dm644 "assets/branding/hge-$size.png" \
+    "$HOME/.local/share/icons/hicolor/${size}x${size}/apps/br.ufrgs.hge.MgbOps.png"
+done
+```
+
+Ensure `$HOME/.local/bin` is on your graphical session's `PATH`. MGB Ops then
+appears in the application menu; pin it or copy its installed application entry
+to the desktop using your desktop environment. It reopens the most recent
+workspace. The [HGE emblem](assets/branding/README.md) and
+[emoji artwork](assets/icons/README.md) have separate provenance.
 
 ## Project guidance
 

@@ -1,5 +1,7 @@
 use eframe::egui::{self, Color32, Stroke, Theme};
 
+pub const FONT: &[u8] = include_bytes!("../../../assets/typography/NotoSans-Regular.ttf");
+
 pub fn chat_font() -> egui::FontFamily {
     egui::FontFamily::Name("Assistant".into())
 }
@@ -7,15 +9,22 @@ pub fn chat_font() -> egui::FontFamily {
 pub fn install(context: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     let name = "Noto Sans".to_owned();
-    fonts.font_data.insert(
-        name.clone(),
-        egui::FontData::from_static(include_bytes!(
-            "../../../assets/typography/NotoSans-Regular.ttf"
-        ))
-        .into(),
-    );
+    fonts
+        .font_data
+        .insert(name.clone(), egui::FontData::from_static(FONT).into());
     let mut chat = fonts.families[&egui::FontFamily::Proportional].clone();
-    chat.insert(0, name);
+    chat.insert(0, name.clone());
+    chat.push("Hack".into());
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .expect("proportional fonts")
+        .insert(0, name);
+    fonts
+        .families
+        .get_mut(&egui::FontFamily::Proportional)
+        .unwrap()
+        .push("Hack".into());
     fonts.families.insert(chat_font(), chat);
     context.set_fonts(fonts);
     for theme in [Theme::Light, Theme::Dark] {
@@ -23,14 +32,14 @@ pub fn install(context: &egui::Context) {
             style.interaction.selectable_labels = true;
             let dark = theme == Theme::Dark;
             let color = |light, dark_color| rgb(if dark { dark_color } else { light });
-            let surface = color(0xf7f9fc, 0x202a34);
-            let raised = color(0xffffff, 0x293746);
-            let recessed = color(0xeceff4, 0x18222d);
-            let edge = color(0xcbd5e1, 0x4a5d70);
+            let surface = color(0xf5f7fb, 0x18222d);
+            let raised = color(0xffffff, 0x243240);
+            let recessed = color(0xedf1f7, 0x1b2835);
+            let edge = color(0xd8e0eb, 0x3c5063);
             let ink = color(0x203043, 0xedf3f9);
             let secondary = color(0x4d6074, 0xb8c7d7);
-            let accent = color(0x086282, 0x8ed7f1);
-            let selected = color(0xd7edf6, 0x274d61);
+            let accent = color(0x087ea4, 0x76d0ef);
+            let selected = color(0xe1f2fb, 0x274d61);
 
             let visuals = &mut style.visuals;
             visuals.panel_fill = surface;
@@ -62,12 +71,12 @@ pub fn install(context: &egui::Context) {
                 widget.weak_bg_fill = fill;
                 widget.bg_stroke = stroke;
                 widget.fg_stroke.color = ink;
-                widget.corner_radius = egui::CornerRadius::same(4);
+                widget.corner_radius = egui::CornerRadius::same(8);
                 widget.expansion = 0.;
             }
-            style.spacing.button_padding = egui::vec2(7., 3.);
-            style.spacing.item_spacing = egui::vec2(6., 5.);
-            style.spacing.interact_size.y = 23.;
+            style.spacing.button_padding = egui::vec2(10., 5.);
+            style.spacing.item_spacing = egui::vec2(7., 6.);
+            style.spacing.interact_size.y = 28.;
             for (text_style, size) in [
                 (egui::TextStyle::Body, 13.),
                 (egui::TextStyle::Button, 13.),
@@ -95,12 +104,141 @@ pub fn toolbar(style: &egui::Style) -> egui::Frame {
 
 pub fn inset(style: &egui::Style) -> egui::Frame {
     egui::Frame::group(style)
-        .inner_margin(8)
+        .inner_margin(10)
+        .corner_radius(10.)
         .fill(style.visuals.extreme_bg_color)
 }
 
-pub fn primary(ui: &egui::Ui, label: String) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(label).strong()).fill(ui.visuals().selection.bg_fill)
+pub fn primary(_ui: &egui::Ui, label: String) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(label).strong()).selected(true)
+}
+
+pub fn map_surface(ui: &egui::Ui) -> Color32 {
+    ui.visuals().faint_bg_color
+}
+
+#[derive(Clone, Copy)]
+pub enum ActionIcon {
+    Send,
+    Copy,
+    Stop,
+    Check,
+}
+
+pub fn action_button(
+    ui: &mut egui::Ui,
+    icon: ActionIcon,
+    label: &str,
+    enabled: bool,
+    primary: bool,
+) -> egui::Response {
+    let compact = matches!(icon, ActionIcon::Copy | ActionIcon::Check);
+    let response = ui
+        .scope(|ui| {
+            if compact {
+                ui.spacing_mut().interact_size = egui::Vec2::splat(22.);
+                ui.spacing_mut().button_padding = egui::Vec2::splat(3.);
+            }
+            ui.add_enabled(
+                enabled,
+                egui::Button::new("")
+                    .frame(!compact)
+                    .selected(primary)
+                    .min_size(egui::Vec2::splat(if compact { 22. } else { 32. })),
+            )
+        })
+        .inner;
+    let size = if compact { 12. } else { 16. };
+    let rect = egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(size));
+    let mut ink = ui.style().interact(&response).fg_stroke.color;
+    if !response.enabled() {
+        ink = ink.gamma_multiply(0.45);
+    } else if compact
+        && !matches!(icon, ActionIcon::Check)
+        && !response.hovered()
+        && !response.has_focus()
+    {
+        ink = ink.gamma_multiply(0.6);
+    }
+    let stroke = Stroke::new(if compact { 1.5 } else { 1.7 }, ink);
+    let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * (size / 16.);
+    let painter = ui
+        .painter()
+        .with_clip_rect(response.rect.intersect(ui.clip_rect()));
+    if compact && response.has_focus() {
+        painter.rect_stroke(
+            response.rect,
+            4.,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
+    match icon {
+        ActionIcon::Send => {
+            painter.add(egui::Shape::line(
+                vec![p(1., 1.), p(15., 8.), p(1., 15.), p(4., 8.), p(1., 1.)],
+                stroke,
+            ));
+            painter.line_segment([p(4., 8.), p(15., 8.)], stroke);
+        }
+        ActionIcon::Copy => {
+            painter.rect_stroke(
+                egui::Rect::from_min_max(p(5., 1.), p(15., 11.)),
+                2.,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+            painter.rect_stroke(
+                egui::Rect::from_min_max(p(1., 5.), p(11., 15.)),
+                2.,
+                stroke,
+                egui::StrokeKind::Inside,
+            );
+        }
+        ActionIcon::Stop => {
+            painter.rect_filled(rect.shrink(2.), 2., stroke.color);
+        }
+        ActionIcon::Check => {
+            painter.add(egui::Shape::line(
+                vec![p(1., 8.), p(6., 13.), p(15., 3.)],
+                stroke,
+            ));
+        }
+    }
+    response.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), label)
+    });
+    response.on_hover_text(label).on_disabled_hover_text(label)
+}
+
+pub fn copy_button(ui: &mut egui::Ui, value: &str, label: &str, pt: bool) {
+    let id = ui.next_auto_id().with("copied-at");
+    let copied = ui
+        .data(|data| data.get_temp::<std::time::Instant>(id))
+        .is_some_and(|at| at.elapsed().as_secs_f32() < 1.4);
+    let hint = if copied {
+        super::text(pt, "Copied", "Copiado")
+    } else {
+        label.into()
+    };
+    if action_button(
+        ui,
+        if copied {
+            ActionIcon::Check
+        } else {
+            ActionIcon::Copy
+        },
+        &hint,
+        true,
+        false,
+    )
+    .clicked()
+    {
+        ui.copy_text(value.to_owned());
+        ui.data_mut(|data| data.insert_temp(id, std::time::Instant::now()));
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(1400));
+    }
 }
 
 pub fn table_text(ui: &mut egui::Ui, text: egui::RichText) {
@@ -181,17 +319,19 @@ pub fn fitted_table(
 }
 
 pub fn color_palette(ui: &mut egui::Ui, color: &mut Color32, label: &str, pt: bool) {
-    let button = ui
-        .add(
-            egui::Button::new(" ")
-                .fill(*color)
-                .min_size(egui::vec2(22., 20.)),
-        )
-        .on_hover_text(super::text(
-            pt,
-            "Choose layer colour",
-            "Escolher cor da camada",
-        ));
+    let (rect, button) = ui.allocate_exact_size(egui::Vec2::splat(16.), egui::Sense::click());
+    ui.painter().rect(
+        rect,
+        3.,
+        *color,
+        Stroke::new(1., ui.visuals().widgets.noninteractive.bg_stroke.color),
+        egui::StrokeKind::Inside,
+    );
+    let button = button.on_hover_text(super::text(
+        pt,
+        "Choose layer colour",
+        "Escolher cor da camada",
+    ));
     button.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
     });
@@ -205,23 +345,23 @@ pub fn color_palette(ui: &mut egui::Ui, color: &mut Color32, label: &str, pt: bo
             0xede9fe, 0xc4b5fd, 0x8b5cf6, 0x6d28d9, 0xfae8ff, 0xe879f9, 0xdb2777, 0x831843,
         ];
         egui::Grid::new("colour-matrix")
-            .spacing(egui::vec2(4., 4.))
+            .spacing(egui::vec2(3., 3.))
             .show(ui, |ui| {
                 for (index, value) in palette.into_iter().enumerate() {
                     let choice = rgb(value);
                     let name = format!("#{value:06X}");
-                    let response = ui
-                        .add(
-                            egui::Button::new(" ")
-                                .fill(choice)
-                                .stroke(if choice == *color {
-                                    Stroke::new(2., ui.visuals().text_color())
-                                } else {
-                                    Stroke::NONE
-                                })
-                                .min_size(egui::vec2(22., 22.)),
-                        )
-                        .on_hover_text(&name);
+                    let (rect, response) =
+                        ui.allocate_exact_size(egui::Vec2::splat(14.), egui::Sense::click());
+                    let response = response.on_hover_text(&name);
+                    ui.painter().rect_filled(rect, 3., choice);
+                    if choice == *color || response.hovered() || response.has_focus() {
+                        ui.painter().rect_stroke(
+                            rect,
+                            3.,
+                            Stroke::new(2., ui.visuals().text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
                     response.widget_info(|| {
                         egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
                     });

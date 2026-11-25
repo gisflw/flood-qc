@@ -648,9 +648,12 @@ impl Runners {
                 )
                 .clicked()
                 && let Some(workspace) = workspace
-                && let Some(path) = rfd::FileDialog::new()
-                    .set_directory(workspace.join("runs"))
-                    .save_file()
+                && let Some(path) = super::dialogs::save(
+                    ui.ctx(),
+                    "save-preparation",
+                    &workspace.join("runs"),
+                    "preparation",
+                )
             {
                 self.start(Action::Prepare(path), ui.ctx());
             }

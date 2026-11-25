@@ -43,6 +43,7 @@ pub struct Pane {
     conversation: Option<Conversation>,
     draft_prompt: String,
     editor_content_height: f32,
+    ime_composing: bool,
     turns: VecDeque<Turn>,
     next_turn: u64,
     status: String,
@@ -184,6 +185,7 @@ struct TurnLayout {
 
 #[derive(Default)]
 struct MarkdownReply {
+    pending_paragraph: bool,
     text: String,
     cache: CommonMarkCache,
     dirty: bool,
@@ -209,8 +211,20 @@ struct FittedMarkdown {
 }
 
 impl MarkdownReply {
+    fn separate(&mut self) {
+        self.pending_paragraph = !self.text.is_empty();
+    }
+
     fn push(&mut self, chunk: &str) {
         if !chunk.is_empty() {
+            if self.pending_paragraph && !chunk.trim().is_empty() {
+                let existing = self.text.chars().rev().take_while(|&c| c == '\n').count()
+                    + chunk.chars().take_while(|&c| c == '\n').count();
+                for _ in existing..2 {
+                    self.text.push('\n');
+                }
+                self.pending_paragraph = false;
+            }
             append_text(&mut self.text, chunk);
             self.dirty = true;
         }
@@ -354,33 +368,14 @@ impl MarkdownReply {
 #[derive(Default)]
 struct Message {
     text: String,
-    layout: Option<TextLayout>,
-}
-
-struct TextLayout {
-    width: f32,
-    scale: f32,
-    color: egui::Color32,
-    galley: Arc<egui::Galley>,
 }
 
 impl Message {
     fn show(&mut self, ui: &mut egui::Ui) {
-        let width = ui.available_width();
-        let scale = ui.pixels_per_point();
-        let color = ui.visuals().text_color();
-        if self.layout.as_ref().is_none_or(|layout| {
-            layout.width != width || layout.scale != scale || layout.color != color
-        }) {
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            self.layout = Some(TextLayout {
-                width,
-                scale,
-                color,
-                galley: ui.painter().layout(self.text.clone(), font, color, width),
-            });
-        }
-        ui.add(egui::Label::new(self.layout.as_ref().unwrap().galley.clone()).selectable(true));
+        // Let egui refresh glyphs in its current font atlas. Retaining galleys
+        // outside that cache can leave stale texture coordinates after a reset.
+        // The transcript still skips off-screen turns using their cached height.
+        ui.add(egui::Label::new(&self.text).wrap().selectable(true));
     }
 }
 
@@ -543,7 +538,6 @@ impl Pane {
                     id: id as u64,
                     prompt: Message {
                         text: saved.prompt.clone(),
-                        layout: None,
                     },
                     answer,
                     activity,
@@ -678,7 +672,6 @@ impl Pane {
                     id: self.next_turn,
                     prompt: Message {
                         text: std::mem::take(&mut self.draft_prompt),
-                        layout: None,
                     },
                     answer: MarkdownReply::default(),
                     activity: Vec::new(),
@@ -846,6 +839,9 @@ impl Pane {
                 }
                 AssistantEvent::Thought(chunk) => {
                     if let Some(turn) = self.turns.back_mut() {
+                        if !chunk.is_empty() {
+                            turn.answer.separate();
+                        }
                         if let Some(Activity::Thought(reply)) = turn.activity.last_mut() {
                             reply.push(&chunk);
                         } else {
@@ -859,6 +855,12 @@ impl Pane {
                 }
                 AssistantEvent::ToolStatus { id, title, status } => {
                     if let Some(turn) = self.turns.back_mut() {
+                        let new_tool = id.as_ref().is_none_or(|id| !turn.activity.iter().any(|activity| {
+                            matches!(activity, Activity::Tool { id: Some(previous), .. } if previous == id)
+                        }));
+                        if new_tool {
+                            turn.answer.separate();
+                        }
                         let title = title.or_else(|| {
                             id.as_ref().and_then(|id| {
                                 turn.activity
@@ -1251,21 +1253,25 @@ impl Pane {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.weak(text(pt, "You", "Você"));
-                            if ui.small_button(text(pt, "Copy", "Copiar")).clicked() {
-                                ui.copy_text(turn.prompt.text.clone());
-                            }
+                            theme::copy_button(
+                                ui,
+                                &turn.prompt.text,
+                                &text(pt, "Copy", "Copiar"),
+                                pt,
+                            );
                         });
                         turn.prompt.show(ui);
                     });
                 ui.add_space(4.);
                 ui.horizontal(|ui| {
                     ui.strong(text(pt, "Assistant", "Assistente"));
-                    if !turn.answer.text.is_empty()
-                        && ui
-                            .small_button(text(pt, "Copy Markdown", "Copiar Markdown"))
-                            .clicked()
-                    {
-                        ui.copy_text(turn.answer.text.clone());
+                    if !turn.answer.text.is_empty() {
+                        theme::copy_button(
+                            ui,
+                            &turn.answer.text,
+                            &text(pt, "Copy Markdown", "Copiar Markdown"),
+                            pt,
+                        );
                     }
                 });
                 if turn.interrupted {
@@ -1359,7 +1365,8 @@ impl Pane {
             .outer_margin(egui::Margin::symmetric(0, 3))
             .corner_radius(9.);
         // Bottom panels position their top edge before laying out children.
-        let controls = row_height + ui.spacing().interact_size.y + 2. * ui.spacing().item_spacing.y;
+        let controls =
+            row_height + ui.spacing().interact_size.y.max(32.) + 2. * ui.spacing().item_spacing.y;
         egui::Panel::bottom(ui.id().with("composer"))
             .show_separator_line(false)
             .exact_size((height + controls + frame.total_margin().sum().y).ceil())
@@ -1391,6 +1398,39 @@ impl Pane {
 
     fn editor(&mut self, ui: &mut egui::Ui, pt: bool, height: f32) {
         let label = ui.weak(text(pt, "Message", "Mensagem"));
+        let editor_id = ui.make_persistent_id("draft-prompt");
+        let focused = ui.memory(|memory| memory.has_focus(editor_id));
+        let submit = focused
+            && ui.input(|input| {
+                let shortcut = submit_shortcut(&input.events, &mut self.ime_composing);
+                shortcut && input.modifiers == egui::Modifiers::NONE
+            });
+        let enter_key = focused
+            && ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                })
+            });
+        if !focused {
+            self.ime_composing = false;
+        }
+        if submit || enter_key {
+            // Read and consume the shortcut before TextEdit/focus navigation sees
+            // it. Some input methods report an idle preedit or a newline commit
+            // alongside Enter, which is not an active composition.
+            ui.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| !(submit && plain_enter(event) || ime_enter(event)))
+            });
+        }
         let editor = egui::ScrollArea::vertical()
             .id_salt("message-editor")
             .auto_shrink([false, false])
@@ -1400,7 +1440,7 @@ impl Pane {
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.draft_prompt)
-                        .id_salt("draft-prompt")
+                        .id(editor_id)
                         .desired_width(ui.available_width())
                         .desired_rows(EDITOR_ROWS)
                         .margin(EDITOR_MARGIN)
@@ -1415,7 +1455,6 @@ impl Pane {
         if edit.changed() {
             self.defer_history(ui.ctx());
         }
-        let submit = edit.has_focus() && ui.input(|input| submit_shortcut(&input.events));
         if self.editor_content_height != editor.content_size.y || edit.changed() {
             self.editor_content_height = editor.content_size.y;
             ui.request_repaint();
@@ -1426,7 +1465,14 @@ impl Pane {
             && !self.draft_prompt.trim().is_empty();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if self.active {
-                if ui.button(text(pt, "Stop", "Parar")).clicked()
+                if theme::action_button(
+                    ui,
+                    theme::ActionIcon::Stop,
+                    &text(pt, "Stop", "Parar"),
+                    true,
+                    false,
+                )
+                .clicked()
                     && let Some(conversation) = &self.conversation
                 {
                     self.status = match conversation.stop() {
@@ -1436,7 +1482,16 @@ impl Pane {
                 }
             } else {
                 let send = ui
-                    .add_enabled(can_send, theme::primary(ui, text(pt, "Send", "Enviar")))
+                    .scope(|ui| {
+                        theme::action_button(
+                            ui,
+                            theme::ActionIcon::Send,
+                            &text(pt, "Send", "Enviar"),
+                            can_send,
+                            true,
+                        )
+                    })
+                    .inner
                     .on_hover_text(text(
                         pt,
                         "Enter to send · Shift+Enter for a new line",
@@ -1601,13 +1656,37 @@ fn plain_enter(event: &egui::Event) -> bool {
     )
 }
 
-fn submit_shortcut(events: &[egui::Event]) -> bool {
-    // Keyboard events handled by the input method are filtered by egui-winit.
-    // A composition update can still share a frame with an ordinary Enter.
-    events.iter().any(plain_enter)
-        && !events
+fn ime_enter(event: &egui::Event) -> bool {
+    matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if text == "\n" || text == "\r" || text == "\r\n")
+}
+
+fn submit_shortcut(events: &[egui::Event], composing: &mut bool) -> bool {
+    let mut blocked = *composing;
+    for event in events {
+        match event {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                blocked |= *modifiers != egui::Modifiers::NONE;
+            }
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                *composing = !text.is_empty();
+                blocked |= *composing;
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                blocked |= !text.is_empty() && !ime_enter(event);
+                *composing = false;
+            }
+            _ => {}
+        }
+    }
+    !blocked
+        && events
             .iter()
-            .any(|event| matches!(event, egui::Event::Ime(_)))
+            .any(|event| plain_enter(event) || ime_enter(event))
 }
 
 fn setting_picker(
@@ -1651,6 +1730,57 @@ fn setting_picker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn assistant_updates_have_paragraphs_but_stream_fragments_stay_intact() {
+        let mut reply = MarkdownReply::default();
+        reply.push("This is the first mes");
+        reply.push("sage.");
+        reply.separate();
+        reply.push("\n");
+        reply.separate();
+        reply.push("This is the second message.");
+        assert_eq!(
+            reply.text,
+            "This is the first message.\n\nThis is the second message."
+        );
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| reply.show(ui));
+        output.textures_delta.clear();
+        let paragraphs: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text().starts_with("This is the")
+                {
+                    Some(text.pos.y)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(paragraphs.len(), 2);
+        assert!(paragraphs[1] > paragraphs[0] + 20.);
+        reply.separate();
+        for chunk in [
+            "\n",
+            "\n```rust\nlet ",
+            "text = \"fragment",
+            "ed\";\n```\n\n| A | B |\n|---|---|\n|1|2|",
+        ] {
+            reply.push(chunk);
+        }
+        assert!(
+            reply
+                .text
+                .contains("\n\n```rust\nlet text = \"fragmented\";\n```")
+        );
+        let saved = serde_json::to_string(&reply.text).unwrap();
+        let mut reopened = MarkdownReply::default();
+        reopened.push(&serde_json::from_str::<String>(&saved).unwrap());
+        assert_eq!(reopened.text, reply.text);
+    }
 
     #[test]
     fn markdown_reply_formats_streamed_chunks_and_blocks_local_link_targets() {
@@ -1706,7 +1836,6 @@ mod tests {
                 id,
                 prompt: Message {
                     text: "A prompt".into(),
-                    layout: None,
                 },
                 answer,
                 activity: Vec::new(),
@@ -1819,7 +1948,21 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
 read -r line || exit
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture"}}'
 while IFS= read -r line; do
- case "$line" in *session/prompt*) printf '%s\n' "$line" > "$1"; id=${line#*\"id\":}; id=${id%%,*}; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id";; esac
+ case "$line" in *session/prompt*)
+  printf '%s\n' "$line" > "$1"
+  id=${line#*\"id\":}; id=${id%%,*}
+  cat <<'EVENTS'
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"This is the first mes"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"sage."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Checking."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call","toolCallId":"check","title":"Check","status":"pending"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"This is the sec"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call_update","toolCallId":"check","status":"completed"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ond message."}}}}
+EVENTS
+  printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+  ;;
+ esac
 done
 "#).unwrap();
         let session = Session::new(InspectionRequest {
@@ -1896,13 +2039,19 @@ done
         frame(&mut pane, vec![egui::Event::Text("send this".into())]);
         frame(
             &mut pane,
-            vec![egui::Event::Key {
-                key: egui::Key::Enter,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: String::new(),
+                    active_range_chars: None,
+                }),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
         );
         let request: serde_json::Value = loop {
             if let Ok(bytes) = fs::read(&log)
@@ -1916,6 +2065,15 @@ done
         assert_eq!(request["method"], "session/prompt");
         assert_eq!(request["params"]["prompt"][0]["text"], "send this");
         assert!(pane.draft_prompt.is_empty());
+        while pane.active {
+            pane.poll(&ctx, &mut preferences, false);
+            assert!(Instant::now() < deadline, "fake ACP answer did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            pane.turns.back().unwrap().answer.text,
+            "This is the first message.\n\nThis is the second message."
+        );
         assert_eq!(pane.turns.len(), 1);
     }
 
@@ -1927,7 +2085,6 @@ done
                 id,
                 prompt: Message {
                     text: "a".repeat(30_000),
-                    layout: None,
                 },
                 answer: MarkdownReply::default(),
                 activity: Vec::new(),
@@ -1977,8 +2134,8 @@ done
                     .shapes
                     .iter()
                     .find_map(|item| match &item.shape {
-                        egui::Shape::Text(shape) if shape.galley.text() == "Send" => {
-                            Some(shape.pos)
+                        egui::Shape::Path(path) if path.points.len() == 5 => {
+                            Some(item.shape.visual_bounding_rect().center())
                         }
                         _ => None,
                     })
@@ -2011,12 +2168,33 @@ done
             text: "あ".into(),
             active_range_chars: None,
         });
-        let ignored = !submit_shortcut(&[enter.clone(), preedit]);
+        let ignored = !submit_shortcut(&[enter.clone(), preedit], &mut false);
         assert!(ignored);
         let commit = egui::Event::Ime(egui::ImeEvent::Commit("あ".into()));
-        let ignored = !submit_shortcut(&[enter.clone(), commit]);
+        let ignored = !submit_shortcut(&[enter.clone(), commit], &mut false);
         assert!(ignored);
-        assert!(submit_shortcut(&[enter]));
+        assert!(submit_shortcut(std::slice::from_ref(&enter), &mut false));
+        let idle = egui::Event::Ime(egui::ImeEvent::Preedit {
+            text: String::new(),
+            active_range_chars: None,
+        });
+        assert!(submit_shortcut(&[idle.clone(), enter.clone()], &mut false));
+        let composing_blocks_enter = !submit_shortcut(&[idle, enter], &mut true);
+        assert!(composing_blocks_enter);
+        assert!(submit_shortcut(
+            &[egui::Event::Ime(egui::ImeEvent::Commit("\n".into()))],
+            &mut false
+        ));
+        let shift_enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        let newline = egui::Event::Ime(egui::ImeEvent::Commit("\n".into()));
+        let newline_does_not_send = !submit_shortcut(&[shift_enter, newline], &mut false);
+        assert!(newline_does_not_send);
     }
 
     #[test]
