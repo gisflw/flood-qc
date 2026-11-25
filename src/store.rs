@@ -94,7 +94,6 @@ pub use self::inundation::{
     FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
     verify_inundation_run,
 };
-#[cfg(feature = "inundation-write")]
 pub(crate) use self::inundation::{
     INUNDATION_TILE, InundationRasters, InundationStage, InundationWriter, cache_catchments,
 };

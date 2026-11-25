@@ -51,14 +51,14 @@ fn raster(path: &Path, x_min: f64, epsg: Option<u32>, nodata: f64, data: RasterD
 
 fn hand(path: &Path, x_min: f64, epsg: Option<u32>) {
     let mut data = vec![0.; WIDTH * HEIGHT];
-    data[..5].copy_from_slice(&[1., 0.5, -9999., 0., 1.]);
-    data[WIDTH - 1] = 1.;
+    data[..6].copy_from_slice(&[10., 5., -9999., 0., 10., -10.]);
+    data[WIDTH - 1] = 10.;
     raster(path, x_min, epsg, -9999., RasterData::F32(data));
 }
 
 fn catchments(path: &Path, last_id: i32) {
     let mut data = vec![0; WIDTH * HEIGHT];
-    data[..5].copy_from_slice(&[1, 1, 1, 1, -9999]);
+    data[..6].copy_from_slice(&[1, 1, 1, 1, -9999, 1]);
     data[WIDTH - 1] = last_id;
     raster(path, -51., Some(4618), -9999., RasterData::I32(data));
 }
@@ -129,19 +129,21 @@ fn processes_and_reuses_a_compressed_scenario_mask() {
     assert_eq!(mask.metadata().provenance.scenario, "reference");
     assert_eq!(mask.metadata().provenance.vertical_datum, "Z0");
     assert_eq!(mask.metadata().provenance.hand_vertical_shift_m, 0);
+    assert!(mask.metadata().provenance.hand_in_decimetres);
+    assert!(mask.metadata().provenance.include_nonpositive_hand);
     assert_eq!(
         mask.metadata().provenance.hand_sha256,
         digest_file(&request.hand).unwrap().0
     );
     assert_eq!(
-        mask.read_window(InundationLevel::Full, 0, 0, 0, 5, 1)
+        mask.read_window(InundationLevel::Full, 0, 0, 0, 6, 1)
             .unwrap(),
-        [0, 1, 255, 255, 255],
+        [0, 1, 255, 1, 255, 1],
     );
     assert_eq!(
         mask.read_window(InundationLevel::Overview4, 0, 0, 0, 2, 1)
             .unwrap(),
-        [6, 255],
+        [13, 6],
     );
     for (level, expected) in [
         (InundationLevel::Full, [0, 1, 1, 0]),
@@ -300,9 +302,9 @@ fn workspace_inundation_derives_and_reuses_aligned_catchments() {
     assert_eq!(first.status, InundationProcessStatus::Created);
     let mask = InundationMask::open(&first.path).unwrap();
     assert_eq!(
-        mask.read_window(InundationLevel::Full, 0, 0, 0, 5, 1)
+        mask.read_window(InundationLevel::Full, 0, 0, 0, 6, 1)
             .unwrap(),
-        [0, 1, 255, 255, 0]
+        [0, 1, 255, 1, 0, 1]
     );
     assert_eq!(process().unwrap().status, InundationProcessStatus::Reused);
     assert_eq!(fs::read_dir(root.join("cache/spatial")).unwrap().count(), 1);

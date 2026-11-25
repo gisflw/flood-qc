@@ -12,6 +12,9 @@ and Clippy. Dependency versions are recorded in `Cargo.lock`; no minimum Rust
 version is qualified. Toolchain updates are qualified separately.
 Linux is the validation platform; Windows remains unverified.
 
+Both build configurations require the netCDF C library and its development
+files. On Debian or Ubuntu, install `libnetcdf-dev` and `pkg-config`.
+
 ```sh
 cargo fmt --check
 cargo clippy --locked --all-targets -- -D warnings
@@ -20,9 +23,10 @@ cargo test --locked --test architecture
 cargo build
 ```
 
-Build optimized CLI and desktop binaries in `target/release/`:
+Build an optimized CLI in `target/release/`, or add `desktop` to build both binaries.
 
 ```sh
+cargo build --locked --release
 cargo build --locked --release --features desktop --bins
 ```
 

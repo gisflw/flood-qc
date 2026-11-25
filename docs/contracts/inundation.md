@@ -6,7 +6,7 @@ uses the chosen run, scenario, and raster paths directly.
 
 ## Required rasters
 
-- A single-band HAND GeoTIFF with heights in metres above the floodplain
+- A single-band HAND GeoTIFF with heights in decimetres above the floodplain
   reference.
 - A single-band integer catchments GeoTIFF on the same pixel grid and CRS.
   Positive pixel values are model MINI IDs. Zero and NoData provide no coverage.
@@ -20,9 +20,8 @@ for the sources and assumptions used for RS Hydro.
 
 ## Produce a mask
 
-Build the processor with the `inundation-write` feature and the netCDF C library.
-For example, on Debian or Ubuntu install `libnetcdf-dev` and `pkg-config`, then
-build with `cargo build --locked --release --features inundation-write`.
+The standard CLI build includes the processor.
+See the [build prerequisites](../../README.md#development).
 
 ```sh
 mgb-ops inundation process \
@@ -52,10 +51,11 @@ cancelled processing leaves any existing product available.
 
 `inundation_mask(time, y, x)` is a categorical NetCDF-4 variable on the original
 grid. `0` is eligible and dry, `1` is wet, and `255` is excluded or unavailable.
-Wet cells must have `HAND > 0`, valid coverage, and a modeled stage strictly
-above their HAND height. On the RS layout the stage in this comparison is
-`HANDTUDO − channel_depth`. Cells with HAND equal to zero remain excluded at
-every hour. Time coordinates use
+Wet cells must have valid coverage and a modeled stage strictly above their
+HAND height converted from decimetres to metres, including zero and negative
+HAND heights. On the RS layout the stage in this comparison is
+`HANDTUDO − channel_depth`. NoData and cells without a valid catchment remain
+excluded. Time coordinates use
 the run's local valid times. The desktop shows the timezone in the bottom strip. The
 product records the input identities and threshold method. Coarser display
 overviews represent wet area as a fraction of each block.

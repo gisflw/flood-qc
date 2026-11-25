@@ -842,6 +842,8 @@ mod tests {
                     catchments_sidecars: vec![],
                     vertical_datum: "Z0".into(),
                     hand_vertical_shift_m: 0,
+                    include_nonpositive_hand: true,
+                    hand_in_decimetres: true,
                 },
             },
             to_source: transformer(4326, epsg as u32),
