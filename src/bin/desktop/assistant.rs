@@ -5,20 +5,20 @@ use mgb_ops::app::{
     AgentPreset, AgentSetting, AgentSettings, AssistantEvent, Conversation, PermissionOption,
     SETUP_NOTICE, Session, SettingKind,
 };
+use mgb_ops::store::{ChatHistory, ChatHistoryStore, SavedActivity, SavedChat, SavedTurn};
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::path::PathBuf;
 use std::{
     cell::RefCell,
     collections::{BTreeMap, VecDeque},
     rc::Rc,
-    sync::Arc,
-    time::Duration,
+    sync::{Arc, Condvar, Mutex},
+    thread,
+    time::{Duration, Instant},
 };
 
-const TRANSCRIPT_LIMIT: usize = 256 * 1024;
-const MESSAGE_LIMIT: usize = 80 * 1024;
-const TURN_LIMIT: usize = 128;
 const EDITOR_ROWS: usize = 2;
 const EDITOR_MARGIN: egui::Margin = egui::Margin::symmetric(8, 5);
 
@@ -52,6 +52,80 @@ pub struct Pane {
     permission: Option<Permission>,
     settings: AgentSettings,
     pending_setting: Option<PendingSetting>,
+    data_dir: Option<PathBuf>,
+    workspace: Option<PathBuf>,
+    store: Option<ChatHistoryStore>,
+    writer: Option<HistoryWriter>,
+    history: ChatHistory,
+    selected: Option<usize>,
+    history_open: bool,
+    renaming: Option<String>,
+    rename_focus: bool,
+    transcript_away: bool,
+    transcript_end: f32,
+    resume_failed: bool,
+    carry_history: bool,
+    history_deadline: Option<Instant>,
+    visible_turns: usize,
+}
+
+#[derive(Default)]
+struct HistoryWriteState {
+    pending: Option<ChatHistory>,
+    stopping: bool,
+    error: Option<String>,
+}
+struct HistoryWriter {
+    state: Arc<(Mutex<HistoryWriteState>, Condvar)>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+impl HistoryWriter {
+    fn start(store: ChatHistoryStore, ctx: egui::Context) -> Self {
+        let state = Arc::new((Mutex::new(HistoryWriteState::default()), Condvar::new()));
+        let shared = state.clone();
+        let worker = thread::spawn(move || {
+            loop {
+                let (lock, wake) = &*shared;
+                let mut state = lock.lock().unwrap();
+                while state.pending.is_none() && !state.stopping {
+                    state = wake.wait(state).unwrap();
+                }
+                let pending = state.pending.take();
+                if pending.is_none() && state.stopping {
+                    break;
+                }
+                drop(state);
+                if let Some(history) = pending
+                    && let Err(error) = store.save(&history)
+                {
+                    lock.lock().unwrap().error = Some(error);
+                    ctx.request_repaint();
+                }
+            }
+        });
+        Self {
+            state,
+            worker: Some(worker),
+        }
+    }
+    fn schedule(&self, history: ChatHistory) {
+        let (lock, wake) = &*self.state;
+        lock.lock().unwrap().pending = Some(history);
+        wake.notify_one();
+    }
+    fn take_error(&self) -> Option<String> {
+        self.state.0.lock().unwrap().error.take()
+    }
+}
+impl Drop for HistoryWriter {
+    fn drop(&mut self) {
+        let (lock, wake) = &*self.state;
+        lock.lock().unwrap().stopping = true;
+        wake.notify_one();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
 }
 
 struct PendingSetting {
@@ -70,8 +144,9 @@ struct Turn {
     id: u64,
     prompt: Message,
     answer: MarkdownReply,
-    activity: Message,
+    activity: Vec<Activity>,
     thinking_open: bool,
+    interrupted: bool,
     layout: Option<TurnLayout>,
 }
 
@@ -81,10 +156,15 @@ impl Turn {
             layout.dirty = true;
         }
     }
+}
 
-    fn len(&self) -> usize {
-        self.prompt.text.len() + self.answer.text.len() + self.activity.text.len()
-    }
+enum Activity {
+    Thought(MarkdownReply),
+    Tool {
+        id: Option<String>,
+        title: Option<String>,
+        status: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -113,10 +193,6 @@ struct MarkdownReply {
 
 fn append_text(message: &mut String, chunk: &str) {
     message.push_str(chunk);
-    if message.len() > MESSAGE_LIMIT {
-        let start = message.ceil_char_boundary(message.len() - MESSAGE_LIMIT);
-        message.drain(..start);
-    }
 }
 
 #[derive(Default)]
@@ -289,14 +365,6 @@ struct TextLayout {
 }
 
 impl Message {
-    fn push(&mut self, text: &str) {
-        if text.is_empty() {
-            return;
-        }
-        append_text(&mut self.text, text);
-        self.layout = None;
-    }
-
     fn show(&mut self, ui: &mut egui::Ui) {
         let width = ui.available_width();
         let scale = ui.pixels_per_point();
@@ -325,9 +393,220 @@ fn agent_id(agent: AgentPreset) -> &'static str {
 }
 
 impl Pane {
+    pub fn set_data_dir(&mut self, path: Option<PathBuf>) {
+        self.data_dir = path;
+    }
+
+    fn ensure_workspace(&mut self, session: &Session, ctx: &egui::Context) {
+        if self.workspace.as_deref() == Some(session.workspace()) {
+            return;
+        }
+        self.conversation = None;
+        self.workspace = Some(session.workspace().to_path_buf());
+        self.turns.clear();
+        self.draft_prompt.clear();
+        self.selected = None;
+        self.writer = None;
+        self.store = None;
+        self.history = ChatHistory::default();
+        if let Some(root) = &self.data_dir {
+            match ChatHistoryStore::open(root, session.workspace()).and_then(|store| {
+                let history = store.load()?;
+                Ok((store, history))
+            }) {
+                Ok((store, history)) => {
+                    self.writer = Some(HistoryWriter::start(store.clone(), ctx.clone()));
+                    self.store = Some(store);
+                    self.history = history;
+                    if let Some(index) =
+                        self.history.selected.as_ref().and_then(|id| {
+                            self.history.chats.iter().position(|chat| &chat.id == id)
+                        })
+                    {
+                        self.choose_chat(index, ctx, session);
+                    }
+                }
+                Err(error) => self.status = format!("Chat history: {error}"),
+            }
+        } else {
+            self.status =
+                "Chat history cannot be saved: application data directory is unavailable.".into();
+        }
+    }
+
+    fn save_history(&mut self) {
+        self.history_deadline = None;
+        if let Some(chat) = self.selected.and_then(|i| self.history.chats.get_mut(i)) {
+            if chat.title == "New chat"
+                && chat.turns.is_empty()
+                && let Some(first) = self.turns.front()
+            {
+                chat.title = first
+                    .prompt
+                    .text
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(60)
+                    .collect();
+            }
+            chat.draft = self.draft_prompt.clone();
+            chat.carry_history = self.carry_history;
+            chat.turns = self
+                .turns
+                .iter()
+                .map(|turn| SavedTurn {
+                    prompt: turn.prompt.text.clone(),
+                    answer: turn.answer.text.clone(),
+                    activity: turn
+                        .activity
+                        .iter()
+                        .map(|activity| match activity {
+                            Activity::Thought(reply) => SavedActivity::Thought(reply.text.clone()),
+                            Activity::Tool { id, title, status } => SavedActivity::Tool {
+                                id: id.clone(),
+                                title: title.clone(),
+                                status: status.clone(),
+                            },
+                        })
+                        .collect(),
+                    interrupted: turn.interrupted
+                        || (self.active
+                            && self.turns.back().is_some_and(|last| last.id == turn.id)),
+                })
+                .collect();
+        }
+        self.history.selected = self
+            .selected
+            .and_then(|i| self.history.chats.get(i))
+            .map(|chat| chat.id.clone());
+        if let Some(writer) = &self.writer {
+            writer.schedule(self.history.clone());
+        }
+    }
+
+    fn defer_history(&mut self, ctx: &egui::Context) {
+        const DELAY: Duration = Duration::from_millis(300);
+        self.history_deadline = Some(Instant::now() + DELAY);
+        ctx.request_repaint_after(DELAY);
+    }
+
+    fn choose_chat(&mut self, index: usize, ctx: &egui::Context, session: &Session) {
+        self.save_history();
+        self.conversation = None;
+        self.ready = false;
+        self.active = false;
+        self.permission = None;
+        self.tools_connected = false;
+        self.settings = AgentSettings::default();
+        self.pending_setting = None;
+        self.resume_failed = false;
+        self.carry_history = false;
+        self.visible_turns = 40;
+        self.status.clear();
+        let Some(chat) = self.history.chats.get(index) else {
+            return;
+        };
+        self.agent = match chat.agent.as_str() {
+            "codex" => Some(AgentPreset::Codex),
+            "gemini" => Some(AgentPreset::Gemini),
+            "claude" => Some(AgentPreset::Claude),
+            _ => None,
+        };
+        self.draft_prompt = chat.draft.clone();
+        self.carry_history = chat.carry_history;
+        self.turns = chat
+            .turns
+            .iter()
+            .enumerate()
+            .map(|(id, saved)| {
+                let mut answer = MarkdownReply::default();
+                answer.push(&saved.answer);
+                let activity = saved
+                    .activity
+                    .iter()
+                    .map(|item| match item {
+                        SavedActivity::Thought(text) => {
+                            let mut reply = MarkdownReply::default();
+                            reply.push(text);
+                            Activity::Thought(reply)
+                        }
+                        SavedActivity::Tool { id, title, status } => Activity::Tool {
+                            id: id.clone(),
+                            title: title.clone(),
+                            status: status.clone(),
+                        },
+                    })
+                    .collect();
+                Turn {
+                    id: id as u64,
+                    prompt: Message {
+                        text: saved.prompt.clone(),
+                        layout: None,
+                    },
+                    answer,
+                    activity,
+                    thinking_open: false,
+                    interrupted: saved.interrupted,
+                    layout: None,
+                }
+            })
+            .collect();
+        self.next_turn = self.turns.len() as u64;
+        self.selected = Some(index);
+        self.save_history();
+        self.connect(ctx, session);
+    }
+
+    fn new_chat(&mut self, ctx: &egui::Context, session: &Session) {
+        self.save_history();
+        self.conversation = None;
+        self.ready = false;
+        self.active = false;
+        self.permission = None;
+        self.tools_connected = false;
+        self.settings = AgentSettings::default();
+        self.pending_setting = None;
+        self.resume_failed = false;
+        self.carry_history = false;
+        self.visible_turns = 40;
+        self.status.clear();
+        self.turns.clear();
+        self.draft_prompt.clear();
+        self.selected = None;
+        let Some(agent) = self.agent else {
+            return;
+        };
+        let Some(store) = &self.store else {
+            self.connect(ctx, session);
+            self.status =
+                "Chat history is unavailable; this conversation is only in memory.".into();
+            return;
+        };
+        match store.new_cwd() {
+            Ok(cwd) => {
+                let id = cwd.file_name().unwrap().to_string_lossy().into_owned();
+                self.history.chats.push(SavedChat {
+                    id,
+                    title: "New chat".into(),
+                    agent: agent_id(agent).into(),
+                    cwd,
+                    ..SavedChat::default()
+                });
+                self.selected = Some(self.history.chats.len() - 1);
+                self.save_history();
+                self.connect(ctx, session);
+            }
+            Err(error) => self.status = format!("Chat history: {error}"),
+        }
+    }
+
     pub fn reset(&mut self) {
+        self.save_history();
         *self = Self {
             agent: self.agent,
+            data_dir: self.data_dir.clone(),
             next_turn: self.next_turn,
             ..Self::default()
         };
@@ -335,16 +614,43 @@ impl Pane {
 
     fn connect(&mut self, ctx: &egui::Context, session: &Session) {
         let Some(agent) = self.agent else { return };
+        if let Some(chat) = self
+            .selected
+            .and_then(|index| self.history.chats.get(index))
+            && self
+                .store
+                .as_ref()
+                .is_none_or(|store| !store.owns_cwd(&chat.cwd))
+        {
+            self.status = "The conversation directory is unavailable.".into();
+            self.resume_failed = true;
+            return;
+        }
         match std::env::current_exe() {
             Ok(executable) => {
                 let ctx = ctx.clone();
-                self.conversation = Some(Conversation::start_with_wake(
-                    session.clone(),
-                    agent,
-                    executable,
-                    move || ctx.request_repaint(),
-                ));
-                self.status.clear();
+                self.conversation = Some(
+                    if let Some(chat) = self.selected.and_then(|i| self.history.chats.get(i)) {
+                        Conversation::start_saved_with_wake(
+                            session.clone(),
+                            agent,
+                            executable,
+                            chat.cwd.clone(),
+                            chat.session_id.clone(),
+                            move || ctx.request_repaint(),
+                        )
+                    } else {
+                        Conversation::start_with_wake(
+                            session.clone(),
+                            agent,
+                            executable,
+                            move || ctx.request_repaint(),
+                        )
+                    },
+                );
+                if self.store.is_some() {
+                    self.status.clear();
+                }
             }
             Err(error) => self.status = error.to_string(),
         }
@@ -354,9 +660,19 @@ impl Pane {
         let Some(conversation) = &self.conversation else {
             return;
         };
-        match conversation.prompt(self.draft_prompt.clone()) {
+        let (prompt, omitted) = if self.carry_history {
+            carry_prompt(&self.turns, &self.draft_prompt)
+        } else {
+            (self.draft_prompt.clone(), false)
+        };
+        match conversation.prompt(prompt) {
             Ok(()) => {
-                self.status.clear();
+                self.status = if omitted {
+                    "Some older conversation context was omitted to fit the prompt limit.".into()
+                } else {
+                    String::new()
+                };
+                self.carry_history = false;
                 self.active = true;
                 self.turns.push_back(Turn {
                     id: self.next_turn,
@@ -365,21 +681,15 @@ impl Pane {
                         layout: None,
                     },
                     answer: MarkdownReply::default(),
-                    activity: Message::default(),
+                    activity: Vec::new(),
                     thinking_open: false,
+                    interrupted: false,
                     layout: None,
                 });
                 self.next_turn += 1;
-                self.trim_transcript();
+                self.save_history();
             }
             Err(error) => self.status = error,
-        }
-    }
-
-    fn trim_transcript(&mut self) {
-        let mut total: usize = self.turns.iter().map(Turn::len).sum();
-        while self.turns.len() > 1 && (self.turns.len() > TURN_LIMIT || total > TRANSCRIPT_LIMIT) {
-            total -= self.turns.pop_front().unwrap().len();
         }
     }
 
@@ -454,7 +764,11 @@ impl Pane {
 
     pub fn poll(&mut self, ctx: &egui::Context, preferences: &mut Preferences, pt: bool) {
         const EVENTS_PER_FRAME: usize = 128;
+        if let Some(error) = self.writer.as_ref().and_then(HistoryWriter::take_error) {
+            self.status = format!("Chat history: {error}");
+        }
         let mut transcript_changed = false;
+        let mut checkpoint = false;
         let mut drained = 0;
         for _ in 0..EVENTS_PER_FRAME {
             let Some(event) = self.conversation.as_mut().and_then(Conversation::try_event) else {
@@ -463,6 +777,20 @@ impl Pane {
             drained += 1;
             match event {
                 AssistantEvent::Handshake => {}
+                AssistantEvent::SessionStarted(id) => {
+                    if let Some(chat) = self.selected.and_then(|i| self.history.chats.get_mut(i)) {
+                        chat.session_id = Some(id);
+                    }
+                    self.save_history();
+                }
+                AssistantEvent::ResumeUnavailable(message) => {
+                    self.resume_failed = true;
+                    self.status = message;
+                    self.ready = false;
+                    self.tools_connected = false;
+                    self.permission = None;
+                    self.conversation = None;
+                }
                 AssistantEvent::Ready => {
                     self.ready = true;
                     let saved_model = self
@@ -518,20 +846,36 @@ impl Pane {
                 }
                 AssistantEvent::Thought(chunk) => {
                     if let Some(turn) = self.turns.back_mut() {
-                        turn.activity.push(&chunk);
+                        if let Some(Activity::Thought(reply)) = turn.activity.last_mut() {
+                            reply.push(&chunk);
+                        } else {
+                            let mut reply = MarkdownReply::default();
+                            reply.push(&chunk);
+                            turn.activity.push(Activity::Thought(reply));
+                        }
                         turn.invalidate_layout();
                         transcript_changed = true;
                     }
                 }
-                AssistantEvent::ToolStatus(status) => {
+                AssistantEvent::ToolStatus { id, title, status } => {
                     if let Some(turn) = self.turns.back_mut() {
-                        let status: String = status.chars().take(500).collect();
-                        if !turn.activity.text.is_empty() {
-                            turn.activity.push("\n\n");
-                        }
-                        turn.activity.push(&status);
+                        let title = title.or_else(|| {
+                            id.as_ref().and_then(|id| {
+                                turn.activity
+                                    .iter()
+                                    .rev()
+                                    .find_map(|activity| match activity {
+                                        Activity::Tool {
+                                            id: Some(previous),
+                                            title: Some(title),
+                                            ..
+                                        } if previous == id => Some(title.clone()),
+                                        _ => None,
+                                    })
+                            })
+                        });
+                        turn.activity.push(Activity::Tool { id, title, status });
                         turn.invalidate_layout();
-                        turn.activity.push("\n\n");
                         transcript_changed = true;
                     }
                 }
@@ -549,8 +893,12 @@ impl Pane {
                 AssistantEvent::PermissionCleared => self.permission = None,
                 AssistantEvent::ReviewStaged => {}
                 AssistantEvent::Finished { cancelled } => {
+                    checkpoint = true;
                     self.active = false;
                     self.permission = None;
+                    if let Some(turn) = self.turns.back_mut() {
+                        turn.interrupted = cancelled;
+                    }
                     if cancelled {
                         self.status = text(pt, "Prompt stopped", "Solicitação interrompida");
                     }
@@ -562,6 +910,20 @@ impl Pane {
                 } => {
                     self.status = format!("{stage} · {message}");
                     if closed {
+                        checkpoint = true;
+                        if self.active
+                            && let Some(turn) = self.turns.back_mut()
+                        {
+                            turn.interrupted = true;
+                        }
+                        if !self.ready
+                            && self
+                                .selected
+                                .and_then(|i| self.history.chats.get(i))
+                                .is_some_and(|chat| chat.session_id.is_some())
+                        {
+                            self.resume_failed = true;
+                        }
                         self.active = false;
                         self.ready = false;
                         self.permission = None;
@@ -573,8 +935,17 @@ impl Pane {
                 }
             }
         }
-        if transcript_changed {
-            self.trim_transcript();
+        if checkpoint {
+            self.save_history();
+        } else if transcript_changed {
+            self.defer_history(ctx);
+        } else if let Some(deadline) = self.history_deadline {
+            let now = Instant::now();
+            if now >= deadline {
+                self.save_history();
+            } else {
+                ctx.request_repaint_after(deadline.duration_since(now));
+            }
         }
         if drained == EVENTS_PER_FRAME {
             ctx.request_repaint();
@@ -586,6 +957,7 @@ impl Pane {
             ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
             return false;
         };
+        self.ensure_workspace(session, ui.ctx());
         ui.scope(|ui| {
             for style in [
                 egui::TextStyle::Body,
@@ -598,19 +970,31 @@ impl Pane {
             }
             theme::fitted_columns(ui, &[1.], |ui, _| self.header(ui, pt, session));
             let applied = self.composer(ui, pt);
-            egui::ScrollArea::vertical()
+            let latest = self.transcript_away
+                && ui
+                    .button(text(pt, "Latest message", "Mensagem mais recente"))
+                    .clicked();
+            let mut scroll = egui::ScrollArea::vertical()
                 .id_salt("assistant-transcript")
                 .auto_shrink([false, false])
-                .stick_to_bottom(true)
-                .show(ui, |ui| self.transcript(ui, pt));
+                .stick_to_bottom(true);
+            if latest {
+                scroll = scroll.vertical_scroll_offset(self.transcript_end);
+            }
+            let output = scroll.show(ui, |ui| self.transcript(ui, pt));
+            self.transcript_end = (output.content_size.y - output.inner_rect.height()).max(0.);
+            self.transcript_away = self.transcript_end - output.state.offset.y > 8.;
             applied
         })
         .inner
     }
 
     fn header(&mut self, ui: &mut egui::Ui, pt: bool, session: &Session) {
-        let old_agent = self.agent;
         ui.horizontal_wrapped(|ui| {
+            if ui.button(text(pt, "History", "Histórico")).clicked() {
+                self.history_open = !self.history_open;
+            }
+            let old_agent = self.agent;
             let label = ui.label(text(pt, "Agent", "Agente"));
             egui::ComboBox::from_id_salt("agent")
                 .selected_text(self.agent.map_or_else(
@@ -624,23 +1008,157 @@ impl Pane {
                 })
                 .response
                 .labelled_by(label.id);
-            if old_agent != self.agent {
-                self.reset();
-                self.connect(ui.ctx(), session);
+            if self.agent != old_agent {
+                self.new_chat(ui.ctx(), session);
             }
-            if self.conversation.is_some() {
-                if ui
-                    .button(text(pt, "Reset conversation", "Reiniciar conversa"))
-                    .clicked()
-                {
-                    self.reset();
-                    self.connect(ui.ctx(), session);
-                }
-            } else if self.agent.is_some() && ui.button(text(pt, "Connect", "Conectar")).clicked() {
-                self.connect(ui.ctx(), session);
+            if ui
+                .add_enabled(
+                    self.agent.is_some(),
+                    egui::Button::new(text(pt, "New chat", "Nova conversa")),
+                )
+                .clicked()
+            {
+                self.new_chat(ui.ctx(), session);
             }
         });
-
+        if let Some(chat) = self
+            .selected
+            .and_then(|index| self.history.chats.get(index))
+        {
+            ui.strong(&chat.title);
+        }
+        if self.history_open {
+            let mut choose = None;
+            let mut delete = None;
+            let mut rename = None;
+            let mut renamed = false;
+            egui::ScrollArea::vertical()
+                .id_salt("chat-history")
+                .max_height(180.)
+                .show(ui, |ui| {
+                    for (index, chat) in self.history.chats.iter_mut().enumerate() {
+                        ui.push_id(chat.id.clone(), |ui| {
+                            ui.horizontal(|ui| {
+                                if self.renaming.as_deref() == Some(chat.id.as_str()) {
+                                    let edit = ui.add(
+                                        egui::TextEdit::singleline(&mut chat.title)
+                                            .desired_width((ui.available_width() - 110.).max(30.)),
+                                    );
+                                    renamed |= edit.changed();
+                                    if self.rename_focus {
+                                        edit.request_focus();
+                                        self.rename_focus = false;
+                                    }
+                                    if edit.lost_focus() {
+                                        rename = Some(None);
+                                    }
+                                } else if ui
+                                    .add_sized(
+                                        egui::vec2(
+                                            (ui.available_width() - 110.).max(30.),
+                                            ui.spacing().interact_size.y,
+                                        ),
+                                        egui::Button::selectable(
+                                            self.selected == Some(index),
+                                            &chat.title,
+                                        )
+                                        .wrap_mode(egui::TextWrapMode::Truncate),
+                                    )
+                                    .on_hover_text(&chat.title)
+                                    .clicked()
+                                {
+                                    choose = Some(index);
+                                }
+                                ui.weak(&chat.agent);
+                                ui.menu_button("⋯", |ui| {
+                                    if ui.button(text(pt, "Rename", "Renomear")).clicked() {
+                                        rename = Some(Some(chat.id.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.button(text(pt, "Delete", "Excluir")).clicked() {
+                                        delete = Some(index);
+                                        ui.close();
+                                    }
+                                });
+                            });
+                        });
+                    }
+                });
+            if let Some(value) = rename {
+                self.rename_focus = value.is_some();
+                self.renaming = value;
+            }
+            if renamed {
+                self.save_history();
+            }
+            if let Some(index) = choose {
+                self.choose_chat(index, ui.ctx(), session);
+            }
+            if let Some(index) = delete {
+                self.renaming = None;
+                if self.selected == Some(index) {
+                    self.conversation = None;
+                    self.permission = None;
+                    self.pending_setting = None;
+                    self.resume_failed = false;
+                    self.carry_history = false;
+                    self.tools_connected = false;
+                    self.settings = AgentSettings::default();
+                    self.status.clear();
+                    self.turns.clear();
+                    self.draft_prompt.clear();
+                    self.selected = None;
+                    self.ready = false;
+                    self.active = false;
+                } else if let Some(selected) = &mut self.selected
+                    && *selected > index
+                {
+                    *selected -= 1;
+                }
+                let chat = self.history.chats.remove(index);
+                if let Some(store) = &self.store
+                    && let Err(error) = store.remove_cwd(&chat.cwd)
+                {
+                    self.status = error;
+                }
+                self.save_history();
+            }
+        }
+        if self.carry_history {
+            ui.weak(text(pt, "The next message includes available prior text; older context may be omitted to fit the prompt limit.", "A próxima mensagem inclui o texto anterior disponível; parte do contexto mais antigo pode ser omitida para respeitar o limite."));
+        }
+        if self.resume_failed {
+            ui.label(text(pt, "The saved session could not be resumed. You can continue in a new session using the visible transcript as context; tool state is not restored.", "Não foi possível retomar a sessão salva. Você pode continuar em uma nova sessão usando a conversa como contexto; o estado das ferramentas não é restaurado."));
+            if ui
+                .button(text(
+                    pt,
+                    "Continue with transcript",
+                    "Continuar com a conversa",
+                ))
+                .clicked()
+            {
+                self.conversation = None;
+                self.resume_failed = false;
+                self.carry_history = true;
+                if let Some(chat) = self.selected.and_then(|i| self.history.chats.get_mut(i)) {
+                    chat.session_id = None;
+                    if let Some(store) = &self.store
+                        && !store.owns_cwd(&chat.cwd)
+                    {
+                        match store.new_cwd() {
+                            Ok(cwd) => chat.cwd = cwd,
+                            Err(error) => {
+                                self.status = error;
+                                self.resume_failed = true;
+                                return;
+                            }
+                        }
+                    }
+                }
+                self.save_history();
+                self.connect(ui.ctx(), session);
+            }
+        }
         if self.ready {
             ui.columns(2, |columns| {
                 for (column, (kind, label)) in columns.iter_mut().zip([
@@ -691,8 +1209,22 @@ impl Pane {
             }
         }
         let latest = self.turns.back().map(|turn| turn.id);
+        let visible = self.visible_turns.max(40);
+        let earlier = self.turns.len().saturating_sub(visible);
+        if earlier > 0
+            && ui
+                .button(text(
+                    pt,
+                    "Load older messages",
+                    "Carregar mensagens anteriores",
+                ))
+                .clicked()
+        {
+            self.visible_turns = visible.saturating_add(40);
+            ui.request_repaint();
+        }
         let width = ui.available_width();
-        for turn in &mut self.turns {
+        for turn in self.turns.iter_mut().skip(earlier) {
             let busy = self.active && latest == Some(turn.id);
             let geometry = TurnGeometry {
                 width,
@@ -717,12 +1249,29 @@ impl Pane {
                     .inner_margin(egui::Margin::symmetric(10, 8))
                     .corner_radius(9.)
                     .show(ui, |ui| {
-                        ui.weak(text(pt, "You", "Você"));
+                        ui.horizontal(|ui| {
+                            ui.weak(text(pt, "You", "Você"));
+                            if ui.small_button(text(pt, "Copy", "Copiar")).clicked() {
+                                ui.copy_text(turn.prompt.text.clone());
+                            }
+                        });
                         turn.prompt.show(ui);
                     });
                 ui.add_space(4.);
-                ui.strong(text(pt, "Assistant", "Assistente"));
-                if busy || !turn.activity.text.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.strong(text(pt, "Assistant", "Assistente"));
+                    if !turn.answer.text.is_empty()
+                        && ui
+                            .small_button(text(pt, "Copy Markdown", "Copiar Markdown"))
+                            .clicked()
+                    {
+                        ui.copy_text(turn.answer.text.clone());
+                    }
+                });
+                if turn.interrupted {
+                    ui.weak(text(pt, "Interrupted", "Interrompida"));
+                }
+                if busy || !turn.activity.is_empty() {
                     ui.horizontal_wrapped(|ui| {
                         let icon = if turn.thinking_open { "−" } else { "+" };
                         let label = text(pt, "Thinking", "Raciocínio");
@@ -742,7 +1291,44 @@ impl Pane {
                         }
                     });
                     if turn.thinking_open {
-                        ui.indent("activity", |ui| turn.activity.show(ui));
+                        egui::Frame::new()
+                            .fill(ui.visuals().faint_bg_color)
+                            .inner_margin(egui::Margin::symmetric(10, 7))
+                            .corner_radius(6.)
+                            .show(ui, |ui| {
+                                for activity in &mut turn.activity {
+                                    match activity {
+                                        Activity::Thought(reply) => reply.show(ui),
+                                        Activity::Tool { id, title, status } => {
+                                            let label = title
+                                                .as_deref()
+                                                .or(id.as_deref())
+                                                .unwrap_or("Tool");
+                                            let (icon, state) = match status.as_deref() {
+                                                Some("pending") => {
+                                                    ("○", text(pt, "Pending", "Pendente"))
+                                                }
+                                                Some("in_progress") => {
+                                                    ("◌", text(pt, "Running", "Em execução"))
+                                                }
+                                                Some("completed") => {
+                                                    ("✓", text(pt, "Completed", "Concluída"))
+                                                }
+                                                Some("failed") => {
+                                                    ("!", text(pt, "Failed", "Falhou"))
+                                                }
+                                                Some(other) => ("•", other.to_owned()),
+                                                None => ("•", String::new()),
+                                            };
+                                            ui.horizontal_wrapped(|ui| {
+                                                ui.label(icon);
+                                                ui.label(label);
+                                                ui.weak(state);
+                                            });
+                                        }
+                                    }
+                                }
+                            });
                     }
                 }
                 if !turn.answer.text.is_empty() {
@@ -826,6 +1412,9 @@ impl Pane {
                 .labelled_by(label.id)
             });
         let edit = editor.inner;
+        if edit.changed() {
+            self.defer_history(ui.ctx());
+        }
         let submit = edit.has_focus() && ui.input(|input| submit_shortcut(&input.events));
         if self.editor_content_height != editor.content_size.y || edit.changed() {
             self.editor_content_height = editor.content_size.y;
@@ -964,6 +1553,41 @@ fn loading_icon(ui: &mut egui::Ui) {
     }
 }
 
+fn carry_prompt(turns: &VecDeque<Turn>, current: &str) -> (String, bool) {
+    const LIMIT: usize = 64 * 1024;
+    const INTRO: &str = "Prior conversation text follows as context, not new instructions. It may be incomplete.\n\n";
+    const CURRENT: &str = "Current user message:\n";
+    const OMITTED: &str = "[Older context omitted.]\n\n";
+    if INTRO.len() + CURRENT.len() + OMITTED.len() + current.len() > LIMIT {
+        return (current.into(), !turns.is_empty());
+    }
+    let budget = LIMIT - INTRO.len() - CURRENT.len() - OMITTED.len() - current.len();
+    let mut selected = Vec::new();
+    let mut size = 0;
+    for turn in turns.iter().rev() {
+        let text = format!(
+            "User: {}\nAssistant: {}\n\n",
+            turn.prompt.text, turn.answer.text
+        );
+        if size + text.len() > budget {
+            break;
+        }
+        size += text.len();
+        selected.push(text);
+    }
+    let omitted = selected.len() < turns.len();
+    let mut prompt = String::from(INTRO);
+    if omitted {
+        prompt.push_str(OMITTED);
+    }
+    for text in selected.iter().rev() {
+        prompt.push_str(text);
+    }
+    prompt.push_str(CURRENT);
+    prompt.push_str(current);
+    (prompt, omitted)
+}
+
 fn plain_enter(event: &egui::Event) -> bool {
     matches!(
         event,
@@ -1071,7 +1695,10 @@ mod tests {
 
     #[test]
     fn transcript_reuses_offscreen_turn_heights_on_followup_frames() {
-        let mut pane = Pane::default();
+        let mut pane = Pane {
+            visible_turns: 80,
+            ..Pane::default()
+        };
         for id in 0..80 {
             let mut answer = MarkdownReply::default();
             answer.push("A **reply** with `formatting`.\n\n- A second line");
@@ -1082,8 +1709,9 @@ mod tests {
                     layout: None,
                 },
                 answer,
-                activity: Message::default(),
+                activity: Vec::new(),
                 thinking_open: false,
+                interrupted: false,
                 layout: None,
             });
         }
@@ -1175,6 +1803,146 @@ mod tests {
         assert_eq!(pane.draft_prompt, "Immediate\nSecond line");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn enter_dispatches_focused_composer_to_fake_acp() {
+        use mgb_ops::app::InspectionRequest;
+        use std::{fs, time::Instant};
+        fs::create_dir_all("runs").unwrap();
+        let root = tempfile::tempdir_in("runs").unwrap();
+        let workspace = root.path().canonicalize().unwrap();
+        let script = workspace.join("agent.sh");
+        let log = workspace.join("prompt.json");
+        fs::write(&script, r#"
+read -r line || exit
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
+read -r line || exit
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture"}}'
+while IFS= read -r line; do
+ case "$line" in *session/prompt*) printf '%s\n' "$line" > "$1"; id=${line#*\"id\":}; id=${id%%,*}; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id";; esac
+done
+"#).unwrap();
+        let session = Session::new(InspectionRequest {
+            workspace: workspace.clone(),
+            invocation_dir: workspace,
+            config: None,
+            gpkg_path: None,
+            engine_executable: None,
+            engine_input_dir: None,
+        });
+        let ctx = egui::Context::default();
+        let wake = ctx.clone();
+        let conversation = Conversation::start_adapter_with_wake(
+            session,
+            PathBuf::from("/bin/sh"),
+            vec![script.into_os_string(), log.clone().into_os_string()],
+            std::env::current_exe().unwrap(),
+            move || wake.request_repaint(),
+        );
+        let mut pane = Pane {
+            conversation: Some(conversation),
+            ..Pane::default()
+        };
+        let mut preferences = Preferences::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pane.ready {
+            pane.poll(&ctx, &mut preferences, false);
+            assert!(
+                Instant::now() < deadline,
+                "fake ACP did not become ready: {}",
+                pane.status
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(220., 360.));
+        let frame = |pane: &mut Pane, events| {
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    pane.composer(ui, false);
+                },
+            );
+            output.textures_delta.clear();
+            output
+        };
+        frame(&mut pane, Vec::new());
+        let output = frame(&mut pane, Vec::new());
+        let editor = output
+            .shapes
+            .iter()
+            .find_map(|item| match &item.shape {
+                egui::Shape::Text(shape) if shape.galley.text() == "Message" => {
+                    Some(egui::pos2(28., shape.pos.y + 24.))
+                }
+                _ => None,
+            })
+            .unwrap();
+        frame(&mut pane, vec![egui::Event::PointerMoved(editor)]);
+        for pressed in [true, false] {
+            frame(
+                &mut pane,
+                vec![egui::Event::PointerButton {
+                    pos: editor,
+                    pressed,
+                    button: egui::PointerButton::Primary,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        frame(&mut pane, vec![egui::Event::Text("send this".into())]);
+        frame(
+            &mut pane,
+            vec![egui::Event::Key {
+                key: egui::Key::Enter,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        let request: serde_json::Value = loop {
+            if let Ok(bytes) = fs::read(&log)
+                && let Ok(request) = serde_json::from_slice(&bytes)
+            {
+                break request;
+            }
+            assert!(Instant::now() < deadline, "Enter did not dispatch");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(request["method"], "session/prompt");
+        assert_eq!(request["params"]["prompt"][0]["text"], "send this");
+        assert!(pane.draft_prompt.is_empty());
+        assert_eq!(pane.turns.len(), 1);
+    }
+
+    #[test]
+    fn carryover_keeps_current_prompt_and_reports_omitted_context() {
+        let mut turns = VecDeque::new();
+        for id in 0..4 {
+            turns.push_back(Turn {
+                id,
+                prompt: Message {
+                    text: "a".repeat(30_000),
+                    layout: None,
+                },
+                answer: MarkdownReply::default(),
+                activity: Vec::new(),
+                thinking_open: false,
+                interrupted: false,
+                layout: None,
+            });
+        }
+        let (text, omitted) = carry_prompt(&turns, "Current message");
+        assert!(omitted);
+        assert!(text.len() <= 64 * 1024);
+        assert!(text.contains("[Older context omitted.]"));
+        assert!(text.ends_with("Current message"));
+    }
+
     #[test]
     fn composer_grows_to_a_cap_then_scrolls_and_shrinks() {
         let ctx = egui::Context::default();
@@ -1260,8 +2028,9 @@ mod tests {
                 id: 0,
                 prompt: Message::default(),
                 answer: MarkdownReply::default(),
-                activity: Message::default(),
+                activity: Vec::new(),
                 thinking_open: false,
+                interrupted: false,
                 layout: None,
             }]),
             ..Default::default()

@@ -102,3 +102,8 @@ mod flood_source;
 pub(crate) use self::flood_source::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource, read_flood_source, write_flood_source,
 };
+
+mod assistant_history;
+pub use self::assistant_history::{
+    ChatHistory, ChatHistoryStore, SavedActivity, SavedChat, SavedTurn,
+};

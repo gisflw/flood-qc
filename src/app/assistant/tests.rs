@@ -403,7 +403,7 @@ done
     conversation.prompt("no-deny".into()).unwrap();
     event(
         &mut conversation,
-        |event| matches!(event, AssistantEvent::ToolStatus(text) if text.contains("no one-time deny")),
+        |event| matches!(event, AssistantEvent::ToolStatus { title: Some(text), .. } if text.contains("no one-time deny")),
     );
     event(&mut conversation, |event| {
         matches!(event, AssistantEvent::Finished { cancelled: true })
@@ -473,6 +473,8 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id";;
     *session/prompt*)
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"adapter summary test-credential"}}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call","toolCallId":"tool-1","title":"read test-credential","status":"in_progress"}}}'
+      printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call_update","toolCallId":"tool-1","status":"completed"}}}'
       printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"answer"}}}}'
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id";;
     *) exit 1;;
@@ -541,6 +543,14 @@ done
     event(
         &mut modern,
         |event| matches!(event, AssistantEvent::Thought(thought) if thought == "adapter summary [redacted]"),
+    );
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::ToolStatus { id: Some(id), title: Some(title), status: Some(status) } if id == "tool-1" && title == "read [redacted]" && status == "in_progress"),
+    );
+    event(
+        &mut modern,
+        |event| matches!(event, AssistantEvent::ToolStatus { id: Some(id), title: None, status: Some(status) } if id == "tool-1" && status == "completed"),
     );
     event(
         &mut modern,
@@ -852,4 +862,46 @@ fn pending_review_tracks_its_origin_without_a_socket() {
     assert!(tools.state().proposal.is_none());
     tools.close();
     assert!(call(credential).is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn saved_session_loads_with_stable_cwd_and_suppresses_replayed_output() {
+    let root = temp();
+    let session = session(root.path());
+    let cwd = root.path().join("stable");
+    fs::create_dir(&cwd).unwrap();
+    let cwd = cwd.canonicalize().unwrap();
+    let script = root.path().join("resume.sh");
+    fs::write(&script, r#"
+read -r line || exit
+printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1,"agentCapabilities":{"loadSession":true}}}'
+read -r line || exit
+case "$line" in *session/load*fixture*) ;; *) exit 4;; esac
+printf '%s\n' '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"replayed"}}}}'
+printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{}}'
+while IFS= read -r line; do
+ case "$line" in *session/prompt*) id=${line#*\"id\":}; id=${id%%,*}; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id";; esac
+done
+"#).unwrap();
+    let mut conversation = Conversation::launch_saved(
+        session,
+        std::env::current_exe().unwrap(),
+        protocol::Launch {
+            executable: "sh".into(),
+            args: vec![script.canonicalize().unwrap().into_os_string()],
+        },
+        Bridge::disconnected,
+        None,
+        Some((cwd, Some("fixture".into()))),
+    );
+    event(&mut conversation, |event| {
+        matches!(event, AssistantEvent::Ready)
+    });
+    let no_replay = !matches!(conversation.try_event(), Some(AssistantEvent::Text(_)));
+    assert!(no_replay);
+    conversation.prompt("follow up".into()).unwrap();
+    event(&mut conversation, |event| {
+        matches!(event, AssistantEvent::Finished { cancelled: false })
+    });
 }

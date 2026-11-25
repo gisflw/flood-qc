@@ -2,7 +2,7 @@
 
 ## Run from a workspace
 
-Use **Processing → New run** in the desktop or run the corresponding CLI commands.
+Use **Operation → New run** in the desktop or run the corresponding CLI commands.
 
 ```sh
 mgb-ops operation run-all --workspace /region --json

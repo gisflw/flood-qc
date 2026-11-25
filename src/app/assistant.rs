@@ -87,10 +87,16 @@ impl fmt::Display for AssistantStage {
 pub enum AssistantEvent {
     Handshake,
     Ready,
+    SessionStarted(String),
+    ResumeUnavailable(String),
     ToolConnected,
     Text(String),
     Thought(String),
-    ToolStatus(String),
+    ToolStatus {
+        id: Option<String>,
+        title: Option<String>,
+        status: Option<String>,
+    },
     Settings(AgentSettings),
     SettingChanged {
         settings: AgentSettings,
@@ -196,12 +202,65 @@ impl Conversation {
         )
     }
 
+    /// Start an ACP-compatible executable supplied by the caller.
+    pub fn start_adapter_with_wake(
+        session: Session,
+        executable: PathBuf,
+        args: Vec<std::ffi::OsString>,
+        helper: PathBuf,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        Self::launch(
+            session,
+            helper,
+            protocol::Launch {
+                executable: executable.into_os_string(),
+                args,
+            },
+            bridge::Bridge::start,
+            Some(Arc::new(wake)),
+        )
+    }
+
+    pub fn start_saved_with_wake(
+        session: Session,
+        agent: AgentPreset,
+        helper: PathBuf,
+        cwd: PathBuf,
+        resume: Option<String>,
+        wake: impl Fn() + Send + Sync + 'static,
+    ) -> Self {
+        let (executable, args) = agent.executable();
+        Self::launch_saved(
+            session,
+            helper,
+            protocol::Launch {
+                executable: executable.into(),
+                args: args.iter().map(|arg| (*arg).into()).collect(),
+            },
+            bridge::Bridge::start,
+            Some(Arc::new(wake)),
+            Some((cwd, resume)),
+        )
+    }
+
     fn launch(
         session: Session,
         helper: PathBuf,
         launch: protocol::Launch,
         connect: impl FnOnce(Arc<Tools>, Events) -> Result<bridge::Bridge, String> + Send + 'static,
         wake: Option<Wake>,
+    ) -> Self {
+        Self::launch_saved(session, helper, launch, connect, wake, None)
+    }
+
+    fn launch_saved(
+        session: Session,
+        helper: PathBuf,
+        launch: protocol::Launch,
+        connect: impl FnOnce(Arc<Tools>, Events) -> Result<bridge::Bridge, String> + Send + 'static,
+        wake: Option<Wake>,
+        saved: Option<(PathBuf, Option<String>)>,
     ) -> Self {
         let (send_input, input) = sync_channel(16);
         let (send_event, events) = sync_channel(QUEUE);
@@ -214,7 +273,7 @@ impl Conversation {
                 sender: send_event,
                 wake: wake.clone(),
             };
-            protocol::supervise(launch, helper, worker, input, events, connect);
+            protocol::supervise(launch, helper, worker, input, events, connect, saved);
             done.store(true, Ordering::Release);
             if let Some(wake) = wake {
                 wake();
