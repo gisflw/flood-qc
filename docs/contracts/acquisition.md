@@ -36,6 +36,16 @@ stored in `operation.sqlite`. Acquire commands write to that database and retain
 originals under `downloads/`. CLI JSON reports station or provider outcomes.
 Standalone acquisition keeps successful sibling results on failure or cancellation.
 
+## CLI download progress
+
+For `observation acquire`, `forecast acquire`, and the download phase of
+`operation run-all`, the CLI shows live progress on stdout in text mode and
+stderr with `--json`. A terminal shows the active ANA station, request window,
+row count, and a requesting or loading spinner. Redirected output and
+`TERM=dumb` use one completion line per station. Forecast output lists each
+attempted cycle and the provider's outcome. A terminal also shows the current
+forecast lead. Completion lines report whether the station had data and whether
+each forecast asset was registered or reused.
 
 ## Explicit acquisition requests
 

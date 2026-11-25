@@ -20,6 +20,39 @@ pub enum AcquisitionKind {
     Forecasts,
 }
 
+#[derive(Debug)]
+pub enum DownloadEvent {
+    Started(NaiveDateTime),
+    AnaWindow {
+        station: String,
+        start: chrono::NaiveDate,
+        end: chrono::NaiveDate,
+        rows: usize,
+        loading: bool,
+    },
+    AnaFinished {
+        station: String,
+        dates: Option<(chrono::NaiveDate, chrono::NaiveDate)>,
+        rows: usize,
+        changed_samples: usize,
+        error: Option<String>,
+        cancelled: bool,
+    },
+    AnaFailed(String),
+    ForecastCycle {
+        provider: ForecastProvider,
+        cycle: DateTime<Utc>,
+    },
+    ForecastLead {
+        provider: ForecastProvider,
+        cycle: DateTime<Utc>,
+        lead: i64,
+        index: usize,
+        total: usize,
+    },
+    ForecastFinished(ForecastAcquisitionOutcome),
+}
+
 #[derive(Clone, Debug)]
 pub struct AcquisitionRequest {
     pub workspace: PathBuf,
@@ -310,6 +343,7 @@ impl AcquisitionDocument {
         control: &OperationControl,
     ) -> Result<AcquisitionReport, String> {
         let client = ProviderClient::new().map_err(|e| e.to_string())?;
+        control.download(|| DownloadEvent::Started(reference.naive_local()));
         let mut report = AcquisitionReport {
             reference_time: reference.naive_local(),
             ana: None,

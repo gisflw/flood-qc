@@ -13,6 +13,19 @@ fn main() {
     let output = PathBuf::from(env::var_os("MGB_OUTPUT_DIR").unwrap());
     let scenario = input.parent().unwrap().file_name().unwrap().to_string_lossy();
     let control = fs::read_to_string(input.join("control.txt")).unwrap_or_default();
+    if control.lines().any(|line| line == format!("log:{scenario}")) {
+        use std::io::Write;
+        write!(std::io::stdout(), "output for {scenario}\r\n").unwrap();
+        writeln!(std::io::stderr(), "diagnostic for {scenario}").unwrap();
+    }
+    if control.lines().any(|line| line == format!("wait:{scenario}")) {
+        let proceed = input.parent().unwrap().join("continue");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !proceed.exists() {
+            assert!(std::time::Instant::now() < deadline, "timed out waiting for the CLI test");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
     if control.lines().any(|line| line == format!("sleep:{scenario}")) {
         fs::write(input.parent().unwrap().join("pid"), std::process::id().to_string()).unwrap();
         std::thread::sleep(std::time::Duration::from_secs(30));

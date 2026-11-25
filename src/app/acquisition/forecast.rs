@@ -13,7 +13,7 @@ use crate::store::{
     ForecastAsset, ForecastAssetChoice, ForecastCatalog, ForecastProvider, GridSeries,
 };
 
-use super::{ForecastAcquisitionOutcome, ForecastDocument, OperationControl};
+use super::{DownloadEvent, ForecastAcquisitionOutcome, ForecastDocument, OperationControl};
 
 fn product(provider: ForecastProvider) -> (&'static str, &'static str) {
     match provider {
@@ -112,6 +112,8 @@ impl Download<'_> {
         for cycle in candidates(reference, provider, self.config.lookback_cycles) {
             self.control.check().map_err(|e| e.to_string())?;
             outcome.attempted_cycles.push(cycle);
+            self.control
+                .download(|| DownloadEvent::ForecastCycle { provider, cycle });
             let request = NormalizationRequest {
                 provider,
                 model: model.into(),
@@ -212,6 +214,13 @@ impl Download<'_> {
         let cycle_local = request.cycle_utc.with_timezone(&request.operation_timezone);
         // Request the final lead first to detect an incomplete provider cycle quickly.
         for (index, &lead) in leads.iter().rev().enumerate() {
+            self.control.download(|| DownloadEvent::ForecastLead {
+                provider,
+                cycle: request.cycle_utc,
+                lead,
+                index: index + 1,
+                total: leads.len(),
+            });
             self.control.acquisition_progress(
                 format!(
                     "{} {} +{lead} h",
@@ -319,6 +328,7 @@ pub(super) fn acquire(
                 .err(),
             Err(error) => Some(error.clone()),
         };
+        control.download(|| DownloadEvent::ForecastFinished(outcome.clone()));
         reports.push(outcome);
     }
     reports
@@ -371,7 +381,13 @@ mod tests {
             buffer_fraction: 0.0,
         };
         let reference = "2026-07-20T13:00:00Z".parse::<DateTime<Utc>>().unwrap();
-        let control = OperationControl::default();
+        let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let observed = events.clone();
+        let control = OperationControl::with_observer(move |event| {
+            if let super::super::super::OperationEvent::Download(event) = event {
+                observed.lock().unwrap().push(event);
+            }
+        });
         let reports = acquire(
             &root,
             &config,
@@ -382,6 +398,18 @@ mod tests {
         responder.join().unwrap();
         assert_eq!(reports[0].attempted_cycles.len(), 2);
         assert!(reports[0].error.is_some() && reports[0].asset_id.is_none());
+        let events = events.lock().unwrap();
+        let followed_retry = matches!(
+            events.as_slice(),
+            [
+                DownloadEvent::ForecastCycle { .. },
+                DownloadEvent::ForecastLead { lead: 360, index: 1, .. },
+                DownloadEvent::ForecastCycle { .. },
+                DownloadEvent::ForecastLead { lead: 360, index: 1, .. },
+                DownloadEvent::ForecastFinished(outcome),
+            ] if outcome.error.is_some()
+        );
+        assert!(followed_retry);
         assert_eq!(
             std::fs::read_dir(root.join("forecasts")).unwrap().count(),
             0
