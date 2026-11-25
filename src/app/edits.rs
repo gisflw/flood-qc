@@ -72,7 +72,7 @@ pub fn save_workspace_observation_edits(
     let workspace = workspace
         .canonicalize()
         .map_err(|error| error.to_string())?;
-    let path = super::operation_database(&workspace);
+    let path = super::observation_assets(&workspace);
     let _lock =
         super::operation::lock_workspace_job(&workspace).map_err(|error| error.to_string())?;
     let mut store = ObservationStore::open_writable(&path).map_err(|error| error.to_string())?;
@@ -98,7 +98,7 @@ pub fn save_workspace_observation_edits(
 }
 
 pub fn workspace_observation_edits(workspace: &Path) -> Result<Vec<ObservationEdit>, String> {
-    let path = super::operation_database(workspace);
+    let path = super::observation_assets(workspace);
     let store = ObservationStore::open_read_only(&path).map_err(|error| error.to_string())?;
     let ids = store
         .replacement_choices()

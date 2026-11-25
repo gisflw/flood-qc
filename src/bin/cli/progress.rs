@@ -322,6 +322,11 @@ pub(super) trait Summary {
     fn print(&self, line: impl FnMut(fmt::Arguments<'_>));
 }
 
+impl Summary for mgb_ops::store::InputSetManifest {
+    fn print(&self, mut line: impl FnMut(fmt::Arguments<'_>)) {
+        line(format_args!("Captured inputs: {}", self.id));
+    }
+}
 impl Summary for PreparationReport {
     fn print(&self, mut line: impl FnMut(fmt::Arguments<'_>)) {
         line(format_args!("Prepared: {}", self.prepared.display()));

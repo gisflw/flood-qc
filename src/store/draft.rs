@@ -9,8 +9,8 @@ use std::{
 static NEXT: AtomicU64 = AtomicU64::new(0);
 
 pub fn read_draft<T: DeserializeOwned>(path: &Path) -> Result<T, String> {
-    let file = fs::File::open(path).map_err(|e| e.to_string())?;
-    serde_json::from_reader(file).map_err(|e| e.to_string())
+    let bytes = fs::read(path).map_err(|e| e.to_string())?;
+    serde_json::from_slice(&bytes).map_err(|e| e.to_string())
 }
 
 pub fn write_draft<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {

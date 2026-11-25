@@ -216,11 +216,6 @@ pub(crate) fn run(options: Options) -> Result<bool, Box<dyn std::error::Error>> 
     if let Some(path) = options.saved_run {
         session.select_run(RunSelection::Saved(path))?;
     }
-    if let Ok(operation) =
-        mgb_ops::app::OperationalRun::open_workspace(session.workspace().into(), chrono::Utc::now())
-    {
-        session.open_run_setup(operation);
-    }
     let executable = std::env::current_exe()?;
     let agent = options.agent.into();
     let mut out = io::stdout().lock();

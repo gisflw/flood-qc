@@ -1,5 +1,7 @@
 # Rust saved-path qualification
 
+The comparisons below describe the qualified implementation and correction rules at the time of each capture. Status of the Parquet and hourly working-grid replacement is tracked in the [migration checklist](../../../docs/migration/summary.md).
+
 The accepted reference and its scientific limits are described in the
 [case record](README.md). Qualification used independent disposable copies;
 the external frozen bundle and legacy/runtime inputs were preserved.
@@ -93,10 +95,17 @@ and coordinates matched, and the original geometry identity is retained among
 manifest input references. Implementation-specific artifact names, source IDs
 and processing metadata are not numerical comparisons.
 
-Reproduce the complete explicit real-case test on Linux:
+The current Linux regression test consumes an independently prepared Parquet
+observation asset directory for the frozen case. Supply the canonical export of
+`capture/fixtures/observations.sqlite`, with series creation timestamps in the
+documented local ISO format. The executable and forecast GRIBs come from the
+original frozen bundle. The test exercises the unchanged zero, ECMWF and NOAA
+scenarios.
 
 ```sh
-MGB_RS_REFERENCE=/workspace/regression-rs-hourly cargo test --locked --release --test rs_saved -- --ignored --nocapture
+MGB_RS_OBSERVATIONS=/path/to/exported/observations \
+  MGB_RS_REFERENCE=/workspace/mgb-ops/target/regression-rs-hourly \
+  cargo test --locked --release --test rs_saved -- --ignored --nocapture
 ```
 
 It fails on missing prerequisites rather than skipping, and retains its disposable
@@ -154,3 +163,30 @@ Independent SQLite and NetCDF reads matched the PCH Autódromo stage of 27,845 c
 changes of −8 cm over one hour and −49 cm over 24 hours, and bias-adjusted +6 h
 and +12 h values of 27,845 cm. The frozen database lacks threshold rows. A
 separate synthetic report exercises threshold classification.
+
+## Current execution environment
+
+On 2026-11-25, the Parquet input-set pipeline produced two byte-identical
+zero-scenario executions. Their prepared rainfall matched the frozen CHUVABIN
+identity, but the strict frozen-stream check failed. A separate direct execution
+of the frozen binary, with all 51 scenario input files verified against their
+frozen SHA-256 values and the original three-variable environment, reproduced
+the difference without using the Rust application. Each of its four output
+streams matched both Rust executions byte for byte.
+
+| Stream | Values differing from the frozen capture | Maximum absolute difference |
+| --- | ---: | ---: |
+| `QTUDO_Inercial_Atual.MGB` | 119,325 | 0.00048828125 |
+| `QTUDO_Inercial_Prev.MGB` | 102,535 | 0.00048828125 |
+| `YTUDO.MGB` | 1,695 | 0.00006103515625 |
+| `YTUDO_prev.MGB` | 1,169 | 0.00006103515625 |
+
+The executable SHA-256 remains
+`263381e450484e5bc345e269f21c54e84d89afdff97ca2d9752eb951907f88eb`.
+The current host uses an Intel Xeon w3-2535 and Debian glibc 2.41; the frozen
+capture records glibc 2.36. The executable dynamically links libgfortran, libm,
+libmvec, libc and libgcc. The probe establishes a current-environment
+reproducibility difference, without identifying which runtime or CPU change
+caused it. The frozen evidence and strict byte-comparison requirement remain unchanged. Matching the
+executable alone does not freeze the numerical runtime, and this probe does not
+establish hydrological validity.

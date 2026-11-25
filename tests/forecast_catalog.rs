@@ -1,11 +1,11 @@
 use chrono::{NaiveDate, TimeZone, Utc};
 use mgb_ops::store::{
-    ForecastCatalog, ForecastCorrection, ForecastProvider, ForecastSource, GridSeries,
+    ForecastCatalog, ForecastProvider, ForecastSnapshotSelection, ForecastSource, GridSeries,
     IntervalAxis, Provenance, RegularGridSpec, TimeInterval,
 };
 use sha2::{Digest, Sha256};
 #[test]
-fn retained_source_is_immutable_and_correction_order_is_explicit() {
+fn forced_replacement_waits_for_readers_and_retires_old_files() {
     let dir = tempfile::tempdir().unwrap();
     let src = dir.path().join("download.grib2");
     std::fs::write(&src, b"source").unwrap();
@@ -51,97 +51,133 @@ fn retained_source_is_immutable_and_correction_order_is_explicit() {
             processing: serde_json::json!({"normalization":settings}),
         },
     };
-    let mut c =
-        ForecastCatalog::open(dir.path(), "operation.sqlite".as_ref(), "assets".as_ref()).unwrap();
+    let root = std::path::Path::new("assets/forecasts");
+    let mut c = ForecastCatalog::open(dir.path(), root, root).unwrap();
     let mut bad_source = source.clone();
     bad_source.byte_length = 7;
     assert!(c.register_native(&src, &bad_source, &native).is_err());
-    let db = rusqlite::Connection::open(dir.path().join("operation.sqlite")).unwrap();
-    let count: i64 = db
-        .query_row("SELECT count(*) FROM asset", [], |r| r.get(0))
-        .unwrap();
-    assert_eq!(count, 0);
-    let asset = c.register_native(&src, &source, &native).unwrap();
-    assert_ne!(asset.asset_id, asset.source_id);
-    let choices = c.asset_choices().unwrap();
-    assert_eq!(choices.len(), 1);
-    assert_eq!(choices[0].asset_id, asset.asset_id);
-    assert_eq!(choices[0].provider, "noaa");
-    std::fs::write(&src, b"changed").unwrap();
-    let (_, got) = c.load_native(&asset.asset_id).unwrap();
-    assert_eq!(got.values, [3.]);
-    let correction = |name: &str| ForecastCorrection {
-        correction_id: name.into(),
-        asset_id: asset.asset_id.clone(),
-        t0_hour: 0,
-        t1_hour: 3,
-        shift_lat_pixels: 0.,
-        shift_lon_pixels: 0.,
-        rotation_deg: 0.,
-        multiplication_factor: 1.,
-        editor: None,
-        reason: "adjust".into(),
-        created_at: "2026-07-20T00:00:00Z".into(),
+    assert!(c.asset_choices().unwrap().is_empty());
+    let first = c.register_native(&src, &source, &native).unwrap();
+    assert_eq!(c.asset_choices().unwrap()[0].asset_id, first.asset_id);
+    let canonical_path = dir.path().join("canonical.nc");
+    let mut canonical = native.clone();
+    canonical.grid.requested_bbox[0] -= 1e-14;
+    canonical.provenance.processing = serde_json::json!({"different": "provenance"});
+    mgb_ops::store::write_grid_series(&canonical_path, &canonical).unwrap();
+    let metadata = mgb_ops::store::CanonicalForecastMetadata {
+        provider: "noaa".into(),
+        model: "gfs".into(),
+        product: "fc".into(),
+        cycle_utc: source.cycle_utc,
     };
-    c.save_correction(&correction("first")).unwrap();
-    c.save_correction(&correction("second")).unwrap();
+    let reused = c.register_canonical(&canonical_path, &metadata).unwrap();
+    assert_eq!(reused.asset_id, first.asset_id);
+    assert_eq!(reused.source_id, first.source_id);
     assert_eq!(
-        c.correction_choices().unwrap(),
-        vec![
-            ("first".into(), asset.asset_id.clone()),
-            ("second".into(), asset.asset_id.clone())
-        ]
+        c.load_native(&first.asset_id)
+            .unwrap()
+            .1
+            .grid
+            .requested_bbox,
+        native.grid.requested_bbox
     );
-    let ids = vec!["second".into(), "first".into()];
-    let (_, loaded, selected) = c.load_selected(&asset.asset_id, &ids).unwrap();
-    assert_eq!(loaded.provenance.processing["asset_id"], asset.asset_id);
-    assert_eq!(
-        selected
-            .iter()
-            .map(|c| c.correction_id.as_str())
-            .collect::<Vec<_>>(),
-        ["second", "first"]
-    );
+    assert_eq!(c.asset_choices().unwrap().len(), 1);
+    canonical.values[0] = 8.;
+    let different_path = dir.path().join("different.nc");
+    mgb_ops::store::write_grid_series(&different_path, &canonical).unwrap();
+    assert!(c.register_canonical(&different_path, &metadata).is_err());
+    let original_identity = c.native_identity(&first.asset_id).unwrap();
+    let mut updated = native.clone();
+    updated.values[0] = 4.;
+    assert!(c.register_native(&src, &source, &updated).is_err());
+    assert_eq!(c.load_native(&first.asset_id).unwrap().1.values, [3.]);
     assert!(
-        c.load_corrections(&asset.asset_id, &["first".into(), "first".into()])
+        c.register_native_force(&src, &bad_source, &updated)
             .is_err()
     );
-    assert!(c.load_corrections("other", &["first".into()]).is_err());
-    assert!(c.load_corrections("other", &[]).is_err());
-    assert!(c.load_corrections(&asset.asset_id, &[]).unwrap().is_empty());
-    db.execute(
-        "UPDATE correction SET reason='' WHERE correction_id='first'",
-        [],
-    )
-    .unwrap();
-    assert_eq!(
-        c.load_corrections(&asset.asset_id, &["first".into()])
-            .unwrap()[0]
-            .reason,
-        ""
+    assert_eq!(c.load_native(&first.asset_id).unwrap().1.values, [3.]);
+    std::fs::write(&src, b"revised source").unwrap();
+    let mut revised_source = source.clone();
+    revised_source.sha256 = format!("{:x}", Sha256::digest(b"revised source"));
+    revised_source.byte_length = 14;
+    let mut identity = Sha256::new();
+    identity.update(revised_source.sha256.as_bytes());
+    identity.update(serde_json::to_vec(&revised_source.normalization_json).unwrap());
+    revised_source.source_id = format!("{:x}", identity.finalize());
+    updated.provenance.source_ids = vec![revised_source.source_id.clone()];
+    assert!(c.register_native(&src, &revised_source, &updated).is_err());
+    assert_eq!(c.load_native(&first.asset_id).unwrap().1.values, [3.]);
+    let guard = std::fs::File::open(dir.path().join(root).join("access.lock")).unwrap();
+    guard.lock_shared().unwrap();
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (done_tx, done_rx) = std::sync::mpsc::channel();
+    let workspace = dir.path().to_path_buf();
+    let writer_source = src.clone();
+    let writer_record = revised_source.clone();
+    let writer_grid = updated.clone();
+    let writer = std::thread::spawn(move || {
+        let mut catalog = ForecastCatalog::open_writable(&workspace, root).unwrap();
+        started_tx.send(()).unwrap();
+        let result = catalog.register_native_force(&writer_source, &writer_record, &writer_grid);
+        done_tx.send(result).unwrap();
+    });
+    started_rx.recv().unwrap();
+    assert!(matches!(
+        done_rx.recv_timeout(std::time::Duration::from_millis(100)),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+    ));
+    assert!(dir.path().join(&first.native_artifact).is_file());
+    drop(guard);
+    let second = done_rx.recv().unwrap().unwrap();
+    writer.join().unwrap();
+    assert_eq!(first.asset_id, second.asset_id);
+    assert_ne!(first.source_id, second.source_id);
+    assert_eq!(c.asset_choices().unwrap().len(), 1);
+    assert_ne!(first.native_artifact, second.native_artifact);
+    assert_ne!(
+        original_identity,
+        c.native_identity(&second.asset_id).unwrap()
     );
-    db.execute("UPDATE asset SET normalization_json='{'", [])
+    assert!(!dir.path().join(&first.native_artifact).exists());
+    assert!(!dir.path().join(&first.retained_source).exists());
+    assert_eq!(c.load_native(&second.asset_id).unwrap().1.values, [4.]);
+    let canonical_replacement = c
+        .register_canonical_force(&different_path, &metadata)
         .unwrap();
-    assert!(c.load_native(&asset.asset_id).is_err());
-    db.execute(
-        "UPDATE asset SET normalization_json=?",
-        [serde_json::to_string(&source.normalization_json).unwrap()],
-    )
-    .unwrap();
-    std::fs::write(dir.path().join(asset.retained_source), b"corrupt").unwrap();
-    assert!(c.load_native(&asset.asset_id).is_err());
+    assert_eq!(canonical_replacement.asset_id, first.asset_id);
+    assert_eq!(c.asset_choices().unwrap().len(), 1);
+    assert!(!dir.path().join(&second.native_artifact).exists());
+    assert_eq!(
+        c.load_native(&canonical_replacement.asset_id)
+            .unwrap()
+            .1
+            .values,
+        [8.]
+    );
+    let second = canonical_replacement;
+    assert_eq!(
+        c.load_native(&second.asset_id)
+            .unwrap()
+            .1
+            .grid
+            .requested_bbox,
+        canonical.grid.requested_bbox
+    );
+    std::fs::remove_file(dir.path().join(&second.retained_source)).unwrap();
+    std::fs::remove_file(&src).unwrap();
+    assert_eq!(c.load_native(&second.asset_id).unwrap().1.values, [8.]);
+    std::fs::write(dir.path().join(&second.native_artifact), b"corrupt").unwrap();
+    assert!(c.load_native(&second.asset_id).is_err());
 }
 
 #[test]
-fn canonical_netcdf_intake_keeps_bytes_and_existing_correction_workflow() {
-    use mgb_ops::analysis::corrected_forecast_frames;
+fn canonical_snapshot_contains_native_and_inline_selection() {
     use mgb_ops::store::{CanonicalForecastMetadata, write_grid_series};
-
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("external.nc");
     let cycle = Utc.with_ymd_and_hms(2026, 7, 20, 0, 0, 0).unwrap();
     let start = cycle.naive_utc();
-    let native = GridSeries {
+    let mut native = GridSeries {
         timeline: IntervalAxis {
             time_zone: "UTC".into(),
             bounds: vec![TimeInterval {
@@ -160,93 +196,53 @@ fn canonical_netcdf_intake_keeps_bytes_and_existing_correction_workflow() {
         valid: vec![true],
         provenance: Provenance {
             source_ids: vec!["external".into()],
-            processing: "original canonical provenance".into(),
+            processing: "original provenance".into(),
         },
     };
     write_grid_series(&input, &native).unwrap();
-    let original_bytes = std::fs::read(&input).unwrap();
-    let mut catalog =
-        ForecastCatalog::open(dir.path(), "forecasts.sqlite".as_ref(), "files".as_ref()).unwrap();
+    let root = std::path::Path::new("assets/forecasts");
+    let mut catalog = ForecastCatalog::open(dir.path(), root, root).unwrap();
     let metadata = CanonicalForecastMetadata {
         provider: "local".into(),
-        model: "forecast model".into(),
+        model: "model".into(),
         product: "rainfall".into(),
         cycle_utc: cycle,
     };
     let asset = catalog.register_canonical(&input, &metadata).unwrap();
     assert_eq!(
         catalog
-            .register_canonical(&input, &metadata)
+            .register_canonical_force(&input, &metadata)
             .unwrap()
             .asset_id,
         asset.asset_id
     );
-    assert_eq!(catalog.asset_choices().unwrap().len(), 1);
-    assert_eq!(catalog.asset_choices().unwrap()[0].provider, "local");
-
-    std::fs::write(&input, b"invalid new content").unwrap();
+    native.values[0] = 5.;
+    std::fs::remove_file(&input).unwrap();
+    write_grid_series(&input, &native).unwrap();
     assert!(catalog.register_canonical(&input, &metadata).is_err());
-    assert_eq!(
-        std::fs::read_dir(dir.path().join("files")).unwrap().count(),
-        1
-    );
-    for path in [&asset.retained_source, &asset.native_artifact] {
-        assert_eq!(
-            std::fs::read(dir.path().join(path)).unwrap(),
-            original_bytes
-        );
-    }
-    assert_eq!(catalog.load_native(&asset.asset_id).unwrap().1, native);
-
-    catalog
-        .register_corrections(&[ForecastCorrection {
-            correction_id: "scale".into(),
-            asset_id: asset.asset_id.clone(),
-            t0_hour: 0,
-            t1_hour: 1,
-            shift_lat_pixels: 0.,
-            shift_lon_pixels: 0.,
-            rotation_deg: 0.,
-            multiplication_factor: 2.,
-            editor: None,
-            reason: "review".into(),
-            created_at: "2026-07-20T00:00:00Z".into(),
-        }])
-        .unwrap();
-    let ids = vec!["scale".into()];
-    let (_, loaded, corrections) = catalog.load_selected(&asset.asset_id, &ids).unwrap();
-    assert_eq!(
-        loaded.provenance.processing["parent"],
-        native.provenance.processing
-    );
-    assert_eq!(
-        corrected_forecast_frames(&loaded, &corrections, &[0])
-            .unwrap()
-            .0[0]
-            .values,
-        [6.0]
-    );
-
+    let updated = catalog.register_canonical_force(&input, &metadata).unwrap();
+    assert_eq!(updated.asset_id, asset.asset_id);
+    assert_ne!(updated.source_id, asset.source_id);
+    assert_eq!(catalog.asset_choices().unwrap().len(), 1);
+    let asset = updated;
     let snapshot = dir.path().join("snapshot");
-    std::fs::create_dir_all(snapshot.join("sources/original")).unwrap();
-    std::fs::create_dir_all(snapshot.join("sources/native")).unwrap();
-    let snapshot_source = snapshot.join(asset.snapshot_source_path());
-    assert_eq!(snapshot_source.extension().unwrap(), "nc");
-    std::fs::copy(dir.path().join(&asset.retained_source), &snapshot_source).unwrap();
+    let snapshot_catalog = snapshot.join("sources/forecasts");
+    let selected = catalog
+        .snapshot_selected_values(
+            &snapshot_catalog,
+            &[ForecastSnapshotSelection {
+                asset_id: asset.asset_id.clone(),
+            }],
+        )
+        .unwrap();
+    assert_eq!(selected[0].0.asset_id, asset.asset_id);
     std::fs::copy(
         dir.path().join(&asset.native_artifact),
-        snapshot.join(format!("sources/native/{}.nc", asset.asset_id)),
+        snapshot_catalog.join(&asset.asset_id).join("native.nc"),
     )
     .unwrap();
-    let snapshot_db = snapshot.join("sources/forecast.sqlite");
-    catalog
-        .snapshot_selected(&snapshot_db, &[(asset.asset_id.clone(), ids.clone())])
-        .unwrap();
-    let reopened = ForecastCatalog::open_read_only(&snapshot, &snapshot_db).unwrap();
-    let (_, snapshot_native, snapshot_corrections) =
-        reopened.load_selected(&asset.asset_id, &ids).unwrap();
-    assert_eq!(snapshot_native, loaded);
-    assert_eq!(snapshot_corrections, corrections);
-    std::fs::write(&snapshot_source, b"not the retained bytes").unwrap();
-    assert!(reopened.load_native(&asset.asset_id).is_err());
+    let reopened =
+        ForecastCatalog::open_read_only(&snapshot, std::path::Path::new("sources/forecasts"))
+            .unwrap();
+    assert_eq!(reopened.load_native(&asset.asset_id).unwrap().1, native);
 }

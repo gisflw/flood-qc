@@ -97,6 +97,13 @@ fn valid_relative(path: &Path) -> bool {
 }
 
 pub fn collect_inputs(root: &Path) -> Result<Vec<InputReference>, String> {
+    collect_selected_inputs(root, &[Path::new("")])
+}
+
+pub(super) fn collect_selected_inputs(
+    root: &Path,
+    selected: &[&Path],
+) -> Result<Vec<InputReference>, String> {
     fn visit(root: &Path, relative: &Path, output: &mut Vec<InputReference>) -> Result<(), String> {
         let mut entries = fs::read_dir(root.join(relative))
             .map_err(|e| e.to_string())?
@@ -131,9 +138,76 @@ pub fn collect_inputs(root: &Path) -> Result<Vec<InputReference>, String> {
         }
         Ok(())
     }
+    collect_input_roots(root, selected, visit)
+}
+
+fn collect_input_roots(
+    root: &Path,
+    paths: &[&Path],
+    visit: fn(&Path, &Path, &mut Vec<InputReference>) -> Result<(), String>,
+) -> Result<Vec<InputReference>, String> {
     let mut references = Vec::new();
-    visit(root, Path::new(""), &mut references)?;
+    for path in paths {
+        let mut current = root.to_path_buf();
+        let mut missing = false;
+        for component in path.components() {
+            current.push(component.as_os_str());
+            match fs::symlink_metadata(&current) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err("symlink in input tree".into());
+                }
+                Ok(metadata) if !metadata.is_dir() => return Err("invalid input directory".into()),
+                Ok(_) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    missing = true;
+                    break;
+                }
+                Err(error) => return Err(error.to_string()),
+            }
+        }
+        if !missing {
+            visit(root, path, &mut references)?;
+        }
+    }
     Ok(references)
+}
+
+pub(super) fn validate_collected_inputs(
+    root: &Path,
+    inputs: &[InputReference],
+    actual: Vec<InputReference>,
+    exempt: &[&Path],
+) -> Result<(), String> {
+    let mut expected = std::collections::HashMap::new();
+    for input in inputs {
+        if expected.insert(&input.path, input).is_some() {
+            return Err("invalid input reference".into());
+        }
+        input_file(root, input)?;
+    }
+    for entry in actual {
+        if exempt.iter().any(|path| entry.path == *path) {
+            continue;
+        }
+        if expected.remove(&entry.path) != Some(&entry) {
+            return Err(format!(
+                "input integrity mismatch or unreferenced file: {}",
+                entry.path.display()
+            ));
+        }
+    }
+    if !expected.is_empty() {
+        return Err("missing indexed input".into());
+    }
+    Ok(())
+}
+
+fn validate_complete_inputs(
+    root: &Path,
+    inputs: &[InputReference],
+    exempt: &[&Path],
+) -> Result<(), String> {
+    validate_collected_inputs(root, inputs, collect_inputs(root)?, exempt)
 }
 
 pub fn verify_inputs(root: &Path, inputs: &[InputReference]) -> Result<(), String> {
@@ -283,8 +357,7 @@ pub fn write_run_manifest(root: &Path, manifest: &OperationManifest) -> Result<(
 }
 
 pub fn read_retained_manifest(root: &Path) -> Result<OperationManifest, String> {
-    let file = File::open(root.join("manifest.json")).map_err(|e| e.to_string())?;
-    let manifest: OperationManifest = serde_json::from_reader(file).map_err(|e| e.to_string())?;
+    let manifest: OperationManifest = super::read_draft(&root.join("manifest.json"))?;
     if manifest.state == "prepared" {
         return read_operation_manifest(root);
     }
@@ -301,8 +374,7 @@ pub fn read_retained_manifest(root: &Path) -> Result<OperationManifest, String> 
 }
 
 pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String> {
-    let file = File::open(root.join("manifest.json")).map_err(|e| e.to_string())?;
-    let manifest: OperationManifest = serde_json::from_reader(file).map_err(|e| e.to_string())?;
+    let manifest: OperationManifest = super::read_draft(&root.join("manifest.json"))?;
     if manifest.schema_version != 1
         || manifest.state != "prepared"
         || manifest.scenarios.is_empty()
@@ -361,13 +433,27 @@ pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String>
             return Err(format!("missing input reference: {}", required.display()));
         }
     }
-    verify_inputs(root, &manifest.inputs)?;
-    let actual = collect_inputs(root)?;
-    if actual.iter().any(|entry| {
-        entry.path != Path::new("manifest.json")
-            && !manifest.inputs.iter().any(|input| input.path == entry.path)
-    }) {
-        return Err("unreferenced file in prepared tree".into());
+    validate_complete_inputs(
+        root,
+        &manifest.inputs,
+        &[Path::new("manifest.json"), Path::new("input-set.json")],
+    )?;
+    if root.join("input-set.json").is_file() {
+        let frozen: super::InputSetManifest = super::read_draft(&root.join("input-set.json"))?;
+        let selected: Vec<_> = manifest
+            .inputs
+            .iter()
+            .filter(|file| {
+                file.path.starts_with("sources") || file.path.starts_with("baseline/Input")
+            })
+            .cloned()
+            .collect();
+        if frozen.files != selected
+            || frozen.recipe != manifest.recipe
+            || !manifest.inputs.contains(&frozen.engine)
+        {
+            return Err("input set disagrees with materialized preparation".into());
+        }
     }
     Ok(manifest)
 }
@@ -400,14 +486,12 @@ pub fn sync_tree(path: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-pub fn finalize_prepared(stage: &Path, destination: &Path) -> Result<(), String> {
+pub(crate) fn finalize_cache_stage(stage: &Path, destination: &Path) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
         use rustix::fs::{CWD, RenameFlags, renameat_with};
         renameat_with(CWD, stage, CWD, destination, RenameFlags::NOREPLACE)
-            .map_err(|e| e.to_string())?;
-        let parent = destination.parent().ok_or("destination has no parent")?;
-        sync_directory(parent)
+            .map_err(|e| e.to_string())
     }
     #[cfg(windows)]
     {
@@ -418,6 +502,12 @@ pub fn finalize_prepared(stage: &Path, destination: &Path) -> Result<(), String>
         let _ = (stage, destination);
         Err("atomic preparation finalization is not qualified on this platform".into())
     }
+}
+
+pub fn finalize_prepared(stage: &Path, destination: &Path) -> Result<(), String> {
+    finalize_cache_stage(stage, destination)?;
+    let parent = destination.parent().ok_or("destination has no parent")?;
+    sync_directory(parent)
 }
 
 pub fn publish_directory<T>(

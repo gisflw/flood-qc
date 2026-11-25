@@ -83,6 +83,12 @@ impl ProviderClient {
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_ana(mut self, endpoint: String) -> Self {
+        self.ana = endpoint;
+        self
+    }
+
     pub(crate) fn ana(
         &self,
         station: &str,

@@ -9,7 +9,7 @@ use std::path::{Component, Path};
 pub(crate) struct BundleManifest {
     pub version: u32,
     pub run_id: String,
-    pub preparation_engine: Option<InputReference>,
+    pub input_set_id: Option<String>,
     pub files: Vec<InputReference>,
 }
 
@@ -55,7 +55,7 @@ pub(crate) fn payload_index(root: &Path) -> Result<Vec<InputReference>, String> 
 pub(crate) fn validate_bundle(root: &Path) -> Result<BundleManifest, String> {
     let actual = payload_index(root)?;
     let bundle: BundleManifest = super::read_draft(&root.join("bundle.json"))?;
-    if bundle.version != 1
+    if bundle.version != 2
         || bundle
             .run_id
             .as_bytes()

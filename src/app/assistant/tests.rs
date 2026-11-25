@@ -35,9 +35,11 @@ fn open_setup(session: &Session) {
         "[run]\ntime_zone='UTC'\n[spatial]\nbounds=[-1.0,-1.0,1.0,1.0]\n",
     )
     .unwrap();
-    session.open_run_setup(
-        OperationalRun::open_workspace(session.workspace().into(), chrono::Utc::now()).unwrap(),
-    );
+    session
+        .open_run_setup(
+            OperationalRun::open_workspace(session.workspace().into(), chrono::Utc::now()).unwrap(),
+        )
+        .unwrap();
 }
 
 fn result(output: commands::Result) -> Value {
@@ -798,7 +800,7 @@ fn location_search_returns_sorted_ambiguous_station_matches() {
     let dir = temp();
     let session = session(dir.path());
     let mut store =
-        ObservationStore::create(&crate::app::operation_database(session.workspace()), "UTC")
+        ObservationStore::create(&crate::app::observation_assets(session.workspace()), "UTC")
             .unwrap();
     let station = |number: &str| Station {
         station_id: format!("ana:{number}"),

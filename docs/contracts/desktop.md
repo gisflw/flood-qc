@@ -50,7 +50,7 @@ See [saved-data workflows](saved-data.md) for request formats and outputs and
 ## Data and selection
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
-`operation.sqlite`, the [active rainfall
+the canonical observation assets, the [active rainfall
 cache](operations.md#active-run-and-rainfall-cache), and the workspace's active run.
 Charts, Files and Map open the active generation automatically. While viewing
 the active run, a newly published generation updates all three views. Map overlays
@@ -259,11 +259,13 @@ unsaved workspace settings.
 
 **Processing → Operation → New run** opens the workspace defaults. Edit the local reference
 hour and day horizons. The form shows the resulting coverage and scenarios.
-Use **Restore defaults** to select zero future rain and the latest usable raw
-cycle per product. Add, remove, reorder or pin scenarios for the current run.
-Add a corrected scenario for a specific cycle to edit its transformations and
-preview the raw and corrected grids on the same scale. Run changes are
-temporary. **Save preparation** freezes the selected inputs for later execution.
+Use **Restore defaults** to return to the configured scenarios or automatic
+selection. Each scenario can use zero rain, a normalized forecast, or an earlier
+scenario as its base. Add or reorder working-grid edits and preview their effects.
+See [scenarios](operations.md#scenarios) for time windows, region and
+transformation semantics. Changes apply to this session. The [input-set
+contract](inputs.md) describes retaining or discarding frozen inputs before
+replacement or leaving the workspace.
 
 **Processing → Review and runs → Observation review** shows availability and spatial rainfall checks.
 Load, edit, and save the ordered workspace observation edits from the same page.

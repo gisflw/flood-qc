@@ -118,7 +118,7 @@ impl Task {
             }
             Self::Init(path, zone) => {
                 let path = resolve(&path);
-                if path == mgb_ops::app::operation_database(workspace) {
+                if path == mgb_ops::app::observation_assets(workspace) {
                     mgb_ops::app::initialize_workspace(workspace)?;
                 } else {
                     ObservationStore::create(&path, &zone).map_err(|e| e.to_string())?;
@@ -487,7 +487,7 @@ impl Forms {
     ) -> Result<Option<Task>, String> {
         ui.heading(form.label(pt));
         if self.database.as_os_str().is_empty() {
-            self.database = mgb_ops::app::operation_database(&project.workspace);
+            self.database = mgb_ops::app::observation_assets(&project.workspace);
         }
         let task = match form {
             Form::Intake => self.intake(ui, pt, &project.time_zone),
@@ -605,9 +605,9 @@ impl Forms {
             path_field(
                 ui,
                 "database",
-                text(pt, "Observation database", "Banco de observações"),
+                text(pt, "Observation assets", "Dados observados"),
                 &mut self.database,
-                false,
+                true,
                 pt,
             );
             if self.bulletin_geometry.as_os_str().is_empty() {
@@ -894,13 +894,17 @@ impl Forms {
             path_field(
                 ui,
                 "database",
-                text(pt, "Observation database", "Banco de observações"),
+                text(pt, "Observation assets", "Dados observados"),
                 &mut self.database,
-                false,
+                true,
                 pt,
             );
             if ui
-                .button(text(pt, "Initialize database", "Inicializar banco"))
+                .button(text(
+                    pt,
+                    "Initialize observations",
+                    "Inicializar observações",
+                ))
                 .clicked()
             {
                 return Some(Task::Init(self.database.clone(), zone.into()));
@@ -980,9 +984,9 @@ impl Forms {
         path_field(
             ui,
             "database",
-            text(pt, "Observation database", "Banco de observações"),
+            text(pt, "Observation assets", "Dados observados"),
             &mut self.database,
-            false,
+            true,
             pt,
         );
         let mut edits_task = None;

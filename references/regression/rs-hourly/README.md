@@ -1,6 +1,6 @@
 # RS hourly regression reference
 
-The offline bundle is `/workspace/regression-rs-hourly`, outside Git. Its `case.json` fixes the operation, ordered scenarios, selected observations, corrections and complete application time axis. `manifest.json` records the source, interpreter, package, decoder and executable identities and retained-file hashes. `comparison.json` records the full capture/repeat comparison. The independently copied `frozen/` inputs contain the original history backup, native forecast grids, original GRIB downloads, runner inputs, engine and provenance; the capture does not read operational data.
+The offline bundle is `/workspace/mgb-ops/target/regression-rs-hourly`, outside Git. Its `case.json` fixes the operation, ordered scenarios, selected observations, corrections and complete application time axis. `manifest.json` records the source, interpreter, package, decoder and executable identities and retained-file hashes. `comparison.json` records the full capture/repeat comparison. The independently copied `frozen/` inputs contain the original history backup, native forecast grids, original GRIB downloads, runner inputs, engine and provenance; the capture does not read operational data.
 
 The reference is July 20, 2026 00:00 in `America/Sao_Paulo`. The application axis contains 241 historical and 121 forecast hourly labels, in that order, for 8,649 explicitly identified mini-basins. The four scenarios are zero, raw ECMWF, raw NOAA and corrected ECMWF. The ordered six NULL replacements and 101 station-offset records are retained in the canonical observations fixture. The forecast correction is applied to the native ECMWF grid before interval splitting and working-grid interpolation.
 
@@ -10,19 +10,22 @@ The engine overwrites the first 121 historical level rows in its combined histor
 
 ## Reproduce
 
-Use Linux and a clean `legacy_python` checkout at revision `15981642a7476fb583f63aeb89cdb1472cfd6b30`, with its Python environment and native dependencies recorded in the bundle manifest. Capture output paths must not already exist. These commands use no operational data:
+Use Linux and a clean `legacy_python` checkout at revision `15981642a7476fb583f63aeb89cdb1472cfd6b30`, with its Python environment and native dependencies recorded in the bundle manifest. Run from the Rust checkout and set `legacy_python` to that environment’s interpreter. The output directories must be new.
 
 ```sh
-/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/capture.py --case /workspace/regression-rs-hourly/case.json --output /path/to/fresh/capture
-/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/capture.py --case /workspace/regression-rs-hourly/case.json --output /path/to/fresh/repeat
-/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/compare.py --actual /path/to/fresh/repeat --expected /path/to/fresh/capture
-/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/compare.py --self-check
+legacy_python=/path/to/legacy_python/.venv/bin/python
+reference=/workspace/mgb-ops/target/regression-rs-hourly
+mkdir -p runs/rs-reference
+"$legacy_python" "$reference"/capture.py --case "$reference/case.json" --output runs/rs-reference/capture
+"$legacy_python" "$reference"/capture.py --case "$reference/case.json" --output runs/rs-reference/repeat
+"$legacy_python" "$reference"/compare.py --actual runs/rs-reference/repeat --expected runs/rs-reference/capture
+"$legacy_python" "$reference"/compare.py --self-check
 ```
 
 For later Rust acceptance, compare the appropriate stage with the accepted `capture/` as expected, for example:
 
 ```sh
-/workspace/legacy_python/.venv/bin/python /workspace/regression-rs-hourly/compare.py --actual /path/to/rust/results --expected /workspace/regression-rs-hourly/capture --stage observed
+"$legacy_python" "$reference"/compare.py --actual /path/to/rust/results --expected "$reference/capture" --stage observed
 ```
 
 Stages are `observed`, `normalization`, `forecast`, `engine` and `results`. Comparison is exact for arrays, masks, metadata, timestamps, identities and raw streams; creation/history metadata is excluded. A mismatch produces JSON and a nonzero exit. Direct ecCodes decoding and cropping reproduced both saved native arrays exactly. Fresh capture and repeat matched, historical outputs agreed across all scenarios, and each nonzero scenario differed from zero in forecast precipitation, flow and level. The comparator self-check rejected value, timestamp, missingness, nonfinite and truncated-stream mutations.

@@ -276,8 +276,8 @@ impl<'ast> Visit<'ast> for Gate {
                 .iter()
                 .map(|s| s.ident.to_string())
                 .collect::<Vec<_>>();
-            if self.owner != "app" || path != ["serde_json", "json"] {
-                self.error("JSON literals require serde_json::json in app");
+            if !["app", "store"].contains(&self.owner.as_str()) || path != ["serde_json", "json"] {
+                self.error("JSON literals require serde_json::json in app or store");
             }
             let parse = |input: syn::parse::ParseStream<'_>| json_value(input, self);
             if parse.parse2(mac.tokens.clone()).is_err() {
@@ -292,29 +292,6 @@ impl<'ast> Visit<'ast> for Gate {
                     .is_ok_and(|literal| literal.value() == "CARGO_PKG_VERSION")
             {
                 self.error("env permits only the assistant's Cargo package version");
-            }
-            return;
-        }
-        if name == "params" {
-            let path = mac
-                .path
-                .segments
-                .iter()
-                .map(|s| s.ident.to_string())
-                .collect::<Vec<_>>();
-            let expressions =
-                syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated
-                    .parse2(mac.tokens.clone());
-            if self.owner != "store" || !(path == ["params"] || path == ["rusqlite", "params"]) {
-                self.error("SQLite parameter macro is limited to store");
-            }
-            match expressions {
-                Ok(expressions) => {
-                    for expression in expressions {
-                        self.visit_expr(&expression);
-                    }
-                }
-                Err(_) => self.error("unsupported SQLite parameter expression"),
             }
             return;
         }
@@ -358,13 +335,9 @@ impl<'ast> Visit<'ast> for Gate {
             let asset = syn::parse2::<syn::LitStr>(mac.tokens.clone());
             let valid = mac.path.is_ident("include_str")
                 && asset.is_ok_and(|literal| {
-                    self.owner == "store"
-                        && self.source.as_deref() == Some(Path::new("store/observations.rs"))
-                        && literal.value() == "sql/observations.sql"
-                        || self.owner == "interface"
-                            && self.source.as_deref() == Some(Path::new("bin/desktop/icons.rs"))
-                            && literal.value()
-                                == "../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop"
+                    self.owner == "interface"
+                        && self.source.as_deref() == Some(Path::new("bin/desktop/icons.rs"))
+                        && literal.value() == "../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop"
                 });
             if !valid {
                 self.error("include_str permits only approved static text at its designated use");
@@ -470,7 +443,7 @@ impl<'ast> Visit<'ast> for Gate {
                         .get_ident()
                         .map(ToString::to_string)
                         .unwrap_or_default();
-                    if name == "arg" && key == "requires" {
+                    if name == "arg" && ["requires", "conflicts_with"].contains(&key.as_str()) {
                         let literal: syn::LitStr = meta.value()?.parse()?;
                         let argument = literal.value();
                         if argument.is_empty()
@@ -785,43 +758,13 @@ fn graph_fixtures() {
 }
 
 #[test]
-fn schema_inclusion_is_limited_to_its_owner_and_static_path() {
-    let source = r#"const DDL: &str = include_str!("sql/observations.sql");"#;
-    let path = Path::new("store/observations.rs");
-    assert!(check_source("store", source, 1, Some(path)).is_empty());
-    assert!(!check_source("app", source, 1, Some(path)).is_empty());
-    for expression in [
-        r#"include_str!(SCHEMA)"#,
-        r#"include_str!("../store/sql/observations_v1.sql")"#,
-        r#"include_str!("../analysis/schema.sql")"#,
-        r#"include_str!("sql/observations_v1.rs")"#,
-        r#"include_str!(concat!("sql/", "observations_v1.sql"))"#,
-        r#"include!("sql/observations_v1.sql")"#,
-    ] {
-        let code = format!("const DDL: &str = {expression};");
-        assert!(!check_source("store", &code, 1, Some(path)).is_empty());
-    }
-    assert!(!check_source("store", "pub use crate::adapters::Thing;", 1, Some(path)).is_empty());
-}
-
-#[test]
-fn sqlite_parameters_preserve_expression_checks() {
-    assert!(
-        check(
-            "store",
-            "fn x() { rusqlite::params![row.id, None::<f64>]; }"
-        )
-        .is_empty()
-    );
-    assert!(check("store", "fn x() { params![value]; }").is_empty());
+fn removed_sql_storage_macros_are_rejected() {
     for source in [
-        "fn x() { params![crate::analysis::value]; }",
-        "fn x() { params![include_str!(\"outside\")]; }",
-        "fn x() { params![other_macro!()]; }",
+        r#"const DDL: &str = include_str!("sql/observations.sql");"#,
+        "fn x() { rusqlite::params![row.id, None::<f64>]; }",
     ] {
-        assert!(!check("store", source).is_empty(), "accepted {source}");
+        assert!(!check("store", source).is_empty());
     }
-    assert!(!check("analysis", "fn x() { rusqlite::params![value]; }").is_empty());
 }
 
 #[test]
@@ -957,6 +900,14 @@ fn launcher_template_is_limited_to_the_icon_module() {
 
 #[test]
 fn json_literals_check_embedded_rust_paths() {
+    assert!(check("store", r#"fn f() { serde_json::json!({"key": 1}); }"#).is_empty());
+    assert!(
+        !check(
+            "store",
+            r#"fn f() { serde_json::json!({"key": crate::app::thing()}); }"#
+        )
+        .is_empty()
+    );
     assert!(
         check(
             "app",
@@ -980,4 +931,18 @@ fn json_literals_check_embedded_rust_paths() {
         .is_empty()
     );
     assert!(!check("app", r#"fn f() { json!({"key":1}); }"#).is_empty());
+}
+
+#[test]
+fn operational_storage_has_no_sqlite_dependency() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let lock: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap();
+    for package in lock["package"].as_array().unwrap() {
+        let name = package["name"].as_str().unwrap();
+        assert!(
+            !name.contains("sqlite"),
+            "operational SQLite dependency: {name}"
+        );
+    }
 }

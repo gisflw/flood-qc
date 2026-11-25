@@ -193,8 +193,8 @@ impl AcquisitionDocument {
             None
         } else {
             let document = ForecastDocument {
-                catalog: super::workspace::DATABASE_PATH.into(),
-                artifact_root: "assets".into(),
+                catalog: super::workspace::FORECASTS_PATH.into(),
+                artifact_root: "assets/forecasts".into(),
                 providers: options.forecast_providers,
                 lookback_cycles: options.lookback_cycles,
                 buffer_fraction: options.buffer_fraction,
@@ -268,7 +268,7 @@ pub fn acquire_inputs(
         Utc::now(),
     )?;
     let _lock = lock_workspace_job(&workspace).map_err(|e| e.to_string())?;
-    super::workspace::initialize_database(&workspace, document.time_zone)?;
+    super::workspace::initialize_assets(&workspace, document.time_zone)?;
     document.acquire_locked(&workspace, reference, Some(kind), control)
 }
 
@@ -292,7 +292,7 @@ pub fn import_ana_csv(
         return Err("Enable ANA in acquisition.observation_providers".into());
     }
     let _lock = lock_workspace_job(&workspace).map_err(|e| e.to_string())?;
-    super::workspace::initialize_database(&workspace, document.time_zone)?;
+    super::workspace::initialize_assets(&workspace, document.time_zone)?;
     let outcome = ana::replay(&workspace, reference, paths, control)?;
     Ok(AcquisitionReport {
         reference_time: reference.naive_local(),
@@ -312,9 +312,9 @@ pub fn import_workspace_inventory(workspace: &Path, inventory: &Path) -> Result<
     let input = fs::File::open(inventory).map_err(|e| e.to_string())?;
     let stations = crate::adapters::read_ana_inventory(input)?;
     let _lock = lock_workspace_job(&workspace).map_err(|e| e.to_string())?;
-    super::workspace::initialize_database(&workspace, zone)?;
+    super::workspace::initialize_assets(&workspace, zone)?;
     let mut db =
-        crate::store::ObservationStore::open_writable(&super::operation_database(&workspace))
+        crate::store::ObservationStore::open_writable(&super::observation_assets(&workspace))
             .map_err(|e| e.to_string())?;
     if db.time_zone().map_err(|e| e.to_string())? != zone.name() {
         return Err("observation database timezone differs from run.time_zone".into());
@@ -353,7 +353,7 @@ pub fn import_workspace_inventory(workspace: &Path, inventory: &Path) -> Result<
 }
 
 pub fn export_workspace_inventory(workspace: &Path, output: &Path) -> Result<usize, String> {
-    let db = crate::store::ObservationStore::open_read_only(&super::operation_database(workspace))
+    let db = crate::store::ObservationStore::open_read_only(&super::observation_assets(workspace))
         .map_err(|error| error.to_string())?;
     let mut writer = csv::Writer::from_writer(Vec::new());
     writer
@@ -367,14 +367,10 @@ pub fn export_workspace_inventory(workspace: &Path, output: &Path) -> Result<usi
         ])
         .map_err(|error| error.to_string())?;
     let mut count = 0;
-    for entry in db.station_locations().map_err(|error| error.to_string())? {
-        let station = entry.station;
+    for (station, variables) in db.station_inventory().map_err(|error| error.to_string())? {
         if station.provider_code != "ana" {
             continue;
         }
-        let variables = db
-            .observed_variables(&station.station_id)
-            .map_err(|error| error.to_string())?;
         let variables = if variables.is_empty() {
             "none".into()
         } else {

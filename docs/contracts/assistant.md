@@ -98,7 +98,7 @@ contract](series.md) defines timestamp, unit and missing-value behavior.
 ## Reviewing run parameters
 
 The assistant can propose the reference hour, horizons and the ordered scenario
-list, including corrections on pinned cycles. Review the changes and choose
+list, including base relationships and [hourly working-grid edits](operations.md#scenarios). Review the changes and choose
 **Apply** or **Reject** in the desktop, or use `:apply` or `:reject` in the CLI.
 Apply updates the current session. A proposal becomes stale when the form
 changes or the workspace closes. Submit the run from **New run** or the

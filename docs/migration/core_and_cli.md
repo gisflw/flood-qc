@@ -17,7 +17,7 @@ including its operational scripts. Port required script behavior into Rust.
 Follow the [architecture](../architecture.md) for module boundaries and execution
 lifecycle. Pass resolved data, paths, settings, and times into core operations.
 Preserve source data and record corrections explicitly. The desktop must not be
-the only way to perform a core operation. SQLite/NetCDF schemas and layouts are
+the only way to perform a core operation. Parquet/NetCDF schemas and layouts are
 settled with their operational capabilities.
 
 The [workspace contract](../contracts/workspace.md) describes current read-only

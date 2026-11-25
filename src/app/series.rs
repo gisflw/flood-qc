@@ -2,8 +2,8 @@ use crate::analysis::{
     HourlyWindow, effective_flow_observations, effective_observations, resolve_hourly_window,
 };
 use crate::store::{
-    IntervalAxis, ObservationSelection, ObservationStore, ObservationValue, ResultSeries,
-    StationResults, TimeInterval, read_result_series, read_retained_manifest, read_station_results,
+    IntervalAxis, ObservationStore, ObservationValue, ResultSeries, StationResults, TimeInterval,
+    read_result_series, read_retained_manifest, read_station_results,
 };
 use chrono::{Duration, NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize};
@@ -371,17 +371,9 @@ fn observation(
         time_zone: zone.into(),
         bounds,
     };
-    let store = ObservationStore::open_read_only(database).map_err(|e| e.to_string())?;
-    let (mut inputs, _) = store
-        .read_selection(
-            &ObservationSelection {
-                station_ids: vec![id.clone()],
-                provider_codes: vec![],
-            },
-            &axis,
-            replacements,
-        )
-        .map_err(|e| e.to_string())?;
+    let (mut inputs, _) =
+        ObservationStore::read_station_selection(database, id, &axis, replacements)
+            .map_err(|e| e.to_string())?;
     if let Some(values) = supplied {
         for value in values {
             crate::store::validate_replacement(value).map_err(|e| e.to_string())?;

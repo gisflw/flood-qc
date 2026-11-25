@@ -296,7 +296,7 @@ max_age_hours = 24
     let request = BulletinRequest {
         trial: root.join("trial"),
         scenario_id: "forecast".into(),
-        observations: root.join("observations.sqlite"),
+        observations: root.join("observations"),
         geometry: geometry.clone(),
         map_geometry: Some(polygons.clone()),
         profile,

@@ -36,7 +36,7 @@ fn series(
 #[test]
 fn integer_levels_null_and_atomic_rollback() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "America/Sao_Paulo").unwrap();
     let at = time("2026-01-01T01:00:00");
     let batch = ObservationBatch {
@@ -68,16 +68,7 @@ fn integer_levels_null_and_atomic_rollback() {
         ]
     );
     assert!(store.replacement_choices().unwrap().is_empty());
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT typeof(value) FROM observation WHERE series_id='l'",
-            [],
-            |r| r.get::<_, String>(0)
-        )
-        .unwrap(),
-        "integer"
-    );
+    assert_level_int32(&path, "l");
     let bad = ObservationBatch {
         stations: vec![Station {
             station_id: "new".into(),
@@ -92,16 +83,13 @@ fn integer_levels_null_and_atomic_rollback() {
         ..Default::default()
     };
     assert!(store.write_batch(&bad).is_err());
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM station WHERE station_id='new'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        0
+    assert!(
+        !store
+            .station_locations()
+            .unwrap()
+            .iter()
+            .any(|s| s.station.station_id == "new")
     );
-    drop(conn);
     drop(store);
     let store = ObservationStore::open_read_only(&path).unwrap();
     let (inputs, offsets) = store
@@ -127,23 +115,22 @@ fn integer_levels_null_and_atomic_rollback() {
 #[test]
 fn fractional_level_and_missing_schema_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "UTC").unwrap();
     store
         .write_batch(&ObservationBatch {
             stations: vec![station()],
             series: vec![series("l", "level", "cm", None)],
+            samples: vec![ObservationSample {
+                series_id: "l".into(),
+                observed_at: time("2026-01-01T01:00:00"),
+                value: Some(ObservationValue::LevelCm(1)),
+            }],
             ..Default::default()
         })
         .unwrap();
     drop(store);
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute(
-        "INSERT INTO observation VALUES ('l','2026-01-01T01:00:00',1.5)",
-        [],
-    )
-    .unwrap();
-    drop(conn);
+    corrupt_level(&path, "l", 1.5);
     let store = ObservationStore::open_read_only(&path).unwrap();
     assert!(
         store
@@ -164,16 +151,15 @@ fn fractional_level_and_missing_schema_are_rejected() {
             .is_err()
     );
     drop(store);
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("DROP TABLE level_reference").unwrap();
-    drop(conn);
+    let manifest = current_manifest(&path);
+    std::fs::remove_file(path.join(manifest["tables"]["references"].as_str().unwrap())).unwrap();
     assert!(ObservationStore::open_read_only(&path).is_err());
 }
 #[test]
 fn invalid_batches_and_existing_destination_preserve_data() {
     use mgb_ops::StationOffset;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "UTC").unwrap();
     assert!(ObservationStore::create(&path, "UTC").is_err());
     let base = ObservationBatch {
@@ -280,7 +266,7 @@ fn invalid_batches_and_existing_destination_preserve_data() {
 fn signed_levels_offsets_and_local_dst_fail_atomically() {
     use mgb_ops::StationOffset;
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "America/New_York").unwrap();
     let base = ObservationBatch {
         stations: vec![station()],
@@ -346,22 +332,8 @@ fn signed_levels_offsets_and_local_dst_fail_atomically() {
     assert_eq!(read.samples, samples);
     assert_eq!(read.stations.len(), 1);
     drop(store);
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    assert_eq!(
-        conn.query_row(
-            "SELECT count(*) FROM observation WHERE typeof(value)='integer'",
-            [],
-            |r| r.get::<_, i64>(0)
-        )
-        .unwrap(),
-        4
-    );
-    conn.execute(
-        "INSERT INTO observation VALUES ('l','2026-01-01T05:00:00',2147483648)",
-        [],
-    )
-    .unwrap();
-    drop(conn);
+    assert_level_int32(&path, "l");
+    corrupt_level(&path, "l", 2147483648.0);
     let store = ObservationStore::open_read_only(&path).unwrap();
     let mut bad = interval;
     bad.bounds[0].end = time("2026-01-01T06:00:00");
@@ -381,7 +353,7 @@ fn signed_levels_offsets_and_local_dst_fail_atomically() {
 #[test]
 fn replacement_ids_must_exist_and_be_unique() {
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "UTC").unwrap();
     store
         .write_batch(&ObservationBatch {
@@ -432,7 +404,7 @@ fn replacement_ids_must_exist_and_be_unique() {
 fn canonical_ingest_retries_and_inventory_changes_preserve_identity() {
     use mgb_ops::{ObservationReplacement, ReplacementKind, StationOffset};
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "UTC").unwrap();
     let at = time("2026-01-01T01:00:00");
     let batch = ObservationBatch {
@@ -512,7 +484,7 @@ fn fresh_schema_supports_flow_edits_and_references() {
     use mgb_ops::{ObservationReplacement, ReplacementKind};
     for write_references in [false, true] {
         let dir = tempfile::tempdir().unwrap();
-        let path = dir.path().join("observations.sqlite");
+        let path = dir.path().join("observations");
         let mut store = ObservationStore::create(&path, "UTC").unwrap();
         let at = time("2026-01-01T01:00:00");
         let rain = ObservationReplacement {
@@ -559,4 +531,65 @@ fn fresh_schema_supports_flow_edits_and_references() {
         assert_eq!(read.read_level_references().unwrap(), references);
         store.replace_level_references(&references).unwrap();
     }
+}
+
+fn partition(path: &std::path::Path, id: &str) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let manifest = current_manifest(path);
+    let prefix = format!("{:x}", Sha256::digest(id.as_bytes()));
+    let entry = manifest["partitions"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(key, _)| key.starts_with(&prefix))
+        .unwrap()
+        .1
+        .as_str()
+        .unwrap();
+    path.join(entry)
+}
+fn assert_level_int32(path: &std::path::Path, id: &str) {
+    use parquet::{
+        basic::Type,
+        file::reader::{FileReader, SerializedFileReader},
+    };
+    let reader =
+        SerializedFileReader::new(std::fs::File::open(partition(path, id)).unwrap()).unwrap();
+    assert_eq!(
+        reader.metadata().row_group(0).column(4).column_type(),
+        Type::INT32
+    );
+}
+fn corrupt_level(path: &std::path::Path, id: &str, value: f64) {
+    use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("series_id", DataType::Utf8, true),
+        Field::new("observed_at", DataType::Utf8, true),
+        Field::new("rain", DataType::Float64, true),
+        Field::new("flow", DataType::Float64, true),
+        Field::new("level", DataType::Float64, true),
+    ]));
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(vec![id])),
+        Arc::new(StringArray::from(vec!["2026-01-01T01:00:00"])),
+        Arc::new(Float64Array::from(vec![None::<f64>])),
+        Arc::new(Float64Array::from(vec![None::<f64>])),
+        Arc::new(Float64Array::from(vec![Some(value)])),
+    ];
+    let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+    let mut writer = ArrowWriter::try_new(
+        std::fs::File::create(partition(path, id)).unwrap(),
+        schema,
+        None,
+    )
+    .unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+}
+
+fn current_manifest(root: &std::path::Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(root.join("current.json")).unwrap()).unwrap()
 }

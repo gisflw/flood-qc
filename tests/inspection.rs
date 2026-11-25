@@ -212,9 +212,9 @@ fn cli_paths_output_and_preservation() {
         b"[spatial]\ngpkg_path = 'geometry.gpkg'\n",
     );
     for name in [
-        "operation.sqlite",
-        "operation.sqlite-wal",
-        "operation.sqlite-shm",
+        "assets/observations",
+        "assets/observations-wal",
+        "assets/observations-shm",
     ] {
         put(&w.join(name), b"sentinel");
     }

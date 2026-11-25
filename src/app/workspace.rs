@@ -118,6 +118,16 @@ pub struct WorkspaceConfig {
     pub precipitation_interpolation: Option<super::InterpolationDocument>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub precipitation_exclude: Option<PrecipitationQcPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forcing: Option<super::ForcingDocument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calibration: Option<super::CalibrationDocument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hot_start: Option<super::HotStartDocument>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing: Option<super::RoutingMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scenarios: Option<Vec<super::RunScenario>>,
 }
 type Config = WorkspaceConfig;
 
@@ -187,7 +197,8 @@ impl Default for WorkspaceAcquisition {
 }
 
 pub(super) const CONFIG_PATH: &str = "config.toml";
-pub(super) const DATABASE_PATH: &str = "operation.sqlite";
+pub(super) const OBSERVATIONS_PATH: &str = "assets/observations";
+pub(super) const FORECASTS_PATH: &str = "assets/forecasts";
 
 pub fn read_workspace_config(path: &Path) -> Result<WorkspaceConfig, String> {
     let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -225,7 +236,10 @@ pub(super) fn default_engine() -> &'static str {
 
 pub fn example_config() -> String {
     format!(
-        r#"[run]
+        r#"# Optional root routing default: inertial
+# routing = "inertial"
+
+[run]
 # Required for operations. No default timezone.
 # time_zone = "America/Sao_Paulo"
 # Defaults
@@ -275,6 +289,31 @@ mini_layers = "source/geometry.gpkg"
 # sequence_lower_mm = 0.0
 # sequence_upper_mm = 1.0
 # sequence_min_length = 5
+
+# Optional routine defaults. Canonical forcing paths are Parquet files.
+# [forcing]
+# wind_observations = "assets/wind/observations.parquet"
+# reservoir_schedules = "assets/reservoirs/schedules.parquet"
+# [[forcing.mappings.wind]]
+# block = 1
+# series_id = "inmet:station"
+# [[forcing.mappings.qobs]]
+# mini_id = 1
+# series_id = "ana:station.flow.raw"
+
+# [calibration]
+# use_edited_geometry = false
+# soil = "model/calibration/paruso.hig"
+
+# Optional default scenario; omit scenarios for automatic zero and latest forecasts.
+# [[scenarios]]
+# id = "wet"
+# base = {{ kind = "forecast", forecast = "ecmwf" }}
+# [[scenarios.edits]]
+# start = "2026-07-20T06:00:00"
+# end = "2026-07-20T18:00:00"
+# multiplication_factor = 1.8
+# rotation_deg = 45.0
 "#,
         default_engine()
     )
@@ -558,7 +597,7 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
             }),
     );
     for (name, relative) in [
-        ("database", DATABASE_PATH),
+        ("database", OBSERVATIONS_PATH),
         ("cache", "cache"),
         ("runs", "cache/run"),
     ] {
@@ -588,8 +627,12 @@ pub fn workspace_config_path(workspace: &Path) -> PathBuf {
     workspace.join(CONFIG_PATH)
 }
 
-pub fn operation_database(workspace: &Path) -> PathBuf {
-    workspace.join(DATABASE_PATH)
+pub fn forecast_assets(workspace: &Path) -> PathBuf {
+    workspace.join(FORECASTS_PATH)
+}
+
+pub fn observation_assets(workspace: &Path) -> PathBuf {
+    workspace.join(OBSERVATIONS_PATH)
 }
 
 pub fn initialize_workspace(workspace: &Path) -> Result<PathBuf, String> {
@@ -603,8 +646,8 @@ pub fn initialize_workspace(workspace: &Path) -> Result<PathBuf, String> {
         .ok_or("Set run.time_zone")?;
     let _lock =
         super::operation::lock_workspace_job(&workspace).map_err(|error| error.to_string())?;
-    initialize_database(&workspace, zone)?;
-    let path = operation_database(&workspace);
+    initialize_assets(&workspace, zone)?;
+    let path = observation_assets(&workspace);
     let observations =
         crate::store::ObservationStore::open_read_only(&path).map_err(|error| error.to_string())?;
     if observations
@@ -614,16 +657,20 @@ pub fn initialize_workspace(workspace: &Path) -> Result<PathBuf, String> {
     {
         return Err("Database timezone differs from run.time_zone".into());
     }
-    crate::store::ForecastCatalog::open_read_only(&workspace, &path)
-        .map_err(|error| error.to_string())?;
+    crate::store::ForecastCatalog::open(
+        &workspace,
+        &forecast_assets(&workspace),
+        Path::new("assets/forecasts"),
+    )
+    .map_err(|error| error.to_string())?;
     Ok(path)
 }
 
-pub(super) fn initialize_database(workspace: &Path, zone: chrono_tz::Tz) -> Result<(), String> {
-    let path = operation_database(workspace);
+pub(super) fn initialize_assets(workspace: &Path, zone: chrono_tz::Tz) -> Result<(), String> {
+    let path = observation_assets(workspace);
+    fs::create_dir_all(workspace.join("assets")).map_err(|e| e.to_string())?;
     if !path.exists() {
-        crate::store::ObservationStore::create_operation(&path, zone.name())
-            .map_err(|e| e.to_string())?;
+        crate::store::ObservationStore::create(&path, zone.name()).map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -675,7 +722,7 @@ pub(super) fn operational_document(
     let engine = config.engine.clone().unwrap_or_default();
     let spatial = config.spatial.clone().unwrap_or_default();
     let acquisition = config.acquisition.clone().unwrap_or_default();
-    let database = operation_database(workspace);
+    let database = observation_assets(workspace);
     let input_dir = PathBuf::from(engine.input_dir.unwrap_or_else(|| "model/Input".into()));
     let local = reference.naive_local();
     let first =
@@ -756,11 +803,13 @@ pub(super) fn operational_document(
             input_dir,
             omp_threads: engine.omp_threads.unwrap_or(4),
         },
-        forecasts: ForecastsDocument { catalog: database },
+        forecasts: ForecastsDocument {
+            catalog: forecast_assets(workspace),
+        },
         scenarios,
-        forcing: None,
-        calibration: None,
-        hot_start: None,
-        routing: None,
+        forcing: config.forcing.clone(),
+        calibration: config.calibration.clone(),
+        hot_start: config.hot_start.clone(),
+        routing: config.routing,
     })
 }

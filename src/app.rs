@@ -16,7 +16,7 @@ mod operational_run;
 mod rainfall;
 pub use self::operational_run::{
     ForecastAdjustment, ForecastPreview, OperationalRun, OperationalRunReport, RunParameters,
-    RunScenario,
+    RunScenario, ScenarioBase,
 };
 pub use self::rainfall::{
     CachedRainfall, RainfallCacheReader, RainfallPeriod, query_cached_rainfall, rainfall_cache_info,
@@ -70,7 +70,7 @@ use self::workspace::absolute;
 pub use self::workspace::{
     Finding, FindingCode, FindingStatus, InspectionReport, InspectionRequest, WorkspaceAcquisition,
     WorkspaceConfig, WorkspaceEngine, WorkspaceRun, WorkspaceSpatial, example_config,
-    initialize_workspace, inspect, operation_database, read_workspace_config,
+    forecast_assets, initialize_workspace, inspect, observation_assets, read_workspace_config,
     workspace_config_path, write_workspace_config,
 };
 
@@ -121,4 +121,11 @@ pub use self::assistant::{
 mod source_acquisition;
 pub use self::source_acquisition::{
     AcquisitionSource, SourceAcquisitionReport, SourceAcquisitionRequest, acquire_source,
+};
+
+mod input_sets;
+pub use self::input_sets::{
+    InputDisposition, capture_run_inputs, capture_workspace_inputs, current_workspace_inputs,
+    discard_workspace_inputs, execute_input_set, save_workspace_inputs,
+    workspace_inputs_need_decision,
 };

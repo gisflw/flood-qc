@@ -1,3 +1,4 @@
+pub(crate) mod parquet;
 pub(crate) use self::geometry::parse_basin_geometry;
 mod geometry;
 pub use self::geometry::{
@@ -62,7 +63,7 @@ pub use self::forcing::{
     ForcingSelections, ObservedFlowMapping, PreparedAdditionalForcing, ReleaseExtrapolation,
     ReleaseExtrapolationMethod, ReservoirMapping, ReservoirScheduleSample, ReservoirSchedules,
     WindMapping, WindObservations, WindSample, WindVector, read_reservoir_schedules,
-    read_wind_observations,
+    read_wind_observations, write_reservoir_schedules, write_wind_observations,
 };
 mod calibration;
 pub(crate) use self::calibration::save_calibration;
@@ -107,3 +108,16 @@ mod assistant_history;
 pub use self::assistant_history::{
     ChatHistory, ChatHistoryStore, SavedActivity, SavedChat, SavedTurn,
 };
+
+mod input_sets;
+pub use self::input_sets::{
+    CurrentInputSet, InputSetManifest, current_input_root, current_input_set, read_input_set,
+    save_input_set,
+};
+pub(crate) use self::input_sets::{
+    clean_materialized_inputs, discard_current_inputs, publish_captured_input_set,
+    save_current_inputs, stage_preparation, write_cache_json,
+};
+
+mod acquisition;
+pub(crate) use self::acquisition::AnaPartialCoverage;

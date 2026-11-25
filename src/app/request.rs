@@ -140,9 +140,12 @@ pub struct ForecastsDocument {
 #[serde(deny_unknown_fields)]
 pub struct ScenarioDocument {
     pub id: String,
-    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub asset_id: Option<String>,
-    pub correction_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<crate::analysis::ScenarioGridEdit>,
 }
 pub(super) struct ValidatedRequest {
     pub document: PreparationDocument,
@@ -568,23 +571,27 @@ pub(super) fn validate_document(
                 "IDs must be unique and match [A-Za-z0-9][A-Za-z0-9_-]{0,63}",
             ));
         }
-        let asset = scenario
+        if scenario
             .asset_id
             .as_ref()
-            .is_some_and(|id| !id.trim().is_empty());
-        let corrections = scenario.correction_ids.as_deref().unwrap_or(&[]);
-        identifiers("scenarios.correction_ids", corrections)?;
-        let valid = match scenario.kind.as_str() {
-            "zero" => scenario.asset_id.is_none() && scenario.correction_ids.is_none(),
-            "raw" => asset && corrections.is_empty(),
-            "corrected" => asset && !corrections.is_empty(),
-            _ => false,
-        };
-        if !valid {
+            .is_some_and(|id| id.trim().is_empty())
+            || (scenario.asset_id.is_some() && scenario.base.is_some())
+        {
             return Err(invalid(
                 "scenarios",
-                "invalid kind/asset/correction selection",
+                "select zero, one forecast asset or one earlier scenario",
             ));
+        }
+        if let Some(base) = &scenario.base
+            && (base == &scenario.id || !scenario_ids.contains(base))
+        {
+            return Err(invalid(
+                "scenarios.base",
+                "base must name an earlier scenario",
+            ));
+        }
+        for edit in &scenario.edits {
+            edit.validate().map_err(|e| invalid("scenarios.edits", e))?;
         }
     }
     Ok(ValidatedRequest {
@@ -616,7 +623,7 @@ pub(super) fn resolve_request(
         workspace,
         "observed.path",
         &mut document.observed.path,
-        false,
+        true,
     )?;
     resolve_file(
         workspace,
@@ -666,13 +673,13 @@ pub(super) fn resolve_request(
     if document
         .scenarios
         .iter()
-        .any(|scenario| scenario.kind != "zero")
+        .any(|scenario| scenario.asset_id.is_some())
     {
         resolve_file(
             workspace,
             "forecasts.catalog",
             &mut document.forecasts.catalog,
-            false,
+            true,
         )?;
     } else {
         if document.forecasts.catalog.as_os_str().is_empty()
@@ -703,7 +710,7 @@ historical_last_end = "2026-07-20T00:00:00"
 forecast_first_end = "2026-07-20T01:00:00"
 forecast_last_end = "2026-07-25T01:00:00"
 [observed]
-path = "observations.sqlite"
+path = "observations"
 provider_codes = ["ana"]
 station_ids = []
 replacement_ids = []
@@ -727,10 +734,9 @@ executable = "engine"
 input_dir = "Input"
 omp_threads = 1
 [forecasts]
-catalog = "missing-forecast.sqlite"
+catalog = "missing-forecast-assets"
 [[scenarios]]
 id = "zero"
-kind = "zero"
 "#
         .into()
     }
@@ -845,7 +851,8 @@ kind = "zero"
     #[test]
     fn saved_axis_and_paths_are_explicit_and_zero_needs_no_forecast_catalog() {
         let dir = tempfile::tempdir().unwrap();
-        for file in ["observations.sqlite", "MINI.gtp", "engine"] {
+        std::fs::create_dir(dir.path().join("observations")).unwrap();
+        for file in ["MINI.gtp", "engine"] {
             std::fs::write(dir.path().join(file), b"fixture").unwrap();
         }
         std::fs::create_dir(dir.path().join("Input")).unwrap();
@@ -881,11 +888,10 @@ kind = "zero"
             request_text().replace("replacement_ids = []\n", ""),
             request_text().replace("replacement_ids = []", "replacement_ids = [\"r\",\"r\"]"),
             request_text().replace("id = \"zero\"", "id = \"../escape\""),
-            request_text().replace("kind = \"zero\"", "kind = \"zero\"\nasset_id = \"x\""),
-            request_text().replace("kind = \"zero\"", "kind = \"raw\""),
+            request_text().replace("id = \"zero\"", "id = \"zero\"\nbase = \"zero\""),
             request_text().replace(
-                "kind = \"zero\"",
-                "kind = \"corrected\"\nasset_id = \"x\"\ncorrection_ids = []",
+                "id = \"zero\"",
+                "id = \"zero\"\nasset_id = \"x\"\nbase = \"other\"",
             ),
             request_text().replace("sequence_upper_mm = 1.0", "sequence_upper_mm = 0.0"),
             request_text().replace("omp_threads = 1", "omp_threads = 0"),
@@ -894,7 +900,7 @@ kind = "zero"
             std::fs::write(&path, text).unwrap();
             assert!(read_request(dir.path(), &path).is_err());
         }
-        if dir.path().join("missing-forecast.sqlite").exists() {
+        if dir.path().join("missing-forecast-assets").exists() {
             panic!("invalid requests created a catalog");
         }
     }

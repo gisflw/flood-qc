@@ -230,7 +230,7 @@ fn canonical_comparisons_are_isolated_and_csv_is_atomic() {
         ObservationBatch, ObservationSample, ObservationSeries, ObservationStore, ObservationValue,
         Station,
     };
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let start = basin.timeline.bounds[0].start;
     let mut database = ObservationStore::create(&path, "UTC").unwrap();
     for (id, value) in [("A,é", 10), ("002", 19)] {
@@ -347,7 +347,7 @@ fn observed_endpoints_and_supplied_rain_edits() {
         Variable, query_series,
     };
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let (_, _, window) = fixture();
     let start = NaiveDate::from_ymd_opt(2026, 1, 1)
         .unwrap()
@@ -567,12 +567,12 @@ fn observed_endpoints_and_supplied_rain_edits() {
         false
     );
     assert_eq!(std::fs::read(&cli_path).unwrap(), previous);
-    let conn = rusqlite::Connection::open(path).unwrap();
-    assert_eq!(
-        conn.query_row("SELECT count(*) FROM observation_replacement", [], |r| r
-            .get::<_, i64>(0))
-            .unwrap(),
-        0
+    assert!(
+        ObservationStore::open_read_only(&path)
+            .unwrap()
+            .replacement_choices()
+            .unwrap()
+            .is_empty()
     );
 }
 

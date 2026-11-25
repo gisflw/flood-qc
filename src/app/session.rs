@@ -30,6 +30,7 @@ struct State {
     selection: RunSelection,
     run_revision: u64,
     setup: Option<OperationalRun>,
+    configuration: Option<super::WorkspaceConfig>,
     setup_revision: u64,
     job: bool,
 }
@@ -69,13 +70,24 @@ impl Session {
             || super::workspace_config_path(&settings.workspace),
             |path| absolute(&settings.invocation_dir, path),
         ));
+        let configuration = super::read_workspace_config(settings.config.as_deref().unwrap()).ok();
+        let setup = configuration.clone().and_then(|config| {
+            OperationalRun::from_config(
+                settings.workspace.clone(),
+                config,
+                settings.config.clone().unwrap(),
+                chrono::Utc::now(),
+            )
+            .ok()
+        });
         Self {
             settings: Arc::new(settings),
             id: next_id(),
             state: Arc::new(Mutex::new(State {
                 selection: RunSelection::Active,
                 run_revision: 0,
-                setup: None,
+                setup,
+                configuration,
                 setup_revision: 0,
                 job: false,
             })),
@@ -113,10 +125,68 @@ impl Session {
         })
     }
 
-    pub fn open_run_setup(&self, operation: OperationalRun) {
+    pub fn open_run_setup(&self, operation: OperationalRun) -> Result<(), String> {
         let mut state = self.state();
+        if state.job {
+            return Err("An operation is running".into());
+        }
+        if operation.workspace() != self.workspace() || operation.recipe_path() != self.config() {
+            return Err("run setup belongs to a different workspace or configuration".into());
+        }
         state.setup = Some(operation);
         state.setup_revision += 1;
+        Ok(())
+    }
+
+    pub fn configuration(&self) -> Option<super::WorkspaceConfig> {
+        self.state().configuration.clone()
+    }
+
+    /// Applies defaults to this session, preserving its explicit experiment parameters.
+    pub fn set_configuration(&self, config: super::WorkspaceConfig) -> Result<(), String> {
+        let mut state = self.state();
+        if state.job {
+            return Err("An operation is running".into());
+        }
+        let mut operation = OperationalRun::from_config(
+            self.workspace().into(),
+            config.clone(),
+            self.config().into(),
+            chrono::Utc::now(),
+        )?;
+        if let Some(previous) = &state.setup {
+            operation.set_parameters(previous.parameters().clone());
+        }
+        state.configuration = Some(config);
+        state.setup = Some(operation);
+        state.setup_revision += 1;
+        Ok(())
+    }
+
+    pub fn reload_configuration(&self) -> Result<(), String> {
+        self.set_configuration(super::read_workspace_config(self.config())?)
+    }
+
+    /// Admits the job and captures the run under the same mutex as parameter updates.
+    pub fn start_job_with_setup(&self) -> Result<(WorkspaceJob, Option<RunSetupSnapshot>), String> {
+        let mut state = self.state();
+        if state.job {
+            return Err("A job is already active in this workspace".into());
+        }
+        let operation = state
+            .setup
+            .as_ref()
+            .map(|operation| operation.at_admission(chrono::Utc::now()))
+            .transpose()?;
+        let snapshot = operation.map(|operation| RunSetupSnapshot {
+            revision: RunSetupRevision {
+                session: self.id,
+                revision: state.setup_revision,
+            },
+            operation,
+        });
+        state.job = true;
+        Ok((WorkspaceJob(self.clone()), snapshot))
     }
 
     pub fn update_run_setup(

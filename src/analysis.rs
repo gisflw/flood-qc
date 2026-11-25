@@ -23,10 +23,10 @@ pub use self::spatial::{
     interpolate_grid_to_basins, interpolate_stations,
 };
 
-pub(crate) use self::forecast::forecast_interval_selection;
 pub use self::forecast::{
-    ForecastPreparationError, ForecastPreparationRequest, corrected_forecast_frames,
-    prepare_forecast, prepare_zero_forecast,
+    ForecastPreparationError, ForecastPreparationRequest, ScenarioGridEdit,
+    apply_scenario_grid_edits, corrected_forecast_frames, forecast_working_grid, prepare_forecast,
+    prepare_zero_forecast,
 };
 
 mod forcing;

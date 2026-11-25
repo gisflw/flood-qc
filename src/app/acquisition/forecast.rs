@@ -42,7 +42,12 @@ fn complete_grid(
 ) -> bool {
     let [west, south, east, north] = grid.grid.effective_bbox;
     let [model_west, model_south, model_east, model_north] = model_bbox;
-    if grid.grid.requested_bbox != request.crop_bbox
+    if grid
+        .grid
+        .requested_bbox
+        .iter()
+        .zip(request.crop_bbox)
+        .any(|(saved, requested)| (saved - requested).abs() > 1e-9)
         || grid.timeline.time_zone != request.operation_timezone.name()
         || (grid.grid.resolution_degrees - 0.25).abs() > 1e-9
         || west > model_west + 1e-9
@@ -50,17 +55,6 @@ fn complete_grid(
         || east < model_east - 1e-9
         || north < model_north - 1e-9
     {
-        return false;
-    }
-    let metadata = &grid.provenance.processing;
-    let Some(unique) = metadata["selected_message_count"]
-        .as_u64()
-        .zip(metadata["duplicate_message_count"].as_u64())
-        .and_then(|(selected, duplicates)| selected.checked_sub(duplicates))
-    else {
-        return false;
-    };
-    if unique != leads.len() as u64 {
         return false;
     }
     let labels = leads.iter().copied().filter(|lead| *lead > 0);
@@ -126,7 +120,8 @@ impl Download<'_> {
             let cycle_local = cycle.with_timezone(&reference.timezone());
             let mut matching = None;
             for choice in choices.iter().filter(|choice| {
-                choice.provider == code
+                !self.control.force_acquisition()
+                    && choice.provider == code
                     && choice.model == model
                     && choice.product == "fc"
                     && choice.cycle_utc == cycle_id
@@ -134,12 +129,7 @@ impl Download<'_> {
                 let (asset, grid) = catalog
                     .load_native(&choice.asset_id)
                     .map_err(|e| e.to_string())?;
-                if asset
-                    .retained_source
-                    .extension()
-                    .is_some_and(|ext| ext == "grib2")
-                    && complete_grid(&grid, &request, self.config.model_bbox, &leads)
-                {
+                if complete_grid(&grid, &request, self.config.model_bbox, &leads) {
                     if matching.is_some() {
                         return Err(format!(
                             "multiple matching {code} forecast assets for {}",
@@ -153,26 +143,6 @@ impl Download<'_> {
                 self.record(outcome, cycle, asset, &grid, true);
                 return Ok(());
             }
-            let retained = self
-                .workspace
-                .join("downloads")
-                .join(code)
-                .join(format!("{model}_fc_{}.grib2", cycle.format("%Y%m%dT%H%MZ")));
-            if self.config.artifact_root == Path::new("assets") && retained.is_file() {
-                let forecast =
-                    normalize_saved_forecast(&retained, &request).map_err(|e| e.to_string())?;
-                if !complete_grid(&forecast.native, &request, self.config.model_bbox, &leads) {
-                    return Err(format!(
-                        "{code}: retained forecast has incomplete schedule or coverage"
-                    ));
-                }
-                self.control.check().map_err(|e| e.to_string())?;
-                let asset = catalog
-                    .register_native(&retained, &forecast.source, &forecast.native)
-                    .map_err(|e| e.to_string())?;
-                self.record(outcome, cycle, asset, &forecast.native, true);
-                return Ok(());
-            }
             match self.download(&request, &leads, &mut noaa_last) {
                 Ok(staged) => {
                     let forecast = normalize_saved_forecast(staged.path(), &request)
@@ -184,9 +154,16 @@ impl Download<'_> {
                         ));
                     }
                     self.control.check().map_err(|e| e.to_string())?;
-                    let asset = catalog
-                        .register_native(staged.path(), &forecast.source, &forecast.native)
-                        .map_err(|e| e.to_string())?;
+                    let asset = if self.control.force_acquisition() {
+                        catalog.register_native_force(
+                            staged.path(),
+                            &forecast.source,
+                            &forecast.native,
+                        )
+                    } else {
+                        catalog.register_native(staged.path(), &forecast.source, &forecast.native)
+                    }
+                    .map_err(|e| e.to_string())?;
                     self.record(outcome, cycle, asset, &forecast.native, false);
                     return Ok(());
                 }
@@ -341,6 +318,52 @@ mod tests {
     use std::net::TcpListener;
 
     #[test]
+    fn reuse_accepts_roundoff_in_requested_crop_but_not_a_changed_region() {
+        let bbox = [-79.1353, -50.61209, -28.67245, -10.08729];
+        let cycle = "2026-07-20T00:00:00Z".parse::<DateTime<Utc>>().unwrap();
+        let zone = chrono_tz::America::Sao_Paulo;
+        let start = cycle.with_timezone(&zone).naive_local();
+        let grid = crate::store::RegularGridSpec::new(bbox, 0.25).unwrap();
+        let cells = grid.latitudes.len() * grid.longitudes.len();
+        let native = GridSeries {
+            timeline: crate::store::IntervalAxis {
+                time_zone: zone.name().into(),
+                bounds: vec![crate::store::TimeInterval {
+                    start,
+                    end: start + TimeDelta::hours(3),
+                }],
+            },
+            grid,
+            values: vec![0.0; cells],
+            valid: vec![true; cells],
+            provenance: crate::store::Provenance {
+                source_ids: Vec::new(),
+                processing: serde_json::Value::Null,
+            },
+        };
+        let model_bbox = [-58.95016, -34.40217, -48.85759, -26.29721];
+        let mut request = NormalizationRequest {
+            provider: ForecastProvider::Ecmwf,
+            model: "ifs".into(),
+            product: "fc".into(),
+            cycle_utc: cycle,
+            operation_timezone: zone,
+            crop_bbox: [
+                model_bbox[0] - 2.0 * (model_bbox[2] - model_bbox[0]),
+                model_bbox[1] - 2.0 * (model_bbox[3] - model_bbox[1]),
+                model_bbox[2] + 2.0 * (model_bbox[2] - model_bbox[0]),
+                model_bbox[3] + 2.0 * (model_bbox[3] - model_bbox[1]),
+            ],
+        };
+        assert_ne!(request.crop_bbox, bbox);
+        assert!(complete_grid(&native, &request, model_bbox, &[0, 3]));
+        request.crop_bbox[0] += 0.01;
+        let reused_changed_region = complete_grid(&native, &request, model_bbox, &[0, 3]);
+        let rejected_changed_region = !reused_changed_region;
+        assert!(rejected_changed_region);
+    }
+
+    #[test]
     fn unavailable_cycle_tries_an_older_cycle_without_registering_partial_data() {
         std::fs::create_dir_all("runs").unwrap();
         let workspace = tempfile::tempdir_in("runs").unwrap();
@@ -373,7 +396,7 @@ mod tests {
         });
         let client = ProviderClient::new().unwrap().test_ecmwf(endpoint);
         let config = ForecastDocument {
-            catalog: "catalog.sqlite".into(),
+            catalog: "forecasts".into(),
             artifact_root: "forecasts".into(),
             providers: vec![ForecastProvider::Ecmwf],
             model_bbox: [-52., -30., -51., -29.],
@@ -410,9 +433,10 @@ mod tests {
             ] if outcome.error.is_some()
         );
         assert!(followed_retry);
-        assert_eq!(
-            std::fs::read_dir(root.join("forecasts")).unwrap().count(),
-            0
-        );
+        let entries: Vec<_> = std::fs::read_dir(root.join("forecasts"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(entries, ["access.lock"]);
     }
 }

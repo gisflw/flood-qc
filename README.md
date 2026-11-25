@@ -41,6 +41,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Operation → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
 | Acquire standalone IMERG, BNDMET rain and wind, or ONS hourly flow files | `acquisition` | [Standalone acquisition](docs/contracts/acquisition.md#standalone-source-acquisition) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
+| Capture, save, or replay run inputs | `inputs capture`, `inputs save`, `inputs execute` | [Run input sets](docs/contracts/inputs.md) |
 | Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#run-from-a-workspace) |
 | Run an operation and update the rainfall display | Desktop **Processing → Operation → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
 | Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **Processing → Review and runs → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
@@ -70,33 +71,31 @@ The built `target/debug/mgb-ops` can run from other directories. See the
 path rules, findings, and inspection limits. Library callers use the same
 [inspection API](docs/contracts/workspace.md#library-api).
 
-### Prepare and execute an operation
+### Run an operation and retain its inputs
 
-Set the run window and providers in the workspace's `config.toml`. Import
-station metadata and acquire inputs as described in the
-[acquisition contract](docs/contracts/acquisition.md). Prepare to a new
-destination, then execute that preparation.
+For a visual tour, start with the [workspace tree and data roles](docs/contracts/workspace.md#operating-layout),
+then follow [station acquisition](docs/contracts/acquisition.md#ana-observations),
+[input capture and replay](docs/contracts/inputs.md#capture-save-and-replay),
+and [execution](docs/contracts/operations.md#run-from-a-workspace).
+The [architecture flow](docs/architecture.md#operational-data-flow) explains
+which module owns each stage.
 
-```sh
-cargo run -- operation prepare --workspace "$workspace" --output prepared --json
-cargo run -- operation execute --workspace "$workspace" --prepared prepared --json
-```
-
-Success replaces the workspace active run, including rainfall and scenario
-results. Past attempts keep a run manifest. Export a bundle before replacement
-to keep full results.
-[Controlled cancellation](docs/contracts/operations.md#controlled-actions-and-cancellation)
-covers SIGINT and the commit boundary.
-
-Use Run All to acquire configured inputs and run with the automatic scenarios.
+Set the routine run window and providers in the workspace’s `config.toml`.
+Import station metadata as described in the [acquisition
+contract](docs/contracts/acquisition.md). Run All acquires configured inputs,
+freezes the selected data and settings, executes MGB and publishes the results.
 
 ```sh
 cargo run -- operation run-all --workspace "$workspace"
+cargo run -- inputs save --workspace "$workspace" --output /archive/july20-inputs
 ```
 
-Automatic scenarios include zero future rain and the latest usable raw cycle for
-each forecast product. See [scenario selection](docs/contracts/operations.md#scenarios)
-for one-run changes and forecast corrections.
+Choose a new directory under an existing parent for the independent save. When
+replacing unsaved inputs, supply `--save-inputs-to PATH` or `--discard-inputs`.
+Past attempts retain manifests. Export a completed run to keep its full results.
+For a later replay with a matching installed engine, see [run input
+sets](docs/contracts/inputs.md). For one-run changes, see [scenario
+selection](docs/contracts/operations.md#scenarios).
 
 ## Desktop interface
 
@@ -142,7 +141,7 @@ workspace. The [HGE emblem](assets/branding/README.md) and
 - [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.
 - [Series and CSV](docs/contracts/series.md): rainfall summaries, chart queries and selected-series exports.
 - [Local geometry](docs/contracts/spatial.md): mini topology, map coordinates and station links.
-- [Canonical observations](docs/contracts/observations.md): SQLite, review selection, and observed forcing APIs.
+- [Canonical observations](docs/contracts/observations.md): Parquet 2, review selection, and observed forcing APIs.
 - [Migration summary](docs/migration/summary.md): temporary capability tracking, validation status, and next work.
 - [Agent guidance](AGENTS.md): change and documentation rules.
 - [Legacy worktree record](references/retirement_record.md), [Python map](references/python_map.md),
