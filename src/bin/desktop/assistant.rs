@@ -184,6 +184,7 @@ struct TurnLayout {
 
 #[derive(Default)]
 struct MarkdownReply {
+    pending_paragraph: bool,
     text: String,
     cache: CommonMarkCache,
     dirty: bool,
@@ -209,8 +210,20 @@ struct FittedMarkdown {
 }
 
 impl MarkdownReply {
+    fn separate(&mut self) {
+        self.pending_paragraph = !self.text.is_empty();
+    }
+
     fn push(&mut self, chunk: &str) {
         if !chunk.is_empty() {
+            if self.pending_paragraph && !chunk.trim().is_empty() {
+                let existing = self.text.chars().rev().take_while(|&c| c == '\n').count()
+                    + chunk.chars().take_while(|&c| c == '\n').count();
+                for _ in existing..2 {
+                    self.text.push('\n');
+                }
+                self.pending_paragraph = false;
+            }
             append_text(&mut self.text, chunk);
             self.dirty = true;
         }
@@ -846,6 +859,9 @@ impl Pane {
                 }
                 AssistantEvent::Thought(chunk) => {
                     if let Some(turn) = self.turns.back_mut() {
+                        if !chunk.is_empty() {
+                            turn.answer.separate();
+                        }
                         if let Some(Activity::Thought(reply)) = turn.activity.last_mut() {
                             reply.push(&chunk);
                         } else {
@@ -859,6 +875,12 @@ impl Pane {
                 }
                 AssistantEvent::ToolStatus { id, title, status } => {
                     if let Some(turn) = self.turns.back_mut() {
+                        let new_tool = id.as_ref().is_none_or(|id| !turn.activity.iter().any(|activity| {
+                            matches!(activity, Activity::Tool { id: Some(previous), .. } if previous == id)
+                        }));
+                        if new_tool {
+                            turn.answer.separate();
+                        }
                         let title = title.or_else(|| {
                             id.as_ref().and_then(|id| {
                                 turn.activity
@@ -1251,21 +1273,25 @@ impl Pane {
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.weak(text(pt, "You", "Você"));
-                            if ui.small_button(text(pt, "Copy", "Copiar")).clicked() {
-                                ui.copy_text(turn.prompt.text.clone());
-                            }
+                            theme::copy_button(
+                                ui,
+                                &turn.prompt.text,
+                                &text(pt, "Copy", "Copiar"),
+                                pt,
+                            );
                         });
                         turn.prompt.show(ui);
                     });
                 ui.add_space(4.);
                 ui.horizontal(|ui| {
                     ui.strong(text(pt, "Assistant", "Assistente"));
-                    if !turn.answer.text.is_empty()
-                        && ui
-                            .small_button(text(pt, "Copy Markdown", "Copiar Markdown"))
-                            .clicked()
-                    {
-                        ui.copy_text(turn.answer.text.clone());
+                    if !turn.answer.text.is_empty() {
+                        theme::copy_button(
+                            ui,
+                            &turn.answer.text,
+                            &text(pt, "Copy Markdown", "Copiar Markdown"),
+                            pt,
+                        );
                     }
                 });
                 if turn.interrupted {
@@ -1359,7 +1385,8 @@ impl Pane {
             .outer_margin(egui::Margin::symmetric(0, 3))
             .corner_radius(9.);
         // Bottom panels position their top edge before laying out children.
-        let controls = row_height + ui.spacing().interact_size.y + 2. * ui.spacing().item_spacing.y;
+        let controls =
+            row_height + ui.spacing().interact_size.y.max(32.) + 2. * ui.spacing().item_spacing.y;
         egui::Panel::bottom(ui.id().with("composer"))
             .show_separator_line(false)
             .exact_size((height + controls + frame.total_margin().sum().y).ceil())
@@ -1426,7 +1453,14 @@ impl Pane {
             && !self.draft_prompt.trim().is_empty();
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if self.active {
-                if ui.button(text(pt, "Stop", "Parar")).clicked()
+                if theme::action_button(
+                    ui,
+                    theme::ActionIcon::Stop,
+                    &text(pt, "Stop", "Parar"),
+                    true,
+                    false,
+                )
+                .clicked()
                     && let Some(conversation) = &self.conversation
                 {
                     self.status = match conversation.stop() {
@@ -1436,7 +1470,16 @@ impl Pane {
                 }
             } else {
                 let send = ui
-                    .add_enabled(can_send, theme::primary(ui, text(pt, "Send", "Enviar")))
+                    .scope(|ui| {
+                        theme::action_button(
+                            ui,
+                            theme::ActionIcon::Send,
+                            &text(pt, "Send", "Enviar"),
+                            can_send,
+                            true,
+                        )
+                    })
+                    .inner
                     .on_hover_text(text(
                         pt,
                         "Enter to send · Shift+Enter for a new line",
@@ -1653,6 +1696,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn assistant_updates_have_paragraphs_but_stream_fragments_stay_intact() {
+        let mut reply = MarkdownReply::default();
+        reply.push("This is the first mes");
+        reply.push("sage.");
+        reply.separate();
+        reply.push("\n");
+        reply.separate();
+        reply.push("This is the second message.");
+        assert_eq!(
+            reply.text,
+            "This is the first message.\n\nThis is the second message."
+        );
+        let ctx = egui::Context::default();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| reply.show(ui));
+        output.textures_delta.clear();
+        let paragraphs: Vec<_> = output
+            .shapes
+            .iter()
+            .filter_map(|shape| {
+                if let egui::Shape::Text(text) = &shape.shape
+                    && text.galley.text().starts_with("This is the")
+                {
+                    Some(text.pos.y)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(paragraphs.len(), 2);
+        assert!(paragraphs[1] > paragraphs[0] + 20.);
+        reply.separate();
+        for chunk in [
+            "\n",
+            "\n```rust\nlet ",
+            "text = \"fragment",
+            "ed\";\n```\n\n| A | B |\n|---|---|\n|1|2|",
+        ] {
+            reply.push(chunk);
+        }
+        assert!(
+            reply
+                .text
+                .contains("\n\n```rust\nlet text = \"fragmented\";\n```")
+        );
+        let saved = serde_json::to_string(&reply.text).unwrap();
+        let mut reopened = MarkdownReply::default();
+        reopened.push(&serde_json::from_str::<String>(&saved).unwrap());
+        assert_eq!(reopened.text, reply.text);
+    }
+
+    #[test]
     fn markdown_reply_formats_streamed_chunks_and_blocks_local_link_targets() {
         let mut reply = MarkdownReply::default();
         reply.push("## Summary\n\n**");
@@ -1819,7 +1913,21 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":1}}'
 read -r line || exit
 printf '%s\n' '{"jsonrpc":"2.0","id":2,"result":{"sessionId":"fixture"}}'
 while IFS= read -r line; do
- case "$line" in *session/prompt*) printf '%s\n' "$line" > "$1"; id=${line#*\"id\":}; id=${id%%,*}; printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id";; esac
+ case "$line" in *session/prompt*)
+  printf '%s\n' "$line" > "$1"
+  id=${line#*\"id\":}; id=${id%%,*}
+  cat <<'EVENTS'
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"This is the first mes"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"sage."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_thought_chunk","content":{"type":"text","text":"Checking."}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call","toolCallId":"check","title":"Check","status":"pending"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"This is the sec"}}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"tool_call_update","toolCallId":"check","status":"completed"}}}
+{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"fixture","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"ond message."}}}}
+EVENTS
+  printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+  ;;
+ esac
 done
 "#).unwrap();
         let session = Session::new(InspectionRequest {
@@ -1916,6 +2024,15 @@ done
         assert_eq!(request["method"], "session/prompt");
         assert_eq!(request["params"]["prompt"][0]["text"], "send this");
         assert!(pane.draft_prompt.is_empty());
+        while pane.active {
+            pane.poll(&ctx, &mut preferences, false);
+            assert!(Instant::now() < deadline, "fake ACP answer did not finish");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            pane.turns.back().unwrap().answer.text,
+            "This is the first message.\n\nThis is the second message."
+        );
         assert_eq!(pane.turns.len(), 1);
     }
 
@@ -1977,8 +2094,8 @@ done
                     .shapes
                     .iter()
                     .find_map(|item| match &item.shape {
-                        egui::Shape::Text(shape) if shape.galley.text() == "Send" => {
-                            Some(shape.pos)
+                        egui::Shape::Path(path) if path.points.len() == 5 => {
+                            Some(item.shape.visual_bounding_rect().center())
                         }
                         _ => None,
                     })

@@ -1,7 +1,9 @@
 mod assistant;
 mod charts;
 mod data;
+mod dialogs;
 mod export;
+mod icons;
 mod inundation;
 mod layout;
 mod map;
@@ -30,13 +32,14 @@ use std::{
 use walkers::{HttpTiles, MapMemory, lon_lat};
 
 const APP_ID: &str = "MGB Ops · Monitoring";
+const WINDOW_APP_ID: &str = "br.ufrgs.hge.MgbOps";
 const STORAGE: &str = "mgb-ops.monitoring.v1";
 fn text(pt: bool, en: &str, br: &str) -> String {
     if pt { br } else { en }.into()
 }
 
 fn icon_button(ui: &mut egui::Ui, glyph: &str, name: &str) -> egui::Response {
-    let response = ui.small_button(glyph);
+    let response = ui.add(egui::Button::new(glyph).min_size(egui::Vec2::splat(28.)));
     response
         .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), name));
     response.on_hover_text(name)
@@ -157,37 +160,12 @@ fn ribbon_group(ui: &mut egui::Ui, title: String, actions: impl FnOnce(&mut egui
 }
 
 fn ribbon_action(ui: &egui::Ui, emoji: &str, label: &str) -> egui::Button<'static> {
-    let emoji_font = egui::FontId::proportional(20.);
-    let label_font = egui::TextStyle::Button.resolve(ui.style());
-    let [emoji_width, label_width] = ui.fonts_mut(|fonts| {
-        [(emoji, &emoji_font), (label, &label_font)].map(|(text, font)| {
-            fonts
-                .layout_no_wrap(text.to_owned(), font.clone(), Color32::PLACEHOLDER)
-                .size()
-                .x
-        })
-    });
-    let width = emoji_width.max(label_width);
-    let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &format!("{emoji}\n"),
-        0.5 * (width - emoji_width),
-        egui::TextFormat {
-            font_id: emoji_font,
-            color: Color32::PLACEHOLDER,
-            ..Default::default()
-        },
-    );
-    job.append(
-        label,
-        0.5 * (width - label_width),
-        egui::TextFormat {
-            font_id: label_font,
-            color: Color32::PLACEHOLDER,
-            ..Default::default()
-        },
-    );
-    egui::Button::new(job).wrap_mode(egui::TextWrapMode::Extend)
+    let layout = egui::AtomLayout::new((icons::emoji(ui.ctx(), emoji, 24.), label.to_owned()))
+        .direction(egui::Direction::TopDown)
+        .align2(egui::Align2::CENTER_CENTER);
+    egui::Button::new(egui::Atom::layout(layout))
+        .min_size(egui::vec2(52., 54.))
+        .wrap_mode(egui::TextWrapMode::Extend)
 }
 
 fn button_label(response: &egui::Response, label: &str) {
@@ -254,6 +232,44 @@ fn layer_width(ui: &mut egui::Ui, pt: bool, width: &mut Option<f32>, default: f3
     {
         *width = Some(value);
     }
+}
+
+fn rainfall_scale_controls(ui: &mut egui::Ui, pt: bool, maximum: &mut f64, hue: Color32) -> bool {
+    let mut changed = false;
+    ui.vertical(|ui| {
+        let id = ui.id().with("rainfall-scale-maximum");
+        let mut input = ui
+            .data(|data| data.get_temp::<String>(id))
+            .unwrap_or_else(|| maximum.to_string());
+        ui.horizontal_wrapped(|ui| {
+            let label = ui.label(text(pt, "Scale maximum (mm)", "Máximo da escala (mm)"));
+            let edit = ui
+                .add(egui::TextEdit::singleline(&mut input).desired_width(72.))
+                .labelled_by(label.id);
+            let parsed = rainfall_maximum(&input);
+            if (edit.lost_focus()
+                || edit.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
+                && let Some(value) = parsed
+                && value != *maximum
+            {
+                *maximum = value;
+                changed = true;
+            }
+            ui.data_mut(|data| data.insert_temp(id, input));
+            if parsed.is_none() {
+                ui.colored_label(
+                    ui.visuals().error_fg_color,
+                    text(
+                        pt,
+                        "Enter a number greater than 1",
+                        "Informe um número maior que 1",
+                    ),
+                );
+            }
+        });
+        map::rain_legend_with(ui, pt, *maximum, hue);
+    });
+    changed
 }
 
 fn status_label(state: &str, portuguese: bool) -> &str {
@@ -500,6 +516,7 @@ enum Departure {
 }
 
 struct Monitoring {
+    context: egui::Context,
     preferences: Preferences,
     display: Display,
     project: Option<Arc<Project>>,
@@ -540,6 +557,10 @@ struct Monitoring {
 impl Monitoring {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
+        cc.egui_ctx
+            .send_viewport_cmd(egui::ViewportCommand::SetTheme(
+                egui::SystemTheme::SystemDefault,
+            ));
         let mut preferences: Preferences = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE))
@@ -562,6 +583,7 @@ impl Monitoring {
         }
         let display = preferences.recent.first().cloned().unwrap_or_default();
         let mut app = Self {
+            context: cc.egui_ctx.clone(),
             preferences,
             display,
             project: None,
@@ -668,7 +690,9 @@ impl Monitoring {
         self.preferences.recent.truncate(10);
     }
     fn choose_project(&mut self) {
-        if let Some(workspace) = rfd::FileDialog::new().pick_folder() {
+        if let Some(workspace) =
+            dialogs::folder(&self.context, "workspace", &self.display.workspace)
+        {
             self.depart(Departure::Project(
                 mgb_ops::app::workspace_config_path(&workspace),
                 workspace,
@@ -689,11 +713,7 @@ impl Monitoring {
             .find(|p| p.config == config)
             .map(|p| p.workspace.clone())
             .or_else(|| data::infer_workspace(&config))
-            .or_else(|| {
-                rfd::FileDialog::new()
-                    .set_title("Workspace / Área de trabalho")
-                    .pick_folder()
-            });
+            .or_else(|| dialogs::folder(&self.context, "workspace", &self.display.workspace));
         if let Some(workspace) = workspace {
             self.depart(Departure::Project(config, workspace));
         }
@@ -1353,53 +1373,79 @@ impl Monitoring {
         self.chart_message = notices.join(" · ");
     }
 
+    fn title_strip(&mut self, ui: &mut egui::Ui) {
+        let pt = self.preferences.portuguese;
+        ui.horizontal(|ui| {
+            ui.add(icons::emblem(ui.ctx(), 32.));
+            ui.label(egui::RichText::new("MGB Ops").size(20.).strong());
+            ui.separator();
+            let open = text(pt, "Open workspace…", "Abrir área de trabalho…");
+            if self.workspace_icon(ui, "📂", &open).clicked() {
+                self.choose_project();
+            }
+            let label = text(pt, "Recent workspaces", "Áreas de trabalho recentes");
+            let button = egui::Button::new(icons::emoji(ui.ctx(), "🕒", 20.))
+                .min_size(egui::Vec2::splat(32.));
+            ui.add_enabled_ui(!self.preferences.recent.is_empty(), |ui| {
+                let (response, _) =
+                    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
+                        for recent in self.preferences.recent.clone() {
+                            if ui.button(recent.workspace.display().to_string()).clicked() {
+                                self.depart(Departure::Project(recent.config, recent.workspace));
+                                ui.close();
+                            }
+                        }
+                    });
+                button_label(&response, &label);
+                response.on_hover_text(&label);
+            });
+            ui.add_enabled_ui(self.project.is_some(), |ui| {
+                if self
+                    .workspace_icon(ui, "⚙", &Form::Workspace.label(pt))
+                    .clicked()
+                {
+                    self.display.layout.form(Form::Workspace);
+                }
+                if self
+                    .workspace_icon(ui, "🚪", &text(pt, "Close project", "Fechar projeto"))
+                    .clicked()
+                {
+                    self.depart(Departure::Close);
+                }
+            });
+            if !self.display.workspace.as_os_str().is_empty() {
+                ui.add(
+                    egui::Label::new(
+                        egui::RichText::new(
+                            self.display
+                                .workspace
+                                .file_name()
+                                .unwrap_or_default()
+                                .to_string_lossy(),
+                        )
+                        .weak(),
+                    )
+                    .truncate(),
+                )
+                .on_hover_text(self.display.workspace.display().to_string());
+            }
+        });
+    }
+
+    fn workspace_icon(&self, ui: &mut egui::Ui, emoji: &str, label: &str) -> egui::Response {
+        let response = ui.add(
+            egui::Button::new(icons::emoji(ui.ctx(), emoji, 20.)).min_size(egui::Vec2::splat(32.)),
+        );
+        button_label(&response, label);
+        response.on_hover_text(label).on_disabled_hover_text(label)
+    }
+
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
         egui::ScrollArea::horizontal()
             .id_salt("ribbon-actions")
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ribbon_group(ui, text(pt, "Workspace", "Área de trabalho"), |ui| {
-                        let label = text(pt, "Open workspace…", "Abrir área de trabalho…");
-                        let button = ribbon_action(ui, "📂", &label);
-                        let open = ui.add(if self.project.is_none() {
-                            button.fill(ui.visuals().selection.bg_fill)
-                        } else {
-                            button
-                        });
-                        button_label(&open, &label);
-                        if open.clicked() {
-                            self.choose_project();
-                        }
-                        if !self.preferences.recent.is_empty() {
-                            let label = text(pt, "Recent", "Recentes");
-                            let (response, _) = egui::containers::menu::MenuButton::from_button(
-                                ribbon_action(ui, "🕒", &label),
-                            )
-                            .ui(ui, |ui| {
-                                for recent in self.preferences.recent.clone() {
-                                    if ui.button(recent.config.display().to_string()).clicked() {
-                                        self.depart(Departure::Project(
-                                            recent.config,
-                                            recent.workspace,
-                                        ));
-                                        ui.close();
-                                    }
-                                }
-                            });
-                            button_label(&response, &label);
-                        }
-                        ui.add_enabled_ui(self.project.is_some(), |ui| {
-                            if ribbon_button(ui, "⚙", Form::Workspace.label(pt)).clicked() {
-                                self.display.layout.form(Form::Workspace);
-                            }
-                            if ribbon_button(ui, "🚪", text(pt, "Close project", "Fechar projeto"))
-                                .clicked()
-                            {
-                                self.depart(Departure::Close);
-                            }
-                        });
-                    });
                     ribbon_group(ui, text(pt, "Monitoring", "Monitoramento"), |ui| {
                         if ribbon_button(ui, "📥", Form::Intake.label(pt)).clicked() {
                             self.display.layout.form(Form::Intake);
@@ -1817,7 +1863,8 @@ impl Monitoring {
                     "Abrir execução para comparação…",
                 ))
                 .clicked()
-                && let Some(root) = rfd::FileDialog::new().pick_folder()
+                && let Some(root) =
+                    dialogs::folder(ui.ctx(), "comparison-run", std::path::Path::new(""))
             {
                 selected = RunSelection::Saved(root);
                 open_comparison = true;
@@ -2158,7 +2205,6 @@ impl Monitoring {
                 );
             });
         }
-        let mut clear = false;
         let mut reorder = None;
         let mut rainfall_color_changed = false;
         for (i, layer) in self.display.layers.iter_mut().enumerate() {
@@ -2181,6 +2227,40 @@ impl Monitoring {
                 if expanded {
                     ui.indent("layer-settings", |ui| {
                         layer_opacity(ui, pt, &mut layer.opacity);
+                        if layer.kind == "rainfall" {
+                            rainfall_color_changed |= rainfall_scale_controls(
+                                ui,
+                                pt,
+                                &mut self.display.rain_maximum,
+                                color,
+                            );
+                            for side in RainSide::BOTH.into_iter().take(
+                                if self.display.map_mode.comparing() {
+                                    2
+                                } else {
+                                    1
+                                },
+                            ) {
+                                let image = self.rainfall[side.index()].image.as_ref();
+                                let range = image.and_then(|image| image.range).map_or_else(
+                                    || "NA".into(),
+                                    |(min, max)| format!("{min:.2} – {max:.2} mm"),
+                                );
+                                let side_label = if self.display.map_mode.comparing() {
+                                    map::side_label(side, pt)
+                                } else {
+                                    String::new()
+                                };
+                                ui.small(format!(
+                                    "{} {} · {range}",
+                                    text(pt, "Map min–max", "Mín–máx do mapa"),
+                                    side_label
+                                ));
+                                if let Some(image) = image {
+                                    ui.small(&image.rain.scenario);
+                                }
+                            }
+                        }
                         if layer.kind == "stations" {
                             ui.horizontal_wrapped(|ui| {
                                 let name =
@@ -2195,8 +2275,7 @@ impl Monitoring {
                             });
                         }
                         if !matches!(layer.kind.as_str(), "rainfall" | inundation::KIND) {
-                            let default = if layer.kind == "catchments" { 0. } else { 1. };
-                            layer_width(ui, pt, &mut layer.width, default);
+                            layer_width(ui, pt, &mut layer.width, 1.);
                         }
                         if layer.kind == "upstream" {
                             ui.horizontal_wrapped(|ui| {
@@ -2223,28 +2302,7 @@ impl Monitoring {
                         }
                     });
                 }
-                let loading = self.loading[UPSTREAM_SLOT];
-                if layer.kind == "upstream" && (loading || self.upstream_basin.is_some()) {
-                    ui.horizontal_wrapped(|ui| {
-                        if let Some((mini, _)) = &self.upstream_basin {
-                            ui.strong(format!("MINI {mini}"));
-                        }
-                        if loading {
-                            ui.spinner();
-                        }
-                        if ui
-                            .small_button(text(pt, "Clear basin", "Limpar bacia"))
-                            .clicked()
-                        {
-                            clear = true;
-                        }
-                    });
-                }
             });
-        }
-        if clear {
-            self.clear_upstream();
-            ui.ctx().request_discard("Remove cleared basin controls");
         }
         if let Some(i) = reorder {
             self.display.layers.swap(i, i - 1);
@@ -2256,9 +2314,13 @@ impl Monitoring {
         if ui
             .button(text(pt, "Add local GIS…", "Adicionar GIS local…"))
             .clicked()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("GIS", &["gpkg", "geojson", "shp"])
-                .pick_file()
+            && let Some(path) = dialogs::file(
+                ui.ctx(),
+                "local-gis",
+                std::path::Path::new(""),
+                "GIS",
+                &["gpkg", "geojson", "shp"],
+            )
         {
             self.display.local.push(map::LocalDisplay {
                 path,
@@ -2334,10 +2396,12 @@ impl Monitoring {
             )
             .clicked()
             && let Some(report) = self.charts.report.clone()
-            && let Some(path) = rfd::FileDialog::new()
-                .add_filter("CSV", &["csv"])
-                .set_file_name("series.csv")
-                .save_file()
+            && let Some(path) = dialogs::save(
+                ui.ctx(),
+                "series-csv-export",
+                std::path::Path::new(""),
+                "series.csv",
+            )
         {
             self.submit(Job::Export(
                 report,
@@ -2358,9 +2422,12 @@ impl Monitoring {
             )
             .clicked()
             && let Some(report) = self.charts.report.clone()
-            && let Some(path) = rfd::FileDialog::new()
-                .set_file_name("monitoring.png")
-                .save_file()
+            && let Some(path) = dialogs::save(
+                ui.ctx(),
+                "chart-png-export",
+                std::path::Path::new(""),
+                "monitoring.png",
+            )
         {
             let references = self.charts.references.clone();
             let title = format!(
@@ -2783,7 +2850,7 @@ impl Monitoring {
         let map_rect = ui.available_rect_before_wrap().intersect(ui.clip_rect());
         let frame = egui::Frame::group(ui.style())
             .inner_margin(1)
-            .fill(ui.visuals().window_fill());
+            .fill(theme::map_surface(ui));
         theme::exclude_text_actions(ui.ctx(), ui.available_rect_before_wrap());
         if ui.available_height() > 16. && ui.available_width() > 16. {
             frame.show(ui, |ui| {
@@ -2874,27 +2941,31 @@ impl Monitoring {
         {
             egui::Area::new(egui::Id::new("map-navigation"))
                 .order(egui::Order::Foreground)
-                .fixed_pos(map_rect.left_top() + egui::vec2(10., 10.))
+                .pivot(egui::Align2::RIGHT_TOP)
+                .fixed_pos(map_rect.right_top() + egui::vec2(-10., 10.))
                 .constrain_to(map_rect)
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::popup(ui.style()).show(ui, |ui| {
-                        ui.spacing_mut().item_spacing.y = 3.;
-                        if icon_button(ui, "+", &text(pt, "Zoom in", "Aproximar")).clicked() {
-                            let _ = self.display.camera.zoom_in();
-                        }
-                        if icon_button(ui, "−", &text(pt, "Zoom out", "Afastar")).clicked() {
-                            let _ = self.display.camera.zoom_out();
-                        }
-                        if icon_button(ui, "⛶", &text(pt, "Full extent", "Extensão completa"))
-                            .clicked()
-                        {
-                            let mut size = map_rect.size();
-                            if mode == map::Mode::Double {
-                                size.x /= 2.;
+                    egui::Frame::popup(ui.style())
+                        .corner_radius(10.)
+                        .inner_margin(6)
+                        .show(ui, |ui| {
+                            ui.spacing_mut().item_spacing.y = 3.;
+                            if icon_button(ui, "+", &text(pt, "Zoom in", "Aproximar")).clicked() {
+                                let _ = self.display.camera.zoom_in();
                             }
-                            map::fit_extent(project, size, &mut self.display.camera);
-                        }
-                    });
+                            if icon_button(ui, "−", &text(pt, "Zoom out", "Afastar")).clicked() {
+                                let _ = self.display.camera.zoom_out();
+                            }
+                            if icon_button(ui, "⛶", &text(pt, "Full extent", "Extensão completa"))
+                                .clicked()
+                            {
+                                let mut size = map_rect.size();
+                                if mode == map::Mode::Double {
+                                    size.x /= 2.;
+                                }
+                                map::fit_extent(project, size, &mut self.display.camera);
+                            }
+                        });
                 });
         }
         self.inundation
@@ -2919,39 +2990,28 @@ impl Monitoring {
         if self.project.is_none() {
             return;
         }
-        theme::inset(ui.style()).show(ui, |ui| {
-            let id = ui.id().with(&self.display.config);
-            let mut input = ui
-                .data(|data| data.get_temp::<String>(id))
-                .unwrap_or_else(|| self.display.rain_maximum.to_string());
-            ui.horizontal_wrapped(|ui| {
-                let label = ui.label(text(pt, "Maximum (mm)", "Máximo (mm)"));
-                let edit = ui
-                    .add(egui::TextEdit::singleline(&mut input).desired_width(72.))
-                    .labelled_by(label.id);
-                let parsed = rainfall_maximum(&input);
-                if (edit.lost_focus()
-                    || edit.has_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)))
-                    && let Some(value) = parsed
-                    && value != self.display.rain_maximum
-                {
-                    self.display.rain_maximum = value;
-                    self.recolor_rainfall();
-                }
-                ui.data_mut(|data| data.insert_temp(id, input));
-                if parsed.is_none() {
-                    ui.colored_label(
-                        ui.visuals().error_fg_color,
-                        text(
-                            pt,
-                            "Enter a number greater than 1",
-                            "Informe um número maior que 1",
-                        ),
-                    );
-                }
+        if self.loading[UPSTREAM_SLOT] || self.upstream_basin.is_some() {
+            let mut clear = false;
+            theme::inset(ui.style()).show(ui, |ui| {
+                ui.strong(text(
+                    pt,
+                    "Loaded upstream basin",
+                    "Bacia a montante carregada",
+                ));
+                ui.horizontal_wrapped(|ui| {
+                    if let Some((mini, _)) = &self.upstream_basin {
+                        ui.label(format!("MINI {mini}"));
+                    }
+                    if self.loading[UPSTREAM_SLOT] {
+                        ui.spinner();
+                    }
+                    clear = ui.button(text(pt, "Clear basin", "Limpar bacia")).clicked();
+                });
             });
-            map::rain_legend_with(ui, pt, self.display.rain_maximum, self.rainfall_color());
-        });
+            if clear {
+                self.clear_upstream();
+            }
+        }
         if let Some(location) = &self.display.selection {
             theme::inset(ui.style()).show(ui, |ui| self.selected_feature(ui, location));
         }
@@ -3301,7 +3361,15 @@ impl eframe::App for Monitoring {
         {
             self.submit(Job::Open(p.config.clone(), p.workspace.clone()));
         }
+        dialogs::workspace(&ctx, &self.display.workspace);
         let toolbar_frame = theme::toolbar(ui.style());
+        egui::Panel::top("title-strip")
+            .frame(
+                egui::Frame::side_top_panel(ui.style())
+                    .fill(ui.visuals().window_fill())
+                    .inner_margin(egui::Margin::symmetric(12, 6)),
+            )
+            .show(ui, |ui| self.title_strip(ui));
         egui::Panel::top("ribbon")
             .frame(toolbar_frame)
             .show(ui, |ui| self.toolbar(ui));
@@ -3333,6 +3401,7 @@ impl eframe::App for Monitoring {
             .show(ui, |ui| self.right_pane(ui));
         self.display.layout.width = response.response.rect.width();
         let map_hover = egui::CentralPanel::default()
+            .frame(egui::Frame::central_panel(ui.style()).fill(theme::map_surface(ui)))
             .show(ui, |ui| self.map_page(ui))
             .inner;
         let mut footer_ui = ui.new_child(
@@ -3378,16 +3447,23 @@ impl eframe::App for Monitoring {
     }
 }
 
+fn native_options() -> eframe::NativeOptions {
+    eframe::NativeOptions {
+        renderer: eframe::Renderer::Wgpu,
+        persistence_path: eframe::storage_dir(APP_ID).map(|root| root.join("app.ron")),
+        viewport: egui::ViewportBuilder::default()
+            .with_app_id(WINDOW_APP_ID)
+            .with_decorations(true)
+            .with_icon(icons::window_icon())
+            .with_inner_size([1500., 950.]),
+        ..Default::default()
+    }
+}
+
 pub fn run() -> eframe::Result {
     eframe::run_native(
         "MGB Ops",
-        eframe::NativeOptions {
-            renderer: eframe::Renderer::Wgpu,
-            viewport: egui::ViewportBuilder::default()
-                .with_app_id(APP_ID)
-                .with_inner_size([1500., 950.]),
-            ..Default::default()
-        },
+        native_options(),
         Box::new(|cc| Ok(Box::new(Monitoring::new(cc)))),
     )
 }
@@ -3615,6 +3691,18 @@ mod interface_tests {
     #[test]
     fn preferences_preserve_storage_identity() {
         assert_eq!(APP_ID, "MGB Ops · Monitoring");
+        let options = native_options();
+        assert_eq!(options.viewport.app_id.as_deref(), Some(WINDOW_APP_ID));
+        assert_eq!(options.viewport.decorations, Some(true));
+        assert_eq!(
+            options.persistence_path,
+            eframe::storage_dir(APP_ID).map(|root| root.join("app.ron"))
+        );
+        let entry = std::fs::read_to_string("assets/desktop/br.ufrgs.hge.MgbOps.desktop").unwrap();
+        let icon_key = format!("Icon={WINDOW_APP_ID}");
+        let class_key = format!("StartupWMClass={WINDOW_APP_ID}");
+        assert!(entry.contains(&icon_key));
+        assert!(entry.contains(&class_key));
         let legacy: Display = serde_json::from_str(
             r#"{"config":"region/config.toml","run":"region/data/runs/run-1",
                  "layout":{"dock":{"Tabs":{"pages":["Map","Data"],"active":1}},

@@ -1,6 +1,6 @@
 use super::charts::{Charts, seconds};
 use ab_glyph::{Font, FontArc, PxScale, ScaleFont};
-use eframe::egui::{self, Color32};
+use eframe::egui::Color32;
 use mgb_ops::app::SeriesReport;
 use mgb_ops::store::LevelReference;
 use std::path::Path;
@@ -83,14 +83,7 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
     let width = 1200 * scale;
     let legend_rows = charts.labels.len().div_ceil(3) as u32;
     let height = (960 + legend_rows * 20) * scale;
-    let fonts = egui::FontDefinitions::default();
-    let bytes = fonts
-        .font_data
-        .values()
-        .next()
-        .ok_or("no export font")?
-        .font
-        .to_vec();
+    let bytes = super::theme::FONT.to_vec();
     let font = FontArc::try_from_vec(bytes).map_err(|e| e.to_string())?;
     let mut canvas = Canvas {
         pixels: vec![255; width as usize * height as usize * 4],
@@ -99,7 +92,8 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
         font,
         scale,
     };
-    canvas.text(15., 10., &export.title, Color32::BLACK);
+    let ink = Color32::from_rgb(64, 82, 105);
+    canvas.text(15., 10., &export.title, ink);
     canvas.text(
         15.,
         30.,
@@ -107,13 +101,13 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
             "{} · {} → {}",
             export.report.time_zone, export.report.window.start, export.report.window.end
         ),
-        Color32::BLACK,
+        ink,
     );
     for (i, plot) in charts.plots.iter_mut().enumerate() {
         let (xmin, xmax, ymin, ymax) = export.limits[i];
         plot.set_graph_x_limits(xmin, xmax);
         plot.set_graph_y_limits(ymin, ymax, rsplot::YAxis::Left);
-        plot.plot_mut().data_background = Color32::WHITE;
+        super::charts::style_plot(plot, false);
         plot.backend().flush_scene();
         let right = (i == 2).then_some(export.right_level_limits).flatten();
         if let Some((min, max)) = right {
@@ -141,28 +135,10 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
         } else {
             ["Rainfall (mm)", "Flow (m³/s)", "Level (cm)"][i]
         };
-        canvas.line(
-            120.,
-            f64::from(top),
-            120.,
-            f64::from(top + 210),
-            Color32::BLACK,
-        );
-        canvas.line(
-            120.,
-            f64::from(top + 210),
-            end_x,
-            f64::from(top + 210),
-            Color32::BLACK,
-        );
+        canvas.line(120., f64::from(top), 120., f64::from(top + 210), ink);
+        canvas.line(120., f64::from(top + 210), end_x, f64::from(top + 210), ink);
         if right.is_some() {
-            canvas.line(
-                end_x,
-                f64::from(top),
-                end_x,
-                f64::from(top + 210),
-                Color32::BLACK,
-            );
+            canvas.line(end_x, f64::from(top), end_x, f64::from(top + 210), ink);
             canvas.text(
                 15.,
                 top as f32 - 24.,
@@ -171,7 +147,7 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
                 } else {
                     "Station level (cm)"
                 },
-                Color32::BLACK,
+                ink,
             );
             canvas.text(
                 end_x as f32,
@@ -181,10 +157,10 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
                 } else {
                     "Raw MINI (cm)"
                 },
-                Color32::BLACK,
+                ink,
             );
         } else {
-            canvas.text(15., top as f32 - 24., title, Color32::BLACK);
+            canvas.text(15., top as f32 - 24., title, ink);
         }
         if i == 2 {
             for reference in &charts.references {
@@ -210,20 +186,20 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
                 (120. + f64::from(logical_width) * fraction - 40.).min(end_x - 75.) as f32,
                 (top + 215) as f32,
                 &label,
-                Color32::BLACK,
+                ink,
             );
             canvas.text(
                 15.,
                 (f64::from(top) + 210. * (1. - fraction) - 7.) as f32,
                 &format!("{:.2}", ymin + (ymax - ymin) * fraction),
-                Color32::BLACK,
+                ink,
             );
             if let Some((min, max)) = right {
                 canvas.text(
                     end_x as f32 + 12.,
                     (f64::from(top) + 210. * (1. - fraction) - 7.) as f32,
                     &format!("{:.2}", min + (max - min) * fraction),
-                    Color32::BLACK,
+                    ink,
                 );
             }
         }
@@ -265,6 +241,7 @@ pub fn write(export: Export, destination: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui;
     #[test]
     #[ignore = "requires a graphics adapter; software rendering is not operator-hardware qualification"]
     fn complete_png_has_titles_axes_legends_and_scaled_dimensions() {

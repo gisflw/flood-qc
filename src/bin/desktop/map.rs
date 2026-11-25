@@ -672,6 +672,18 @@ fn mesh(fill: &Fill, transform: &ScreenTransform, color: Color32) -> egui::Mesh 
 pub struct RainImage {
     pub texture: egui::TextureHandle,
     pub rain: Arc<Rain>,
+    pub range: Option<(f64, f64)>,
+}
+fn value_range(values: &[Option<f64>]) -> Option<(f64, f64)> {
+    let mut valid = values
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|value| value.is_finite());
+    let first = valid.next()?;
+    Some(valid.fold((first, first), |(min, max), value| {
+        (min.min(value), max.max(value))
+    }))
 }
 impl RainImage {
     fn colors(rain: &Rain, maximum: f64, hue: Color32) -> egui::ColorImage {
@@ -698,7 +710,12 @@ impl RainImage {
         let image = Self::colors(&rain, maximum, hue);
         let texture =
             context.load_texture("accumulated-rainfall", image, egui::TextureOptions::NEAREST);
-        Self { texture, rain }
+        let range = value_range(&rain.values);
+        Self {
+            texture,
+            rain,
+            range,
+        }
     }
     fn draw(&self, painter: &egui::Painter, projector: &Projector, opacity: f32) {
         painter.add(egui::Shape::mesh(rain_mesh(
@@ -991,7 +1008,7 @@ impl StaticCache {
         width: Option<f32>,
         context: &egui::Context,
     ) {
-        let style = (opacity, tint, width.unwrap_or(0.));
+        let style = (opacity, tint, width.unwrap_or(1.));
         if self
             .tinted_catchments
             .as_ref()
@@ -1015,23 +1032,42 @@ impl StaticCache {
             combined.append(mesh(&feature.fill, transform, tint));
         }
         if style.2 > 0. {
-            for feature in project.catchments.iter() {
-                for path in &feature.paths {
-                    let points = path
+            let mut outlines = Vec::new();
+            for prepared in project
+                .fills
+                .iter()
+                .filter(|feature| feature.projected_bounds.intersects(transform, clip))
+            {
+                let Ok(index) = project
+                    .catchments
+                    .binary_search_by_key(&prepared.mini_id, |feature| feature.mini_id)
+                else {
+                    continue;
+                };
+                let feature = &project.catchments[index];
+                let paths: Vec<_> = if feature.polygons.is_empty() {
+                    feature.paths.iter().collect()
+                } else {
+                    feature
+                        .polygons
                         .iter()
-                        .copied()
-                        .map(world)
+                        .flat_map(|polygon| {
+                            std::iter::once(&polygon.exterior).chain(&polygon.interiors)
+                        })
+                        .collect()
+                };
+                for path in paths {
+                    let projected: Vec<_> = path.iter().copied().map(world).collect();
+                    let tolerance = 0.5 / (transform.scale * f64::from(context.pixels_per_point()));
+                    let points = simplify(&projected, tolerance)
+                        .into_iter()
                         .map(|p| transform.project(p))
                         .collect();
-                    let shapes = line_meshes(
-                        context,
-                        clip,
-                        vec![egui::Shape::line(points, Stroke::new(style.2, tint))],
-                    );
-                    for overlay in shapes {
-                        combined.append((*overlay.anchor).clone());
-                    }
+                    outlines.push(egui::Shape::line(points, Stroke::new(style.2, tint)));
                 }
+            }
+            for overlay in line_meshes(context, clip, outlines) {
+                combined.append((*overlay.anchor).clone());
             }
         }
         self.tinted_catchments = Some((style, OverlayMesh::new(combined)));
@@ -1332,9 +1368,8 @@ impl Overlay<'_> {
                                 station_distance = distance;
                                 hit = Some(Location::Station(station.station_id.clone()));
                                 hit_label = format!(
-                                    "{}: {} ({})",
+                                    "{}: {}",
                                     super::text(pt, "Station", "Estação"),
-                                    station.name,
                                     station.station_id
                                 );
                             }
@@ -1452,19 +1487,35 @@ impl Overlay<'_> {
                 }
             }
             let side = clips.map_or(dominant_side, |clips| side_at(clips[0], pointer.x));
-            let coordinates = format!("Lat: {:.5} | Lon: {:.5}", geographic.y(), geographic.x());
-            let mut labels = vec![coordinates];
-            if !hit_label.is_empty() {
-                labels.push(hit_label);
+            if let Some(Location::Station(id)) = &hit
+                && let Some(station) = self
+                    .project
+                    .stations
+                    .iter()
+                    .find(|entry| entry.station.station_id == *id)
+                && let Some((lon, lat)) = station.station.longitude.zip(station.station.latitude)
+            {
+                let point = screen(projector, (lon, lat));
+                ui.painter()
+                    .circle_stroke(point, 10., Stroke::new(4., ui.visuals().window_fill()));
+                ui.painter().circle_stroke(
+                    point,
+                    10.,
+                    Stroke::new(2., ui.visuals().hyperlink_color),
+                );
             }
+            if !hit_label.is_empty() {
+                response.clone().on_hover_text_at_pointer(hit_label);
+            }
+            let mut labels = Vec::new();
             if visible("rainfall")
                 && let Some(rainfall) = self.rainfall[side.index()]
-                && let Some((col, row, value)) = rainfall.inspect((geographic.x(), geographic.y()))
+                && let Some((_, _, value)) = rainfall.inspect((geographic.x(), geographic.y()))
             {
                 let rainfall_label = super::text(pt, "Rainfall", "Chuva");
                 let amount = value.map_or_else(|| "NA".into(), |mm| format!("{mm:.2} mm"));
                 labels.push(format!(
-                    "{rainfall_label}: {amount} ({}, [{col}, {row}])",
+                    "{rainfall_label}: {amount} ({})",
                     rainfall.rain.scenario
                 ));
             }
@@ -1629,6 +1680,90 @@ impl walkers::sources::TileSource for BlueMarble {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rainfall_extrema_keep_zero_and_ignore_unknown_and_nonfinite_cells() {
+        assert_eq!(
+            value_range(&[None, Some(0.), Some(127.5), Some(12.), Some(f64::NAN)]),
+            Some((0., 127.5))
+        );
+        assert_eq!(value_range(&[Some(4.), Some(4.)]), Some((4., 4.)));
+        assert_eq!(value_range(&[None, Some(f64::INFINITY)]), None);
+        assert_eq!(value_range(&[]), None);
+    }
+
+    #[test]
+    fn station_hover_highlights_without_selecting_or_putting_identity_in_the_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, mgb_ops::example_config()).unwrap();
+        let mut project = super::super::data::open(config, dir.path().into(), None).unwrap();
+        Arc::get_mut(&mut project)
+            .unwrap()
+            .stations
+            .push(mgb_ops::store::StationLocation {
+                station: mgb_ops::store::Station {
+                    station_id: "001".into(),
+                    provider_code: "test".into(),
+                    station_code: "001".into(),
+                    name: "Test station".into(),
+                    latitude: Some(0.),
+                    longitude: Some(0.),
+                },
+                offset: None,
+            });
+        let context = egui::Context::default();
+        let mut memory = MapMemory::default();
+        memory.center_at(lon_lat(0., 0.));
+        let mut cache = StaticCache::default();
+        let mut inundation = inundation::Inundation::new(context.clone());
+        let mut layers = default_layers();
+        for visible in [true, false] {
+            layers
+                .iter_mut()
+                .find(|layer| layer.kind == "stations")
+                .unwrap()
+                .visible = visible;
+            let mut hit = None;
+            let mut readout = None;
+            let mut output = egui::FullOutput::default();
+            for _ in 0..2 {
+                output.textures_delta.clear();
+                output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.))),
+                        events: vec![egui::Event::PointerMoved(Pos2::new(250., 250.))],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        readout = Overlay {
+                            project: &project,
+                            layers: &layers,
+                            rainfall: [None, None],
+                            inundation: &mut inundation,
+                            side: None,
+                            selection: &None,
+                            upstream: None,
+                            hit: &mut hit,
+                            cache: &mut cache,
+                            labels: false,
+                            local: &[],
+                            local_display: &[],
+                        }
+                        .show(ui, None, &mut memory, true, None, false)
+                        .inner;
+                    },
+                );
+            }
+            output.textures_delta.clear();
+            assert!(hit.is_none(), "hover must not commit selection");
+            assert!(readout.is_none(), "footer must contain rainfall only");
+            let halo = output.shapes.iter().any(
+                |shape| matches!(&shape.shape, egui::Shape::Circle(circle) if circle.radius == 10.),
+            );
+            assert_eq!(halo, visible);
+        }
+    }
 
     fn render_frame(
         context: &egui::Context,
@@ -2022,6 +2157,28 @@ mod tests {
                         assert!(cache.hits.is_empty());
                     }
                     cache.rivers(&project, 0.8, color("rivers"), None, ui.ctx());
+                    cache.catchments(&project, 0.25, color("catchments"), Some(0.), ui.ctx());
+                    let fill_indices = cache
+                        .tinted_catchments
+                        .as_ref()
+                        .unwrap()
+                        .1
+                        .anchor
+                        .indices
+                        .len();
+                    cache.catchments(&project, 0.25, color("catchments"), None, ui.ctx());
+                    assert!(
+                        cache
+                            .tinted_catchments
+                            .as_ref()
+                            .unwrap()
+                            .1
+                            .anchor
+                            .indices
+                            .len()
+                            > fill_indices,
+                        "default catchment strokes must include the exterior and hole boundaries"
+                    );
                     if longitude != 4.0 {
                         let actual = cache.hits[0].points[0] + cache.offset;
                         assert!(actual.distance(screen(&projector, (0., 0.))) < 0.001);

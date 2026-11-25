@@ -75,12 +75,12 @@ pub fn seconds(timestamp: chrono::NaiveDateTime) -> f64 {
 }
 fn source_color(scenario_order: &[String], scenario_id: Option<&str>) -> Color32 {
     let colors = [
-        Color32::from_rgb(25, 145, 205),
-        Color32::from_rgb(190, 85, 190),
-        Color32::from_rgb(55, 175, 95),
-        Color32::from_rgb(235, 145, 35),
+        Color32::from_rgb(0, 125, 190),
+        Color32::from_rgb(166, 91, 194),
+        Color32::from_rgb(30, 163, 119),
+        Color32::from_rgb(230, 145, 35),
     ];
-    scenario_id.map_or(Color32::from_rgb(135, 145, 155), |id| {
+    scenario_id.map_or(Color32::from_rgb(100, 116, 139), |id| {
         let index = scenario_order.iter().position(|scenario| scenario == id);
         colors[index.unwrap_or(0) % colors.len()]
     })
@@ -116,6 +116,28 @@ fn padded_y_bounds(values: impl Iterator<Item = f64>) -> Option<(f64, f64)> {
         (max - min) * 0.1
     };
     Some((min - pad, max + pad))
+}
+
+pub fn style_plot(plot: &mut Plot1D, dark: bool) {
+    let (surface, data, ink, grid) = if dark {
+        (
+            Color32::from_rgb(36, 50, 64),
+            Color32::from_rgb(31, 44, 58),
+            Color32::from_rgb(184, 202, 220),
+            Color32::from_rgb(53, 70, 87),
+        )
+    } else {
+        (
+            Color32::WHITE,
+            Color32::from_rgb(246, 249, 253),
+            Color32::from_rgb(100, 116, 139),
+            Color32::from_rgb(232, 238, 245),
+        )
+    };
+    plot.set_background_colors(surface, data);
+    plot.set_foreground_colors(ink, grid);
+    plot.set_graph_grid(true);
+    plot.set_graph_minor_grid(false);
 }
 
 impl Charts {
@@ -273,7 +295,7 @@ impl Charts {
                         .map_err(|e| e.to_string())?
                 } else {
                     let mut spec = CurveSpec::new(&x, &y, color);
-                    spec.line_width = 1.5 * self.line_scale;
+                    spec.line_width = 2. * self.line_scale;
                     spec.symbol_size = 7. * self.line_scale;
                     if raw_level && separate_raw {
                         spec.y_axis = YAxis::Right;
@@ -347,11 +369,7 @@ impl Charts {
             return;
         };
         for plot in &mut self.plots {
-            plot.set_background_colors(ui.visuals().panel_fill, ui.visuals().extreme_bg_color);
-            plot.set_foreground_colors(
-                ui.visuals().text_color(),
-                ui.visuals().widgets.noninteractive.bg_stroke.color,
-            );
+            style_plot(plot, ui.visuals().dark_mode);
         }
 
         let top = ui.cursor().min.y;
@@ -424,22 +442,32 @@ impl Charts {
                         ui.add_space(height);
                         return None;
                     }
-                    // The plotting widget centers end tick labels. Leave room on the right
-                    // for the overhang before laying out the plot.
-                    plot.plot_mut().margins.right = if plot.plot().y2.is_some() {
-                        0.
-                    } else {
-                        ((right_gutter - 12.) / (width - 80.).max(1.)).clamp(0., 0.8)
-                    };
-                    // The view already supplies the pointer transform and plot controls.
-                    // Plot1D's extra item picking scans series on each pointer move.
-                    let mode = plot.interaction_mode();
-                    let backend = plot.backend_mut();
-                    backend.flush_scene();
-                    let response =
-                        PlotView::new().show_with_interaction(ui, backend.plot_mut(), mode);
-                    backend.set_plot_bounds_in_pixels(response.transform.area);
-                    Some(response)
+                    let panel = egui::Frame::group(ui.style())
+                        .fill(ui.visuals().window_fill())
+                        .corner_radius(10.)
+                        .inner_margin(8)
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new(plot_title(index, portuguese)).strong());
+                            plot.clear_graph_title();
+                            // The plotting widget centers end tick labels. Leave room on the right
+                            // for the overhang before laying out the plot.
+                            plot.plot_mut().margins.right = if plot.plot().y2.is_some() {
+                                0.
+                            } else {
+                                ((right_gutter - 12.) / (ui.available_width() - 80.).max(1.))
+                                    .clamp(0., 0.8)
+                            };
+                            // The view already supplies the pointer transform and plot controls.
+                            // Plot1D's extra item picking scans series on each pointer move.
+                            let mode = plot.interaction_mode();
+                            let backend = plot.backend_mut();
+                            backend.flush_scene();
+                            let response =
+                                PlotView::new().show_with_interaction(ui, backend.plot_mut(), mode);
+                            backend.set_plot_bounds_in_pixels(response.transform.area);
+                            Some(response)
+                        });
+                    panel.inner
                 })
                 .inner;
             let Some(response) = response else { continue };
@@ -722,8 +750,8 @@ mod tests {
     #[test]
     fn scenario_colors_follow_the_run_order() {
         let scenario_order = ["zero", "ecmwf-raw", "noaa-raw", "ecmwf-corrected"].map(String::from);
-        let raw = Color32::from_rgb(190, 85, 190);
-        let corrected = Color32::from_rgb(235, 145, 35);
+        let raw = Color32::from_rgb(166, 91, 194);
+        let corrected = Color32::from_rgb(230, 145, 35);
         assert_eq!(
             ["ecmwf-corrected", "ecmwf-raw", "ecmwf-corrected"]
                 .map(|id| source_color(&scenario_order, Some(id))),
@@ -731,7 +759,7 @@ mod tests {
         );
         assert_eq!(
             source_color(&scenario_order, None),
-            Color32::from_rgb(135, 145, 155)
+            Color32::from_rgb(100, 116, 139)
         );
     }
 

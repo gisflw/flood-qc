@@ -27,7 +27,11 @@ choices per agent and restores them when the adapter still offers them.
 
 Type in the composer at the bottom. It grows with the message up to a height limit
 and scrolls within the editor after that. Press **Enter** to send, or
-**Shift+Enter** to insert a newline. Replies appear under **Assistant** and render
+**Shift+Enter** to insert a newline. Send and copy actions use icon buttons with
+localized labels on hover; copying briefly confirms success. Assistant updates
+separated by tool use or thinking appear as separate paragraphs. Streaming
+fragments within an update stay joined, and saved/copied replies retain their
+paragraph breaks. Replies appear under **Assistant** and render
 Markdown as they stream, including headings, lists, code, links, and tables.
 Wide tables wrap within the transcript and show their rows as labeled fields
 when columns would be too

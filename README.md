@@ -110,6 +110,27 @@ alongside Layers and the right-hand tabs and forms. See the
 [desktop task index](docs/contracts/desktop.md#common-tasks) and
 [qualification limits](docs/contracts/desktop.md#current-qualification-limits).
 
+### Linux application launcher
+
+After building the release desktop, install the binary, HGE icons, and application
+entry for your account:
+
+```sh
+install -Dm755 target/release/mgb-ops-desktop "$HOME/.local/bin/mgb-ops-desktop"
+install -Dm644 assets/desktop/br.ufrgs.hge.MgbOps.desktop \
+  "$HOME/.local/share/applications/br.ufrgs.hge.MgbOps.desktop"
+for size in 32 48 64 128 256; do
+  install -Dm644 "assets/branding/hge-$size.png" \
+    "$HOME/.local/share/icons/hicolor/${size}x${size}/apps/br.ufrgs.hge.MgbOps.png"
+done
+```
+
+Ensure `$HOME/.local/bin` is on your graphical session's `PATH`. MGB Ops then
+appears in the application menu; pin it or copy its installed application entry
+to the desktop using your desktop environment. It reopens the most recent
+workspace. The [HGE emblem](assets/branding/README.md) and
+[emoji artwork](assets/icons/README.md) have separate provenance.
+
 ## Project guidance
 
 - [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.

@@ -466,7 +466,12 @@ impl CalibrationTools {
                     .button(text(pt, "Open geometry…", "Abrir geometria…"))
                     .clicked()
                 {
-                    open = pick("MGB", &["gtp", "mgb", "hig", "txt"]);
+                    open = pick(
+                        ui.ctx(),
+                        "geometry-open",
+                        "MGB",
+                        &["gtp", "mgb", "hig", "txt"],
+                    );
                 }
                 if let Some(path) = source_hint
                     && ui
@@ -509,7 +514,8 @@ impl CalibrationTools {
                             "Aplicar tabela de largura/profundidade…",
                         ))
                         .clicked()
-                        && let Some(path) = pick("CSV", &["csv", "txt"])
+                        && let Some(path) =
+                            pick(ui.ctx(), "geometry-csv-edits", "CSV", &["csv", "txt"])
                     {
                         self.geometry.start(ui, move |data| {
                             data.as_mut()
@@ -522,7 +528,7 @@ impl CalibrationTools {
                         && ui
                             .button(text(pt, "Save geometry as…", "Salvar geometria como…"))
                             .clicked()
-                        && let Some(path) = save_file("MINI.gtp")
+                        && let Some(path) = save_file(ui.ctx(), "geometry-export", "MINI.gtp")
                     {
                         self.geometry.start(ui, move |data| {
                             data.as_ref().ok_or("Open geometry first")?.save(&path)?;
@@ -549,7 +555,12 @@ impl CalibrationTools {
             if ui
                 .button(text(pt, "Select geometry…", "Selecionar geometria…"))
                 .clicked()
-                && let Some(path) = pick("MGB", &["gtp", "mgb", "hig", "txt"])
+                && let Some(path) = pick(
+                    ui.ctx(),
+                    "geometry-import",
+                    "MGB",
+                    &["gtp", "mgb", "hig", "txt"],
+                )
             {
                 self.soil_geometry_path = Some(path);
             }
@@ -564,7 +575,7 @@ impl CalibrationTools {
                     "Selecionar descrições HRC…",
                 ))
                 .clicked()
-                && let Some(path) = pick("HRC", &["hrc", "HRC"])
+                && let Some(path) = pick(ui.ctx(), "geometry-hrc", "HRC", &["hrc", "HRC"])
             {
                 self.hrc_path = Some(path);
             }
@@ -582,7 +593,7 @@ impl CalibrationTools {
                         ))
                         .clicked()
                     {
-                        open = pick("MGB", &["hig", "cal", "CAL"]).map(Some);
+                        open = pick(ui.ctx(), "soil-open", "MGB", &["hig", "cal", "CAL"]).map(Some);
                     }
                     if let Some(path) = soil_hint
                         && ui
@@ -639,7 +650,7 @@ impl CalibrationTools {
                         "Salvar parâmetros de solo como…",
                     ))
                     .clicked()
-                    && let Some(path) = save_file("paruso.CAL")
+                    && let Some(path) = save_file(ui.ctx(), "soil-export", "paruso.CAL")
                 {
                     self.soil.start(ui, move |data| {
                         data.as_ref()
@@ -654,14 +665,22 @@ impl CalibrationTools {
     }
 }
 
-fn pick(label: &str, extensions: &[&str]) -> Option<PathBuf> {
-    rfd::FileDialog::new()
-        .add_filter(label, extensions)
-        .pick_file()
+fn pick(
+    context: &egui::Context,
+    purpose: &str,
+    label: &str,
+    extensions: &[&str],
+) -> Option<PathBuf> {
+    super::dialogs::file(
+        context,
+        purpose,
+        std::path::Path::new(""),
+        label,
+        extensions,
+    )
 }
-
-fn save_file(name: &str) -> Option<PathBuf> {
-    rfd::FileDialog::new().set_file_name(name).save_file()
+fn save_file(context: &egui::Context, purpose: &str, name: &str) -> Option<PathBuf> {
+    super::dialogs::save(context, purpose, std::path::Path::new(""), name)
 }
 
 fn geometry_value(row: &CalibrationGeometryRow, field: GeometryField) -> f64 {
