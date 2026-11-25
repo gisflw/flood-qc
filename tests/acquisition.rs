@@ -13,19 +13,19 @@ fn legacy_ana_csv_bootstraps_and_revises_raw_samples_idempotently() {
     let workspace = dir.path().canonicalize().unwrap();
     let request = AcquisitionRequest {
         workspace: workspace.clone(),
-        request_file: "acquisition.toml".into(),
         reference_time: Some("2026-07-20T16:00:00".into()),
     };
     fs::write(
-        workspace.join("acquisition.toml"),
-        r#"schema_version = 1
+        workspace.join("config.toml"),
+        r#"[run]
 time_zone = "UTC"
-[ana]
-inventory = "inventory.csv"
+[acquisition]
+observation_providers = ["ana"]
 "#,
     )
     .unwrap();
     fs::write(workspace.join("inventory.csv"), "provider_code,station_code,station_name,latitude,longitude,observed_variables\nana,00123,Station,0,0,\"rain,level\"\ninmet,A01,Ignored,0,0,rain\n").unwrap();
+    mgb_ops::app::import_workspace_inventory(&workspace, &workspace.join("inventory.csv")).unwrap();
     let csv = workspace.join("sample.csv");
     let input = [PathBuf::from("sample.csv")];
     let record = |rain: f64| {

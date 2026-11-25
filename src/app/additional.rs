@@ -124,16 +124,15 @@ pub(super) fn check_engine(doc: &PreparationDocument, executable: &Path) -> Resu
 
 pub(super) fn soil_identity(
     selection: Option<&CalibrationDocument>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<(String, u64)>, String> {
     selection
         .and_then(|selection| selection.soil.as_ref())
-        .map(|path| digest_file(path).and_then(|value| super::draft::identity(&value)))
+        .map(|path| digest_file(path))
         .transpose()
 }
 
 pub(super) struct AdditionalInputs {
     pub prepared: PreparedAdditionalForcing,
-    pub accepted: String,
     pub raw_files: Vec<(&'static str, Vec<u8>)>,
 }
 
@@ -175,14 +174,6 @@ pub(super) fn capture(
         .filter(|item| item.variable == "flow")
         .cloned()
         .collect();
-    let accepted = super::draft::identity(&(
-        &raw,
-        schedules
-            .as_deref()
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes))),
-        wind.as_deref()
-            .map(|bytes| format!("{:x}", Sha256::digest(bytes))),
-    ))?;
     let mut hourly = ObservationInputs {
         series: raw.series.clone(),
         ..Default::default()
@@ -241,7 +232,6 @@ pub(super) fn capture(
     .collect();
     Ok(Some(AdditionalInputs {
         prepared,
-        accepted,
         raw_files,
     }))
 }

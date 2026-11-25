@@ -440,29 +440,6 @@ fn timeline_endpoints(
 }
 
 /// Inclusive hourly labels for observed and forecast rainfall.
-pub(super) fn coverage(value: &serde_json::Value) -> Result<[String; 4], String> {
-    let field = |key: &str| value[key].as_str().ok_or_else(|| format!("{key} required"));
-    let zone = field("time_zone")?;
-    let hfirst = field("historical_first_end")?;
-    let hlast = field("historical_last_end")?;
-    let ffirst = field("forecast_first_end")?;
-    let flast = field("forecast_last_end")?;
-    let [first, _, _, end] =
-        timeline_endpoints(field("reference_time")?, hfirst, hlast, ffirst, flast)
-            .map_err(|e| e.to_string())?;
-    // Validate the contiguous span without allocating every interval.
-    let start = first
-        .checked_sub_signed(Duration::hours(1))
-        .ok_or("Coverage start overflow")?;
-    IntervalAxis {
-        time_zone: zone.into(),
-        bounds: vec![TimeInterval { start, end }],
-    }
-    .validate()
-    .map_err(|e| e.to_string())?;
-    Ok([hfirst.into(), hlast.into(), ffirst.into(), flast.into()])
-}
-
 pub(super) fn validate_document(
     document: PreparationDocument,
     request_bytes: Vec<u8>,

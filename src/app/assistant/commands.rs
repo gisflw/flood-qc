@@ -1,13 +1,12 @@
-use super::super::{DraftSnapshot, DraftVersion, Location, Session, Variable};
+use super::super::{Location, RunParameters, RunScenario, RunSetupRevision, Session, Variable};
 use crate::analysis::{HourlyWindow, resolve_hourly_window};
-use crate::store::{ForecastCatalog, ObservationStore, read_mini_topology, read_result_timeline};
+use crate::store::{ObservationStore, read_mini_topology, read_result_timeline};
 use chrono::{NaiveDateTime, Timelike};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 
 const MAX_POINTS: usize = 1_000;
 const MAX_MATCHES: usize = 100;
-const MAX_SCENARIOS: usize = 100;
 
 #[derive(Debug, Serialize)]
 pub(super) struct Finding {
@@ -55,8 +54,8 @@ pub struct FieldChange {
 }
 
 pub(super) struct Proposal {
-    pub(super) document: super::super::DraftDocument,
-    pub(super) version: DraftVersion,
+    pub(super) parameters: RunParameters,
+    pub(super) revision: RunSetupRevision,
     pub(super) review: ProposalReview,
 }
 
@@ -75,14 +74,13 @@ fn empty() -> Value {
     object(serde_json::json!({}), &[])
 }
 
-fn version_schema() -> Value {
+fn revision_schema() -> Value {
     object(
         serde_json::json!({
             "session":{"type":"integer","minimum":0},
-            "draft":{"type":"integer","minimum":0},
             "revision":{"type":"integer","minimum":0}
         }),
-        &["session", "draft", "revision"],
+        &["session", "revision"],
     )
 }
 
@@ -134,29 +132,27 @@ const COMMANDS: &[Command] = &[
         invoke: series_query,
     },
     Command {
-        id: "draft.read",
-        description: "Read the open working draft anchor, period, scenarios and version for review",
+        id: "run.parameters",
+        description: "Read the current run parameters, revision, and available forecast cycles",
         schema: empty,
-        invoke: draft_read,
+        invoke: run_parameters,
     },
     Command {
-        id: "draft.propose_edit",
-        description: "Stage horizon or scenario forecast asset changes for operator review",
+        id: "run.propose_parameters",
+        description: "Propose a reference, horizon or an ordered scenario selection for operator review",
         schema: || {
             object(
                 serde_json::json!({
-                    "version":version_schema(),
-                    "observed_horizon_days":{"type":"integer","minimum":0},
-                    "forecast_horizon_days":{"type":"integer","minimum":1},
-                    "forecast_assets":{"type":"array","items":object(serde_json::json!({
-                        "scenario_index":{"type":"integer","minimum":0},
-                        "asset_id":{"type":"string","minLength":1}
-                    }), &["scenario_index","asset_id"])}
+                    "revision": revision_schema(),
+                    "reference_time": {"type":"string"},
+                    "lookback_days": {"type":"integer","minimum":0},
+                    "forecast_days": {"type":"integer","minimum":1},
+                    "scenarios": {"type":"array","items":{"type":"object","description":"kind zero, raw with forecast, or corrected with pinned forecast and ordered corrections"}}
                 }),
-                &["version"],
+                &["revision"],
             )
         },
-        invoke: draft_edit,
+        invoke: propose_parameters,
     },
 ];
 
@@ -412,200 +408,97 @@ fn series_query(session: &Session, arguments: Value) -> Result {
     }
 }
 
-fn draft_read(session: &Session, arguments: Value) -> Result {
+fn run_parameters(session: &Session, arguments: Value) -> Result {
     parse::<Empty>(arguments)?;
-    let Some(snapshot) = session.draft() else {
-        return Ok(Output::Data(serde_json::json!({"draft":null})));
+    let Some(snapshot) = session.run_setup() else {
+        return Ok(Output::Data(serde_json::json!({"parameters":null})));
     };
-    let operation = &snapshot.draft.document.operation;
-    let scenarios: Vec<_> = operation.scenarios.iter().take(MAX_SCENARIOS).enumerate()
-        .map(|(index, scenario)| {
-            serde_json::json!({"index":index,"id":scenario.id,"asset_id":scenario.asset_id})
-        }).collect();
+    let operation = &snapshot.operation;
     Ok(Output::Data(serde_json::json!({
-        "version":snapshot.version, "schema_version":snapshot.draft.document.schema_version,
-        "reference_time":operation.reference_time,"time_zone":operation.time_zone,
-        "period":{
-            "observed_horizon_days":operation.observed_horizon_days,"forecast_horizon_days":operation.forecast_horizon_days,
-            "step_seconds":operation.step_seconds,"historical_first_end":operation.historical_first_end,
-            "historical_last_end":operation.historical_last_end,"forecast_first_end":operation.forecast_first_end,
-            "forecast_last_end":operation.forecast_last_end
-        },
-        "scenarios":scenarios,"more_scenarios":operation.scenarios.len() > MAX_SCENARIOS
+        "revision": snapshot.revision,
+        "reference_time": operation.reference(),
+        "parameters": operation.parameters(),
+        "scenarios": operation.scenarios().map_err(Finding::read)?,
+        "available_forecasts": operation.available_forecasts().map_err(Finding::read)?,
     })))
 }
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DraftEdit {
-    version: DraftVersion,
-    #[serde(default, deserialize_with = "present")]
-    observed_horizon_days: Option<u32>,
-    #[serde(default, deserialize_with = "present")]
-    forecast_horizon_days: Option<u32>,
-    #[serde(default)]
-    forecast_assets: Vec<AssetChange>,
+struct ProposedParameters {
+    revision: RunSetupRevision,
+    reference_time: Option<String>,
+    lookback_days: Option<u32>,
+    forecast_days: Option<u32>,
+    scenarios: Option<Vec<RunScenario>>,
 }
 
-fn present<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
-    d: D,
-) -> std::result::Result<Option<T>, D::Error> {
-    T::deserialize(d).map(Some)
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct AssetChange {
-    scenario_index: usize,
-    asset_id: String,
-}
-
-fn check_asset(snapshot: &DraftSnapshot, change: &AssetChange) -> std::result::Result<(), Finding> {
-    let operation = &snapshot.draft.document.operation;
-    let path = operation
-        .forecasts
-        .as_ref()
-        .and_then(|forecasts| forecasts.catalog.as_deref())
-        .ok_or_else(|| Finding::invalid("Select a forecast catalog in the working draft"))?;
-    let catalog = ForecastCatalog::open_read_only(&snapshot.draft.workspace, path)
-        .map_err(|error| Finding::invalid(error.to_string()))?;
-    catalog
-        .check_asset_available(&change.asset_id)
-        .map_err(|error| Finding::invalid(error.to_string()))?;
-    let ids = operation.scenarios[change.scenario_index]
-        .correction_ids
-        .as_deref()
-        .unwrap_or_default();
-    let corrections = snapshot
-        .draft
-        .document
-        .instructions
-        .corrections
-        .get(change.scenario_index)
-        .and_then(Option::as_ref);
-    if corrections.is_some_and(|values| {
-        values
-            .iter()
-            .any(|item| item.value.asset_id != change.asset_id)
-    }) {
-        return Err(Finding::invalid(
-            "The selected draft corrections belong to another asset",
-        ));
-    }
-    catalog
-        .load_corrections(&change.asset_id, ids)
-        .map_err(|error| Finding::invalid(error.to_string()))?;
-    Ok(())
-}
-
-fn draft_edit(session: &Session, arguments: Value) -> Result {
-    let args: DraftEdit = parse(arguments)?;
+fn propose_parameters(session: &Session, arguments: Value) -> Result {
+    let args = parse::<ProposedParameters>(arguments)?;
     let snapshot = session
-        .draft()
-        .filter(|draft| draft.version == args.version)
+        .run_setup()
+        .filter(|snapshot| snapshot.revision == args.revision)
         .ok_or_else(|| {
             Finding::new(
-                "stale_draft",
-                super::super::DraftConflict::Stale.to_string(),
+                "stale_run_parameters",
+                "Read the current run parameters first",
             )
         })?;
-    let mut document = snapshot.draft.document.clone();
-    let operation = &mut document.operation;
+    let mut operation = snapshot.operation;
+    let mut parameters = operation.parameters().clone();
     let mut changes = Vec::new();
-    if let (Some(observed), Some(forecast)) = (
-        args.observed_horizon_days
-            .or(operation.observed_horizon_days),
-        args.forecast_horizon_days
-            .or(operation.forecast_horizon_days),
-    ) && (args.observed_horizon_days.is_some() || args.forecast_horizon_days.is_some())
-    {
-        let mut period = serde_json::json!({
-            "reference_time":operation.reference_time.as_deref().unwrap_or("2000-01-01T00:00:00"),
-            "observed_horizon_days":observed,"forecast_horizon_days":forecast
-        });
-        super::super::request::expand_period(&mut period)
-            .map_err(|error| Finding::invalid(error.to_string()))?;
-    }
-    for (field, current, proposed) in [
-        (
-            "observed_horizon_days",
-            &mut operation.observed_horizon_days,
-            args.observed_horizon_days,
-        ),
-        (
-            "forecast_horizon_days",
-            &mut operation.forecast_horizon_days,
-            args.forecast_horizon_days,
-        ),
-    ] {
-        if let Some(value) = proposed {
-            if document.schema_version != 2 {
-                return Err(Finding::invalid("Day horizons require a version 2 draft"));
-            }
-            if field == "forecast_horizon_days" && value == 0 {
-                return Err(Finding::invalid("Forecast horizon must be positive"));
-            }
-            if *current != Some(value) {
-                changes.push(FieldChange {
-                    field,
-                    scenario_index: None,
-                    scenario_id: None,
-                    current: serde_json::json!(current),
-                    proposed: serde_json::json!(value),
-                });
-                *current = Some(value);
-            }
-        }
-    }
-    let mut seen = std::collections::HashSet::new();
-    for change in args.forecast_assets {
-        if !seen.insert(change.scenario_index) || change.asset_id.trim().is_empty() {
-            return Err(Finding::invalid(
-                "Use a nonempty asset ID and one change per scenario",
-            ));
-        }
-        let scenario = operation
-            .scenarios
-            .get_mut(change.scenario_index)
-            .ok_or_else(|| Finding::invalid("Scenario index is outside the reviewed draft"))?;
-        if scenario.asset_id.as_deref() != Some(&change.asset_id) {
-            check_asset(&snapshot, &change)?;
+    fn change<T: serde::Serialize + PartialEq>(
+        changes: &mut Vec<FieldChange>,
+        field: &'static str,
+        current: &mut Option<T>,
+        proposed: Option<T>,
+    ) {
+        if let Some(proposed) = proposed
+            && current.as_ref() != Some(&proposed)
+        {
             changes.push(FieldChange {
-                field: "asset_id",
-                scenario_index: Some(change.scenario_index),
-                scenario_id: scenario.id.clone(),
-                current: serde_json::json!(scenario.asset_id),
-                proposed: serde_json::json!(change.asset_id),
+                field,
+                scenario_index: None,
+                scenario_id: None,
+                current: serde_json::json!(current),
+                proposed: serde_json::json!(proposed),
             });
-            scenario.asset_id = Some(change.asset_id);
+            *current = Some(proposed);
         }
     }
+    change(
+        &mut changes,
+        "reference_time",
+        &mut parameters.reference_time,
+        args.reference_time,
+    );
+    change(
+        &mut changes,
+        "lookback_days",
+        &mut parameters.lookback_days,
+        args.lookback_days,
+    );
+    change(
+        &mut changes,
+        "forecast_days",
+        &mut parameters.forecast_days,
+        args.forecast_days,
+    );
+    change(
+        &mut changes,
+        "scenarios",
+        &mut parameters.scenarios,
+        args.scenarios,
+    );
     if changes.is_empty() {
-        return Ok(Output::Data(
-            serde_json::json!({"status":"unchanged","message":"There are no changes to apply"}),
-        ));
+        return Err(Finding::invalid("No changed run parameters"));
     }
-    let candidate = snapshot
-        .draft
-        .validate_working_document(document)
-        .map_err(Finding::invalid)?;
-    let operation = &candidate.document.operation;
-    let mut readiness = Vec::new();
-    if operation.reference_time.is_none() || operation.time_zone.is_none() {
-        readiness.push("The draft needs a reference time and timezone.".into());
-    }
-    if candidate.document.schema_version == 2
-        && (operation.observed_horizon_days.is_none() || operation.forecast_horizon_days.is_none())
-    {
-        readiness.push("The draft needs both day horizons.".into());
-    }
-    if operation.scenarios.is_empty() {
-        readiness.push("The draft needs at least one scenario.".into());
-    }
-    readiness.push("Accept selected inputs explicitly before using changed selections.".into());
+    operation.set_parameters(parameters.clone());
+    operation.check_parameters().map_err(Finding::invalid)?;
+    let readiness = operation.validate();
     Ok(Output::Proposal(Box::new(Proposal {
-        document: candidate.document,
-        version: snapshot.version,
+        parameters,
+        revision: args.revision,
         review: ProposalReview { changes, readiness },
     })))
 }

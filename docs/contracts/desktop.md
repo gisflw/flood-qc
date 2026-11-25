@@ -37,8 +37,7 @@ current workspace.
 | Inspect location data or a run | **View → Charts**, **Data**, or **Files** |
 | Review observation availability and QC | **View → Observation review** |
 | Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
-| Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |
-| Run an editable draft | **Draft → Run experiment** |
+| Edit observations | **View → Observation review** |
 | Run a workspace operation at a selected reference | **Processing → New run** |
 | Set forcing and state options | **Processing → Forcing and state** |
 | Schedule jobs or monitor and cancel a job | **Processing → Operation → Automation** or **View → Review and runs → Jobs** |
@@ -57,7 +56,7 @@ Charts, Files and Map open the active generation automatically. While viewing
 the active run, a newly published generation updates all three views and clears
 the previous scenario, inundation frame, and tiles. Files shows the displayed
 run's status and provenance. Missing or corrupt scenario outputs produce
-findings. For previous attempts, read the diagnostics in `data/run-manifests/`.
+findings. For previous attempts, see the [run history](operations.md#active-run-and-rainfall-cache).
 
 Use **Files → Open comparison run** to open a retained run or exported bundle.
 The Files selector keeps explicitly opened runs available until the workspace
@@ -162,7 +161,7 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 
 ## Layout and settings
 
-The ribbon has Project, Draft, View and Processing tabs. The map stays visible in the center with linked basemap
+The ribbon has Project, View and Processing tabs. The map stays visible in the center with linked basemap
 attribution in the bottom stripe when tiles are enabled. NASA Blue Marble provides a satellite basemap at regional scale.
 **Map view** offers **Single**, **Double**, and **Swipe**. Double synchronizes the
 center and zoom of two side-by-side maps. Swipe compares the overlays at the same
@@ -171,7 +170,7 @@ keys to move it. Both comparison modes show left and right scenario and period
 controls in Rainfall. The views share the basemap, layers, and selected feature.
 The one-line bottom stripe shows map hover coordinates and rainfall, along with the displayed run's reference time and timezone,
 observed and forecast horizons, and available scenarios. The summary comes from
-the loaded run and its frozen recipe. Day horizons appear only when the saved
+the loaded run and its frozen settings. Day horizons appear only when the saved
 hourly boundaries convert losslessly. Available scenarios have successful,
 readable basin results. Unavailable fields in a loaded run show a dash.
 
@@ -196,74 +195,31 @@ and applied rainfall settings. Projects saved before map comparisons open in Sin
 with their previous rainfall settings. Projects saved with a flat right pane open with their tabs in one group. Reset layout restores the default right
 pane and keeps results, selections and unfinished edits. Tab navigation and ribbon
 actions are keyboard accessible. Ctrl+1 focuses **Map view**, Ctrl+2/3 opens Charts/Data,
-Ctrl+S saves the draft, Ctrl+Q requests exit, and F5 refreshes monitoring.
+Ctrl+S saves workspace settings, Ctrl+Q requests exit, and F5 refreshes monitoring.
 
-## Workspace settings and operation drafts
+## Workspace settings and run parameters
 
-The **Settings** page under **Project → Workspace** edits the supported geometry
-and engine paths using the shared typed configuration read/save API. Save
-validates and atomically replaces
-TOML; Revert restores the loaded/saved baseline. Failed saves retain edits and
-existing destination bytes.
+**Project → Workspace → Settings** edits the geometry and engine paths in
+`config.toml`. Save validates and atomically replaces the file. Revert restores
+the last saved settings. Closing or switching a workspace prompts about
+unsaved workspace settings.
 
-The Draft ribbon’s Run experiment form edits one shared
-[operation draft](drafts.md). They show its fixed reference and timezone,
-editable day horizons for version 2 drafts, and read-only coverage from the shared backend,
-observation paths/provider/station/series selections, ordered existing replacements,
-scenarios/forecast assets/ordered corrections, output stations, geometry/grid,
-interpolation, QC and engine settings. Load existing instructions/assets reads the
-selected catalogs independently without registering anything; an unavailable source
-reports its finding while choices from another available source remain usable.
-Selection toggles distinguish an unset field from an explicitly empty list (for
-example, no replacement instructions or no output stations).
+**Processing → New run** opens the workspace defaults. Edit the local reference
+hour and day horizons. The form shows the resulting coverage and scenarios.
+Use **Restore defaults** to select zero future rain and the latest usable raw
+cycle per product. Add, remove, reorder or pin scenarios for the current run.
+Add a corrected scenario for a specific cycle to edit its transformations and
+preview the raw and corrected grids on the same scale. Run changes are
+temporary. **Save preparation** freezes the selected inputs for later execution.
 
-New draft fixes the reference and timezone from the selected Processing setup.
-With no Processing setup, it uses the current hour in the workspace timezone.
-Available workspace paths initialize without selecting providers, assets or
-scenarios. Draft Open reads the selected file with its stored reference, timezone
-and coverage. Automatic reopening considers only the remembered active draft with
-the current-hour reference in the separately remembered operation timezone.
-Version 1 drafts retain their explicit coverage when opened.
-
-Draft Save writes under `config/drafts/` using
-`operation-YYYYMMDDTHHMMSS±HHMM.json`. Save As permits a different destination while
-requiring that reference-anchored suffix. Existing destinations require
-explicit overwrite unless they are the active saved file. Incomplete drafts remain
-saveable; operational edits are never automatically saved. Explicit
-Accept/Refresh selected inputs accepts selected content through the shared backend;
-Check readiness displays backend findings, including changed/unaccepted sources.
-Monitoring F5 never accepts operational inputs. Preparing and running never
-implicitly accept sources or register instructions.
-
-**Draft → Review instructions** edits staged observation replacements and
-forecast corrections. Select the items to register and use **Commit selected corrections**.
-The two catalog outcomes report their registered IDs or their individual errors.
-Working selections and their order are preserved. An unchanged retry reuses the
-same IDs. Later edits keep the successful registration as their origin.
-
-Before New/Open replaces a draft, or closing/switching a project or quitting, Save,
-Discard and Cancel cover dirty configuration and draft edits, including hidden
-forms. Cancel and failed saves retain the active project and edits. Preference
-changes alone do not make operational work dirty.
+**View → Observation review** shows availability and spatial rainfall checks.
+Load, edit, and save the ordered workspace observation edits from the same page.
 
 ## Controlled jobs
 
-Processing → New run opens a standalone form. Select an existing [operation
-TOML](operations.md#request). The reference defaults to the current hour in the
-recipe timezone and can be edited for a historical run. The form recalculates
-the two hourly periods as you edit. Check readiness validates the saved selections,
-including forecast coverage of the requested period. Select a recipe with matching
-forecast assets and corrections for the reference you intend to run.
-
-Accept/Refresh selected inputs explicitly accepts those inputs for the current
-reference. Changing the reference or selecting a recipe requires fresh acceptance.
-Run All prepares and executes with the shared controlled pipeline and publishes
-the new active run and its rainfall cache on success. Preparation is temporary. The operation
-keeps any open draft and its unsaved edits independent. The Draft ribbon’s
-experiment action uses the accepted draft values.
-
-Use [acquisition](acquisition.md) to update ANA and forecast inputs from
-**Processing → Acquire inputs** or as part of Run All.
+**Run All** acquires the configured inputs, prepares and executes, and publishes
+the results and rainfall cache together on success. Use **Processing → Acquire
+inputs** to update the catalog independently. See [acquisition](acquisition.md).
 
 Operational file work and processing run on a dedicated worker, separately from
 monitoring loading. One operational job runs at a time per workspace, with backend

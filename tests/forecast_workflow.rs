@@ -75,6 +75,9 @@ fn library_and_cli_normalize_the_same_canonical_values() {
         mgb_ops::store::read_grid_series(&typed_report.native_artifact).unwrap(),
         mgb_ops::store::read_grid_series(&report.native_artifact).unwrap()
     );
+    std::fs::write(dir.path().join("cli/config.toml"),
+        "[run]\ntime_zone='America/Sao_Paulo'\n[spatial]\nbounds=[-180.0,-90.0,180.0,90.0]\n[acquisition]\nbuffer_fraction=0.0\n",
+    ).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
         .current_dir(dir.path())
         .args([
@@ -82,8 +85,16 @@ fn library_and_cli_normalize_the_same_canonical_values() {
             "normalize",
             "--workspace",
             "cli",
-            "--request",
-            "requests/normalize.toml",
+            "--source",
+            "cli/sources/noaa.grib2",
+            "--provider",
+            "noaa",
+            "--model",
+            "gfs",
+            "--product",
+            "fc",
+            "--cycle",
+            "2026-07-20T00:00:00Z",
             "--json",
         ])
         .output()

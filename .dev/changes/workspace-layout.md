@@ -20,7 +20,8 @@ Reading or inspecting a workspace leaves it intact.
   defaults, validates effective settings, and reports unknown settings by
   key. **Omit `schema_version` from workspace configuration.**
 - Keep regional paths, run defaults and acquisition settings in that file.
-  Select scenarios when running. Keep observation aggregation in the adapters. Use one shared set of spatial
+  Select scenarios when running. Default to zero and the latest usable raw cycle
+  of each available product. Keep observation aggregation in the adapters. Use one shared set of spatial
   bounds and one operation timezone. The prepared run freezes its reference,
   window, sources and settings.
 - Choose observation and forecast providers in the TOML. Station inventory,
@@ -32,13 +33,14 @@ Reading or inspecting a workspace leaves it intact.
 
 ## Operational database
 
-- Put stations, observation data, forecast metadata, corrections and run state
+- Put stations, observation data, forecast metadata, observation edits and run state
   in `operation.sqlite`. Initialize the full SQLite schema without version
   checks or version-based upgrades. Use internal keys for relationships and show users
   station codes and provider/product/cycle labels. Store file paths relative
   to the workspace. Share catalog access through `store` in both interfaces.
-- Edit ordered replacements and corrections in the app or import/export CSV
-  tables. Validate a table before applying it in one transaction. Keep raw
+- Edit ordered observation replacements in the app or import/export CSV
+  tables. Validate a table before applying it in one transaction. Forecast
+  corrections belong to each run scenario and are retained in its manifest. Keep raw
   observations intact. Preparation freezes the actual edits and selected
   station and forecast inputs. Refresh precipitation flags for the selected
   rainfall window. The final observation view masks flagged raw values before

@@ -7,9 +7,8 @@ use crate::store::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
     ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_tree,
     copy_working_inputs, digest_file, new_run_stage, publish_run_checked, read_basin_forcing,
-    read_operation_manifest, recover_run_cache, retire_legacy_rainfall, run_cache_root,
-    run_stage_id, sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
-    write_run_manifest,
+    read_operation_manifest, recover_run_cache, run_cache_root, run_stage_id, sync_tree,
+    verify_inputs, write_run_attempt, write_run_journal, write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -161,7 +160,7 @@ pub struct ScenarioExecution {
 pub struct ExecutionReport {
     pub run_root: PathBuf,
     pub run_artifact: PathBuf,
-    pub attempt_manifest: PathBuf,
+    pub run_id: String,
     pub status: BatchStatus,
     pub scenarios: Vec<ScenarioExecution>,
     pub error: Option<String>,
@@ -212,19 +211,13 @@ impl std::error::Error for OperationError {}
 #[serde(deny_unknown_fields)]
 pub(super) struct ExecutionRecipe {
     pub document: serde_json::Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub operational_workspace: Option<PathBuf>,
     pub historical_count: usize,
     pub forecast_count: usize,
     pub selected_station_ids: Vec<String>,
     pub offsets: Vec<StationOffset>,
     pub omp_threads: usize,
-    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub source_identities: std::collections::BTreeMap<String, String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub inline_replacements: bool,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub inline_corrections: Vec<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace_scenarios: Option<super::operational_run::ResolvedScenarios>,
 }
 
 fn resolved(invocation: &Path, path: &Path) -> PathBuf {
@@ -276,35 +269,37 @@ pub(super) fn validate_recipe(
     let replacement_values = object
         .remove("replacement_values")
         .ok_or("missing replacement values")?;
-    let correction_values = object
-        .remove("correction_values")
-        .ok_or("missing correction values")?;
+    let correction_values = object.remove("correction_values");
     let document: super::request::PreparationDocument =
         serde_json::from_value(document).map_err(|error| error.to_string())?;
-    let mut retained = super::request::parse_request(
-        fs::read(root.join("request.toml")).map_err(|error| error.to_string())?,
-    )
-    .map_err(|error| error.to_string())?
-    .document;
-    retained.observed.path = document.observed.path.clone();
-    retained.geometry.mini_gtp = document.geometry.mini_gtp.clone();
-    retained.engine.executable = document.engine.executable.clone();
-    retained.engine.input_dir = document.engine.input_dir.clone();
-    retained.forecasts.catalog = document.forecasts.catalog.clone();
-    if let (Some(requested), Some(resolved)) = (&mut retained.forcing, &document.forcing) {
-        requested.reservoir_schedules = resolved.reservoir_schedules.clone();
-        requested.wind_observations = resolved.wind_observations.clone();
-    }
-    if let (Some(requested), Some(resolved)) = (&mut retained.calibration, &document.calibration) {
-        requested.soil = resolved.soil.clone();
-    }
-    if let (Some(requested), Some(resolved)) = (&mut retained.hot_start, &document.hot_start) {
-        requested.use_bundle = resolved.use_bundle.clone();
-    }
-    if serde_json::to_value(&retained).map_err(|error| error.to_string())?
-        != serde_json::to_value(&document).map_err(|error| error.to_string())?
-    {
-        return Err("recipe differs from retained request".into());
+    if recipe.workspace_scenarios.is_none() {
+        let mut retained = super::request::parse_request(
+            fs::read(root.join("request.toml")).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?
+        .document;
+        retained.observed.path = document.observed.path.clone();
+        retained.geometry.mini_gtp = document.geometry.mini_gtp.clone();
+        retained.engine.executable = document.engine.executable.clone();
+        retained.engine.input_dir = document.engine.input_dir.clone();
+        retained.forecasts.catalog = document.forecasts.catalog.clone();
+        if let (Some(requested), Some(resolved)) = (&mut retained.forcing, &document.forcing) {
+            requested.reservoir_schedules = resolved.reservoir_schedules.clone();
+            requested.wind_observations = resolved.wind_observations.clone();
+        }
+        if let (Some(requested), Some(resolved)) =
+            (&mut retained.calibration, &document.calibration)
+        {
+            requested.soil = resolved.soil.clone();
+        }
+        if let (Some(requested), Some(resolved)) = (&mut retained.hot_start, &document.hot_start) {
+            requested.use_bundle = resolved.use_bundle.clone();
+        }
+        if serde_json::to_value(&retained).map_err(|error| error.to_string())?
+            != serde_json::to_value(&document).map_err(|error| error.to_string())?
+        {
+            return Err("recipe differs from retained request".into());
+        }
     }
     super::additional::check_engine(&document, &root.join(crate::store::PREPARED_ENGINE))?;
     if document.schema_version != 1
@@ -320,47 +315,77 @@ pub(super) fn validate_recipe(
     {
         return Err("recipe and scenario membership disagree".into());
     }
-    let expected_corrections: Vec<crate::store::ForecastCorrection> =
-        serde_json::from_value(correction_values).map_err(|error| error.to_string())?;
-    let mut actual_corrections = Vec::new();
-    let mut catalog = None;
-    for scenario in &document.scenarios {
-        let corrections = scenario.correction_ids.as_deref().unwrap_or_default();
-        match (
-            scenario.kind.as_str(),
-            scenario.asset_id.as_deref(),
-            corrections.is_empty(),
-        ) {
-            ("zero", None, true) => continue,
-            ("raw", Some(asset), true) | ("corrected", Some(asset), false) if !asset.is_empty() => {
-                if catalog.is_none() {
-                    catalog = Some(
-                        crate::store::ForecastCatalog::open_read_only(
-                            root,
-                            Path::new("sources/forecast.sqlite"),
-                        )
-                        .map_err(|error| error.to_string())?,
+    if let Some(inputs) = &recipe.workspace_scenarios {
+        if inputs.len() != document.scenarios.len() || correction_values.is_some() {
+            return Err("invalid prepared scenario values".into());
+        }
+        for (scenario, input) in document.scenarios.iter().zip(inputs) {
+            match (
+                scenario.kind.as_str(),
+                &scenario.asset_id,
+                &input.forecast,
+                input.corrections.is_empty(),
+            ) {
+                ("zero", None, None, true) => (),
+                ("raw", Some(asset), Some(_), true)
+                | ("corrected", Some(asset), Some(_), false)
+                    if asset
+                        .bytes()
+                        .all(|value| value.is_ascii_alphanumeric() || value == b'-')
+                        && !asset.is_empty()
+                        && root
+                            .join("sources/native")
+                            .join(format!("{asset}.nc"))
+                            .is_file() => {}
+                _ => return Err("invalid frozen forecast selection".into()),
+            }
+        }
+    } else {
+        let expected_corrections: Vec<crate::store::ForecastCorrection> =
+            serde_json::from_value(correction_values.ok_or("missing correction values")?)
+                .map_err(|error| error.to_string())?;
+        let mut actual_corrections = Vec::new();
+        let mut catalog = None;
+        for scenario in &document.scenarios {
+            let corrections = scenario.correction_ids.as_deref().unwrap_or_default();
+            match (
+                scenario.kind.as_str(),
+                scenario.asset_id.as_deref(),
+                corrections.is_empty(),
+            ) {
+                ("zero", None, true) => continue,
+                ("raw", Some(asset), true) | ("corrected", Some(asset), false)
+                    if !asset.is_empty() =>
+                {
+                    if catalog.is_none() {
+                        catalog = Some(
+                            crate::store::ForecastCatalog::open_read_only(
+                                root,
+                                Path::new("sources/forecast.sqlite"),
+                            )
+                            .map_err(|error| error.to_string())?,
+                        );
+                    }
+                    let catalog = catalog.as_ref().unwrap();
+                    let (selected, _) = catalog.load_native(asset).map_err(|e| e.to_string())?;
+                    if selected.retained_source != selected.snapshot_source_path()
+                        || selected.native_artifact
+                            != Path::new("sources/native").join(format!("{asset}.nc"))
+                    {
+                        return Err("invalid retained forecast paths".into());
+                    }
+                    actual_corrections.extend(
+                        catalog
+                            .load_corrections(asset, corrections)
+                            .map_err(|error| error.to_string())?,
                     );
                 }
-                let catalog = catalog.as_ref().unwrap();
-                let (selected, _) = catalog.load_native(asset).map_err(|e| e.to_string())?;
-                if selected.retained_source != selected.snapshot_source_path()
-                    || selected.native_artifact
-                        != Path::new("sources/native").join(format!("{asset}.nc"))
-                {
-                    return Err("invalid retained forecast paths".into());
-                }
-                actual_corrections.extend(
-                    catalog
-                        .load_corrections(asset, corrections)
-                        .map_err(|error| error.to_string())?,
-                );
+                _ => return Err("invalid scenario forecast selection".into()),
             }
-            _ => return Err("invalid scenario forecast selection".into()),
         }
-    }
-    if actual_corrections != expected_corrections {
-        return Err("forecast corrections differ from retained catalog".into());
+        if actual_corrections != expected_corrections {
+            return Err("forecast corrections differ from retained catalog".into());
+        }
     }
     let mut seen = std::collections::HashSet::new();
     if recipe
@@ -618,33 +643,6 @@ pub(super) fn lock_workspace_job(workspace: &Path) -> Result<std::fs::File, Oper
     Ok(lock)
 }
 
-pub fn run_draft(
-    draft: &super::Draft,
-    control: &OperationControl,
-) -> Result<ExecutionReport, OperationError> {
-    control.check()?;
-    let workspace = draft
-        .workspace
-        .canonicalize()
-        .map_err(|e| OperationError::Source {
-            path: draft.workspace.clone(),
-            message: e.to_string(),
-        })?;
-    let lock = lock_workspace(&workspace)?;
-    run_draft_locked(draft, control, &workspace, &lock)
-}
-
-pub(super) fn run_draft_locked(
-    draft: &super::Draft,
-    control: &OperationControl,
-    workspace: &Path,
-    lock: &std::fs::File,
-) -> Result<ExecutionReport, OperationError> {
-    run_preparation_locked(control, workspace, lock, |workspace, prepared, control| {
-        draft.prepare_controlled(workspace.to_path_buf(), prepared, control)
-    })
-}
-
 pub(super) fn run_preparation_locked(
     control: &OperationControl,
     workspace: &Path,
@@ -654,14 +652,7 @@ pub(super) fn run_preparation_locked(
     run_attempt(workspace, control, |run_root, attempt| {
         let prepared = run_root.join("preparation");
         let report = prepare(workspace, prepared, control)?;
-        execute_in_stage(
-            workspace,
-            &report.prepared,
-            run_root,
-            attempt,
-            control,
-            true,
-        )
+        execute_in_stage(&report.prepared, run_root, attempt, control, true)
     })
 }
 
@@ -672,8 +663,25 @@ pub(super) fn execute_locked(
     _lock: &std::fs::File,
     _temporary_preparation: bool,
 ) -> Result<ExecutionReport, OperationError> {
+    if !super::operation_database(workspace).exists() {
+        let manifest = read_operation_manifest(prepared).map_err(|message| {
+            OperationError::InvalidPrepared {
+                path: prepared.to_path_buf(),
+                message,
+            }
+        })?;
+        let recipe: ExecutionRecipe = serde_json::from_value(manifest.recipe)
+            .map_err(|error| store_error(prepared, error))?;
+        let zone: chrono_tz::Tz = recipe.document["time_zone"]
+            .as_str()
+            .ok_or_else(|| store_error(prepared, "Missing operation timezone"))?
+            .parse()
+            .map_err(|error| store_error(prepared, error))?;
+        super::workspace::initialize_database(workspace, zone)
+            .map_err(|error| store_error(workspace, error))?;
+    }
     run_attempt(workspace, control, |run_root, attempt| {
-        execute_in_stage(workspace, prepared, run_root, attempt, control, false)
+        execute_in_stage(prepared, run_root, attempt, control, false)
     })
 }
 
@@ -683,25 +691,6 @@ fn run_attempt(
     execute: impl FnOnce(&Path, &mut RunAttemptManifest) -> Result<ExecutionReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
     control.check()?;
-    {
-        let base = workspace.join("data/runs");
-        match fs::read_dir(&base) {
-            Ok(entries) => {
-                for entry in entries {
-                    let entry = entry.map_err(|error| store_error(&base, error))?;
-                    if entry
-                        .file_type()
-                        .map_err(|error| store_error(&base, error))?
-                        .is_dir()
-                    {
-                        return Err(store_error(&base, "Migrate legacy runs before executing"));
-                    }
-                }
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
-            Err(error) => return Err(store_error(&base, error)),
-        }
-    }
     let run_root = new_run_stage(workspace).map_err(|error| store_error(workspace, error))?;
     let mut attempt = RunAttemptManifest::new(
         run_stage_id(&run_root)
@@ -737,12 +726,7 @@ fn run_attempt(
     *committed = true;
     drop(committed);
     match result {
-        Ok(report) => {
-            if sync_directory(&run_cache_root(workspace)).is_ok() {
-                let _ = retire_legacy_rainfall(workspace);
-            }
-            Ok(report)
-        }
+        Ok(report) => Ok(report),
         Err(mut error) => {
             if cancelled && !matches!(error, OperationError::BatchFailed { .. }) {
                 error = OperationError::Cancelled {
@@ -776,7 +760,6 @@ fn run_attempt(
             if let OperationError::BatchFailed { report } = &mut error {
                 report.run_root = archive.parent().unwrap_or(workspace).to_path_buf();
                 report.run_artifact = archive.clone();
-                report.attempt_manifest = archive;
                 for item in &mut report.scenarios {
                     item.logs.clear();
                     item.results.clear();
@@ -788,7 +771,6 @@ fn run_attempt(
 }
 
 fn execute_in_stage(
-    workspace: &Path,
     prepared: &Path,
     run_root: &Path,
     attempt: &mut RunAttemptManifest,
@@ -932,9 +914,7 @@ fn execute_in_stage(
         .collect();
     let report = ExecutionReport {
         run_artifact: run_root.join("manifest.json"),
-        attempt_manifest: workspace
-            .join("runs/history")
-            .join(format!("{}.json", attempt.attempt_id)),
+        run_id: attempt.attempt_id.clone(),
         run_root: run_root.to_path_buf(),
         status: if complete && !cancelled {
             BatchStatus::Completed

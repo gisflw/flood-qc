@@ -10,13 +10,14 @@ pub use self::series::{
 };
 mod references;
 pub use self::references::{ReferenceImportReport, import_level_references};
-mod cache_migration;
 mod migration_export;
-pub use self::cache_migration::{CacheMigrationReport, migrate_cache};
 mod operation;
 mod operational_run;
 mod rainfall;
-pub use self::operational_run::{OperationalRun, OperationalRunReport};
+pub use self::operational_run::{
+    ForecastAdjustment, ForecastPreview, OperationalRun, OperationalRunReport, RunParameters,
+    RunScenario,
+};
 pub use self::rainfall::{
     CachedRainfall, RainfallCacheReader, RainfallPeriod, query_cached_rainfall, rainfall_cache_info,
 };
@@ -29,16 +30,14 @@ pub use self::operation::{
     BatchStatus, ExecutionReport, ExecutionRequest, OperationControl, OperationError,
     OperationProgress, OperationStage, PreparationReport, PreparationRequest, ScenarioExecution,
     ScenarioProgress, TrialCache, discover_trials, execute_prepared, execute_prepared_controlled,
-    read_trial, run_draft, tail_log, with_active_run,
+    read_trial, tail_log, with_active_run,
 };
 pub use self::request::{
     CalibrationDocument, EngineDocument, ForcingDocument, ForecastsDocument, GeometryDocument,
     GridDocument, HotStartDocument, InterpolationDocument, LevelsDocument, ObservedDocument,
     PreparationDocument, RoutingMode, ScenarioDocument, retained_day_horizons,
 };
-pub use self::sharing::{
-    RunBundleReport, export_run, import_run, import_run_to, regenerate_run, replay_run,
-};
+pub use self::sharing::{RunBundleReport, export_run, import_run, import_run_to, regenerate_run};
 mod acquisition;
 mod forecast;
 pub use self::acquisition::{
@@ -49,7 +48,8 @@ pub use self::acquisition::{
 pub use self::forecast::{
     CanonicalForecastDocument, NormalizeForecastDocument, NormalizeForecastError,
     NormalizeForecastReport, NormalizeForecastRequest, import_canonical_forecast,
-    normalize_forecast, normalize_forecast_document,
+    import_workspace_forecast, normalize_forecast, normalize_forecast_document,
+    normalize_workspace_forecast,
 };
 
 mod additional;
@@ -61,24 +61,19 @@ pub use self::prepare::{
 };
 
 mod edits;
-pub use self::edits::{export_workspace_edits, import_workspace_edits};
+pub use self::edits::{
+    ObservationEdit, export_workspace_edits, import_workspace_edits,
+    save_workspace_observation_edits, workspace_observation_edits,
+};
 mod workspace;
+use self::workspace::absolute;
 pub use self::workspace::{
     Finding, FindingCode, FindingStatus, InspectionReport, InspectionRequest, WorkspaceAcquisition,
     WorkspaceConfig, WorkspaceEngine, WorkspaceRun, WorkspaceSpatial, example_config,
     initialize_workspace, inspect, operation_database, read_workspace_config,
     workspace_config_path, write_workspace_config,
 };
-use self::workspace::{absolute, default_engine};
 
-mod draft;
-pub use self::draft::{
-    Draft, DraftAction, DraftCorrection, DraftDocument, DraftEngine, DraftFinding, DraftForecasts,
-    DraftGeometry, DraftGrid, DraftInstructions, DraftInterpolation, DraftLevels, DraftObserved,
-    DraftOperation, DraftQc, DraftReplacement, DraftScenario, DraftSources, DraftVisualization,
-    ForecastPreview, ObservationPreview, RegistrationCorrectionSelection, RegistrationMapping,
-    RegistrationOutcome, RegistrationReport, RegistrationSelection,
-};
 mod calibration;
 pub use self::calibration::{
     CalibrationGeometry, CalibrationGeometryRow, ChannelDimension, GeometryEdit, GeometryField,
@@ -112,8 +107,8 @@ pub use self::inundation::{
 
 mod session;
 pub use self::session::{
-    DraftConflict, DraftJob, DraftSnapshot, DraftVersion, RunSelection, RunSnapshot, RunSummary,
-    Session, read_run_summary,
+    RunSelection, RunSetupRevision, RunSetupSnapshot, RunSnapshot, RunSummary, Session,
+    WorkspaceJob, read_run_summary,
 };
 
 mod assistant;

@@ -1,6 +1,3 @@
-mod instructions;
-pub use self::instructions::{InstructionAction, InstructionTools};
-
 use super::text;
 use eframe::egui::{self, Ui};
 use mgb_ops::app::{
@@ -475,8 +472,8 @@ impl CalibrationTools {
                     && ui
                         .button(text(
                             pt,
-                            "Open draft geometry",
-                            "Abrir geometria do rascunho",
+                            "Open selected geometry",
+                            "Abrir geometria selecionada",
                         ))
                         .clicked()
                 {
@@ -591,8 +588,8 @@ impl CalibrationTools {
                         && ui
                             .button(text(
                                 pt,
-                                "Open draft soil parameters",
-                                "Abrir parâmetros de solo do rascunho",
+                                "Open selected soil parameters",
+                                "Abrir parâmetros de solo selecionados",
                             ))
                             .clicked()
                     {

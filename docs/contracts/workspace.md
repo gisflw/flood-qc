@@ -77,16 +77,21 @@ Select the same workspace directory in the CLI and desktop. Its root contains
 `config.toml` and `operation.sqlite`. Use `source/` for regional geometry,
 rasters and inventory CSVs, `model/` for MGB prerequisites, `downloads/` for
 original provider files, `assets/` for normalized forecast grids, `runs/` for
-saved preparations and replay manifests, and `cache/` for active results and
+saved preparations and archived run manifests, and `cache/` for active results and
 derived rasters. The database records the active generation under `cache/run/`. Run
 `mgb-ops workspace init --workspace /region` to create the database explicitly.
-Inventory import and acquisition can also initialize it.
+Inventory import and acquisition can also initialize it. To use inputs from a
+prototype layout, initialize a fresh workspace and import the retained inputs.
 
 The [acquisition](acquisition.md) and [operation](operations.md) commands use this
 same TOML. Run settings, provider choices, precipitation interpolation and
 exclusion rules apply defaults when omitted. Station inventory and edits are
 database records. There is no version setting for the workspace configuration
 or the SQLite database.
+
+Scenario choices and forecast corrections are [run parameters](operations.md#scenarios).
+Original provider payloads and normalized artifacts have separate locations.
+The workspace example prints supported settings and default values.
 
 ## Path resolution
 

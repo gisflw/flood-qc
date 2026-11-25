@@ -225,10 +225,61 @@ pub(super) fn default_engine() -> &'static str {
 
 pub fn example_config() -> String {
     format!(
-        "[spatial]\n# Example only: replace with your regional geometry file.\nmini_layers = \"source/geometry.gpkg\"\n\n[model]\n# Linux default: {LINUX_ENGINE}\n# Windows default: {WINDOWS_ENGINE}\nexecutable = \"{}\"\ninput_dir = \"model/Input\"\n",
+        r#"[run]
+# Required for operations. No default timezone.
+# time_zone = "America/Sao_Paulo"
+# Defaults
+# reference_time = "now"
+# lookback_days = 5
+# forecast_days = 5
+# timestep_hours = 1
+
+[spatial]
+# Example only. Set this path to the regional geometry.
+mini_layers = "source/geometry.gpkg"
+# No default HAND raster.
+# hand_raster = "source/HAND_Flood.tif"
+# The default is to derive the catchment raster on the HAND grid.
+# catchment_raster = "source/catchments.tif"
+# Required for operations. Set west, south, east and north.
+# bounds = [-59.0, -35.0, -48.0, -26.0]
+# Default in geographic degrees
+# resolution_degrees = 0.1
+
+[model]
+# Linux default is {LINUX_ENGINE}
+# Windows default is {WINDOWS_ENGINE}
+# executable = "{}"
+# Defaults
+# input_dir = "model/Input"
+# omp_threads = 4
+
+[acquisition]
+# Defaults
+# observation_providers = []
+# forecast_providers = []
+# request_days = 90
+# fetch_window_days = 30
+# timeout_seconds = 15
+# lookback_cycles = 4
+# buffer_fraction = 2.0
+
+[precipitation_interpolation]
+# Defaults
+# nearest_stations = 5
+# power = 2.0
+
+[precipitation_exclude]
+# Defaults in hourly mm and consecutive samples
+# high_threshold_mm = 50.0
+# sequence_lower_mm = 0.0
+# sequence_upper_mm = 1.0
+# sequence_min_length = 5
+"#,
         default_engine()
     )
 }
+
 pub(super) fn absolute(base: &Path, path: &Path) -> PathBuf {
     if path.is_absolute() {
         path.into()
@@ -606,74 +657,16 @@ pub(super) fn reference(
         .ok_or_else(|| format!("ambiguous or nonexistent reference time {local}"))
 }
 
-#[derive(Clone, Debug)]
-pub(super) enum RunScenario {
-    Zero,
-    Forecast {
-        provider: String,
-        cycle: Option<chrono::DateTime<chrono::Utc>>,
-        corrected: bool,
-    },
-}
-
-impl RunScenario {
-    pub(super) fn parse(value: &str) -> Result<Self, String> {
-        if value == "zero" {
-            return Ok(Self::Zero);
-        }
-        let (corrected, value) = value
-            .strip_prefix("corrected:")
-            .map_or((false, value), |value| (true, value));
-        let (provider, cycle) = value
-            .split_once('@')
-            .map_or((value, None), |(provider, cycle)| (provider, Some(cycle)));
-        if !matches!(provider, "ecmwf" | "noaa") || (corrected && cycle.is_none()) {
-            return Err(
-                "Use zero, ecmwf, noaa, provider@UTC-cycle, or corrected:provider@UTC-cycle".into(),
-            );
-        }
-        let cycle = cycle
-            .map(|value| {
-                chrono::DateTime::parse_from_rfc3339(value)
-                    .map(|value| value.to_utc())
-                    .map_err(|error| error.to_string())
-            })
-            .transpose()?;
-        Ok(Self::Forecast {
-            provider: provider.into(),
-            cycle,
-            corrected,
-        })
-    }
-
-    pub(super) fn name(&self) -> String {
-        match self {
-            Self::Zero => "zero".into(),
-            Self::Forecast {
-                provider,
-                cycle,
-                corrected,
-            } => {
-                let kind = if *corrected { "corrected" } else { "raw" };
-                match cycle {
-                    Some(cycle) => format!("{provider}-{kind}-{}", cycle.format("%Y%m%dT%H%MZ")),
-                    None => format!("{provider}-{kind}"),
-                }
-            }
-        }
-    }
-}
-
 pub(super) fn operational_document(
     workspace: &Path,
     config: &WorkspaceConfig,
     reference: chrono::DateTime<chrono_tz::Tz>,
     resolve_sources: bool,
-    requested: &[RunScenario],
+    scenarios: Vec<super::ScenarioDocument>,
 ) -> Result<super::PreparationDocument, String> {
     use super::{
         EngineDocument, ForecastsDocument, GeometryDocument, GridDocument, LevelsDocument,
-        ObservedDocument, PreparationDocument, ScenarioDocument,
+        ObservedDocument, PreparationDocument,
     };
     let run = config.run.clone().unwrap_or_default();
     if run.timestep_hours != 1 || run.forecast_days == 0 {
@@ -724,88 +717,6 @@ pub(super) fn operational_document(
         replacements = observations
             .replacement_choices()
             .map_err(|e| e.to_string())?;
-    }
-    let default_scenarios = if acquisition.forecast_providers.is_empty() {
-        vec![RunScenario::Zero]
-    } else {
-        acquisition
-            .forecast_providers
-            .iter()
-            .map(|provider| RunScenario::Forecast {
-                provider: match provider {
-                    ForecastProvider::Ecmwf => "ecmwf",
-                    ForecastProvider::Noaa => "noaa",
-                }
-                .into(),
-                cycle: None,
-                corrected: false,
-            })
-            .collect()
-    };
-    let requested = if requested.is_empty() {
-        &default_scenarios
-    } else {
-        requested
-    };
-    let catalog = (resolve_sources
-        && requested
-            .iter()
-            .any(|scenario| matches!(scenario, RunScenario::Forecast { .. })))
-    .then(|| crate::store::ForecastCatalog::open_read_only(workspace, &database))
-    .transpose()
-    .map_err(|e| e.to_string())?;
-    let mut scenarios = Vec::new();
-    for item in requested {
-        let (kind, asset_id, correction_ids) = match item {
-            RunScenario::Zero => ("zero", None, None),
-            RunScenario::Forecast {
-                provider,
-                cycle,
-                corrected,
-            } => {
-                let id = match (&catalog, cycle) {
-                    (Some(catalog), Some(cycle)) => {
-                        let label = cycle.to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-                        let matches: Vec<_> = catalog.asset_choices().map_err(|e| e.to_string())?.into_iter()
-                            .filter(|asset| asset.provider == *provider && asset.cycle_utc == label).collect();
-                        let [asset] = matches.as_slice() else {
-                            return Err(format!("{provider}: expected one asset for cycle {label}"));
-                        };
-                        asset.asset_id.clone()
-                    }
-                    (Some(catalog), None) => catalog.covering_asset(provider, reference.to_utc(), local,
-                        forecast_last, reference.timezone().name()).map_err(|e| e.to_string())?
-                        .ok_or_else(|| format!("{provider}: no saved forecast covers {local} through {forecast_last}"))?,
-                    (None, _) => "pending-acquisition".into(),
-                };
-                let corrections = if *corrected && let Some(catalog) = &catalog {
-                    let ids: Vec<_> = catalog
-                        .correction_choices()
-                        .map_err(|e| e.to_string())?
-                        .into_iter()
-                        .filter(|(_, asset)| asset == &id)
-                        .map(|(correction, _)| correction)
-                        .collect();
-                    if ids.is_empty() {
-                        return Err(format!("{provider}: cycle has no stored corrections"));
-                    }
-                    Some(ids)
-                } else {
-                    None
-                };
-                (
-                    if *corrected { "corrected" } else { "raw" },
-                    Some(id),
-                    corrections,
-                )
-            }
-        };
-        scenarios.push(ScenarioDocument {
-            id: item.name(),
-            kind: kind.into(),
-            asset_id,
-            correction_ids,
-        });
     }
     Ok(PreparationDocument {
         schema_version: 1,

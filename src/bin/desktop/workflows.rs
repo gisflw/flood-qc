@@ -4,11 +4,11 @@ use eframe::egui;
 use mgb_ops::analysis::ReviewVariable;
 use mgb_ops::app::{
     AcquisitionKind, AcquisitionReport, AcquisitionRequest, AutomationControl, AutomationJobStatus,
-    BulletinPreview, BulletinRequest, CanonicalForcingKind, Draft, ForecastPreview,
-    HydrographReport, ObservationPreview, ObservationReviewReport, ObservationReviewRequest,
-    OperationControl, ReviewWindow, SpatialObservationQcReport,
+    BulletinPreview, BulletinRequest, CanonicalForcingKind, HydrographReport, ObservationEdit,
+    ObservationReviewReport, ObservationReviewRequest, OperationControl, ReviewWindow,
+    RunParameters, SpatialObservationQcReport,
 };
-use mgb_ops::store::{GridFrame, IdwSettings, ObservationSelection};
+use mgb_ops::store::{GridFrame, IdwSettings, ObservationSelection, ReplacementKind};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
@@ -40,8 +40,10 @@ pub enum Task {
     Init(PathBuf, String),
     ObservationBatch(PathBuf, PathBuf),
     Inventory(PathBuf, PathBuf),
-    Forecast(PathBuf),
+    Forecast(PathBuf, mgb_ops::store::CanonicalForecastMetadata),
     Forcing(PathBuf, PathBuf, CanonicalForcingKind),
+    LoadEdits,
+    SaveEdits(Vec<ObservationEdit>),
     Availability(ObservationReviewRequest),
     Spatial(ObservationReviewRequest, Option<String>, IdwSettings),
     Export(PathBuf, Option<PathBuf>, PathBuf),
@@ -71,8 +73,7 @@ pub enum AutomationTask {
 pub enum Output {
     Notice(String),
     Acquisition(Box<AcquisitionReport>),
-    Observations(ObservationPreview),
-    Forecast(ForecastPreview),
+    Edits(Vec<ObservationEdit>),
     Availability(ObservationReviewReport),
     Spatial(SpatialObservationQcReport),
     Analysis(HydrographReport),
@@ -138,24 +139,38 @@ impl Task {
                     .map_err(|e| e.to_string())?;
                 resolve(&database).display().to_string()
             }
-            Self::Forecast(request) => {
-                mgb_ops::app::import_canonical_forecast(workspace, json(&resolve(&request))?)
-                    .map_err(|e| e.to_string())?
-                    .asset_id
+            Self::Forecast(source, metadata) => {
+                mgb_ops::app::import_workspace_forecast(workspace, source, metadata)?
+                    .native_artifact
+                    .display()
+                    .to_string()
             }
             Self::Forcing(source, destination, kind) => {
                 let path = resolve(&destination);
                 mgb_ops::app::save_canonical_forcing(&resolve(&source), &path, kind)?;
                 path.display().to_string()
             }
+            Self::LoadEdits => {
+                return mgb_ops::app::workspace_observation_edits(workspace).map(Output::Edits);
+            }
+            Self::SaveEdits(edits) => {
+                let count = mgb_ops::app::save_workspace_observation_edits(workspace, edits)?;
+                format!("Saved {count} observation edits")
+            }
             Self::Availability(mut request) => {
                 request.database = resolve(&request.database);
+                request.replacement_ids = ObservationStore::open_read_only(&request.database)
+                    .and_then(|store| store.replacement_choices())
+                    .map_err(|error| error.to_string())?;
                 return mgb_ops::app::review_observations(&request)
                     .map(Output::Availability)
                     .map_err(|e| e.to_string());
             }
             Self::Spatial(mut request, station, idw) => {
                 request.database = resolve(&request.database);
+                request.replacement_ids = ObservationStore::open_read_only(&request.database)
+                    .and_then(|store| store.replacement_choices())
+                    .map_err(|error| error.to_string())?;
                 return mgb_ops::app::spatial_observation_qc(&request, station.as_deref(), &idw)
                     .map(Output::Spatial)
                     .map_err(|e| e.to_string());
@@ -278,10 +293,13 @@ impl AutomationTask {
 
 #[derive(Default)]
 pub struct Forms {
-    acquisition_request: PathBuf,
     acquisition_reference: String,
     acquisition_csv: PathBuf,
     intake: Intake,
+    forecast_provider: String,
+    forecast_model: String,
+    forecast_product: String,
+    forecast_cycle: String,
     input: PathBuf,
     destination: PathBuf,
     database: PathBuf,
@@ -289,13 +307,13 @@ pub struct Forms {
     end: String,
     variable: Option<ReviewVariable>,
     monthly: bool,
+    review_edits: Option<Vec<EditRow>>,
     bundle: PathBuf,
     import_parent: PathBuf,
     import_name: String,
     export: PathBuf,
     preparation: PathBuf,
     engine: PathBuf,
-    preview_step: usize,
     preview: Option<Output>,
     notice: String,
     forcing_text: String,
@@ -356,16 +374,6 @@ fn optional_path(
 impl Forms {
     pub fn acquisition(&mut self, ui: &mut egui::Ui, pt: bool, workspace: &Path) -> Option<Task> {
         ui.heading(Form::Acquisition.label(pt));
-        if self.acquisition_request.as_os_str().is_empty() {
-            self.acquisition_request = "config.toml".into();
-        }
-        path_field(
-            ui,
-            text(pt, "Acquisition TOML", "TOML de aquisição"),
-            &mut self.acquisition_request,
-            false,
-            pt,
-        );
         ui.label(text(
             pt,
             "Reference hour (current if blank)",
@@ -377,7 +385,6 @@ impl Forms {
         );
         let request = AcquisitionRequest {
             workspace: workspace.to_path_buf(),
-            request_file: self.acquisition_request.clone(),
             reference_time: (!self.acquisition_reference.trim().is_empty())
                 .then(|| self.acquisition_reference.trim().to_owned()),
         };
@@ -417,6 +424,9 @@ impl Forms {
 
     pub fn receive(&mut self, response: Output, context: &egui::Context) {
         match response {
+            Output::Edits(rows) => {
+                self.review_edits = Some(rows.into_iter().map(EditRow::from).collect());
+            }
             Output::Notice(text) => {
                 self.notice = text;
             }
@@ -454,7 +464,6 @@ impl Forms {
                 self.job_text = text;
             }
             preview => {
-                self.preview_step = 0;
                 self.preview = Some(preview);
             }
         }
@@ -465,27 +474,19 @@ impl Forms {
         ui: &mut egui::Ui,
         form: Form,
         pt: bool,
-        draft: &Draft,
+        project: &super::data::Project,
         run: Option<&mgb_ops::app::RunSummary>,
     ) -> Result<Option<Task>, String> {
         ui.heading(form.label(pt));
-        let default_db = draft
-            .document
-            .operation
-            .observed
-            .as_ref()
-            .and_then(|s| s.path.as_ref())
-            .cloned()
-            .unwrap_or_else(|| "operation.sqlite".into());
         if self.database.as_os_str().is_empty() {
-            self.database = default_db;
+            self.database = mgb_ops::app::operation_database(&project.workspace);
         }
         let task = match form {
-            Form::Intake => self.intake(ui, pt, draft),
-            Form::Review => self.review(ui, pt, draft)?,
+            Form::Intake => self.intake(ui, pt, &project.time_zone),
+            Form::Review => self.review(ui, pt, project)?,
             Form::RunBundle => self.share(ui, pt, run.map(|run| run.root.as_path())),
             Form::Analysis => self.analysis(ui, pt),
-            Form::Bulletin => self.bulletin(ui, pt, draft, run),
+            Form::Bulletin => self.bulletin(ui, pt, project, run),
             Form::Automation => self.automation(ui, pt),
             _ => None,
         };
@@ -493,7 +494,7 @@ impl Forms {
             ui.label(&self.notice);
         }
         if form == Form::Review {
-            self.show_preview(ui, pt, draft);
+            self.show_preview(ui, pt);
         }
         Ok(task)
     }
@@ -561,7 +562,7 @@ impl Forms {
         &mut self,
         ui: &mut egui::Ui,
         pt: bool,
-        draft: &Draft,
+        project: &super::data::Project,
         run: Option<&mgb_ops::app::RunSummary>,
     ) -> Option<Task> {
         if let Some(run) = run {
@@ -599,13 +600,7 @@ impl Forms {
                 pt,
             );
             if self.bulletin_geometry.as_os_str().is_empty() {
-                self.bulletin_geometry = draft
-                    .document
-                    .operation
-                    .geometry
-                    .as_ref()
-                    .and_then(|item| item.mini_gtp.clone())
-                    .unwrap_or_default();
+                self.bulletin_geometry = baseline_geometry(project);
             }
             path_field(
                 ui,
@@ -783,6 +778,12 @@ impl Forms {
                 |ui| {
                     for stage in &job.stages {
                         ui.label(format!("{:?} · {:?}", stage.stage, stage.state));
+                        if let Some(run_id) = &stage.run_id {
+                            ui.label(run_id);
+                        }
+                        for finding in &stage.acquisition_findings {
+                            ui.label(finding);
+                        }
                         for artifact in &stage.artifacts {
                             ui.label(artifact.display().to_string());
                         }
@@ -828,7 +829,7 @@ impl Forms {
         })
     }
 
-    fn intake(&mut self, ui: &mut egui::Ui, pt: bool, draft: &Draft) -> Option<Task> {
+    fn intake(&mut self, ui: &mut egui::Ui, pt: bool, zone: &str) -> Option<Task> {
         egui::ComboBox::from_id_salt("canonical-input-kind")
             .selected_text(self.intake.label(pt))
             .show_ui(ui, |ui| {
@@ -844,15 +845,28 @@ impl Forms {
             });
         path_field(
             ui,
-            text(
-                pt,
-                "Canonical input or forecast request JSON",
-                "Entrada canônica ou solicitação de previsão JSON",
-            ),
+            text(pt, "Canonical input", "Entrada canônica"),
             &mut self.input,
             false,
             pt,
         );
+        if self.intake == Intake::Forecast {
+            for (label, value) in [
+                (
+                    text(pt, "Provider", "Provedor"),
+                    &mut self.forecast_provider,
+                ),
+                (text(pt, "Model", "Modelo"), &mut self.forecast_model),
+                (text(pt, "Product", "Produto"), &mut self.forecast_product),
+                (
+                    text(pt, "Cycle (RFC3339)", "Ciclo (RFC3339)"),
+                    &mut self.forecast_cycle,
+                ),
+            ] {
+                ui.label(label);
+                ui.text_edit_singleline(value);
+            }
+        }
         if matches!(self.intake, Intake::Observations | Intake::Inventory) {
             path_field(
                 ui,
@@ -861,12 +875,6 @@ impl Forms {
                 false,
                 pt,
             );
-            let zone = draft
-                .document
-                .operation
-                .time_zone
-                .as_deref()
-                .unwrap_or("America/Sao_Paulo");
             if ui
                 .button(text(pt, "Initialize database", "Inicializar banco"))
                 .clicked()
@@ -881,21 +889,39 @@ impl Forms {
                 self.destination = path.into();
             }
         }
-        ui.add_enabled(
-            !self.input.as_os_str().is_empty(),
-            egui::Button::new(text(
-                pt,
-                "Import selected data",
-                "Importar dados selecionados",
-            )),
-        )
-        .clicked()
-        .then(|| match self.intake {
+        let submit = ui
+            .add_enabled(
+                !self.input.as_os_str().is_empty(),
+                egui::Button::new(text(
+                    pt,
+                    "Import selected data",
+                    "Importar dados selecionados",
+                )),
+            )
+            .clicked();
+        if !submit {
+            return None;
+        }
+        let task = match self.intake {
             Intake::Observations => {
                 Task::ObservationBatch(self.database.clone(), self.input.clone())
             }
             Intake::Inventory => Task::Inventory(self.database.clone(), self.input.clone()),
-            Intake::Forecast => Task::Forecast(self.input.clone()),
+            Intake::Forecast => match self.forecast_cycle.parse() {
+                Ok(cycle_utc) => Task::Forecast(
+                    self.input.clone(),
+                    mgb_ops::store::CanonicalForecastMetadata {
+                        provider: self.forecast_provider.trim().into(),
+                        model: self.forecast_model.trim().into(),
+                        product: self.forecast_product.trim().into(),
+                        cycle_utc,
+                    },
+                ),
+                Err(error) => {
+                    self.notice = format!("Invalid forecast cycle: {error}");
+                    return None;
+                }
+            },
             Intake::Reservoirs => Task::Forcing(
                 self.input.clone(),
                 self.destination.clone(),
@@ -906,16 +932,16 @@ impl Forms {
                 self.destination.clone(),
                 CanonicalForcingKind::Wind,
             ),
-        })
+        };
+        Some(task)
     }
 
     fn review(
         &mut self,
         ui: &mut egui::Ui,
         pt: bool,
-        draft: &Draft,
+        project: &super::data::Project,
     ) -> Result<Option<Task>, String> {
-        let operation = &draft.document.operation;
         path_field(
             ui,
             text(pt, "Observation database", "Banco de observações"),
@@ -923,8 +949,100 @@ impl Forms {
             false,
             pt,
         );
+        let mut edits_task = None;
+        ui.collapsing(
+            text(pt, "Observation edits", "Edições de observações"),
+            |ui| {
+                if ui
+                    .button(text(pt, "Load saved edits", "Carregar edições"))
+                    .clicked()
+                {
+                    edits_task = Some(Ok(Task::LoadEdits));
+                }
+                if let Some(rows) = &mut self.review_edits {
+                    let mut remove = None;
+                    let mut move_up = None;
+                    for (index, row) in rows.iter_mut().enumerate() {
+                        ui.push_id(index, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut row.station)
+                                        .hint_text("ana:123"),
+                                );
+                                egui::ComboBox::from_id_salt("edit-variable")
+                                    .selected_text(&row.variable)
+                                    .show_ui(ui, |ui| {
+                                        for variable in ["rain", "flow", "level"] {
+                                            ui.selectable_value(
+                                                &mut row.variable,
+                                                variable.into(),
+                                                variable,
+                                            );
+                                        }
+                                    });
+                                ui.checkbox(&mut row.period, text(pt, "Period", "Período"));
+                                if ui.small_button("↑").clicked() && index > 0 {
+                                    move_up = Some(index);
+                                }
+                                if ui.small_button("×").clicked() {
+                                    remove = Some(index);
+                                }
+                            });
+                            ui.add(
+                                egui::TextEdit::singleline(&mut row.start)
+                                    .hint_text(text(pt, "Start", "Início")),
+                            );
+                            if row.period {
+                                ui.add(egui::TextEdit::singleline(&mut row.end).hint_text(text(
+                                    pt,
+                                    "End (optional)",
+                                    "Fim (opcional)",
+                                )));
+                            }
+                            ui.add(egui::TextEdit::singleline(&mut row.value).hint_text(text(
+                                pt,
+                                "Value (blank excludes)",
+                                "Valor (vazio exclui)",
+                            )));
+                            ui.add(
+                                egui::TextEdit::singleline(&mut row.reason)
+                                    .hint_text(text(pt, "Reason", "Motivo")),
+                            );
+                        });
+                    }
+                    if let Some(index) = remove {
+                        rows.remove(index);
+                    } else if let Some(index) = move_up {
+                        rows.swap(index - 1, index);
+                    }
+                    if ui
+                        .button(text(pt, "Add edit", "Adicionar edição"))
+                        .clicked()
+                    {
+                        rows.push(EditRow {
+                            variable: "rain".into(),
+                            ..EditRow::default()
+                        });
+                    }
+                    if ui
+                        .button(text(pt, "Save edits", "Salvar edições"))
+                        .clicked()
+                    {
+                        edits_task = Some(
+                            rows.iter()
+                                .map(EditRow::value)
+                                .collect::<Result<_, _>>()
+                                .map(Task::SaveEdits),
+                        );
+                    }
+                }
+            },
+        );
+        if let Some(task) = edits_task {
+            return task.map(Some);
+        }
         if self.end.is_empty() {
-            self.end = operation.reference_time.clone().unwrap_or_default();
+            self.end = super::runners::reference_now(&project.time_zone).unwrap_or_default();
         }
         ui.label(text(
             pt,
@@ -963,18 +1081,18 @@ impl Forms {
         }
         let station =
             (!self.station_id.trim().is_empty()).then(|| self.station_id.trim().to_string());
-        let observed = operation
-            .observed
-            .as_ref()
-            .ok_or("Set the observation sources in the draft")?;
         let selection = match (&station, spatial) {
             (Some(station), false) => ObservationSelection {
                 provider_codes: vec![],
                 station_ids: vec![station.clone()],
             },
             _ => ObservationSelection {
-                provider_codes: observed.provider_codes.clone().unwrap_or_default(),
-                station_ids: observed.station_ids.clone().unwrap_or_default(),
+                provider_codes: vec![],
+                station_ids: project
+                    .stations
+                    .iter()
+                    .map(|station| station.station.station_id.clone())
+                    .collect(),
             },
         };
         let request = ObservationReviewRequest {
@@ -991,24 +1109,21 @@ impl Forms {
             } else {
                 ReviewWindow::Recent72Hours
             },
-            replacement_ids: observed.replacement_ids.clone().unwrap_or_default(),
-            replacements: draft
-                .document
-                .instructions
-                .replacements
-                .as_ref()
-                .map(|values| values.iter().map(|item| item.value.clone()).collect()),
+            replacement_ids: Vec::new(),
+            replacements: None,
         };
         Ok(Some(if available {
             Task::Availability(request)
         } else {
-            let options = operation.interpolation.as_ref();
+            let options = mgb_ops::app::read_workspace_config(&project.config)?
+                .precipitation_interpolation
+                .unwrap_or_default();
             Task::Spatial(
                 request,
                 station,
                 IdwSettings {
-                    nearest_stations: options.and_then(|o| o.nearest_stations).unwrap_or(5),
-                    power: options.and_then(|o| o.power).unwrap_or(2.0),
+                    nearest_stations: options.nearest_stations,
+                    power: options.power,
                 },
             )
         }))
@@ -1106,7 +1221,7 @@ impl Forms {
         })
     }
 
-    pub fn forcing(&mut self, ui: &mut egui::Ui, pt: bool, draft: &mut Draft) {
+    pub fn forcing(&mut self, ui: &mut egui::Ui, pt: bool, parameters: &mut RunParameters) {
         ui.heading(Form::Forcing.label(pt));
         ui.label(text(
             pt,
@@ -1114,7 +1229,7 @@ impl Forms {
             "Arquivos canônicos e associações do modelo",
         ));
         if self.forcing_text.is_empty() {
-            let selected = draft.document.operation.forcing.clone().unwrap_or_default();
+            let selected = parameters.forcing.clone().unwrap_or_default();
             self.forcing_text = serde_json::to_string_pretty(&selected).unwrap_or_default();
         }
         ui.add(
@@ -1133,9 +1248,12 @@ impl Forms {
         {
             match serde_json::from_str(&self.forcing_text) {
                 Ok(value) => {
-                    draft.document.operation.forcing = Some(value);
-                    draft.document.sources.accepted.remove("additional_forcing");
-                    self.selection_notice = text(pt, "Updated draft", "Rascunho atualizado");
+                    parameters.forcing = Some(value);
+                    self.selection_notice = text(
+                        pt,
+                        "Updated run parameters",
+                        "Parâmetros da execução atualizados",
+                    );
                 }
                 Err(error) => self.selection_notice = error.to_string(),
             }
@@ -1144,7 +1262,7 @@ impl Forms {
             .button(text(pt, "Use baseline forcing", "Usar entradas da base"))
             .clicked()
         {
-            draft.document.operation.forcing = None;
+            parameters.forcing = None;
             self.forcing_text.clear();
         }
         ui.separator();
@@ -1153,7 +1271,7 @@ impl Forms {
             "Hot-start save time (local hour)",
             "Hora de gravação do estado (hora local)",
         ));
-        let selection = draft.document.operation.hot_start.get_or_insert_default();
+        let selection = parameters.hot_start.get_or_insert_default();
         let mut date = selection.save_at.clone().unwrap_or_default();
         if ui.text_edit_singleline(&mut date).changed() {
             selection.save_at = (!date.trim().is_empty()).then_some(date);
@@ -1170,9 +1288,9 @@ impl Forms {
             pt,
         );
         if selection.save_at.is_none() && selection.use_bundle.is_none() {
-            draft.document.operation.hot_start = None;
+            parameters.hot_start = None;
         }
-        let routing = &mut draft.document.operation.routing;
+        let routing = &mut parameters.routing;
         ui.horizontal_wrapped(|ui| {
             ui.selectable_value(
                 routing,
@@ -1193,7 +1311,7 @@ impl Forms {
         ui.label(&self.selection_notice);
     }
 
-    pub fn show_preview(&mut self, ui: &mut egui::Ui, pt: bool, draft: &Draft) {
+    fn show_preview(&mut self, ui: &mut egui::Ui, pt: bool) {
         let Some(preview) = self.preview.as_ref() else {
             return;
         };
@@ -1241,74 +1359,72 @@ impl Forms {
                     ui.label(format!("{} · {}", station.station_id, value));
                 }
             }
-            Output::Observations(report) => {
-                if !draft.preview_is_current(&report.generation) {
-                    ui.label(text(
-                        pt,
-                        "Refresh preview after editing",
-                        "Atualize a prévia após editar",
-                    ));
-                    return;
-                }
-                ui.label(format!(
-                    "{} · {}",
-                    text(pt, "Rainfall QC findings", "Avisos de chuva"),
-                    report.qc.len()
-                ));
-                for finding in &report.qc {
-                    ui.label(format!("{finding:?}"));
-                }
-            }
-            Output::Forecast(report) => {
-                if !draft.preview_is_current(&report.generation) {
-                    ui.label(text(
-                        pt,
-                        "Refresh preview after editing",
-                        "Atualize a prévia após editar",
-                    ));
-                    return;
-                }
-                if report.raw.is_empty() {
-                    return;
-                }
-                ui.add(
-                    egui::Slider::new(&mut self.preview_step, 0..=report.raw.len() - 1).text(text(
-                        pt,
-                        "Interval",
-                        "Intervalo",
-                    )),
-                );
-                let (before, after) = (
-                    &report.raw[self.preview_step],
-                    &report.corrected[self.preview_step],
-                );
-                ui.label(format!(
-                    "{} → {}",
-                    before.interval.start, before.interval.end
-                ));
-                let max = [before, after]
-                    .into_iter()
-                    .flat_map(|frame| frame.values.iter().zip(&frame.valid))
-                    .filter_map(|(&value, &valid)| valid.then_some(value))
-                    .fold(0.0_f64, f64::max);
-                ui.columns(2, |columns| {
-                    grid_preview(
-                        &mut columns[0],
-                        before,
-                        max,
-                        &text(pt, "Original", "Original"),
-                    );
-                    grid_preview(
-                        &mut columns[1],
-                        after,
-                        max,
-                        &text(pt, "Corrected", "Corrigida"),
-                    );
-                });
-            }
             _ => {}
         }
     }
+}
+
+#[derive(Default)]
+struct EditRow {
+    station: String,
+    variable: String,
+    period: bool,
+    start: String,
+    end: String,
+    value: String,
+    reason: String,
+}
+
+impl From<ObservationEdit> for EditRow {
+    fn from(edit: ObservationEdit) -> Self {
+        Self {
+            station: edit.station_id,
+            variable: edit.variable,
+            period: edit.kind == ReplacementKind::Period,
+            start: edit.start_at.format("%Y-%m-%dT%H:%M:%S").to_string(),
+            end: edit
+                .end_at
+                .map(|end| end.format("%Y-%m-%dT%H:%M:%S").to_string())
+                .unwrap_or_default(),
+            value: edit
+                .value
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            reason: edit.reason,
+        }
+    }
+}
+
+impl EditRow {
+    fn value(&self) -> Result<ObservationEdit, String> {
+        Ok(ObservationEdit {
+            station_id: self.station.trim().to_owned(),
+            variable: self.variable.clone(),
+            kind: if self.period {
+                ReplacementKind::Period
+            } else {
+                ReplacementKind::Point
+            },
+            start_at: super::data::timestamp(self.start.trim())?,
+            end_at: (self.period && !self.end.trim().is_empty())
+                .then(|| super::data::timestamp(self.end.trim()))
+                .transpose()?,
+            value: (!self.value.trim().is_empty())
+                .then(|| self.value.trim().parse::<f64>())
+                .transpose()
+                .map_err(|error| error.to_string())?,
+            reason: self.reason.clone(),
+        })
+    }
+}
+
+pub(super) fn baseline_geometry(project: &super::data::Project) -> PathBuf {
+    let input = mgb_ops::app::read_workspace_config(&project.config)
+        .ok()
+        .and_then(|config| config.engine)
+        .and_then(|engine| engine.input_dir)
+        .unwrap_or_else(|| "model/Input".into());
+    project.workspace.join(input).join("MINI.gtp")
 }
 
 fn destination(ui: &mut egui::Ui, label: String, path: &mut PathBuf) {
@@ -1389,7 +1505,7 @@ fn hydrograph(ui: &mut egui::Ui, report: &HydrographReport) {
     }
 }
 
-fn grid_preview(ui: &mut egui::Ui, frame: &GridFrame, maximum: f64, title: &str) {
+pub(super) fn grid_preview(ui: &mut egui::Ui, frame: &GridFrame, maximum: f64, title: &str) {
     ui.strong(title);
     let width = frame.grid.longitudes.len();
     let height = frame.grid.latitudes.len();

@@ -72,27 +72,24 @@ first used. Do not equate missing values with zero or silently discard timezones
 ## Application sessions and the assistant
 
 App owns the process-local session for an explicitly selected workspace. It
-holds the resolved configuration selection, run source, and working draft.
-Reads that follow the active run hold the cache's shared guard through artifact
-access. Retained selections are independent of publication. Draft changes
-from snapshots require the same session, draft identity and revision. App
-serializes the update with job admission. Interfaces own display and departure
-decisions.
+holds the configuration selection, the viewed run, and the current run
+parameters. Reads that follow the active generation hold the cache's shared
+guard through artifact access. Run parameter proposals apply to the same
+session and revision, with updates serialized against job admission.
 
 The assistant uses ACP for agent interaction and an MCP connection scoped to
-the conversation. App owns tool dispatch and uses the same data workflows as
-operators. Operator review applies a draft proposal to the working copy.
-Durable actions continue to use the explicit application workflows. See the
-[assistant contract](contracts/assistant.md).
+the conversation. App owns dispatch and uses the same run parameters as
+operators. Operator approval applies proposed parameter changes to the open
+form. See the [assistant contract](contracts/assistant.md).
 
 ## Operational data decisions
 
 Saved operations use Rust-owned canonical formats. The workspace's
 `operation.sqlite` holds observations, station metadata, review instructions,
-forecast records, run attempts, and the active generation. Initialize the
+forecast records, the run index, and the active generation. Initialize the
 complete schema without database schema versioning. NetCDF holds large
 scientific arrays. Store owns the schemas and the lifecycle of those files.
-An attempt manifest carries resolved inputs and outcomes for replay and export.
+A run manifest carries the resolved inputs and outcomes.
 
 Geometry and CRS readers are store capabilities using the pinned Terrio vector
 integration. Analysis derives upstream membership from validated model topology and local areas, not map-coordinate
@@ -104,9 +101,10 @@ Observation replacements preserve raw measurements and support a point or a
 [start,end) period, with an absent end meaning indefinitely. NA replacements
 express exclusions. Automatic precipitation flags mask raw rainfall in the
 final observation view before replacements; ordered selected instructions apply with last match winning.
-There is no separate review-set or station-exclusion entity. Forecast scenarios
-select an asset and an explicit ordered list of correction IDs. Run artifacts
-record the actual selected instruction values, not only mutable IDs.
+App selects forecast scenarios for each run. Each corrected scenario binds
+ordered transformation values to a concrete asset. The run manifest owns
+those values. See [scenario selection](contracts/operations.md#scenarios).
+
 
 Canonical timestamps use the operation's timezone, recorded in artifact metadata.
 Forecast normalization converts source UTC timestamps into that convention while
@@ -173,15 +171,15 @@ Saved preparation and execution follow these rules:
   Store retains values or immutable versions, not merely selectors, mutable paths,
   or hashes without retained data.
 - Later acquisition/editing cannot alter an execution. Refreshing inputs creates a
-  new snapshot. Regeneration from the recorded recipe requires referenced data
-  and the compatible engine to remain available; hashes cannot recover missing bytes.
+  new snapshot. An explicitly saved preparation retains the data for exact
+  execution later.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
 - Each workspace publishes a single active generation containing results and
   rainfall from the same validated execution. Inundation products extend that
   generation. Store owns atomic publication and file retirement. App decides
   when to commit based on all requested scenarios and required outputs.
-- Superseded and failed attempts leave replay manifests. Operators explicitly
+- Superseded and failed attempts retain their manifests. Operators explicitly
   export full results or save reusable preparations for long-term retention.
   See the [operation contract](contracts/operations.md#active-run-and-rainfall-cache).
 

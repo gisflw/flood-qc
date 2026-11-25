@@ -310,18 +310,6 @@ impl ObservationStore {
         self.write_batch_inner(batch, true, false)
     }
 
-    pub(crate) fn seed_ana_stations(
-        &mut self,
-        stations: &[Station],
-    ) -> Result<(), ObservationError> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        Self::upsert_ana_stations(&tx, stations)?;
-        tx.commit()?;
-        Ok(())
-    }
-
     fn upsert_ana_stations(tx: &Connection, stations: &[Station]) -> Result<(), ObservationError> {
         for station in stations {
             validate_station(station)?;

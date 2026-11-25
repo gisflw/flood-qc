@@ -239,7 +239,6 @@ fn layer_opacity(ui: &mut egui::Ui, pt: bool, opacity: &mut f32) {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Ribbon {
     Project,
-    Draft,
     View,
     Processing,
 }
@@ -248,7 +247,6 @@ impl Ribbon {
     fn label(self, pt: bool) -> String {
         match self {
             Self::Project => text(pt, "Project", "Projeto"),
-            Self::Draft => text(pt, "Draft", "Rascunho"),
             Self::View => text(pt, "View", "Exibir"),
             Self::Processing => text(pt, "Processing", "Processamento"),
         }
@@ -298,8 +296,6 @@ struct Display {
     chart_end: String,
     #[serde(rename = "right_pane")]
     layout: layout::Layout,
-    draft: Option<PathBuf>,
-    operation_zone: Option<String>,
 }
 impl Default for Display {
     fn default() -> Self {
@@ -331,8 +327,6 @@ impl Default for Display {
             chart_start: String::new(),
             chart_end: String::new(),
             layout: layout::Layout::default(),
-            draft: None,
-            operation_zone: None,
         }
     }
 }
@@ -349,10 +343,6 @@ impl Display {
         {
             self.layers.insert(position.min(self.layers.len()), layer);
         }
-    }
-
-    fn selected_operation_zone<'a>(&'a self, fallback: &'a str) -> &'a str {
-        self.operation_zone.as_deref().unwrap_or(fallback)
     }
 
     fn rainfall_settings(&self, side: RainSide) -> RainfallSettings {
@@ -474,8 +464,6 @@ enum Departure {
     Project(PathBuf, PathBuf),
     Close,
     Quit,
-    New,
-    Draft(PathBuf),
 }
 
 struct Monitoring {
@@ -506,7 +494,6 @@ struct Monitoring {
     assistant: assistant::Pane,
     workflows: workflows::Forms,
     calibration: tools::CalibrationTools,
-    instructions: tools::InstructionTools,
     pending: Option<Departure>,
     saving_departure: bool,
     leaving_job: bool,
@@ -574,7 +561,6 @@ impl Monitoring {
             assistant: assistant::Pane::default(),
             workflows: workflows::Forms::default(),
             calibration: tools::CalibrationTools::default(),
-            instructions: tools::InstructionTools::default(),
             pending: None,
             saving_departure: false,
             leaving_job: false,
@@ -639,14 +625,6 @@ impl Monitoring {
         }
     }
     fn remember(&mut self) {
-        if self.runners.initialized
-            && let Some(zone) = self
-                .runners
-                .draft_time_zone()
-                .filter(|z| z.parse::<chrono_tz::Tz>().is_ok())
-        {
-            self.display.operation_zone = Some(zone);
-        }
         if self.display.config.as_os_str().is_empty() {
             return;
         }
@@ -1083,16 +1061,9 @@ impl Monitoring {
                         self.runners = runners::Runners::new(project.session.clone());
                         self.workflows = workflows::Forms::default();
                         self.calibration = tools::CalibrationTools::default();
-                        self.instructions = tools::InstructionTools::default();
                         self.runners.start(
                             runners::Action::Initialize {
-                                workspace: project.workspace.clone(),
                                 config: project.config.clone(),
-                                zone: self
-                                    .display
-                                    .selected_operation_zone(&project.time_zone)
-                                    .into(),
-                                remembered: self.display.draft.clone(),
                             },
                             context,
                         );
@@ -1349,12 +1320,7 @@ impl Monitoring {
         ui.horizontal_wrapped(|ui| {
             ui.label(egui::RichText::new("MGB Ops").heading().strong());
             ui.separator();
-            for tab in [
-                Ribbon::Project,
-                Ribbon::Draft,
-                Ribbon::View,
-                Ribbon::Processing,
-            ] {
+            for tab in [Ribbon::Project, Ribbon::View, Ribbon::Processing] {
                 ui.selectable_value(
                     &mut self.ribbon,
                     tab,
@@ -1439,68 +1405,6 @@ impl Monitoring {
                                     }
                                 },
                             );
-                        });
-                    }
-                    Ribbon::Draft => {
-                        let enabled = self.runners.initialized
-                            && !self.runners.busy()
-                            && !self.switching_project;
-                        ribbon_group(ui, text(pt, "Draft files", "Arquivos de rascunho"), |ui| {
-                            ui.add_enabled_ui(enabled, |ui| {
-                                if ribbon_button(ui, "📄", text(pt, "New draft", "Novo rascunho"))
-                                    .clicked()
-                                {
-                                    self.depart(Departure::New);
-                                }
-                                if ribbon_button(ui, "📂", text(pt, "Open…", "Abrir…")).clicked()
-                                    && let Some(path) = rfd::FileDialog::new()
-                                        .add_filter("Draft JSON", &["json"])
-                                        .pick_file()
-                                {
-                                    self.depart(Departure::Draft(path));
-                                }
-                            });
-                        });
-                        ribbon_group(ui, text(pt, "Save draft", "Salvar rascunho"), |ui| {
-                            ui.add_enabled_ui(enabled, |ui| {
-                                if ribbon_button(ui, "💾", text(pt, "Save", "Salvar")).clicked() {
-                                    match self.runners.save_path() {
-                                        Ok(path) => self.runners.save(path, ui.ctx()),
-                                        Err(e) => self.runners.status = e,
-                                    };
-                                }
-                                if ribbon_button(ui, "📝", text(pt, "Save As…", "Salvar como…"))
-                                    .clicked()
-                                {
-                                    match self.runners.save_path() {
-                                        Ok(path) => {
-                                            if let Some(path) = rfd::FileDialog::new()
-                                                .set_directory(path.parent().unwrap_or(&path))
-                                                .set_file_name(
-                                                    path.file_name()
-                                                        .unwrap_or_default()
-                                                        .to_string_lossy(),
-                                                )
-                                                .add_filter("Draft JSON", &["json"])
-                                                .save_file()
-                                            {
-                                                self.runners.save(path, ui.ctx());
-                                            }
-                                        }
-                                        Err(e) => self.runners.status = e,
-                                    };
-                                }
-                            });
-                        });
-                        ribbon_group(ui, text(pt, "Review", "Revisão"), |ui| {
-                            if ribbon_button(ui, "📋", Form::Instructions.label(pt)).clicked() {
-                                self.display.layout.form(Form::Instructions);
-                            }
-                        });
-                        ribbon_group(ui, text(pt, "Experiment", "Experimento"), |ui| {
-                            if ribbon_button(ui, "🧪", Form::RunAll.label(pt)).clicked() {
-                                self.display.layout.form(Form::RunAll);
-                            }
                         });
                     }
                     Ribbon::View => {
@@ -1707,21 +1611,17 @@ impl Monitoring {
                             .show(ui, |ui| self.runners.workspace_settings(ui, pt));
                     }
                     Form::Assistant => {
-                        let applied = self.assistant.show(
+                        self.assistant.show(
                             ui,
                             pt,
                             self.project.as_ref().map(|project| &project.session),
                         );
-                        if applied {
-                            self.runners.draft_edited(pt);
-                        }
                     }
                     Form::Intake
                     | Form::Acquisition
                     | Form::Review
                     | Form::RunBundle
                     | Form::Forcing
-                    | Form::Instructions
                     | Form::Geometry
                     | Form::Soil
                     | Form::Analysis
@@ -1777,95 +1677,70 @@ impl Monitoring {
                     return;
                 }
                 ui.add_enabled_ui(!busy, |ui| {
-                    let Some(mut snapshot) = self.runners.draft_snapshot() else {
+                    let Some(project) = &self.project else {
                         ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
                         return;
                     };
-                    let draft = &mut snapshot.draft;
-                    if matches!(
-                        form,
-                        Form::Forcing | Form::Geometry | Form::Soil | Form::Instructions
-                    ) {
-                        runners::draft_anchor(ui, draft, pt);
-                    }
                     let action = match form {
                         Form::Forcing => {
-                            self.workflows.forcing(ui, pt, draft);
+                            if let Some(setup) = project.session.run_setup() {
+                                let mut parameters = setup.operation.parameters().clone();
+                                self.workflows.forcing(ui, pt, &mut parameters);
+                                if !busy {
+                                    let _ = project
+                                        .session
+                                        .update_run_setup(&setup.revision, parameters);
+                                }
+                            }
                             None
                         }
                         Form::Geometry | Form::Soil => {
-                            let operation = &mut draft.document.operation;
-                            let geometry = operation
+                            let setup = project.session.run_setup();
+                            let mut parameters = setup
+                                .as_ref()
+                                .map(|setup| setup.operation.parameters().clone())
+                                .unwrap_or_default();
+                            let geometry = parameters
                                 .geometry
                                 .as_ref()
-                                .and_then(|value| value.mini_gtp.as_ref())
-                                .map(|path| draft.workspace.join(path));
+                                .map(|path| project.workspace.join(path))
+                                .unwrap_or_else(|| workflows::baseline_geometry(project));
                             if form == Form::Geometry {
                                 if let Some(path) =
-                                    self.calibration.geometry(ui, pt, geometry.as_deref())
+                                    self.calibration.geometry(ui, pt, Some(&geometry))
                                 {
-                                    operation.geometry.get_or_insert_default().mini_gtp =
-                                        Some(path);
-                                    operation
+                                    parameters.geometry = Some(path);
+                                    parameters
                                         .calibration
                                         .get_or_insert_default()
                                         .use_edited_geometry = true;
-                                    draft.document.sources.accepted.remove("geometry");
                                 }
                             } else {
-                                let soil = operation
+                                let soil = parameters
                                     .calibration
                                     .as_ref()
-                                    .and_then(|value| value.soil.as_ref())
-                                    .map(|path| draft.workspace.join(path));
-                                if let Some(path) = self.calibration.soil(
-                                    ui,
-                                    pt,
-                                    geometry.as_deref(),
-                                    soil.as_deref(),
-                                ) {
-                                    operation.calibration.get_or_insert_default().soil = Some(path);
-                                    draft.document.sources.accepted.remove("soil");
+                                    .and_then(|selection| selection.soil.as_ref())
+                                    .map(|path| project.workspace.join(path));
+                                if let Some(path) =
+                                    self.calibration
+                                        .soil(ui, pt, Some(&geometry), soil.as_deref())
+                                {
+                                    parameters.calibration.get_or_insert_default().soil =
+                                        Some(path);
                                 }
+                            }
+                            if let Some(setup) = setup
+                                && !busy
+                            {
+                                let _ = project
+                                    .session
+                                    .update_run_setup(&setup.revision, parameters);
                             }
                             None
                         }
-                        Form::Instructions => {
-                            ui.heading(form.label(pt));
-                            let accept = ui
-                                .button(text(
-                                    pt,
-                                    "Accept selected inputs",
-                                    "Aceitar entradas selecionadas",
-                                ))
-                                .clicked();
-                            let instruction = self.instructions.show(ui, pt, draft);
-                            self.workflows.show_preview(ui, pt, draft);
-                            if accept {
-                                Some(runners::Action::Accept)
-                            } else {
-                                instruction.map(|request| match request {
-                                    tools::InstructionAction::MaterializeReplacements => {
-                                        runners::Action::MaterializeReplacements
-                                    }
-                                    tools::InstructionAction::MaterializeCorrections(index) => {
-                                        runners::Action::MaterializeCorrections(index)
-                                    }
-                                    tools::InstructionAction::PreviewObservations => {
-                                        runners::Action::PreviewObservations
-                                    }
-                                    tools::InstructionAction::PreviewForecast(index) => {
-                                        runners::Action::PreviewForecast(index)
-                                    }
-                                    tools::InstructionAction::Register(selection) => {
-                                        runners::Action::RegisterInstructions(selection)
-                                    }
-                                })
-                            }
-                        }
                         _ => match self
                             .workflows
-                            .show(ui, form, pt, draft, self.run.as_deref())
+                            .show(ui, form, pt, project, self.run.as_deref())
                         {
                             Ok(task) => task.map(runners::Action::Workflow),
                             Err(error) => {
@@ -1874,11 +1749,8 @@ impl Monitoring {
                             }
                         },
                     };
-                    if !busy {
-                        self.runners.update_draft(snapshot);
-                        if let Some(action) = action {
-                            self.runners.start(action, ui.ctx());
-                        }
+                    if !busy && let Some(action) = action {
+                        self.runners.start(action, ui.ctx());
                     }
                 });
                 ui.label(self.runners.localized_status(pt));
@@ -3105,13 +2977,6 @@ impl Monitoring {
                 self.switching_project = true;
                 self.submit(Job::Open(config, workspace));
             }
-            Departure::New => {
-                if let Some(project) = &self.project {
-                    self.runners
-                        .start(runners::Action::New(project.time_zone.clone()), ctx);
-                }
-            }
-            Departure::Draft(path) => self.runners.start(runners::Action::Open(path), ctx),
             Departure::Quit => {
                 self.assistant.reset();
                 self.allow_quit = true;
@@ -3144,35 +3009,11 @@ impl Monitoring {
                 self.runners = runners::Runners::default();
                 self.workflows = workflows::Forms::default();
                 self.calibration = tools::CalibrationTools::default();
-                self.instructions = tools::InstructionTools::default();
             }
         }
     }
     fn departure_dialog(&mut self, ctx: &egui::Context) {
         let pt = self.preferences.portuguese;
-        if let Some(path) = self.runners.overwrite.clone() {
-            egui::Modal::new(egui::Id::new("Destination exists")).show(ctx, |ui| {
-                ui.heading(text(pt, "Destination exists", "Destino existente"));
-                ui.label(path.display().to_string());
-                ui.label(text(
-                    pt,
-                    "Overwrite this draft?",
-                    "Sobrescrever este rascunho?",
-                ));
-                ui.horizontal(|ui| {
-                    if ui.button(text(pt, "Overwrite", "Sobrescrever")).clicked() {
-                        self.runners.overwrite = None;
-                        self.runners
-                            .start(runners::Action::Save(path.clone(), true), ctx);
-                    }
-                    if ui.button(text(pt, "Cancel", "Cancelar")).clicked() {
-                        self.runners.overwrite = None;
-                        self.saving_departure = false;
-                    }
-                });
-            });
-            return;
-        }
         if self.pending.is_none() {
             return;
         }
@@ -3245,45 +3086,19 @@ impl Monitoring {
             self.finish_departure(ctx);
             return;
         }
-        if self.saving_departure {
-            if !self.runners.saved {
-                self.saving_departure = false;
-            } else if self.runners.config_dirty() {
-                self.runners.start(runners::Action::SaveConfig, ctx);
-                return;
-            } else if self.runners.draft().is_some_and(|draft| draft.is_dirty()) {
-                match self.runners.save_path() {
-                    Ok(path) => self.runners.save(path, ctx),
-                    Err(e) => {
-                        self.runners.status = e;
-                        self.saving_departure = false;
-                    }
-                }
-                return;
-            }
-        }
+        self.saving_departure = false;
         egui::Modal::new(egui::Id::new("Unsaved work")).show(ctx, |ui| {
             ui.heading(text(pt, "Unsaved work", "Alterações não salvas"));
             ui.label(text(
                 pt,
-                "Save workspace settings and operation draft before continuing?",
-                "Salvar configurações e rascunho operacional antes de continuar?",
+                "Save workspace settings before continuing?",
+                "Salvar configurações antes de continuar?",
             ));
             ui.label(self.runners.localized_status(pt));
             ui.horizontal(|ui| {
                 if ui.button(text(pt, "Save", "Salvar")).clicked() {
                     self.saving_departure = true;
-                    if self.runners.config_dirty() {
-                        self.runners.start(runners::Action::SaveConfig, ctx);
-                    } else {
-                        match self.runners.save_path() {
-                            Ok(path) => self.runners.save(path, ctx),
-                            Err(e) => {
-                                self.runners.status = e;
-                                self.saving_departure = false;
-                            }
-                        }
-                    }
+                    self.runners.start(runners::Action::SaveConfig, ctx);
                 }
                 if ui.button(text(pt, "Discard", "Descartar")).clicked() {
                     self.runners.discard();
@@ -3325,23 +3140,7 @@ impl eframe::App for Monitoring {
                 runners::Outcome::Workflow(output) => {
                     self.workflows.receive(output, &ctx);
                 }
-                runners::Outcome::DraftChanged => {
-                    self.instructions = tools::InstructionTools::default();
-                }
-                runners::Outcome::RegistrationReport(report, origin_errors) => {
-                    self.instructions.registration_report(report, origin_errors);
-                }
                 _ => {}
-            }
-        }
-        if self.runners.initialized {
-            self.display.draft = self.runners.last_saved.clone();
-            if let Some(zone) = self
-                .runners
-                .draft_time_zone()
-                .filter(|z| z.parse::<chrono_tz::Tz>().is_ok())
-            {
-                self.display.operation_zone = Some(zone);
             }
         }
         if ctx.input(|i| i.viewport().close_requested()) && !self.allow_quit {
@@ -3619,18 +3418,8 @@ mod interface_tests {
     }
 
     #[test]
-    fn preferences_preserve_storage_identity_and_independent_operation_zone() {
+    fn preferences_preserve_storage_identity() {
         assert_eq!(APP_ID, "MGB Ops · Monitoring");
-        let mut display = Display {
-            operation_zone: Some("Asia/Tokyo".into()),
-            draft: Some(PathBuf::from("operation-stale-0300.json")),
-            ..Default::default()
-        };
-        let serialized = serde_json::to_string(&display).unwrap();
-        display = serde_json::from_str(&serialized).unwrap();
-        assert_eq!(display.selected_operation_zone("UTC"), "Asia/Tokyo");
-        display.draft = Some("different-stale-file.json".into());
-        assert_eq!(display.selected_operation_zone("UTC"), "Asia/Tokyo");
         let legacy: Display = serde_json::from_str(
             r#"{"config":"region/config.toml","run":"region/data/runs/run-1",
                  "layout":{"dock":{"Tabs":{"pages":["Map","Data"],"active":1}},
@@ -3638,7 +3427,6 @@ mod interface_tests {
                  "operation_zone":"America/Sao_Paulo","basemap":2}"#,
         )
         .unwrap();
-        assert_eq!(legacy.selected_operation_zone("UTC"), "America/Sao_Paulo");
         assert_eq!(legacy.config, PathBuf::from("region/config.toml"));
         assert!(serde_json::to_value(&legacy).unwrap().get("run").is_none());
         assert_eq!(legacy.basemap, 2);

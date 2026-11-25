@@ -325,8 +325,15 @@ pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String>
             return Err("missing scenario forcing reference".into());
         }
     }
+    if manifest.recipe.get("workspace_scenarios").is_none()
+        && !manifest
+            .inputs
+            .iter()
+            .any(|input| input.path == Path::new("request.toml"))
+    {
+        return Err("missing input reference: request.toml".into());
+    }
     for required in [
-        Path::new("request.toml"),
         Path::new(PREPARED_ENGINE),
         Path::new("baseline/Input/MINI.gtp"),
         Path::new("baseline/Input/PARHIG.hig"),

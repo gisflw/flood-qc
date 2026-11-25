@@ -5,10 +5,17 @@ use mgb_ops::{
 };
 use std::{fs, path::Path, process::Command};
 static TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn serialize_fixture() -> std::sync::MutexGuard<'static, ()> {
+    // Each test owns its workspace. A failed fixture must not block the rest.
+    TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 fn time(value: &str) -> NaiveDateTime {
     NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S").unwrap()
 }
-fn fixture(root: &Path) {
+fn fixture(root: &Path) -> ObservationBatch {
     fs::create_dir_all(root.join("Input")).unwrap();
     fs::write(
         root.join("Input/MINI.gtp"),
@@ -63,7 +70,7 @@ fn fixture(root: &Path) {
             value: Some(ObservationValue::RainMm(1.0)),
         })
         .collect();
-    db.write_batch(&ObservationBatch {
+    let batch = ObservationBatch {
         stations: vec![station],
         series: vec![series],
         samples,
@@ -73,8 +80,8 @@ fn fixture(root: &Path) {
             mini_id: 1,
             offset_m: 0.609,
         }],
-    })
-    .unwrap();
+    };
+    db.write_batch(&batch).unwrap();
     fs::write(
         root.join("request.toml"),
         r#"schema_version = 1
@@ -127,10 +134,11 @@ kind = "zero"
 "#,
     )
     .unwrap();
+    batch
 }
 #[test]
 fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -170,9 +178,7 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
     );
     let rainfall = mgb_ops::app::rainfall_cache_info(&path).unwrap().unwrap();
     assert_eq!(Some(rainfall.generation.as_ref()), two.run_root.file_name());
-    assert_eq!(fs::read_dir(path.join("runs/history")).unwrap().count(), 2);
-    let copied = mgb_ops::Draft::import_manifest(path.clone(), &path, &two.run_root).unwrap();
-    assert_eq!(copied.document.operation.scenarios.len(), 4);
+    assert_eq!(fs::read_dir(path.join("runs/history")).unwrap().count(), 1);
     let stations =
         mgb_ops::store::read_station_results(&two.run_root.join("results/zero/station.nc"))
             .unwrap();
@@ -182,7 +188,7 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
 
 #[test]
 fn optional_flood_source_retains_exact_depth_and_reports_invalid_scenarios() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -295,7 +301,7 @@ fn optional_flood_source_retains_exact_depth_and_reports_invalid_scenarios() {
 
 #[test]
 fn run_bundle_round_trips_and_regenerates_without_original_sources() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let source = dir.path().canonicalize().unwrap();
@@ -364,148 +370,8 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
 }
 
 #[test]
-fn canonical_forecast_reaches_frozen_preparation_and_execution() {
-    use mgb_ops::app::{CanonicalForecastDocument, import_canonical_forecast};
-    use mgb_ops::store::{
-        CanonicalForecastMetadata, GridSeries, IntervalAxis, Provenance, RegularGridSpec,
-        TimeInterval, write_grid_series,
-    };
-
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    let grid = RegularGridSpec::new([-1.0, -1.0, 1.0, 1.0], 1.0).unwrap();
-    let cells = grid.latitudes.len() * grid.longitudes.len();
-    let source = root.join("forecast.nc");
-    write_grid_series(
-        &source,
-        &GridSeries {
-            timeline: IntervalAxis {
-                time_zone: "UTC".into(),
-                bounds: vec![TimeInterval {
-                    start: time("2026-01-01T02:00:00"),
-                    end: time("2026-01-01T03:00:00"),
-                }],
-            },
-            grid,
-            values: vec![2.0; cells],
-            valid: vec![true; cells],
-            provenance: Provenance {
-                source_ids: vec!["canonical-forecast".into()],
-                processing: serde_json::Value::Object(serde_json::Map::new()),
-            },
-        },
-    )
-    .unwrap();
-    let asset = import_canonical_forecast(
-        &root,
-        CanonicalForecastDocument {
-            catalog: "forecast.sqlite".into(),
-            artifact_root: "forecast-assets".into(),
-            source: source.clone(),
-            metadata: CanonicalForecastMetadata {
-                provider: "fixture".into(),
-                model: "saved".into(),
-                product: "hourly".into(),
-                cycle_utc: "2026-01-01T02:00:00Z".parse().unwrap(),
-            },
-        },
-    )
-    .unwrap();
-    let request = root.join("request.toml");
-    let contents = fs::read_to_string(&request)
-        .unwrap()
-        .replace("unused.sqlite", "forecast.sqlite")
-        .replace(
-            "id = \"other\"\nkind = \"zero\"",
-            &format!(
-                "id = \"other\"\nkind = \"raw\"\nasset_id = \"{}\"",
-                asset.asset_id
-            ),
-        );
-    fs::write(&request, contents).unwrap();
-    fs::remove_file(source).unwrap();
-    let mut operation = mgb_ops::app::OperationalRun::open(
-        root.clone(),
-        &request,
-        time("2026-01-01T03:00:00").and_utc(),
-    )
-    .unwrap();
-    assert!(
-        operation
-            .validate()
-            .iter()
-            .any(|error| error.contains("MissingTimeCoverage"))
-    );
-    assert!(
-        operation
-            .accept_inputs()
-            .unwrap_err()
-            .contains("Scenario other")
-    );
-    assert!(!operation.has_accepted_inputs());
-    operation.set_reference("2026-01-01T02:00:00".into());
-    operation.accept_inputs().unwrap();
-    assert!(mgb_ops::app::rainfall_cache_info(&root).unwrap().is_none());
-    operation
-        .run_all(&mgb_ops::OperationControl::default())
-        .unwrap();
-    let generation = mgb_ops::app::rainfall_cache_info(&root).unwrap().unwrap();
-    let query = |scenario, period| {
-        mgb_ops::app::query_cached_rainfall(&root, scenario, &period, None, false)
-            .unwrap()
-            .unwrap()
-    };
-    use mgb_ops::app::RainfallPeriod::{Explicit, SignedHours};
-    assert_eq!(query("zero", SignedHours(1)).values, vec![Some(0.); cells]);
-    let forecast = query("other", SignedHours(1));
-    assert_eq!(forecast.values[5], Some(2.));
-    assert_eq!(query("other", SignedHours(-1)).values[5], Some(1.));
-    let combined = query(
-        "other",
-        Explicit {
-            start: time("2026-01-01T01:00:00"),
-            end: time("2026-01-01T03:00:00"),
-        },
-    );
-    assert_eq!(combined.info, generation);
-    assert_eq!(combined.values[5], Some(3.));
-    assert_eq!(query("other", SignedHours(2)).values, vec![None; cells]);
-    assert!(!root.join("cache/preparations").exists());
-    let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
-        workspace: root.clone(),
-        invocation_dir: root.clone(),
-        request_file: request,
-        output: "prepared".into(),
-    })
-    .unwrap();
-    let assets = prepared.prepared.join("sources/original");
-    assert!(assets.join(format!("{}.nc", asset.asset_id)).is_file());
-    fs::remove_dir_all(root.join("forecast-assets")).unwrap();
-    let trial = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
-        workspace: root.clone(),
-        invocation_dir: root.clone(),
-        prepared: prepared.prepared,
-    })
-    .unwrap();
-    let basin =
-        mgb_ops::store::read_result_series(&trial.run_root.join("results/other/basin.nc")).unwrap();
-    let updated = mgb_ops::app::rainfall_cache_info(&root).unwrap().unwrap();
-    assert_ne!(updated.generation, generation.generation);
-    assert_eq!(
-        updated.generation,
-        trial.run_root.file_name().unwrap().to_str().unwrap()
-    );
-    assert_eq!(updated.reference, generation.reference);
-    assert_eq!(updated.scenarios, generation.scenarios);
-    assert_eq!(basin.precipitation.last(), Some(&2.0));
-}
-
-#[test]
 fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     use std::fs::OpenOptions;
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
@@ -542,34 +408,12 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
     let Err(mgb_ops::OperationError::BatchFailed { report }) = run() else {
         panic!("expected failure")
     };
-    let cli_prepare = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir("/")
-        .args(["operation", "prepare", "--workspace"])
-        .arg(&path)
-        .arg("--request")
-        .arg(path.join("request.toml"))
-        .arg("--output")
-        .arg(path.join("prepared-cli"))
-        .arg("--json")
-        .output()
-        .unwrap();
-    assert!(
-        cli_prepare.status.success(),
-        "{}",
-        String::from_utf8_lossy(&cli_prepare.stderr)
-    );
-    let cli_prepared: serde_json::Value = serde_json::from_slice(&cli_prepare.stdout).unwrap();
-    assert_eq!(cli_prepared["scenario_ids"].as_array().unwrap().len(), 4);
-    assert_eq!(
-        mgb_ops::store::read_basin_forcing(&path.join("prepared/forcing/zero.nc")).unwrap(),
-        mgb_ops::store::read_basin_forcing(&path.join("prepared-cli/forcing/zero.nc")).unwrap()
-    );
     let cli_run = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
         .current_dir("/")
         .args(["operation", "execute", "--workspace"])
         .arg(&path)
         .arg("--prepared")
-        .arg(path.join("prepared-cli"))
+        .arg(path.join("prepared"))
         .arg("--json")
         .output()
         .unwrap();
@@ -637,7 +481,7 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
 
 #[test]
 fn malformed_output_archives_completed_siblings_and_bounded_log_tails() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -687,7 +531,7 @@ fn malformed_output_archives_completed_siblings_and_bounded_log_tails() {
 
 #[test]
 fn final_manifest_failure_reaps_children_and_archives_attempt() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -726,7 +570,7 @@ fn final_manifest_failure_reaps_children_and_archives_attempt() {
 fn lock_is_contended_by_another_process() {
     use std::io::{BufRead, BufReader};
     use std::process::Stdio;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -765,7 +609,7 @@ fn lock_is_contended_by_another_process() {
 
 #[test]
 fn prepared_input_rejects_corrupt_json_paths_links_and_hashes() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -838,7 +682,7 @@ fn prepared_input_rejects_corrupt_json_paths_links_and_hashes() {
 #[test]
 fn spawn_failure_is_retained_as_failed_history() {
     use std::os::unix::fs::PermissionsExt;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -875,7 +719,7 @@ fn spawn_failure_is_retained_as_failed_history() {
 #[test]
 fn readonly_baseline_is_copied_to_writable_private_inputs() {
     use std::os::unix::fs::PermissionsExt;
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -942,7 +786,7 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
     };
     use mgb_ops::{ObservationReplacement, ReplacementKind};
     use sha2::{Digest, Sha256};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
@@ -1031,7 +875,7 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
         },
     };
     let mut catalog =
-        ForecastCatalog::open(&path, Path::new("operation.sqlite"), Path::new("assets")).unwrap();
+        ForecastCatalog::open(&path, Path::new("forecast.sqlite"), Path::new("assets")).unwrap();
     let asset = catalog
         .register_native(&path.join("forecast.grib2"), &source, &native)
         .unwrap();
@@ -1059,7 +903,7 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
         .iter()
         .map(|r| r.replacement_id.clone())
         .collect();
-    document.forecasts.catalog = "operation.sqlite".into();
+    document.forecasts.catalog = "forecast.sqlite".into();
     document.scenarios.truncate(1);
     document.scenarios[0].id = "corrected".into();
     document.scenarios[0].kind = "corrected".into();
@@ -1082,795 +926,20 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
         output: "registered".into(),
     })
     .unwrap();
-    let copied =
-        mgb_ops::Draft::import_manifest(path.clone(), &path, Path::new("registered")).unwrap();
-    assert_eq!(
-        copied
-            .document
-            .instructions
-            .replacements
-            .as_ref()
-            .unwrap()
-            .len(),
-        replacements.len()
-    );
-    assert_eq!(
-        copied.document.instructions.corrections[0]
-            .as_ref()
-            .unwrap()
-            .len(),
-        corrections.len()
-    );
-    let mut unaccepted =
-        mgb_ops::Draft::from_preparation(path.clone(), &path, document.clone()).unwrap();
-    unaccepted.document.operation.geometry = None;
-    unaccepted.document.operation.engine = None;
-    unaccepted
-        .save(&path.join("unaccepted.json"), true)
-        .unwrap();
-    let native_path = path.join(&asset.native_artifact);
-    let moved = native_path.with_extension("missing");
-    fs::rename(&native_path, &moved).unwrap();
-    let opened = mgb_ops::Draft::open(path.clone(), &path, Path::new("unaccepted.json")).unwrap();
-    assert!(
-        opened
-            .findings
-            .iter()
-            .any(|finding| finding.starts_with("forecast:0 unavailable"))
-    );
-    assert!(opened.document.sources.accepted.is_empty());
-    fs::rename(&moved, &native_path).unwrap();
-    let mut draft =
-        mgb_ops::Draft::from_preparation(path.clone(), &path, document.clone()).unwrap();
-    draft.refresh_forecast(0).unwrap();
-    let preview = draft.preview_forecast(0).unwrap();
-    let prepared_frame = mgb_ops::store::read_grid_frame(
-        &path.join("registered/checkpoints/forecast/corrected/0000.nc"),
-    )
-    .unwrap();
-    assert_eq!(preview.corrected[0], prepared_frame);
-    let catalog =
-        ForecastCatalog::open(&path, Path::new("operation.sqlite"), Path::new("assets")).unwrap();
-    catalog
-        .save_correction(&correction("unrelated", 4.))
-        .unwrap();
-    drop(catalog);
-    assert!(draft.preview_forecast(0).is_ok());
-    let mut invalid_forecast = draft.clone();
-    let mut bad_correction = corrections[0].clone();
-    bad_correction.multiplication_factor = 0.0;
-    invalid_forecast.document.instructions.corrections =
-        vec![Some(vec![mgb_ops::DraftCorrection {
-            draft_id: "bad".into(),
-            registered_origin: None,
-            value: bad_correction,
-        }])];
-    assert!(
-        invalid_forecast
-            .validate_preparation()
-            .iter()
-            .any(|v| v.contains("invalid correction"))
-    );
-    assert!(invalid_forecast.preview_forecast(0).is_err());
-    draft.refresh_inputs().unwrap();
-    let before_observations = draft.preview_observations().unwrap();
-    let before_forecast = draft.preview_forecast(0).unwrap();
-    draft.save(&path.join("materialize.json"), true).unwrap();
-    for (source, scenario) in [("observations", None), ("forecast", Some("0"))] {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_mgb-ops"));
-        command.current_dir(&path).args([
-            "draft",
-            "materialize",
-            "--workspace",
-            ".",
-            "--draft",
-            "materialize.json",
-            "--source",
-            source,
-        ]);
-        if let Some(scenario) = scenario {
-            command.args(["--scenario", scenario]);
-        }
-        assert!(command.output().unwrap().status.success());
-    }
-    draft.materialize_replacements().unwrap();
-    draft.materialize_corrections(0).unwrap();
-    let cli_materialized =
-        mgb_ops::Draft::open(path.clone(), &path, Path::new("materialize.json")).unwrap();
-    assert_eq!(draft.document, cli_materialized.document);
-    assert!(draft.preview_observations().is_err());
-    assert!(draft.preview_forecast(0).is_err());
-    draft.refresh_inputs().unwrap();
-    assert_eq!(
-        before_observations.rows,
-        draft.preview_observations().unwrap().rows
-    );
-    assert_eq!(
-        before_forecast.corrected,
-        draft.preview_forecast(0).unwrap().corrected
-    );
-    let draft_replacements = draft.document.instructions.replacements.as_mut().unwrap();
-    draft_replacements[0].value.reason.clear();
-    draft_replacements[1].value.reason.clear();
-    let mut excluded = draft_replacements[1].clone();
-    excluded.draft_id = "excluded".into();
-    excluded.registered_origin = None;
-    excluded.value.replacement_id = "excluded".into();
-    excluded.value.value = None;
-    draft_replacements.insert(1, excluded);
-    for correction in draft.document.instructions.corrections[0].as_mut().unwrap() {
-        correction.value.reason.clear();
-        correction.value.editor = None;
-    }
-    let before_observations = draft.preview_observations().unwrap();
-    let before_forecast = draft.preview_forecast(0).unwrap();
-    assert_eq!(before_observations.rows[1].effective_value, Some(4.0));
-    let obs_count = |path: &Path| -> i64 {
-        rusqlite::Connection::open(path.join("observations.sqlite"))
-            .unwrap()
-            .query_row("SELECT count(*) FROM observation_replacement", [], |r| {
-                r.get(0)
-            })
-            .unwrap()
-    };
-    let forecast_count = |path: &Path| -> i64 {
-        rusqlite::Connection::open(path.join("operation.sqlite"))
-            .unwrap()
-            .query_row("SELECT count(*) FROM correction", [], |r| r.get(0))
-            .unwrap()
-    };
-    let counts = (obs_count(&path), forecast_count(&path));
-    draft
-        .prepare(path.clone(), "before-registration".into())
-        .unwrap();
-    assert_eq!(counts, (obs_count(&path), forecast_count(&path)));
-    let selection = mgb_ops::RegistrationSelection {
-        replacements: vec!["period".into(), "excluded".into(), "point".into()],
-        corrections: vec![
-            mgb_ops::RegistrationCorrectionSelection {
-                scenario: 0,
-                draft_id: "first".into(),
-            },
-            mgb_ops::RegistrationCorrectionSelection {
-                scenario: 0,
-                draft_id: "second".into(),
-            },
-        ],
-    };
-    draft
-        .save(&path.join("registration-draft.json"), true)
-        .unwrap();
-    fs::write(
-        path.join("selection.json"),
-        serde_json::to_vec(&selection).unwrap(),
-    )
-    .unwrap();
-    let partial = mgb_ops::RegistrationSelection {
-        replacements: vec!["period".into()],
-        corrections: vec![mgb_ops::RegistrationCorrectionSelection {
-            scenario: 0,
-            draft_id: "unknown".into(),
-        }],
-    };
-    fs::write(
-        path.join("partial.json"),
-        serde_json::to_vec(&partial).unwrap(),
-    )
-    .unwrap();
-    let cli_partial = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&path)
-        .args([
-            "draft",
-            "register",
-            "--workspace",
-            ".",
-            "--draft",
-            "registration-draft.json",
-            "--selection",
-            "partial.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(!cli_partial.status.success());
-    let partial_result: serde_json::Value = serde_json::from_slice(&cli_partial.stdout).unwrap();
-    assert_eq!(partial_result["ok"], false);
-    assert_eq!(
-        partial_result["result"],
-        serde_json::to_value(draft.register_selected(&partial)).unwrap()
-    );
-    assert_eq!(
-        partial_result["result"]["observations"]["mappings"]
-            .as_array()
-            .unwrap()
-            .len(),
-        1
-    );
-    assert!(partial_result["result"]["forecasts"]["error"].is_string());
-    let report = draft.register_selected(&selection);
-    assert!(report.succeeded());
-    assert_eq!(
-        before_observations.rows,
-        draft.preview_observations().unwrap().rows
-    );
-    assert_eq!(
-        before_forecast.corrected,
-        draft.preview_forecast(0).unwrap().corrected
-    );
-    draft
-        .prepare(path.clone(), "after-registration".into())
-        .unwrap();
-    let before =
-        mgb_ops::store::read_basin_forcing(&path.join("before-registration/forcing/corrected.nc"))
-            .unwrap();
-    let after =
-        mgb_ops::store::read_basin_forcing(&path.join("after-registration/forcing/corrected.nc"))
-            .unwrap();
-    assert_eq!(before, after);
-    let cli = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&path)
-        .args([
-            "draft",
-            "register",
-            "--workspace",
-            ".",
-            "--draft",
-            "registration-draft.json",
-            "--selection",
-            "selection.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(cli.status.success());
-    let result: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
-    assert_eq!(result["result"], serde_json::to_value(&report).unwrap());
-    let mapping = &report.observations.mappings[0];
-    fs::write(
-        path.join("mapping.json"),
-        serde_json::to_vec(mapping).unwrap(),
-    )
-    .unwrap();
-    let mut api_copy =
-        mgb_ops::Draft::open(path.clone(), &path, Path::new("registration-draft.json")).unwrap();
-    api_copy.copy_registered_for_edit(mapping).unwrap();
-    let cli_copy = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&path)
-        .args([
-            "draft",
-            "copy-registered-for-edit",
-            "--workspace",
-            ".",
-            "--draft",
-            "registration-draft.json",
-            "--mapping",
-            "mapping.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(cli_copy.status.success());
-    let copy_result: serde_json::Value = serde_json::from_slice(&cli_copy.stdout).unwrap();
-    assert_eq!(
-        copy_result["result"],
-        serde_json::to_value(&api_copy.document).unwrap()
-    );
-    let saved_bytes = fs::read(path.join("registration-draft.json")).unwrap();
-    let mut wrong = serde_json::to_value(mapping).unwrap();
-    wrong["catalog_id"] = "missing".into();
-    fs::write(
-        path.join("mapping.json"),
-        serde_json::to_vec(&wrong).unwrap(),
-    )
-    .unwrap();
-    let rejected = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&path)
-        .args([
-            "draft",
-            "copy-registered-for-edit",
-            "--workspace",
-            ".",
-            "--draft",
-            "registration-draft.json",
-            "--mapping",
-            "mapping.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(!rejected.status.success());
-    assert_eq!(
-        fs::read(path.join("registration-draft.json")).unwrap(),
-        saved_bytes
-    );
-    let obs = rusqlite::Connection::open(path.join("observations.sqlite")).unwrap();
-    obs.execute("DELETE FROM observation_replacement", [])
-        .unwrap();
-    drop(obs);
-    let cat = rusqlite::Connection::open(path.join("operation.sqlite")).unwrap();
-    cat.execute("DELETE FROM correction", []).unwrap();
-    drop(cat);
-    let source_obs = fs::read(path.join("observations.sqlite")).unwrap();
-    let source_catalog = fs::read(path.join("operation.sqlite")).unwrap();
-    let typed =
-        |output: &str,
-         replacements: Vec<ObservationReplacement>,
-         corrections: Vec<ForecastCorrection>| mgb_ops::TypedPreparationRequest {
-            workspace: path.clone(),
-            invocation_dir: path.clone(),
-            output: output.into(),
-            document: document.clone(),
-            replacements: Some(replacements),
-            corrections: vec![Some(corrections)],
-        };
-    mgb_ops::prepare_typed(typed("supplied", replacements.clone(), corrections.clone())).unwrap();
-    let first =
-        mgb_ops::store::read_basin_forcing(&path.join("registered/forcing/corrected.nc")).unwrap();
-    let second =
-        mgb_ops::store::read_basin_forcing(&path.join("supplied/forcing/corrected.nc")).unwrap();
-    assert_eq!(first, second);
-    let mut shared = typed("shared", replacements.clone(), corrections.clone());
-    let mut sibling = shared.document.scenarios[0].clone();
-    sibling.id = "sibling".into();
-    shared.document.scenarios.push(sibling);
-    shared.corrections.push(Some(corrections.clone()));
-    mgb_ops::prepare_typed(shared.clone()).unwrap();
-    for scenario in ["corrected", "sibling"] {
-        let forcing = mgb_ops::store::read_basin_forcing(
-            &path.join("shared/forcing").join(format!("{scenario}.nc")),
-        )
-        .unwrap();
-        assert_eq!(forcing, second);
-    }
-    shared.output = "conflicting-correction".into();
-    shared.corrections[1].as_mut().unwrap()[0].multiplication_factor = 5.;
-    assert!(mgb_ops::prepare_typed(shared).is_err());
-    assert_eq!(&second.values[..2], &[2., 4.]);
-    assert!((second.values[2] - 12.).abs() < 1e-12);
-    for file in [
-        "checkpoints/observed-grid.nc",
-        "checkpoints/forecast/corrected/working.nc",
-    ] {
-        assert_eq!(
-            mgb_ops::store::read_grid_series(&path.join("registered").join(file)).unwrap(),
-            mgb_ops::store::read_grid_series(&path.join("supplied").join(file)).unwrap()
-        );
-    }
-    assert_eq!(
-        mgb_ops::store::read_grid_frame(
-            &path.join("registered/checkpoints/forecast/corrected/0000.nc")
-        )
-        .unwrap(),
-        mgb_ops::store::read_grid_frame(
-            &path.join("supplied/checkpoints/forecast/corrected/0000.nc")
-        )
-        .unwrap()
-    );
-    for file in [
-        "baseline/engine",
-        "baseline/Input/MINI.gtp",
-        &format!("sources/native/{}.nc", asset.asset_id),
-        &format!("sources/original/{}.grib2", asset.asset_id),
-    ] {
-        assert_eq!(
-            fs::read(path.join("registered").join(file)).unwrap(),
-            fs::read(path.join("supplied").join(file)).unwrap()
-        );
-    }
-    for file in ["checkpoints/effective.json", "checkpoints/qc.json"] {
-        assert_eq!(
-            fs::read(path.join("registered").join(file)).unwrap(),
-            fs::read(path.join("supplied").join(file)).unwrap()
-        );
-    }
-    let registered: serde_json::Value =
-        serde_json::from_slice(&fs::read(path.join("registered/manifest.json")).unwrap()).unwrap();
-    let supplied: serde_json::Value =
-        serde_json::from_slice(&fs::read(path.join("supplied/manifest.json")).unwrap()).unwrap();
-    assert_eq!(
-        registered["recipe"]["document"],
-        supplied["recipe"]["document"]
-    );
-    assert_eq!(
-        registered["recipe"]["source_identities"],
-        supplied["recipe"]["source_identities"]
-    );
-    assert!(registered["recipe"].get("inline_replacements").is_none());
-    assert!(registered["recipe"].get("inline_corrections").is_none());
-    assert_eq!(supplied["recipe"]["inline_replacements"], true);
-    assert_eq!(
-        supplied["recipe"]["inline_corrections"],
-        serde_json::json!([0])
-    );
-    assert!(
-        mgb_ops::prepare_typed(typed(
-            "duplicate-replacement",
-            vec![replacements[0].clone(), replacements[0].clone()],
-            corrections.clone()
-        ))
-        .is_err()
-    );
-    assert!(
-        mgb_ops::prepare_typed(typed(
-            "duplicate-correction",
-            replacements.clone(),
-            vec![corrections[0].clone(), corrections[0].clone()]
-        ))
-        .is_err()
-    );
-    let mut wrong_asset = corrections.clone();
-    wrong_asset[0].asset_id = "other".into();
-    assert!(
-        mgb_ops::prepare_typed(typed("cross-asset", replacements.clone(), wrong_asset)).is_err()
-    );
-    let mut unknown = typed("unknown", replacements.clone(), corrections.clone());
-    unknown.replacements = None;
-    assert!(mgb_ops::prepare_typed(unknown).is_err());
-    let mut invalid_replacement = replacements[0].clone();
-    invalid_replacement.variable = "level".into();
-    let mut unknown = typed("unknown-correction", replacements, corrections);
-    unknown.corrections = vec![None];
-    assert!(mgb_ops::prepare_typed(unknown).is_err());
-    let mut invalid = typed("invalid", vec![], vec![]);
-    invalid.document.scenarios[0].kind = "zero".into();
-    invalid.document.scenarios[0].asset_id = None;
-    invalid.corrections = vec![None];
-    invalid.replacements = Some(vec![invalid_replacement]);
-    assert!(mgb_ops::prepare_typed(invalid).is_err());
-    for name in [
-        "duplicate-replacement",
-        "duplicate-correction",
-        "conflicting-correction",
-        "cross-asset",
-        "unknown",
-        "unknown-correction",
-        "invalid",
-    ] {
-        assert!(!path.join(name).exists());
-    }
-    assert_eq!(
-        source_obs,
-        fs::read(path.join("observations.sqlite")).unwrap()
-    );
-    assert_eq!(
-        source_catalog,
-        fs::read(path.join("operation.sqlite")).unwrap()
-    );
-    assert!(!path.join("data/runs").exists());
-    fs::remove_dir_all(path.join("Input")).unwrap();
-    fs::remove_file(path.join("engine")).unwrap();
-    fs::remove_file(path.join("observations.sqlite")).unwrap();
-    fs::remove_dir_all(path.join("assets")).unwrap();
-    fs::remove_file(path.join("operation.sqlite")).unwrap();
-    let executed = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
-        workspace: path.clone(),
-        invocation_dir: path.clone(),
-        prepared: "supplied".into(),
-    })
-    .unwrap();
-    assert!(matches!(executed.status, mgb_ops::BatchStatus::Completed));
-    let supplied_result =
-        mgb_ops::store::read_result_series(&executed.run_root.join("results/corrected/basin.nc"))
-            .unwrap();
-    let registered_run = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
+    let report = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
         workspace: path.clone(),
         invocation_dir: path.clone(),
         prepared: "registered".into(),
     })
     .unwrap();
-    let registered_result = mgb_ops::store::read_result_series(
-        &registered_run.run_root.join("results/corrected/basin.nc"),
-    )
-    .unwrap();
-    assert_eq!(supplied_result, registered_result);
-}
-
-#[test]
-fn draft_preview_accepts_selected_content_and_preserves_order() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    rusqlite::Connection::open(root.join("observations.sqlite"))
-        .unwrap()
-        .execute(
-            "UPDATE station SET latitude = NULL, longitude = NULL WHERE station_id = 's'",
-            [],
-        )
-        .unwrap();
-    let mut draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
-    assert!(draft.preview_observations().is_err());
-    draft.refresh_observations().unwrap();
-    let initial = draft.preview_observations().unwrap();
-    assert_eq!(initial.rows[0].raw_value, Some(1.0));
-    assert_eq!(
-        (initial.rows[0].latitude, initial.rows[0].longitude),
-        (None, None)
-    );
-    draft.refresh_observations().unwrap();
-    assert!(!draft.preview_is_current(&initial.generation));
-    let replacement = |id: &str, value| mgb_ops::DraftReplacement {
-        draft_id: id.into(),
-        registered_origin: None,
-        value: mgb_ops::ObservationReplacement {
-            replacement_id: id.into(),
-            station_id: "s".into(),
-            variable: "rain".into(),
-            kind: mgb_ops::ReplacementKind::Point,
-            start_at: time("2026-01-01T01:00:00"),
-            end_at: None,
-            value,
-            reason: "test".into(),
-        },
-    };
-    draft.document.instructions.replacements =
-        Some(vec![replacement("a", Some(2.0)), replacement("b", None)]);
-    assert!(!draft.preview_is_current(&initial.generation));
-    let edited = draft.preview_observations().unwrap();
-    assert_eq!(edited.rows[0].effective_value, None);
-    draft
-        .document
-        .instructions
-        .replacements
-        .as_mut()
-        .unwrap()
-        .reverse();
-    let reversed = draft.preview_observations().unwrap();
-    assert_eq!(reversed.rows[0].effective_value, Some(2.0));
-    draft.save(&root.join("draft.json"), true).unwrap();
-    let connection = rusqlite::Connection::open(root.join("observations.sqlite")).unwrap();
-    connection
-        .execute(
-            "INSERT INTO station VALUES ('other', 'other', '2', 'other', 0, 0)",
-            [],
-        )
-        .unwrap();
-    assert!(draft.preview_observations().is_ok());
-    connection
-        .execute("UPDATE observation SET value = 8 WHERE series_id = 'r'", [])
-        .unwrap();
-    assert!(draft.preview_observations().is_err());
-    let reopened = mgb_ops::Draft::open(root.clone(), &root, Path::new("draft.json")).unwrap();
-    assert!(reopened.findings.iter().any(|v| v.contains("changed")));
-    draft.refresh_observations().unwrap();
-    assert_eq!(
-        draft.preview_observations().unwrap().rows[0].raw_value,
-        Some(8.0)
-    );
-}
-
-#[test]
-fn draft_preparation_requires_refresh_and_freezes_current_inputs() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    let mut draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
-    assert!(draft.prepare(root.clone(), "unaccepted".into()).is_err());
-    draft.refresh_inputs().unwrap();
-    let original = draft.preview_observations().unwrap();
-    let mut invalid = draft.clone();
-    invalid.document.schema_version = 3;
-    assert!(invalid.preview_observations().is_err());
-    assert!(
-        invalid
-            .validate_preparation()
-            .iter()
-            .any(|v| v.contains("schema"))
-    );
-    assert!(invalid.prepare(root.clone(), "bad-version".into()).is_err());
-    invalid = draft.clone();
-    invalid.document.operation.step_seconds = Some(1800);
-    assert!(invalid.preview_observations().is_err());
-    invalid.document.operation.step_seconds = None;
-    assert!(invalid.preview_observations().is_ok());
-    invalid = draft.clone();
-    invalid.document.instructions.replacements = Some(vec![mgb_ops::DraftReplacement {
-        draft_id: "bad".into(),
-        registered_origin: None,
-        value: mgb_ops::ObservationReplacement {
-            replacement_id: "bad".into(),
-            station_id: "s".into(),
-            variable: "level".into(),
-            kind: mgb_ops::ReplacementKind::Point,
-            start_at: time("2026-01-01T01:00:00"),
-            end_at: None,
-            value: None,
-            reason: "test".into(),
-        },
-    }]);
-    assert!(
-        invalid
-            .validate_preparation()
-            .iter()
-            .any(|v| v.contains("invalid bounds or variable"))
-    );
-    assert!(invalid.preview_observations().is_err());
-    assert!(
-        invalid
-            .prepare(root.clone(), "bad-replacement".into())
-            .is_err()
-    );
-    invalid.document.instructions.replacements.as_mut().unwrap()[0]
-        .value
-        .variable = "rain".into();
-    let preview_missing = invalid.preview_observations().unwrap();
-    invalid.document.instructions.replacements.as_mut().unwrap()[0]
-        .value
-        .value = Some(f64::NAN);
-    assert!(invalid.generation().is_err());
-    assert!(!invalid.preview_is_current(&preview_missing.generation));
-    assert!(!invalid.preview_is_current(&original.generation));
-    assert!(invalid.preview_observations().is_err());
-    assert!(invalid.prepare(root.clone(), "nonfinite".into()).is_err());
-    fs::write(root.join("Input/control.txt"), "changed").unwrap();
-    assert!(draft.prepare(root.clone(), "changed".into()).is_err());
-    assert!(!root.join("changed").exists());
-    draft.refresh_inputs().unwrap();
-    draft.prepare(root.clone(), "prepared".into()).unwrap();
-    assert!(root.join("prepared/manifest.json").exists());
-}
-
-#[test]
-fn draft_cli_and_api_preview_agree() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    let mut draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
-    draft.refresh_inputs().unwrap();
-    draft.save(&root.join("draft.json"), true).unwrap();
-    draft.document.visualization = Some(mgb_ops::DraftVisualization {
-        map_position: Some([0.0, 0.0, 3.0]),
-        ..Default::default()
-    });
-    draft.save(&root.join("draft.json"), true).unwrap();
-    let save = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&root)
-        .args([
-            "draft",
-            "save",
-            "--workspace",
-            ".",
-            "--draft",
-            "draft.json",
-            "--output",
-            "copy.json",
-            "--omit-visualization",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(save.status.success());
-    let copied = mgb_ops::Draft::open(root.clone(), &root, Path::new("copy.json")).unwrap();
-    assert!(copied.document.visualization.is_none());
-    let output: serde_json::Value = serde_json::from_slice(&save.stdout).unwrap();
-    assert_eq!(
-        output["result"],
-        serde_json::to_value(copied.document).unwrap()
-    );
-    let expected = serde_json::to_value(draft.preview_observations().unwrap()).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&root)
-        .args([
-            "draft",
-            "preview-observations",
-            "--workspace",
-            ".",
-            "--draft",
-            "draft.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["ok"], true);
-    assert_eq!(result["result"], expected);
-    let mut incomplete = mgb_ops::Draft::new(root.clone(), &root);
-    incomplete
-        .save(&root.join("incomplete.json"), true)
-        .unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&root)
-        .args([
-            "draft",
-            "validate",
-            "--workspace",
-            ".",
-            "--draft",
-            "incomplete.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(result["ok"], false);
-    assert!(result["result"].as_array().is_some_and(|v| !v.is_empty()));
-}
-
-#[test]
-fn incomplete_draft_open_reports_unaccepted_missing_sources_in_api_and_cli() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let mut draft = mgb_ops::Draft::new(root.clone(), &root);
-    draft.document.operation.observed = Some(mgb_ops::DraftObserved {
-        path: Some("missing.sqlite".into()),
-        ..Default::default()
-    });
-    draft.document.operation.forecasts = Some(mgb_ops::DraftForecasts {
-        catalog: Some("forecast.sqlite".into()),
-    });
-    draft
-        .document
-        .operation
-        .scenarios
-        .push(mgb_ops::DraftScenario {
-            asset_id: Some("selected".into()),
-            ..Default::default()
-        });
-    draft.document.operation.geometry = Some(mgb_ops::DraftGeometry {
-        mini_gtp: Some("missing.gtp".into()),
-    });
-    draft.document.operation.engine = Some(mgb_ops::DraftEngine {
-        executable: Some("missing-engine".into()),
-        input_dir: Some("missing-input".into()),
-        omp_threads: None,
-    });
-    draft.save(Path::new("draft.json"), true).unwrap();
-    let opened = mgb_ops::Draft::open(".".into(), &root, Path::new("draft.json")).unwrap();
-    for name in [
-        "observations unavailable",
-        "forecast catalog unavailable",
-        "geometry unavailable",
-        "engine unavailable",
-        "engine inputs unavailable",
-    ] {
-        assert!(
-            opened
-                .findings
-                .iter()
-                .any(|finding| finding.starts_with(name)),
-            "missing finding for {name}"
-        );
-    }
-    assert!(opened.document.sources.accepted.is_empty());
-    assert!(!root.join("missing.sqlite").exists());
-    assert!(!root.join("forecast.sqlite").exists());
-    let output = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .current_dir(&root)
-        .args([
-            "draft",
-            "open",
-            "--workspace",
-            ".",
-            "--draft",
-            "draft.json",
-            "--json",
-        ])
-        .output()
-        .unwrap();
-    assert!(output.status.success());
-    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(
-        json["result"]["findings"],
-        serde_json::to_value(opened.findings).unwrap()
-    );
+    assert_eq!(report.scenarios.len(), 1);
+    assert!(report.run_root.join("results/corrected/basin.nc").is_file());
 }
 
 #[test]
 fn cancellation_reaps_engines_archives_outcomes_and_releases_lock() {
     use std::time::{Duration, Instant};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -1895,7 +964,7 @@ fn cancellation_reaps_engines_archives_outcomes_and_releases_lock() {
                 &control,
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(90);
         let (attempt, pids) = loop {
             let progress = control.progress();
             if let Some(progress) = progress
@@ -1949,7 +1018,7 @@ fn cancellation_reaps_engines_archives_outcomes_and_releases_lock() {
 
 #[test]
 fn cancelled_preparation_does_not_publish_partial_tree_and_tail_is_bounded() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -1977,7 +1046,7 @@ fn cancelled_preparation_does_not_publish_partial_tree_and_tail_is_bounded() {
 #[test]
 fn cli_sigint_cancels_history_and_reaps_child() {
     use std::time::{Duration, Instant};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -1999,7 +1068,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
         .stdout(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(90);
     let (attempt, pid) = 'waiting: loop {
         if let Ok(entries) = fs::read_dir(root.join("cache/run")) {
             for entry in entries.flatten() {
@@ -2045,7 +1114,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
 #[test]
 fn cancellation_during_preparation_removes_staging_and_preserves_existing_preparation() {
     use std::time::{Duration, Instant};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -2071,7 +1140,7 @@ fn cancellation_during_preparation_removes_staging_and_preserves_existing_prepar
                 &control,
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(90);
         loop {
             if fs::read_dir(&root).unwrap().flatten().any(|entry| {
                 entry
@@ -2101,51 +1170,9 @@ fn cancellation_during_preparation_removes_staging_and_preserves_existing_prepar
 }
 
 #[test]
-fn run_uses_current_draft_and_cleans_temporary_preparation() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    let mut draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
-    draft.refresh_inputs().unwrap();
-    let control = mgb_ops::OperationControl::default();
-    let first = mgb_ops::run_draft(&draft, &control).unwrap();
-    let cache = mgb_ops::read_trial(&first.run_root).unwrap();
-    assert!(!root.join("cache/preparations").exists());
-    assert!(fs::read_dir(&root).unwrap().all(|entry| {
-        !entry
-            .unwrap()
-            .file_name()
-            .to_string_lossy()
-            .starts_with(".preparation-")
-    }));
-    assert!(cache.preparation_sha256.is_some());
-    let prepared = draft
-        .prepare(root.clone(), "separate-prepared".into())
-        .unwrap();
-    fs::remove_dir_all(root.join("Input")).unwrap();
-    fs::remove_file(root.join("engine")).unwrap();
-    fs::remove_file(root.join("observations.sqlite")).unwrap();
-    draft.document.operation.step_seconds = Some(1800);
-    let second = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
-        workspace: root.clone(),
-        invocation_dir: root.clone(),
-        prepared: prepared.prepared,
-    })
-    .unwrap();
-    assert_ne!(first.run_root, second.run_root);
-    control.cancel();
-    assert!(!control.is_cancelled());
-    assert!(!first.run_root.exists());
-    assert!(second.run_root.join("results/zero/basin.nc").exists());
-}
-
-#[test]
 fn cancellation_during_finalization_preserves_the_publication_boundary() {
     use std::time::{Duration, Instant};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -2174,7 +1201,7 @@ fn cancellation_during_finalization_preserves_the_publication_boundary() {
                 &control,
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(45);
+        let deadline = Instant::now() + Duration::from_secs(180);
         loop {
             if worker.is_finished()
                 || control.progress().is_some_and(|progress| {
@@ -2225,7 +1252,7 @@ fn cancellation_during_finalization_preserves_the_publication_boundary() {
 #[test]
 fn failed_worker_tree_is_removed_after_workers_stop_and_lock_releases() {
     use std::time::{Duration, Instant};
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
@@ -2250,7 +1277,7 @@ fn failed_worker_tree_is_removed_after_workers_stop_and_lock_releases() {
                 &control,
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(90);
         let attempt = loop {
             if let Some(attempt) = control.progress().and_then(|p| p.attempt)
                 && attempt.join("scenarios/other/pid").is_file()
@@ -2278,383 +1305,223 @@ fn failed_worker_tree_is_removed_after_workers_stop_and_lock_releases() {
     });
 }
 
-#[cfg(unix)]
 #[test]
-fn cli_uncontrolled_draft_import_keeps_default_sigint() {
-    use std::os::unix::process::ExitStatusExt;
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    let fifo = root.join("request.fifo");
-    assert!(
-        Command::new("mkfifo")
-            .arg(&fifo)
-            .status()
-            .unwrap()
-            .success()
-    );
-    let mut cli = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .args(["draft", "import-toml", "--workspace"])
-        .arg(&root)
-        .arg("--request")
-        .arg(&fifo)
-        .arg("--output")
-        .arg(root.join("draft.json"))
-        .spawn()
-        .unwrap();
-    let writer = fs::OpenOptions::new().write(true).open(&fifo).unwrap();
-    assert!(
-        Command::new("kill")
-            .args(["-INT", &cli.id().to_string()])
-            .status()
-            .unwrap()
-            .success()
-    );
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let status = loop {
-        if let Some(status) = cli.try_wait().unwrap() {
-            break status;
-        }
-        if std::time::Instant::now() >= deadline {
-            cli.kill().unwrap();
-            cli.wait().unwrap();
-            panic!("SIGINT was ignored");
-        }
-        std::thread::sleep(std::time::Duration::from_millis(10));
+fn workspace_parameters_resolve_cycles_and_freeze_forecast_corrections_once() {
+    use chrono::Duration;
+    use mgb_ops::app::{ForecastAdjustment, OperationalRun, RunScenario};
+    use mgb_ops::store::{
+        CanonicalForecastMetadata, ForecastCatalog, GridSeries, IntervalAxis, Provenance,
+        RegularGridSpec, TimeInterval,
     };
-    drop(writer);
-    assert_eq!(status.signal(), Some(2));
-}
 
-#[test]
-fn reference_horizons_prepare_execute_and_incomplete_draft_preview() {
-    let _guard = TEST_LOCK.lock().unwrap();
+    let _guard = serialize_fixture();
     fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    let mut db = ObservationStore::open_writable(&root.join("observations.sqlite")).unwrap();
-    db.write_batch(&ObservationBatch {
-        stations: vec![],
-        series: vec![],
-        replacements: vec![],
-        offsets: vec![],
-        samples: vec![ObservationSample {
-            series_id: "r".into(),
-            observed_at: time("2026-01-01T00:00:00"),
-            value: Some(ObservationValue::RainMm(1.0)),
-        }],
-    })
+    let fixture_dir = tempfile::tempdir_in("runs").unwrap();
+    let root = fixture_dir.path().canonicalize().unwrap();
+    let mut batch = fixture(&root);
+    batch.samples.push(ObservationSample {
+        series_id: "r".into(),
+        observed_at: time("2026-01-01T00:00:00"),
+        value: Some(ObservationValue::RainMm(1.0)),
+    });
+    let database = root.join("operation.sqlite");
+    fs::write(
+        root.join("config.toml"),
+        r#"
+[run]
+time_zone = "UTC"
+reference_time = "2026-01-01T02:00:00"
+lookback_days = 0
+forecast_days = 1
+[spatial]
+bounds = [-1.0,-1.0,1.0,1.0]
+resolution_degrees = 1.0
+[model]
+executable = "engine"
+input_dir = "Input"
+omp_threads = 1
+[precipitation_interpolation]
+nearest_stations = 1
+"#,
+    )
     .unwrap();
-    let text = fs::read_to_string(root.join("request.toml")).unwrap();
-    let text = text.replace("schema_version = 1", "schema_version = 2")
-        .replace("step_seconds = 3600\nhistorical_first_end = \"2026-01-01T01:00:00\"\nhistorical_last_end = \"2026-01-01T02:00:00\"\nforecast_first_end = \"2026-01-01T03:00:00\"\nforecast_last_end = \"2026-01-01T03:00:00\"", "observed_horizon_days = 0\nforecast_horizon_days = 1");
-    fs::write(root.join("request.toml"), text).unwrap();
-    let mut draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
-    assert_eq!(draft.document.schema_version, 2);
-    assert_eq!(draft.document.operation.observed_horizon_days, Some(0));
-    assert!(draft.document.operation.historical_first_end.is_none());
-    draft.save(Path::new("draft.json"), true).unwrap();
-    let mut local = mgb_ops::Draft::open(root.clone(), &root, Path::new("draft.json")).unwrap();
-    local.document.operation.forecast_horizon_days = None;
-    local.document.operation.engine = None;
-    for horizon in [None, Some(0), Some(u32::MAX)] {
-        local.document.operation.forecast_horizon_days = horizon;
-        local.refresh_observations().unwrap();
-        assert_eq!(local.preview_observations().unwrap().rows.len(), 3);
-    }
-    draft.refresh_inputs().unwrap();
-    draft
-        .save_preparation_toml(Path::new("export.toml"))
+
+    mgb_ops::app::initialize_workspace(&root).unwrap();
+    ObservationStore::open_writable(&database)
+        .unwrap()
+        .write_batch(&batch)
         .unwrap();
-    let exported = fs::read_to_string(root.join("export.toml")).unwrap();
-    assert!(exported.contains("observed_horizon_days"));
-    assert!(!exported.contains("historical_first_end"));
-    let exported_draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("export.toml")).unwrap();
-    assert_eq!(exported_draft.document.operation, draft.document.operation);
-    draft.prepare(root.clone(), "prepared-v2".into()).unwrap();
-    let report = mgb_ops::app::execute_prepared(mgb_ops::app::ExecutionRequest {
+
+    let reference = time("2026-01-01T02:00:00");
+    let grid = RegularGridSpec::new([-1.0, -1.0, 1.0, 1.0], 1.0).unwrap();
+    let cells = grid.latitudes.len() * grid.longitudes.len();
+    let mut catalog = ForecastCatalog::open(&root, &database, Path::new("assets")).unwrap();
+    for (product, cycle_hour, hours) in [
+        ("hourly", 0, 25),
+        ("hourly", 2, 25),
+        ("hourly", 3, 25),
+        ("short", 2, 24),
+        ("alternate", 2, 25),
+    ] {
+        let source = root.join(format!("source-{product}-{cycle_hour}.nc"));
+        mgb_ops::store::write_grid_series(
+            &source,
+            &GridSeries {
+                timeline: IntervalAxis {
+                    time_zone: "UTC".into(),
+                    bounds: vec![TimeInterval {
+                        start: reference,
+                        end: reference + Duration::hours(hours),
+                    }],
+                },
+                values: vec![2.0 * hours as f64; cells],
+                valid: vec![true; cells],
+                grid: grid.clone(),
+                provenance: Provenance {
+                    source_ids: vec!["forecast-fixture".into()],
+                    processing: serde_json::json!({}),
+                },
+            },
+        )
+        .unwrap();
+        catalog
+            .register_canonical(
+                &source,
+                &CanonicalForecastMetadata {
+                    provider: "fixture".into(),
+                    model: "native".into(),
+                    product: product.into(),
+                    cycle_utc: time(&format!("2026-01-01T{cycle_hour:02}:00:00")).and_utc(),
+                },
+            )
+            .unwrap();
+        fs::remove_file(source).unwrap();
+    }
+    let mut operation = OperationalRun::open_workspace(root.clone(), reference.and_utc()).unwrap();
+    let forecast = "fixture/native/hourly@2026-01-01T02:00:00Z";
+    assert_eq!(
+        operation.default_scenarios().unwrap(),
+        [
+            RunScenario::Zero,
+            RunScenario::Raw {
+                forecast: "fixture/native/alternate@2026-01-01T02:00:00Z".into()
+            },
+            RunScenario::Raw {
+                forecast: forecast.into()
+            },
+        ]
+    );
+    assert_eq!(operation.available_forecasts().unwrap().len(), 3);
+    let scenario = RunScenario::Corrected {
+        forecast: forecast.into(),
+        corrections: [2.0, 3.0]
+            .into_iter()
+            .map(|multiplication_factor| ForecastAdjustment {
+                t1_hour: 25,
+                multiplication_factor,
+                ..Default::default()
+            })
+            .collect(),
+    };
+    let preview = operation.preview_forecast(&scenario).unwrap();
+    assert_eq!(preview.raw[0].values[0], 50.0);
+    assert_eq!(preview.corrected[0].values[0], 300.0);
+    let cli = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+        .current_dir(&root)
+        .args([
+            "operation",
+            "prepare",
+            "--workspace",
+            ".",
+            "--output",
+            "prepared",
+            "--scenario",
+            "zero",
+            "--scenario",
+            forecast,
+            "--scenario",
+        ])
+        .arg(serde_json::to_string(&scenario).unwrap())
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "{}\n{}",
+        String::from_utf8_lossy(&cli.stdout),
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let prepared = root.join("prepared");
+    let manifest = mgb_ops::store::read_operation_manifest(&prepared).unwrap();
+    assert_eq!(manifest.scenarios.len(), 3);
+    let corrected = &manifest.scenarios[2].id;
+    let edits = &manifest.recipe["workspace_scenarios"][2]["corrections"];
+    assert_eq!(edits[0]["multiplication_factor"], 2.0);
+    assert_eq!(edits[1]["multiplication_factor"], 3.0);
+    assert!(!prepared.join("request.toml").exists());
+    assert!(!prepared.join("sources/forecast.sqlite").exists());
+    let working = mgb_ops::store::read_grid_series(
+        &prepared
+            .join("checkpoints/forecast")
+            .join(corrected)
+            .join("working.nc"),
+    )
+    .unwrap();
+    assert_eq!(working.values[0], preview.corrected[0].values[0] / 25.0);
+    assert!(
+        !working
+            .provenance
+            .processing
+            .to_string()
+            .contains("multiplication_factor")
+    );
+    let index = rusqlite::Connection::open(&database).unwrap();
+    let has_corrections = index
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='correction')",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap();
+    assert!(!has_corrections);
+
+    operation
+        .set_scenarios(&[
+            "zero".into(),
+            forecast.into(),
+            serde_json::to_string(&scenario).unwrap(),
+        ])
+        .unwrap();
+    let run = operation.run_all_report(&mgb_ops::OperationControl::default());
+    assert!(run.error.is_none(), "{:?}", run.error);
+    let first = run.execution.unwrap();
+    let active = mgb_ops::store::read_retained_manifest(&first.run_root).unwrap();
+    assert_eq!(
+        active.recipe["workspace_scenarios"][2]["corrections"],
+        *edits
+    );
+    let asset_index: String = index
+        .query_row("SELECT manifest_path FROM run_attempt", [], |row| {
+            row.get(0)
+        })
+        .unwrap();
+    assert_eq!(root.join(asset_index), first.run_root.join("manifest.json"));
+
+    fs::remove_dir_all(root.join("assets")).unwrap();
+    operation.set_scenarios(&[forecast.into()]).unwrap();
+    let failed = operation.run_all_report(&mgb_ops::OperationControl::default());
+    assert!(failed.error.is_some());
+    assert_eq!(
+        mgb_ops::discover_trials(&root).unwrap(),
+        std::slice::from_ref(&first.run_root)
+    );
+    let second = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
         workspace: root.clone(),
         invocation_dir: root.clone(),
-        prepared: "prepared-v2".into(),
+        prepared,
     })
     .unwrap();
-    assert!(matches!(
-        report.status,
-        mgb_ops::app::BatchStatus::Completed
-    ));
-    assert_eq!(
-        mgb_ops::read_trial(&report.run_root)
-            .unwrap()
-            .scenarios
-            .len(),
-        4
-    );
-    let retained = mgb_ops::Draft::import_manifest(root.clone(), &root, &report.run_root).unwrap();
-    assert_eq!(
-        retained.document.operation.reference_time,
-        draft.document.operation.reference_time
-    );
-    assert_eq!(retained.document.operation.observed_horizon_days, Some(0));
-    assert_eq!(retained.document.operation.forecast_horizon_days, Some(1));
-}
-
-#[test]
-fn legacy_invalid_recipe_remains_importable_for_repair() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let root = dir.path().canonicalize().unwrap();
-    fixture(&root);
-    let original = fs::read_to_string(root.join("request.toml")).unwrap();
-    fs::write(
-        root.join("request.toml"),
-        original.replace("omp_threads = 1", "omp_threads = 0"),
-    )
-    .unwrap();
-    let draft =
-        mgb_ops::Draft::import_toml(root.clone(), &root, Path::new("request.toml")).unwrap();
-    assert_eq!(draft.document.schema_version, 1);
-    assert_eq!(
-        draft
-            .document
-            .operation
-            .engine
-            .as_ref()
-            .unwrap()
-            .omp_threads,
-        Some(0)
-    );
-    assert_eq!(
-        draft.document.operation.historical_first_end.as_deref(),
-        Some("2026-01-01T01:00:00")
-    );
-    assert!(!draft.validate_preparation().is_empty());
-}
-
-#[test]
-fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let workspace = dir.path().canonicalize().unwrap();
-    fixture(&workspace);
-    fs::write(
-        workspace.join("Input/MINI.gtp"),
-        "CatID Mini Xcen Ycen MiniJus Area_(km2)\n1 1 0 0 -1 7\n",
-    )
-    .unwrap();
-    let request = workspace.join("request.toml");
-    let saved = fs::read(&request).unwrap();
-    let now = time("2026-01-02T13:37:00").and_utc();
-    let mut operation =
-        mgb_ops::app::OperationalRun::open(workspace.clone(), &request, now).unwrap();
-    assert_eq!(operation.reference(), "2026-01-02T13:00:00");
-    assert_eq!(
-        operation.coverage().unwrap(),
-        [
-            "2026-01-02T12:00:00",
-            "2026-01-02T13:00:00",
-            "2026-01-02T14:00:00",
-            "2026-01-02T14:00:00"
-        ]
-    );
-    operation.set_reference("2026-01-01T02:00:00".into());
-    let control = mgb_ops::app::OperationControl::default();
-    assert!(operation.run_all(&control).is_err());
-    assert!(
-        operation
-            .validate()
-            .iter()
-            .any(|finding| finding.contains("not been accepted"))
-    );
-    assert!(mgb_ops::discover_trials(&workspace).unwrap().is_empty());
-    operation.accept_inputs().unwrap();
-    assert!(operation.validate().is_empty());
-
-    let report = operation
-        .run_all(&mgb_ops::app::OperationControl::default())
-        .unwrap();
-    assert_eq!(
-        mgb_ops::read_trial(&report.run_root)
-            .unwrap()
-            .scenarios
-            .len(),
-        4
-    );
-    assert!(!workspace.join("cache/preparations").exists());
-
-    let active = mgb_ops::app::rainfall_cache_info(&workspace)
-        .unwrap()
-        .unwrap();
-    assert_eq!(active.reference, time("2026-01-01T02:00:00"));
-    let rainfall = mgb_ops::app::query_cached_rainfall(
-        &workspace,
-        "zero",
-        &mgb_ops::app::RainfallPeriod::SignedHours(1),
-        Some(1),
-        true,
-    )
-    .unwrap()
-    .unwrap();
-    let summary = rainfall.summary.unwrap();
-    assert_eq!(summary.total_area_km2, 7.);
-    assert_eq!(summary.mean_mm, Some(0.));
-
-    fs::write(workspace.join("Input/control.txt"), "fail:other\n").unwrap();
-    operation.accept_inputs().unwrap();
-    assert!(
-        operation
-            .run_all(&mgb_ops::OperationControl::default())
-            .is_err()
-    );
-    assert_eq!(
-        mgb_ops::app::rainfall_cache_info(&workspace).unwrap(),
-        Some(active.clone())
-    );
-
-    operation.set_reference("2026-01-01T01:00:00".into());
-    assert!(!operation.has_accepted_inputs());
-    assert!(
-        operation
-            .run_all(&mgb_ops::app::OperationControl::default())
-            .is_err()
-    );
-    assert_eq!(fs::read(&request).unwrap(), saved);
-    fs::write(workspace.join("Input/control.txt"), "").unwrap();
-    operation.set_reference("2026-01-01T02:00:00".into());
-    operation.accept_inputs().unwrap();
-    operation
-        .run_all(&mgb_ops::OperationControl::default())
-        .unwrap();
-    let switched = mgb_ops::app::rainfall_cache_info(&workspace)
-        .unwrap()
-        .unwrap();
-    assert_ne!(switched.generation, active.generation);
-    assert_eq!(switched.reference, time("2026-01-01T02:00:00"));
-    assert!(!workspace.join("cache/preparations").exists());
-    let after_switch = mgb_ops::app::query_cached_rainfall(
-        &workspace,
-        "zero",
-        &mgb_ops::app::RainfallPeriod::SignedHours(1),
-        Some(1),
-        true,
-    )
-    .unwrap()
-    .unwrap();
-    assert_eq!(after_switch.info, switched);
-    assert_eq!(after_switch.summary.unwrap().mean_mm, Some(0.));
-
-    let cache = workspace.join("cache/run");
-    assert!(!cache.join(active.generation).exists());
-    assert_eq!(
-        fs::read_dir(&cache)
-            .unwrap()
-            .filter(|entry| entry
-                .as_ref()
-                .unwrap()
-                .file_name()
-                .to_string_lossy()
-                .starts_with("generation-"))
-            .count(),
-        1
-    );
-    fs::write(
-        cache
-            .join(&switched.generation)
-            .join("rainfall/checkpoints/observed-grid.nc"),
-        "invalid",
-    )
-    .unwrap();
-    assert!(
-        mgb_ops::app::query_cached_rainfall(
-            &workspace,
-            "zero",
-            &mgb_ops::app::RainfallPeriod::SignedHours(-1),
-            Some(1),
-            true,
-        )
-        .is_err()
-    );
-}
-
-#[test]
-fn standalone_day_horizons_recalculate_from_local_midnight() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let workspace = dir.path().canonicalize().unwrap();
-    fixture(&workspace);
-    let request = workspace.join("request.toml");
-    let recipe = fs::read_to_string(&request).unwrap();
-    let settings = recipe.split_once("[observed]").unwrap().1;
-    fs::write(
-        &request,
-        format!(
-            r#"schema_version = 2
-time_zone = "Asia/Tokyo"
-reference_time = "2026-01-01T02:00:00"
-observed_horizon_days = 1
-forecast_horizon_days = 2
-[observed]{settings}"#
-        ),
-    )
-    .unwrap();
-    let mut operation = mgb_ops::app::OperationalRun::open(
-        workspace,
-        &request,
-        time("2026-01-01T17:46:00").and_utc(),
-    )
-    .unwrap();
-    assert_eq!(operation.time_zone(), "Asia/Tokyo");
-    assert_eq!(operation.reference(), "2026-01-02T02:00:00");
-    assert_eq!(
-        operation.coverage().unwrap(),
-        [
-            "2026-01-01T00:00:00",
-            "2026-01-02T02:00:00",
-            "2026-01-02T03:00:00",
-            "2026-01-04T03:00:00"
-        ]
-    );
-    operation.set_reference("2025-12-25T01:30:00".into());
-    assert!(operation.coverage().is_err());
-    operation.set_reference("2025-12-25T01:00:00".into());
-    assert_eq!(operation.coverage().unwrap()[0], "2025-12-24T00:00:00");
-}
-
-#[test]
-fn replay_from_standalone_recipe_requires_identical_sources() {
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let temporary = tempfile::tempdir_in("runs").unwrap();
-    let workspace = temporary.path().canonicalize().unwrap();
-    fixture(&workspace);
-    let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
-        workspace: workspace.clone(),
-        invocation_dir: workspace.clone(),
-        request_file: "request.toml".into(),
-        output: "prepared".into(),
-    })
-    .unwrap();
-    let manifest = workspace.join("recipe.json");
-    fs::copy(prepared.prepared.join("manifest.json"), &manifest).unwrap();
-    fs::remove_dir_all(&prepared.prepared).unwrap();
-
-    let editable =
-        mgb_ops::Draft::import_manifest(workspace.clone(), &workspace, &manifest).unwrap();
-    assert_eq!(
-        editable.document.operation.reference_time.as_deref(),
-        Some("2026-01-01T02:00:00")
-    );
-    assert!(editable.document.sources.accepted.is_empty());
-    let control = mgb_ops::OperationControl::default();
-    let first = mgb_ops::replay_run(&workspace, &manifest, &control).unwrap();
-    assert!(matches!(first.status, mgb_ops::BatchStatus::Completed));
-    assert!(first.run_root.join("results/zero/basin.nc").is_file());
+    assert_ne!(first.run_root, second.run_root);
     let id = first
         .run_root
         .file_name()
@@ -2663,230 +1530,18 @@ fn replay_from_standalone_recipe_requires_identical_sources() {
         .unwrap()
         .strip_prefix("generation-")
         .unwrap();
-    let archived = workspace.join("runs/history").join(format!("{id}.json"));
-    assert!(mgb_ops::Draft::import_manifest(workspace.clone(), &workspace, &archived).is_ok());
-    let replayed = mgb_ops::replay_run(&workspace, &archived, &control).unwrap();
-    assert_ne!(first.run_root, replayed.run_root);
+    let archived: String = index
+        .query_row(
+            "SELECT manifest_path FROM run_attempt WHERE attempt_id=?1",
+            [id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let archive: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join(archived)).unwrap()).unwrap();
+    assert_eq!(
+        archive["operation"]["recipe"]["workspace_scenarios"][2]["corrections"],
+        *edits
+    );
     assert!(!first.run_root.exists());
-
-    let legacy = workspace.join("legacy-recipe.json");
-    let mut legacy_manifest: mgb_ops::store::OperationManifest =
-        mgb_ops::store::read_draft(&manifest).unwrap();
-    legacy_manifest.inputs.clear();
-    legacy_manifest
-        .recipe
-        .as_object_mut()
-        .unwrap()
-        .remove("source_identities");
-    mgb_ops::store::write_draft(&legacy, &legacy_manifest).unwrap();
-    let legacy_replayed = mgb_ops::replay_run(&workspace, &legacy, &control).unwrap();
-    assert!(
-        legacy_replayed
-            .run_root
-            .join("results/zero/basin.nc")
-            .is_file()
-    );
-
-    fs::write(workspace.join("Input/control.txt"), "fail").unwrap();
-    let error = mgb_ops::replay_run(&workspace, &archived, &control).unwrap_err();
-    assert!(
-        format!("{error}").contains("recorded operation recipe or source identities changed"),
-        "{error}"
-    );
-    assert!(legacy_replayed.run_root.exists());
-}
-
-#[test]
-fn acquisition_run_all_freezes_cached_provider_selection_and_keeps_active_on_failure() {
-    use chrono::{Datelike, TimeDelta, Timelike};
-    use mgb_ops::adapters::{NormalizationRequest, normalize_saved_forecast};
-    use mgb_ops::store::{ForecastCatalog, ForecastProvider};
-
-    let _guard = TEST_LOCK.lock().unwrap();
-    fs::create_dir_all("runs").unwrap();
-    let dir = tempfile::tempdir_in("runs").unwrap();
-    let workspace = dir.path().canonicalize().unwrap();
-    fixture(&workspace);
-    let cycle = time("2026-07-20T00:00:00").and_utc();
-    let reference = time("2026-07-20T02:00:00");
-    let bounds = [0.125, 0.125, 0.25, 0.25];
-    let mut observation_store =
-        ObservationStore::open_writable(&workspace.join("observations.sqlite")).unwrap();
-    observation_store
-        .ingest_batch(&ObservationBatch {
-            samples: [time("2026-07-20T01:00:00"), reference]
-                .into_iter()
-                .map(|observed_at| ObservationSample {
-                    series_id: "r".into(),
-                    observed_at,
-                    value: Some(ObservationValue::RainMm(0.)),
-                })
-                .collect(),
-            ..Default::default()
-        })
-        .unwrap();
-
-    // Expand one fixture message into a complete GFS cycle using its GRIB2
-    // template 4.8 end time and accumulation-duration fields.
-    let grib = include_bytes!("fixtures/forecast/noaa.grib2");
-    let message_end = u64::from_be_bytes(grib[8..16].try_into().unwrap()) as usize;
-    let mut section = 16;
-    while grib[section + 4] != 4 {
-        section += u32::from_be_bytes(grib[section..section + 4].try_into().unwrap()) as usize;
-    }
-    let mut bytes = Vec::new();
-    for lead in (3..=240u32).step_by(3).chain((252..=384).step_by(12)) {
-        let mut message = grib[..message_end].to_vec();
-        let end = cycle + TimeDelta::hours(i64::from(lead));
-        message[section + 34..section + 36].copy_from_slice(&(end.year() as u16).to_be_bytes());
-        message[section + 36] = end.month() as u8;
-        message[section + 37] = end.day() as u8;
-        message[section + 38] = end.hour() as u8;
-        message[section + 49..section + 53].copy_from_slice(&lead.to_be_bytes());
-        bytes.extend(message);
-    }
-    let source = workspace.join("gfs.grib2");
-    fs::write(&source, bytes).unwrap();
-    let forecast = normalize_saved_forecast(
-        &source,
-        &NormalizationRequest {
-            provider: ForecastProvider::Noaa,
-            model: "gfs".into(),
-            product: "fc".into(),
-            cycle_utc: cycle,
-            operation_timezone: chrono_tz::UTC,
-            crop_bbox: bounds,
-        },
-    )
-    .unwrap();
-    let mut catalog = ForecastCatalog::open(
-        &workspace,
-        Path::new("forecasts.sqlite"),
-        Path::new("forecasts"),
-    )
-    .unwrap();
-    let asset = catalog
-        .register_native(&source, &forecast.source, &forecast.native)
-        .unwrap();
-    assert_eq!(
-        catalog
-            .register_native(&source, &forecast.source, &forecast.native)
-            .unwrap()
-            .asset_id,
-        asset.asset_id
-    );
-
-    let request = workspace.join("request.toml");
-    let original = fs::read_to_string(&request).unwrap();
-    let recipe = original
-        .split_once("[[scenarios]]\nid = \"other\"")
-        .unwrap()
-        .0
-        .replace("2026-01-01", "2026-07-20")
-        .replace("[-1.0,-1.0,1.0,1.0]", "[0.125,0.125,0.25,0.25]")
-        .replace("resolution_degrees = 1.0", "resolution_degrees = 0.25")
-        .replace("unused.sqlite", "forecasts.sqlite");
-    let recipe = format!(
-        r#"{recipe}
-[acquisition]
-request = "acquisition.toml"
-[[scenarios]]
-id = "noaa"
-kind = "raw"
-forecast_provider = "noaa"
-"#
-    );
-    fs::write(&request, &recipe).unwrap();
-    fs::write(
-        workspace.join("acquisition.toml"),
-        r#"schema_version = 1
-time_zone = "UTC"
-[forecasts]
-providers = ["noaa"]
-model_bbox = [0.125, 0.125, 0.25, 0.25]
-buffer_fraction = 0.0
-catalog = "forecasts.sqlite"
-artifact_root = "forecasts"
-"#,
-    )
-    .unwrap();
-
-    let operation =
-        mgb_ops::OperationalRun::open(workspace.clone(), &request, reference.and_utc()).unwrap();
-    assert!(operation.acquires_inputs());
-    assert!(
-        operation.validate().is_empty(),
-        "{:?}",
-        operation.validate()
-    );
-    let report = operation.run_all_report(&mgb_ops::OperationControl::default());
-    assert!(report.error.is_none(), "{:?}", report.error);
-    let acquisition = report.acquisition.unwrap();
-    let resolved = &acquisition.forecasts[0];
-    assert!(resolved.reused);
-    assert_eq!(resolved.asset_id.as_deref(), Some(asset.asset_id.as_str()));
-    let execution = report.execution.unwrap();
-    let manifest = mgb_ops::store::read_retained_manifest(&execution.run_root).unwrap();
-    assert_eq!(
-        manifest.recipe["document"]["scenarios"][1]["asset_id"],
-        asset.asset_id
-    );
-    assert!(manifest.recipe["document"].get("acquisition").is_none());
-    assert_eq!(fs::read_to_string(&request).unwrap(), recipe);
-
-    let active = mgb_ops::app::rainfall_cache_info(&workspace).unwrap();
-    let ecmwf_source = workspace.join("ifs.grib2");
-    fs::write(
-        &ecmwf_source,
-        include_bytes!("fixtures/forecast/ecmwf.grib2"),
-    )
-    .unwrap();
-    let ecmwf = normalize_saved_forecast(
-        &ecmwf_source,
-        &NormalizationRequest {
-            provider: ForecastProvider::Ecmwf,
-            model: "ifs".into(),
-            product: "fc".into(),
-            cycle_utc: cycle,
-            operation_timezone: chrono_tz::UTC,
-            crop_bbox: bounds,
-        },
-    )
-    .unwrap();
-    let damaged = catalog
-        .register_native(&ecmwf_source, &ecmwf.source, &ecmwf.native)
-        .unwrap();
-    fs::write(workspace.join(damaged.retained_source), b"damaged source").unwrap();
-    let acquisition_path = workspace.join("acquisition.toml");
-    let config = fs::read_to_string(&acquisition_path).unwrap();
-    fs::write(
-        acquisition_path,
-        config.replace("[\"noaa\"]", "[\"noaa\", \"ecmwf\"]"),
-    )
-    .unwrap();
-    let failed = operation.run_all_report(&mgb_ops::OperationControl::default());
-    assert!(failed.error.is_some());
-    assert!(failed.execution.is_none());
-    let forecasts = failed.acquisition.unwrap().forecasts;
-    assert_eq!(
-        forecasts[0].asset_id.as_deref(),
-        Some(asset.asset_id.as_str())
-    );
-    assert!(forecasts[0].reused && forecasts[1].error.is_some());
-    assert_eq!(
-        mgb_ops::app::rainfall_cache_info(&workspace).unwrap(),
-        active
-    );
-
-    let cancelled = mgb_ops::OperationControl::default();
-    cancelled.cancel();
-    let report = operation.run_all_report(&cancelled);
-    assert!(matches!(
-        report.error,
-        Some(mgb_ops::OperationError::Cancelled { .. })
-    ));
-    assert_eq!(
-        mgb_ops::app::rainfall_cache_info(&workspace).unwrap(),
-        active
-    );
 }

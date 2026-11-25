@@ -926,8 +926,8 @@ impl Pane {
                             applied = true;
                             text(
                                 pt,
-                                "Applied to the working draft. Save it from Draft.",
-                                "Aplicado ao rascunho. Salve-o na aba Rascunho.",
+                                "Applied to the current run parameters.",
+                                "Aplicado aos parâmetros da execução.",
                             )
                         }
                         Err(error) => error,
