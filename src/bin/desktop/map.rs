@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::sync::Arc;
 use walkers::{Map, MapMemory, Projector, Tiles, lon_lat};
+mod catchments;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
@@ -312,16 +313,122 @@ pub struct PreparedMini {
     pub fill: Fill,
     pub bounds: [f64; 4],
     projected_bounds: Bounds,
+    outlines: Vec<ProjectedPath>,
+    overviews: [CatchmentDetail; CATCHMENT_ZOOMS.len()],
+}
+const CATCHMENT_ZOOMS: [i32; 6] = [3, 5, 7, 9, 11, 12];
+struct CatchmentDetail {
+    fill: Option<Fill>,
+    outlines: Vec<ProjectedPath>,
+}
+impl PreparedMini {
+    fn detail(&self, zoom: f64, pixels_per_point: f32) -> (&Fill, &[ProjectedPath]) {
+        let physical_zoom = zoom + f64::from(pixels_per_point).log2();
+        if let Some(level) = CATCHMENT_ZOOMS
+            .iter()
+            .position(|&level| physical_zoom <= f64::from(level))
+        {
+            let detail = &self.overviews[level];
+            (detail.fill.as_ref().unwrap_or(&self.fill), &detail.outlines)
+        } else {
+            (&self.fill, &self.outlines)
+        }
+    }
+}
+
+// A linear display-only filter. Every discarded point is within tolerance of
+// the preceding retained endpoint. Unlike RDP, dense closed zigzags cannot turn
+// a map toggle into quadratic work. Raw polygons remain authoritative for hits.
+fn simplify_ring(path: &[Point], tolerance: f64) -> Vec<Point> {
+    if path.len() <= 4 {
+        return path.to_vec();
+    }
+    let mut kept = Vec::with_capacity(path.len());
+    kept.push(path[0]);
+    let squared = tolerance * tolerance;
+    for &point in &path[1..path.len() - 1] {
+        let last = kept.last().unwrap();
+        if (point.0 - last.0).powi(2) + (point.1 - last.1).powi(2) > squared {
+            kept.push(point);
+        }
+    }
+    kept.push(*path.last().unwrap());
+    if kept.len() < 4 {
+        // A subpixel ring still retains three original vertices and closure.
+        vec![
+            path[0],
+            path[path.len() / 3],
+            path[2 * path.len() / 3],
+            *path.last().unwrap(),
+        ]
+    } else {
+        kept
+    }
+}
+fn unworld((x, y): Point) -> Point {
+    (
+        (x * 2. - 1.) * 180.,
+        ((1. - y * 2.) * std::f64::consts::PI)
+            .sinh()
+            .atan()
+            .to_degrees(),
+    )
+}
+fn catchment_outlines(polygons: &[MapPolygon], fallback: &[Vec<Point>]) -> Vec<ProjectedPath> {
+    let paths: Vec<_> = if polygons.is_empty() {
+        fallback.iter().collect()
+    } else {
+        polygons
+            .iter()
+            .flat_map(|polygon| std::iter::once(&polygon.exterior).chain(&polygon.interiors))
+            .collect()
+    };
+    paths
+        .into_iter()
+        .map(|path| ProjectedPath::new(path.iter().copied().map(world).collect()))
+        .collect()
 }
 pub fn prepare_catchments(features: &[MiniMapFeature]) -> Result<Vec<PreparedMini>, String> {
     features
         .iter()
         .map(|feature| {
             let fill = prepare_fill(&feature.polygons)?;
+            let outlines = catchment_outlines(&feature.polygons, &feature.paths);
+            let overviews = CATCHMENT_ZOOMS.map(|level| {
+                let tolerance = overview_tolerance(level);
+                let polygons: Vec<_> = feature
+                    .polygons
+                    .iter()
+                    .map(|polygon| {
+                        let ring = |ring: &[Point]| {
+                            simplify_ring(
+                                &ring.iter().copied().map(world).collect::<Vec<_>>(),
+                                tolerance,
+                            )
+                            .into_iter()
+                            .map(unworld)
+                            .collect()
+                        };
+                        MapPolygon {
+                            exterior: ring(&polygon.exterior),
+                            interiors: polygon.interiors.iter().map(|path| ring(path)).collect(),
+                        }
+                    })
+                    .collect();
+                CatchmentDetail {
+                    fill: prepare_fill(&polygons).ok(),
+                    outlines: outlines
+                        .iter()
+                        .map(|path| ProjectedPath::new(simplify_ring(&path.points, tolerance)))
+                        .collect(),
+                }
+            });
             Ok(PreparedMini {
                 mini_id: feature.mini_id,
                 projected_bounds: Bounds::new(&fill.projected),
                 fill,
+                outlines,
+                overviews,
                 bounds: feature.paths.iter().flatten().fold(
                     [
                         f64::INFINITY,
@@ -471,6 +578,7 @@ pub fn fit_extent(project: &Project, viewport: Vec2, camera: &mut MapMemory) -> 
     camera.center_at(lon_lat(lon, lat));
     true
 }
+#[derive(Clone, Copy, PartialEq)]
 pub(super) struct ScreenTransform {
     center: (f64, f64),
     scale: f64,
@@ -545,6 +653,104 @@ fn color(kind: &str) -> Color32 {
 const RAIN_MIN_MM: f64 = 1.;
 pub const RAIN_MAX_MM: f64 = 100.;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RainScheme {
+    #[default]
+    Blues,
+    Spectral,
+    Viridis,
+    Cividis,
+    Turbo,
+    Legacy([u8; 4]),
+}
+impl From<Color32> for RainScheme {
+    fn from(color: Color32) -> Self {
+        Self::Legacy(color.to_srgba_unmultiplied())
+    }
+}
+impl RainScheme {
+    pub const PRESETS: [Self; 5] = [
+        Self::Blues,
+        Self::Spectral,
+        Self::Viridis,
+        Self::Cividis,
+        Self::Turbo,
+    ];
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Blues => "Blues",
+            Self::Spectral => "Spectral",
+            Self::Viridis => "Viridis",
+            Self::Cividis => "Cividis",
+            Self::Turbo => "Turbo",
+            Self::Legacy(_) => "Custom",
+        }
+    }
+    fn colors(self, maximum: f64) -> RainColors {
+        use rsplot::ColormapName;
+        let name = match self {
+            Self::Blues => Some(ColormapName::Blues),
+            Self::Spectral => Some(ColormapName::Spectral),
+            Self::Viridis => Some(ColormapName::Viridis),
+            Self::Cividis => Some(ColormapName::Cividis),
+            Self::Turbo => Some(ColormapName::Turbo),
+            Self::Legacy(_) => None,
+        };
+        RainColors {
+            scheme: self,
+            maximum,
+            map: name.map(|name| rsplot::Colormap::new(name, RAIN_MIN_MM, maximum)),
+        }
+    }
+}
+struct RainColors {
+    scheme: RainScheme,
+    maximum: f64,
+    map: Option<rsplot::Colormap>,
+}
+impl RainColors {
+    fn at(&self, value: Option<f64>) -> Color32 {
+        let Some(value) = value.filter(|value| value.is_finite()) else {
+            return Color32::TRANSPARENT;
+        };
+        if let Some(map) = &self.map {
+            let [r, g, b, a] = map.color_at(value);
+            Color32::from_rgba_unmultiplied(r, g, b, a)
+        } else if let RainScheme::Legacy([r, g, b, a]) = self.scheme {
+            rain_color_with(
+                Some(value),
+                self.maximum,
+                Color32::from_rgba_unmultiplied(r, g, b, a),
+            )
+        } else {
+            unreachable!("named rainfall schemes have a colour map")
+        }
+    }
+}
+
+pub fn scheme_picker(ui: &mut egui::Ui, scheme: &mut RainScheme, pt: bool) -> bool {
+    let before = *scheme;
+    ui.label(super::text(pt, "Colour scheme", "Escala de cores"));
+    egui::ComboBox::from_id_salt("rainfall-scheme")
+        .selected_text(scheme.name())
+        .show_ui(ui, |ui| {
+            for preset in RainScheme::PRESETS {
+                ui.horizontal(|ui| {
+                    let (rect, preview) =
+                        ui.allocate_exact_size(egui::vec2(72., 12.), egui::Sense::click());
+                    paint_gradient(ui, rect, preset, RAIN_MAX_MM);
+                    if preview.clicked()
+                        || ui.selectable_value(scheme, preset, preset.name()).clicked()
+                    {
+                        *scheme = preset;
+                        ui.close();
+                    }
+                });
+            }
+        });
+    before != *scheme
+}
+
 #[cfg(test)]
 fn rain_color(value: Option<f64>, maximum: f64) -> Color32 {
     rain_color_with(value, maximum, Color32::from_rgb(5, 40, 135))
@@ -577,7 +783,7 @@ pub fn layer_swatch(kind: &str) -> Color32 {
     }
 }
 
-pub fn rain_legend_with(ui: &mut egui::Ui, pt: bool, maximum: f64, hue: Color32) {
+pub fn rain_legend_with(ui: &mut egui::Ui, pt: bool, maximum: f64, scheme: RainScheme) {
     ui.strong(super::text(
         pt,
         "Accumulated rainfall (mm)",
@@ -585,15 +791,18 @@ pub fn rain_legend_with(ui: &mut egui::Ui, pt: bool, maximum: f64, hue: Color32)
     ));
     let width = ui.available_width().clamp(1., 340.);
     let (bar, _) = ui.allocate_exact_size(egui::vec2(width, 12.), egui::Sense::hover());
+    paint_gradient(ui, bar, scheme, maximum);
+    rain_ticks(ui, width, maximum);
+}
+fn paint_gradient(ui: &egui::Ui, bar: egui::Rect, scheme: RainScheme, maximum: f64) {
+    let colors = scheme.colors(maximum);
     let mut mesh = egui::Mesh::default();
     for step in 0..=32 {
         let fraction = step as f32 / 32.;
         let x = egui::lerp(bar.x_range(), fraction);
-        let color = rain_color_with(
-            Some(RAIN_MIN_MM + f64::from(fraction) * (maximum - RAIN_MIN_MM)),
-            maximum,
-            hue,
-        );
+        let color = colors.at(Some(
+            RAIN_MIN_MM + f64::from(fraction) * (maximum - RAIN_MIN_MM),
+        ));
         mesh.colored_vertex(egui::pos2(x, bar.top()), color);
         mesh.colored_vertex(egui::pos2(x, bar.bottom()), color);
         if step > 0 {
@@ -603,6 +812,8 @@ pub fn rain_legend_with(ui: &mut egui::Ui, pt: bool, maximum: f64, hue: Color32)
         }
     }
     ui.painter().add(egui::Shape::mesh(mesh));
+}
+fn rain_ticks(ui: &mut egui::Ui, width: f32, maximum: f64) {
     let (ticks, _) = ui.allocate_exact_size(egui::vec2(width, 13.), egui::Sense::hover());
     let font = egui::TextStyle::Small.resolve(ui.style());
     let values: &[f64] = if width >= 145. && maximum >= 10. {
@@ -672,20 +883,30 @@ fn mesh(fill: &Fill, transform: &ScreenTransform, color: Color32) -> egui::Mesh 
 pub struct RainImage {
     pub texture: egui::TextureHandle,
     pub rain: Arc<Rain>,
+    pub range: Option<(f64, f64)>,
+}
+fn value_range(values: &[Option<f64>]) -> Option<(f64, f64)> {
+    let mut valid = values
+        .iter()
+        .flatten()
+        .copied()
+        .filter(|value| value.is_finite());
+    let first = valid.next()?;
+    Some(valid.fold((first, first), |(min, max), value| {
+        (min.min(value), max.max(value))
+    }))
 }
 impl RainImage {
-    fn colors(rain: &Rain, maximum: f64, hue: Color32) -> egui::ColorImage {
+    fn colors(rain: &Rain, maximum: f64, scheme: RainScheme) -> egui::ColorImage {
+        let colors = scheme.colors(maximum);
         egui::ColorImage::new(
             [rain.grid.longitudes.len(), rain.grid.latitudes.len()],
-            rain.values
-                .iter()
-                .map(|v| rain_color_with(*v, maximum, hue))
-                .collect(),
+            rain.values.iter().map(|v| colors.at(*v)).collect(),
         )
     }
-    pub fn recolor_with_color(&mut self, maximum: f64, hue: Color32) {
+    pub fn recolor_with_color(&mut self, maximum: f64, scheme: RainScheme) {
         self.texture.set(
-            Self::colors(&self.rain, maximum, hue),
+            Self::colors(&self.rain, maximum, scheme),
             egui::TextureOptions::NEAREST,
         );
     }
@@ -693,12 +914,17 @@ impl RainImage {
         context: &egui::Context,
         rain: Arc<Rain>,
         maximum: f64,
-        hue: Color32,
+        scheme: RainScheme,
     ) -> Self {
-        let image = Self::colors(&rain, maximum, hue);
+        let image = Self::colors(&rain, maximum, scheme);
         let texture =
             context.load_texture("accumulated-rainfall", image, egui::TextureOptions::NEAREST);
-        Self { texture, rain }
+        let range = value_range(&rain.values);
+        Self {
+            texture,
+            rain,
+            range,
+        }
     }
     fn draw(&self, painter: &egui::Painter, projector: &Projector, opacity: f32) {
         painter.add(egui::Shape::mesh(rain_mesh(
@@ -872,11 +1098,16 @@ pub struct StaticCache {
     tinted_rivers: Option<((f32, Color32, f32), Vec<OverlayMesh>)>,
     basin: Option<BasinOverlay>,
     hits: Vec<RiverHit>,
-    tinted_catchments: Option<((f32, Color32, f32), OverlayMesh)>,
+    catchment_renderer: catchments::Renderer,
 }
 impl StaticCache {
     pub fn clear(&mut self) {
-        *self = Self::default();
+        let mut catchment_renderer = std::mem::take(&mut self.catchment_renderer);
+        catchment_renderer.clear();
+        *self = Self {
+            catchment_renderer,
+            ..Self::default()
+        };
     }
     fn update(
         &mut self,
@@ -991,50 +1222,15 @@ impl StaticCache {
         width: Option<f32>,
         context: &egui::Context,
     ) {
-        let style = (opacity, tint, width.unwrap_or(0.));
-        if self
-            .tinted_catchments
-            .as_ref()
-            .is_some_and(|(cached, _)| *cached == style)
-        {
-            return;
-        }
-        let clip = self
-            .key
-            .expect("map view prepared")
-            .0
-            .expand(GEOMETRY_MARGIN);
-        let transform = self.anchor.as_ref().expect("map view prepared");
-        let mut combined = egui::Mesh::default();
-        let tint = tint.gamma_multiply(opacity);
-        for feature in project
-            .fills
-            .iter()
-            .filter(|feature| feature.projected_bounds.intersects(transform, clip))
-        {
-            combined.append(mesh(&feature.fill, transform, tint));
-        }
-        if style.2 > 0. {
-            for feature in project.catchments.iter() {
-                for path in &feature.paths {
-                    let points = path
-                        .iter()
-                        .copied()
-                        .map(world)
-                        .map(|p| transform.project(p))
-                        .collect();
-                    let shapes = line_meshes(
-                        context,
-                        clip,
-                        vec![egui::Shape::line(points, Stroke::new(style.2, tint))],
-                    );
-                    for overlay in shapes {
-                        combined.append((*overlay.anchor).clone());
-                    }
-                }
-            }
-        }
-        self.tinted_catchments = Some((style, OverlayMesh::new(combined)));
+        let (rect, zoom, _, _, _) = self.key.expect("map view prepared");
+        self.catchment_renderer.prepare(
+            &project.fills,
+            self.anchor.expect("map view prepared"),
+            rect.expand(GEOMETRY_MARGIN),
+            zoom,
+            (opacity, tint, width.unwrap_or(1.)),
+            context,
+        );
     }
     fn basin(
         &mut self,
@@ -1193,6 +1389,9 @@ impl Overlay<'_> {
                 .iter()
                 .any(|layer| layer.kind == kind && layer.visible && layer.opacity > 0.)
         };
+        if !visible("catchments") {
+            self.cache.catchment_renderer.clear();
+        }
         let mut hit = None;
         let mut hit_label = String::new();
         let mut station_distance = 10.;
@@ -1237,9 +1436,9 @@ impl Overlay<'_> {
                         layer.width,
                         ui.ctx(),
                     );
-                    if let Some((_, mesh)) = &mut self.cache.tinted_catchments {
-                        mesh.paint(ui, self.cache.offset);
-                    }
+                    self.cache
+                        .catchment_renderer
+                        .paint(ui, self.cache.offset, pt);
                 }
                 "upstream" => {
                     if let Some(paths) = self.upstream {
@@ -1332,9 +1531,8 @@ impl Overlay<'_> {
                                 station_distance = distance;
                                 hit = Some(Location::Station(station.station_id.clone()));
                                 hit_label = format!(
-                                    "{}: {} ({})",
+                                    "{}: {}",
                                     super::text(pt, "Station", "Estação"),
-                                    station.name,
                                     station.station_id
                                 );
                             }
@@ -1452,19 +1650,35 @@ impl Overlay<'_> {
                 }
             }
             let side = clips.map_or(dominant_side, |clips| side_at(clips[0], pointer.x));
-            let coordinates = format!("Lat: {:.5} | Lon: {:.5}", geographic.y(), geographic.x());
-            let mut labels = vec![coordinates];
-            if !hit_label.is_empty() {
-                labels.push(hit_label);
+            if let Some(Location::Station(id)) = &hit
+                && let Some(station) = self
+                    .project
+                    .stations
+                    .iter()
+                    .find(|entry| entry.station.station_id == *id)
+                && let Some((lon, lat)) = station.station.longitude.zip(station.station.latitude)
+            {
+                let point = screen(projector, (lon, lat));
+                ui.painter()
+                    .circle_stroke(point, 10., Stroke::new(4., ui.visuals().window_fill()));
+                ui.painter().circle_stroke(
+                    point,
+                    10.,
+                    Stroke::new(2., ui.visuals().hyperlink_color),
+                );
             }
+            if !hit_label.is_empty() {
+                response.clone().on_hover_text_at_pointer(hit_label);
+            }
+            let mut labels = Vec::new();
             if visible("rainfall")
                 && let Some(rainfall) = self.rainfall[side.index()]
-                && let Some((col, row, value)) = rainfall.inspect((geographic.x(), geographic.y()))
+                && let Some((_, _, value)) = rainfall.inspect((geographic.x(), geographic.y()))
             {
                 let rainfall_label = super::text(pt, "Rainfall", "Chuva");
                 let amount = value.map_or_else(|| "NA".into(), |mm| format!("{mm:.2} mm"));
                 labels.push(format!(
-                    "{rainfall_label}: {amount} ({}, [{col}, {row}])",
+                    "{rainfall_label}: {amount} ({})",
                     rainfall.rain.scenario
                 ));
             }
@@ -1629,6 +1843,112 @@ impl walkers::sources::TileSource for BlueMarble {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_rainfall_schemes_preserve_zero_unknowns_limits_and_saved_choices() {
+        let mut distinct = HashSet::new();
+        for scheme in RainScheme::PRESETS {
+            let colors = scheme.colors(100.);
+            assert_eq!(colors.at(Some(0.)), colors.at(Some(1.)));
+            assert_eq!(colors.at(Some(150.)), colors.at(Some(100.)));
+            assert_eq!(colors.at(None), Color32::TRANSPARENT);
+            assert_eq!(colors.at(Some(f64::NAN)), Color32::TRANSPARENT);
+            assert_ne!(colors.at(Some(1.)), colors.at(Some(100.)));
+            distinct.insert(colors.at(Some(50.)));
+            assert_eq!(
+                serde_json::from_str::<RainScheme>(&serde_json::to_string(&scheme).unwrap())
+                    .unwrap(),
+                scheme
+            );
+        }
+        assert_eq!(distinct.len(), RainScheme::PRESETS.len());
+        let color = Color32::from_rgb(200, 35, 70);
+        assert_eq!(RainScheme::from(color).colors(100.).at(Some(100.)), color);
+    }
+
+    #[test]
+    fn rainfall_extrema_keep_zero_and_ignore_unknown_and_nonfinite_cells() {
+        assert_eq!(
+            value_range(&[None, Some(0.), Some(127.5), Some(12.), Some(f64::NAN)]),
+            Some((0., 127.5))
+        );
+        assert_eq!(value_range(&[Some(4.), Some(4.)]), Some((4., 4.)));
+        assert_eq!(value_range(&[None, Some(f64::INFINITY)]), None);
+        assert_eq!(value_range(&[]), None);
+    }
+
+    #[test]
+    fn station_hover_highlights_without_selecting_or_putting_identity_in_the_footer() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join("config.toml");
+        std::fs::write(&config, mgb_ops::example_config()).unwrap();
+        let mut project = super::super::data::open(config, dir.path().into(), None).unwrap();
+        Arc::get_mut(&mut project)
+            .unwrap()
+            .stations
+            .push(mgb_ops::store::StationLocation {
+                station: mgb_ops::store::Station {
+                    station_id: "001".into(),
+                    provider_code: "test".into(),
+                    station_code: "001".into(),
+                    name: "Test station".into(),
+                    latitude: Some(0.),
+                    longitude: Some(0.),
+                },
+                offset: None,
+            });
+        let context = egui::Context::default();
+        let mut memory = MapMemory::default();
+        memory.center_at(lon_lat(0., 0.));
+        let mut cache = StaticCache::default();
+        let mut inundation = inundation::Inundation::new(context.clone());
+        let mut layers = default_layers();
+        for visible in [true, false] {
+            layers
+                .iter_mut()
+                .find(|layer| layer.kind == "stations")
+                .unwrap()
+                .visible = visible;
+            let mut hit = None;
+            let mut readout = None;
+            let mut output = egui::FullOutput::default();
+            for _ in 0..2 {
+                output.textures_delta.clear();
+                output = context.run_ui(
+                    egui::RawInput {
+                        screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::splat(500.))),
+                        events: vec![egui::Event::PointerMoved(Pos2::new(250., 250.))],
+                        ..Default::default()
+                    },
+                    |ui| {
+                        readout = Overlay {
+                            project: &project,
+                            layers: &layers,
+                            rainfall: [None, None],
+                            inundation: &mut inundation,
+                            side: None,
+                            selection: &None,
+                            upstream: None,
+                            hit: &mut hit,
+                            cache: &mut cache,
+                            labels: false,
+                            local: &[],
+                            local_display: &[],
+                        }
+                        .show(ui, None, &mut memory, true, None, false)
+                        .inner;
+                    },
+                );
+            }
+            output.textures_delta.clear();
+            assert!(hit.is_none(), "hover must not commit selection");
+            assert!(readout.is_none(), "footer must contain rainfall only");
+            let halo = output.shapes.iter().any(
+                |shape| matches!(&shape.shape, egui::Shape::Circle(circle) if circle.radius == 10.),
+            );
+            assert_eq!(halo, visible);
+        }
+    }
 
     fn render_frame(
         context: &egui::Context,
@@ -2018,7 +2338,6 @@ mod tests {
                     cache.update(&project, &projector, rect, &memory, ui.ctx());
                     if longitude != 1.0 {
                         assert!(cache.tinted_rivers.is_none());
-                        assert!(cache.tinted_catchments.is_none());
                         assert!(cache.hits.is_empty());
                     }
                     cache.rivers(&project, 0.8, color("rivers"), None, ui.ctx());

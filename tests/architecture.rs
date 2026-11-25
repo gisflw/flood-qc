@@ -297,19 +297,50 @@ impl<'ast> Visit<'ast> for Gate {
         }
         if name == "include_bytes" {
             let asset = syn::parse2::<syn::LitStr>(mac.tokens.clone());
-            let font = match (self.owner.as_str(), self.source.as_deref()) {
+            let approved = match (self.owner.as_str(), self.source.as_deref()) {
                 ("analysis", Some(path)) if path == Path::new("analysis/report_graphics.rs") => {
-                    Some("../../assets/typography/NotoSans-Regular.ttf")
+                    vec!["../../assets/typography/NotoSans-Regular.ttf".to_owned()]
                 }
                 ("interface", Some(path)) if path == Path::new("bin/desktop/theme.rs") => {
-                    Some("../../../assets/typography/NotoSans-Regular.ttf")
+                    vec!["../../../assets/typography/NotoSans-Regular.ttf".to_owned()]
                 }
-                _ => None,
+                ("interface", Some(path)) if path == Path::new("bin/desktop/icons.rs") => {
+                    let mut assets: Vec<_> = [
+                        "folder", "recent", "settings", "close", "import", "refresh", "map",
+                        "charts", "data", "files", "chat", "review", "analysis", "bulletin",
+                        "bundle", "jobs", "reset", "run", "acquire", "geometry", "soil",
+                        "language", "light", "dark",
+                    ]
+                    .iter()
+                    .map(|name| format!("../../../assets/icons/{name}.png"))
+                    .collect();
+                    assets.extend(
+                        [32, 48, 64, 128, 256]
+                            .map(|size| format!("../../../assets/branding/hge-{size}.png")),
+                    );
+                    assets
+                }
+                _ => Vec::new(),
             };
             let valid = mac.path.is_ident("include_bytes")
-                && font.is_some_and(|font| asset.is_ok_and(|literal| literal.value() == font));
+                && asset.is_ok_and(|literal| approved.contains(&literal.value()));
             if !valid {
-                self.error("include_bytes permits only the shared font at its approved uses");
+                self.error(
+                    "include_bytes permits only approved static assets at their designated uses",
+                );
+            }
+            return;
+        }
+        if name == "include_str" {
+            let asset = syn::parse2::<syn::LitStr>(mac.tokens.clone());
+            let valid = mac.path.is_ident("include_str")
+                && asset.is_ok_and(|literal| {
+                    self.owner == "interface"
+                        && self.source.as_deref() == Some(Path::new("bin/desktop/icons.rs"))
+                        && literal.value() == "../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop"
+                });
+            if !valid {
+                self.error("include_str permits only approved static text at its designated use");
             }
             return;
         }
@@ -821,6 +852,50 @@ fn shared_font_inclusion_is_limited_to_its_static_paths() {
         )
         .is_empty()
     );
+}
+
+#[test]
+fn desktop_images_are_limited_to_named_assets_in_the_icon_module() {
+    let source = Path::new("bin/desktop/icons.rs");
+    let accepted = r#"const ICON: &[u8] = include_bytes!("../../../assets/icons/map.png");"#;
+    assert!(check_source("interface", accepted, 2, Some(source)).is_empty());
+    assert!(!check_source("store", accepted, 2, Some(source)).is_empty());
+    assert!(
+        !check_source(
+            "interface",
+            accepted,
+            2,
+            Some(Path::new("bin/desktop/mod.rs"))
+        )
+        .is_empty()
+    );
+    for rejected in [
+        r#"const ICON: &[u8] = include_bytes!("../../../src/store.rs");"#,
+        r#"const ICON: &[u8] = include_bytes!("../../../assets/icons/unknown.png");"#,
+        r#"const ICON: &[u8] = include_bytes!(concat!("../../../assets/icons/", "map.png"));"#,
+        r#"const ICON: &[u8] = other::include_bytes!("../../../assets/icons/map.png");"#,
+    ] {
+        assert!(!check_source("interface", rejected, 2, Some(source)).is_empty());
+    }
+}
+
+#[test]
+fn launcher_template_is_limited_to_the_icon_module() {
+    let template = r#"const ENTRY: &str = include_str!("../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop");"#;
+    let source = Path::new("bin/desktop/icons.rs");
+    assert!(check_source("interface", template, 2, Some(source)).is_empty());
+    assert!(!check_source("store", template, 2, Some(source)).is_empty());
+    assert!(
+        !check_source(
+            "interface",
+            template,
+            2,
+            Some(Path::new("bin/desktop/platform.rs"))
+        )
+        .is_empty()
+    );
+    let outside = r#"const ENTRY: &str = include_str!("../../../src/store.rs");"#;
+    assert!(!check_source("interface", outside, 2, Some(source)).is_empty());
 }
 
 #[test]

@@ -36,6 +36,9 @@ pollster = "0.4"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full", "visit"] }
 
+[build-dependencies]
+winresource = { version = "=0.1.34", optional = true }
+
 [lints.rust]
 unsafe_code = "forbid"
 
@@ -68,6 +71,7 @@ desktop = [
     "dep:egui_commonmark",
     "dep:egui_extras",
     "dep:pulldown-cmark",
+    "dep:winresource",
 ]
 
 [[bin]]

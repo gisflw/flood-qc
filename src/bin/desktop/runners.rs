@@ -122,13 +122,16 @@ impl Runners {
         })
     }
     pub fn save_inputs_dialog(&mut self, ctx: &egui::Context) {
-        if let Some(destination) = rfd::FileDialog::new()
-            .set_title("Save run inputs")
-            .set_file_name("run-inputs")
-            .save_file()
-        {
+        if let Some(destination) = self.input_save_destination(ctx) {
             self.start(Action::SaveInputs(destination), ctx);
         }
+    }
+    fn input_save_destination(&self, ctx: &egui::Context) -> Option<PathBuf> {
+        let current = self
+            .session
+            .as_ref()
+            .map_or(Path::new(""), Session::workspace);
+        super::dialogs::save(ctx, "save-run-inputs", current, "run-inputs")
     }
     pub fn discard_inputs(&mut self, ctx: &egui::Context) {
         self.start(Action::DiscardInputs, ctx);
@@ -147,10 +150,7 @@ impl Runners {
             ));
             ui.horizontal(|ui| {
                 if ui.button(text(pt, "Save", "Salvar")).clicked()
-                    && let Some(destination) = rfd::FileDialog::new()
-                        .set_title("Save run inputs")
-                        .set_file_name("run-inputs")
-                        .save_file()
+                    && let Some(destination) = self.input_save_destination(ctx)
                 {
                     self.next_input_disposition =
                         Some(mgb_ops::app::InputDisposition::Save { destination });
