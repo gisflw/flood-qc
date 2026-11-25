@@ -1,3 +1,4 @@
+mod acquisition;
 mod assistant;
 mod draft;
 mod output;
@@ -18,6 +19,11 @@ struct Cli {
 }
 #[derive(Subcommand)]
 enum Command {
+    /// Acquire standalone source files and normalize them for ingestion.
+    Acquisition {
+        #[command(subcommand)]
+        command: acquisition::AcquisitionCommand,
+    },
     /// Chat with an installed agent in an explicitly selected workspace.
     Assistant(assistant::Options),
     Automation {
@@ -739,6 +745,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     if matches!(
         &cli.command,
         Command::Inundation { .. }
+            | Command::Acquisition { .. }
             | Command::Observation {
                 command: ObservationCommand::ImportAnaCsv { .. }
             }
@@ -750,6 +757,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let mut out = stdout.lock();
     match cli.command {
         Command::Assistant(_) => unreachable!("handled interactive command"),
+        Command::Acquisition { command } => acquisition::run(command, &control, &mut out),
         Command::Automation { command } => automation_action(command, &mut out),
         Command::Report { command } => {
             match command {

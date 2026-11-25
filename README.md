@@ -35,6 +35,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | --- | --- | --- |
 | Inspect a regional workspace | `workspace inspect` | [Configuration and checks](docs/contracts/workspace.md) |
 | Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
+| Acquire standalone IMERG, BNDMET rain and wind, or ONS hourly flow files | `acquisition` | [Standalone acquisition](docs/contracts/acquisition.md#standalone-source-acquisition) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
 | Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#choose-an-execution-path) |
 | Run an operation and update the rainfall display | Desktop **Processing → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
