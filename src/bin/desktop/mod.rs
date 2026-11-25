@@ -1,5 +1,6 @@
 mod assistant;
 mod charts;
+mod chrome;
 mod data;
 mod dialogs;
 mod export;
@@ -7,6 +8,7 @@ mod icons;
 mod inundation;
 mod layout;
 mod map;
+mod platform;
 mod runners;
 mod theme;
 mod tools;
@@ -183,33 +185,32 @@ fn ribbon_button(ui: &mut egui::Ui, emoji: &str, label: String) -> egui::Respons
     response
 }
 
-fn layer_row(
-    ui: &mut egui::Ui,
-    pt: bool,
-    label: &str,
-    color: &mut Color32,
-    visible: &mut bool,
-) -> bool {
+fn layer_row(ui: &mut egui::Ui, pt: bool, label: &str, visible: &mut bool) -> bool {
     let id = ui.id().with("layer-settings-open");
     let mut open = ui.data(|data| data.get_temp::<bool>(id).unwrap_or(false));
-    ui.horizontal_wrapped(|ui| {
-        let action = if open {
-            text(pt, "Hide settings", "Ocultar configurações")
-        } else {
-            text(pt, "Show settings", "Mostrar configurações")
-        };
-        if icon_button(
-            ui,
-            if open { "-" } else { "+" },
-            &format!("{action} · {label}"),
-        )
-        .clicked()
-        {
-            open = !open;
-            ui.data_mut(|data| data.insert_temp(id, open));
-        }
-        theme::color_palette(ui, color, label, pt);
-        ui.checkbox(visible, label);
+    ui.scope(|ui| {
+        ui.spacing_mut().interact_size.y = 22.;
+        ui.spacing_mut().button_padding = egui::vec2(3., 1.);
+        ui.spacing_mut().icon_width = 14.;
+        ui.horizontal_wrapped(|ui| {
+            let action = if open {
+                text(pt, "Hide settings", "Ocultar configurações")
+            } else {
+                text(pt, "Show settings", "Mostrar configurações")
+            };
+            let expand = ui
+                .add_sized(
+                    egui::Vec2::splat(20.),
+                    egui::Button::new(if open { "−" } else { "+" }),
+                )
+                .on_hover_text(format!("{action} · {label}"));
+            button_label(&expand, &format!("{action} · {label}"));
+            if expand.clicked() {
+                open = !open;
+                ui.data_mut(|data| data.insert_temp(id, open));
+            }
+            ui.checkbox(visible, label);
+        });
     });
     open
 }
@@ -234,7 +235,12 @@ fn layer_width(ui: &mut egui::Ui, pt: bool, width: &mut Option<f32>, default: f3
     }
 }
 
-fn rainfall_scale_controls(ui: &mut egui::Ui, pt: bool, maximum: &mut f64, hue: Color32) -> bool {
+fn rainfall_scale_controls(
+    ui: &mut egui::Ui,
+    pt: bool,
+    maximum: &mut f64,
+    scheme: map::RainScheme,
+) -> bool {
     let mut changed = false;
     ui.vertical(|ui| {
         let id = ui.id().with("rainfall-scale-maximum");
@@ -267,7 +273,7 @@ fn rainfall_scale_controls(ui: &mut egui::Ui, pt: bool, maximum: &mut f64, hue: 
                 );
             }
         });
-        map::rain_legend_with(ui, pt, *maximum, hue);
+        map::rain_legend_with(ui, pt, *maximum, scheme);
     });
     changed
 }
@@ -296,6 +302,7 @@ struct Display {
     layers: Vec<map::LayerControl>,
     basemap: usize,
     rain_maximum: f64,
+    rain_scheme: Option<map::RainScheme>,
     labels: bool,
     local: Vec<map::LocalDisplay>,
     selection: Option<Location>,
@@ -328,6 +335,7 @@ impl Default for Display {
             layers: map::default_layers(),
             basemap: 1,
             rain_maximum: map::RAIN_MAX_MM,
+            rain_scheme: None,
             labels: true,
             local: vec![],
             selection: None,
@@ -438,14 +446,25 @@ struct RainfallView {
 }
 
 impl RainfallView {
-    fn replace(&mut self, context: &egui::Context, mut view: View, maximum: f64, hue: Color32) {
+    fn replace(
+        &mut self,
+        context: &egui::Context,
+        mut view: View,
+        maximum: f64,
+        scheme: impl Into<map::RainScheme>,
+    ) {
         if let Some(rain) = view.rainfall.take() {
             if self.image.as_ref().is_none_or(|image| {
                 image.rain.generation != rain.generation
                     || image.rain.scenario != rain.scenario
                     || image.rain.window != rain.window
             }) {
-                self.image = Some(map::RainImage::new_with_color(context, rain, maximum, hue));
+                self.image = Some(map::RainImage::new_with_color(
+                    context,
+                    rain,
+                    maximum,
+                    scheme.into(),
+                ));
             }
             self.finding = None;
             self.view = Some(view);
@@ -467,6 +486,13 @@ impl RainfallView {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+enum RibbonTab {
+    #[default]
+    Workspace,
+    Processing,
+}
+
 #[derive(Default, Serialize, Deserialize)]
 #[serde(default)]
 struct Preferences {
@@ -474,6 +500,7 @@ struct Preferences {
     appearance: usize,
     recent: Vec<Display>,
     assistant: assistant::Preferences,
+    ribbon: RibbonTab,
 }
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ComparisonFields {
@@ -557,10 +584,6 @@ struct Monitoring {
 impl Monitoring {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::install(&cc.egui_ctx);
-        cc.egui_ctx
-            .send_viewport_cmd(egui::ViewportCommand::SetTheme(
-                egui::SystemTheme::SystemDefault,
-            ));
         let mut preferences: Preferences = cc
             .storage
             .and_then(|s| eframe::get_value(s, STORAGE))
@@ -1375,169 +1398,225 @@ impl Monitoring {
 
     fn title_strip(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
+        let rect =
+            egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), 32.));
+        theme::exclude_text_actions(ui.ctx(), rect);
         ui.horizontal(|ui| {
-            ui.add(icons::emblem(ui.ctx(), 32.));
-            ui.label(egui::RichText::new("MGB Ops").size(20.).strong());
-            ui.separator();
-            let open = text(pt, "Open workspace…", "Abrir área de trabalho…");
-            if self.workspace_icon(ui, "📂", &open).clicked() {
-                self.choose_project();
-            }
-            let label = text(pt, "Recent workspaces", "Áreas de trabalho recentes");
-            let button = egui::Button::new(icons::emoji(ui.ctx(), "🕒", 20.))
-                .min_size(egui::Vec2::splat(32.));
-            ui.add_enabled_ui(!self.preferences.recent.is_empty(), |ui| {
-                let (response, _) =
-                    egui::containers::menu::MenuButton::from_button(button).ui(ui, |ui| {
-                        for recent in self.preferences.recent.clone() {
-                            if ui.button(recent.workspace.display().to_string()).clicked() {
-                                self.depart(Departure::Project(recent.config, recent.workspace));
-                                ui.close();
-                            }
+            let width =
+                (ui.available_width() - chrome::CONTROLS_WIDTH - ui.spacing().item_spacing.x)
+                    .max(1.);
+            ui.allocate_ui_with_layout(
+                egui::vec2(width, 32.),
+                egui::Layout::left_to_right(egui::Align::Center),
+                |ui| {
+                    ui.style_mut().interaction.selectable_labels = false;
+                    let emblem =
+                        ui.add(icons::emblem(ui.ctx(), 28.).sense(egui::Sense::click_and_drag()));
+                    chrome::drag(ui, &emblem);
+                    let title = ui.add(
+                        egui::Label::new(egui::RichText::new("MGB Ops").size(18.).strong())
+                            .sense(egui::Sense::click_and_drag()),
+                    );
+                    chrome::drag(ui, &title);
+                    ui.separator();
+                    let open = text(pt, "Open workspace…", "Abrir área de trabalho…");
+                    if self.workspace_icon(ui, "📂", &open).clicked() {
+                        self.choose_project();
+                    }
+                    let label = text(pt, "Recent workspaces", "Áreas de trabalho recentes");
+                    let button = egui::Button::new(icons::emoji(ui.ctx(), "🕒", 20.))
+                        .frame(false)
+                        .min_size(egui::Vec2::splat(32.));
+                    ui.add_enabled_ui(!self.preferences.recent.is_empty(), |ui| {
+                        let (response, _) = egui::containers::menu::MenuButton::from_button(button)
+                            .ui(ui, |ui| {
+                                for recent in self.preferences.recent.clone() {
+                                    if ui.button(recent.workspace.display().to_string()).clicked() {
+                                        self.depart(Departure::Project(
+                                            recent.config,
+                                            recent.workspace,
+                                        ));
+                                        ui.close();
+                                    }
+                                }
+                            });
+                        button_label(&response, &label);
+                        response.on_hover_text(&label);
+                    });
+                    ui.add_enabled_ui(self.project.is_some(), |ui| {
+                        if self
+                            .workspace_icon(ui, "⚙", &Form::Workspace.label(pt))
+                            .clicked()
+                        {
+                            self.display.layout.form(Form::Workspace);
+                        }
+                        if self
+                            .workspace_icon(
+                                ui,
+                                "folder-close",
+                                &text(pt, "Close project", "Fechar projeto"),
+                            )
+                            .clicked()
+                        {
+                            self.depart(Departure::Close);
                         }
                     });
-                button_label(&response, &label);
-                response.on_hover_text(&label);
-            });
-            ui.add_enabled_ui(self.project.is_some(), |ui| {
-                if self
-                    .workspace_icon(ui, "⚙", &Form::Workspace.label(pt))
-                    .clicked()
-                {
-                    self.display.layout.form(Form::Workspace);
-                }
-                if self
-                    .workspace_icon(ui, "🚪", &text(pt, "Close project", "Fechar projeto"))
-                    .clicked()
-                {
-                    self.depart(Departure::Close);
-                }
-            });
-            if !self.display.workspace.as_os_str().is_empty() {
-                ui.add(
-                    egui::Label::new(
-                        egui::RichText::new(
-                            self.display
-                                .workspace
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy(),
-                        )
-                        .weak(),
-                    )
-                    .truncate(),
-                )
-                .on_hover_text(self.display.workspace.display().to_string());
+                    let name = self
+                        .display
+                        .workspace
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy();
+                    chrome::title_space(ui, &name, &self.display.workspace.display().to_string());
+                },
+            );
+            if chrome::controls(ui, pt) {
+                self.depart(Departure::Quit);
             }
         });
     }
 
     fn workspace_icon(&self, ui: &mut egui::Ui, emoji: &str, label: &str) -> egui::Response {
+        let closing = emoji == "folder-close";
         let response = ui.add(
-            egui::Button::new(icons::emoji(ui.ctx(), emoji, 20.)).min_size(egui::Vec2::splat(32.)),
+            egui::Button::new(icons::emoji(
+                ui.ctx(),
+                if closing { "📁" } else { emoji },
+                20.,
+            ))
+            .frame(false)
+            .min_size(egui::Vec2::splat(32.)),
         );
+        if closing {
+            let center = response.rect.right_bottom() - egui::vec2(8., 8.);
+            ui.painter()
+                .circle_filled(center, 6., ui.visuals().window_fill());
+            let stroke = egui::Stroke::new(1.7, ui.style().interact(&response).fg_stroke.color);
+            for direction in [-1., 1.] {
+                let offset = egui::vec2(3., direction * 3.);
+                ui.painter()
+                    .line_segment([center - offset, center + offset], stroke);
+            }
+        }
         button_label(&response, label);
         response.on_hover_text(label).on_disabled_hover_text(label)
     }
 
     fn toolbar(&mut self, ui: &mut egui::Ui) {
         let pt = self.preferences.portuguese;
+        ui.horizontal(|ui| {
+            ui.selectable_value(
+                &mut self.preferences.ribbon,
+                RibbonTab::Workspace,
+                text(pt, "Workspace", "Área de trabalho"),
+            );
+            ui.selectable_value(
+                &mut self.preferences.ribbon,
+                RibbonTab::Processing,
+                text(pt, "Processing", "Processamento"),
+            );
+        });
+        ui.separator();
         egui::ScrollArea::horizontal()
-            .id_salt("ribbon-actions")
+            .id_salt(("ribbon-actions", self.preferences.ribbon as u8))
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    ribbon_group(ui, text(pt, "Monitoring", "Monitoramento"), |ui| {
-                        if ribbon_button(ui, "📥", Form::Intake.label(pt)).clicked() {
-                            self.display.layout.form(Form::Intake);
-                        }
-                        ui.add_enabled_ui(
-                            !self.switching_project && self.project.is_some(),
-                            |ui| {
-                                if ribbon_button(
-                                    ui,
-                                    "🔄",
-                                    text(pt, "Refresh (F5)", "Atualizar (F5)"),
-                                )
+                    if self.preferences.ribbon == RibbonTab::Workspace {
+                        ribbon_group(ui, text(pt, "Layout", "Layout"), |ui| {
+                            self.interface_settings(ui);
+                            if ribbon_button(ui, "🔁", text(pt, "Reset layout", "Restaurar layout"))
                                 .clicked()
-                                    && let Some(project) = &self.project
-                                {
-                                    self.submit(Job::Open(
-                                        project.config.clone(),
-                                        project.workspace.clone(),
-                                    ));
+                            {
+                                self.display.layout = layout::Layout::default();
+                                let id = egui::Id::new(("right-pane", &self.display.config));
+                                ui.ctx().data_mut(|d| {
+                                    d.remove::<egui::containers::panel::PanelState>(id)
+                                });
+                            }
+                        });
+                        ribbon_group(ui, text(pt, "Monitoring", "Monitoramento"), |ui| {
+                            if ribbon_button(ui, "📥", Form::Intake.label(pt)).clicked() {
+                                self.display.layout.form(Form::Intake);
+                            }
+                            ui.add_enabled_ui(
+                                !self.switching_project && self.project.is_some(),
+                                |ui| {
+                                    if ribbon_button(
+                                        ui,
+                                        "🔄",
+                                        text(pt, "Refresh (F5)", "Atualizar (F5)"),
+                                    )
+                                    .clicked()
+                                        && let Some(project) = &self.project
+                                    {
+                                        self.submit(Job::Open(
+                                            project.config.clone(),
+                                            project.workspace.clone(),
+                                        ));
+                                    }
+                                },
+                            );
+                        });
+                        ribbon_group(ui, text(pt, "Pages", "Páginas"), |ui| {
+                            for (tab, emoji) in [
+                                (SideTab::Map, "🗺"),
+                                (SideTab::Charts, "📈"),
+                                (SideTab::Data, "📊"),
+                                (SideTab::Files, "📁"),
+                            ] {
+                                if ribbon_button(ui, emoji, tab.label(pt)).clicked() {
+                                    self.display.layout.open(tab);
+                                }
+                            }
+                            if ribbon_button(ui, "💬", Form::Assistant.label(pt)).clicked() {
+                                self.display.layout.form(Form::Assistant);
+                            }
+                        });
+                    } else {
+                        ribbon_group(
+                            ui,
+                            text(pt, "Review and runs", "Revisão e execuções"),
+                            |ui| {
+                                for (form, emoji) in [
+                                    (Form::Review, "🔍"),
+                                    (Form::Analysis, "📉"),
+                                    (Form::Bulletin, "📰"),
+                                    (Form::RunBundle, "📦"),
+                                    (Form::Jobs, "📋"),
+                                ] {
+                                    if ribbon_button(ui, emoji, form.label(pt)).clicked() {
+                                        self.display.layout.form(form);
+                                    }
                                 }
                             },
                         );
-                    });
-                    ribbon_group(ui, text(pt, "Pages", "Páginas"), |ui| {
-                        for (tab, emoji) in [
-                            (SideTab::Map, "🗺"),
-                            (SideTab::Charts, "📈"),
-                            (SideTab::Data, "📊"),
-                            (SideTab::Files, "📁"),
-                        ] {
-                            if ribbon_button(ui, emoji, tab.label(pt)).clicked() {
-                                self.display.layout.open(tab);
-                            }
-                        }
-                        if ribbon_button(ui, "💬", Form::Assistant.label(pt)).clicked() {
-                            self.display.layout.form(Form::Assistant);
-                        }
-                    });
-                    ribbon_group(
-                        ui,
-                        text(pt, "Review and runs", "Revisão e execuções"),
-                        |ui| {
-                            for (form, emoji) in [
-                                (Form::Review, "🔍"),
-                                (Form::Analysis, "📉"),
-                                (Form::Bulletin, "📰"),
-                                (Form::RunBundle, "📦"),
-                                (Form::Jobs, "📋"),
-                            ] {
+                        ribbon_group(ui, text(pt, "Calibration", "Calibração"), |ui| {
+                            for (form, emoji) in [(Form::Geometry, "📐"), (Form::Soil, "🌱")] {
                                 if ribbon_button(ui, emoji, form.label(pt)).clicked() {
                                     self.display.layout.form(form);
                                 }
                             }
-                        },
-                    );
-                    ribbon_group(ui, text(pt, "Layout", "Layout"), |ui| {
-                        self.interface_settings(ui);
-                        if ribbon_button(ui, "🔁", text(pt, "Reset layout", "Restaurar layout"))
-                            .clicked()
-                        {
-                            self.display.layout = layout::Layout::default();
-                            let id = egui::Id::new(("right-pane", &self.display.config));
-                            ui.ctx()
-                                .data_mut(|d| d.remove::<egui::containers::panel::PanelState>(id));
-                        }
-                    });
-                    ribbon_group(ui, text(pt, "Operation", "Operação"), |ui| {
-                        let label = Form::NewRun.label(pt);
-                        let response = ui.add(
-                            ribbon_action(ui, "▶", &label).fill(ui.visuals().selection.bg_fill),
-                        );
-                        button_label(&response, &label);
-                        if response.clicked() {
-                            self.display.layout.form(Form::NewRun);
-                        }
-                        if ribbon_button(ui, "⬇", Form::Acquisition.label(pt)).clicked() {
-                            self.display.layout.form(Form::Acquisition);
-                        }
-                        if ribbon_button(ui, "📥", Form::Forcing.label(pt)).clicked() {
-                            self.display.layout.form(Form::Forcing);
-                        }
-                        if ribbon_button(ui, "🕒", Form::Automation.label(pt)).clicked() {
-                            self.display.layout.form(Form::Automation);
-                        }
-                    });
-                    ribbon_group(ui, text(pt, "Calibration", "Calibração"), |ui| {
-                        for (form, emoji) in [(Form::Geometry, "📐"), (Form::Soil, "🌱")] {
-                            if ribbon_button(ui, emoji, form.label(pt)).clicked() {
-                                self.display.layout.form(form);
+                        });
+                        ribbon_group(ui, text(pt, "Operation", "Operação"), |ui| {
+                            let label = Form::NewRun.label(pt);
+                            let response = ui.add(
+                                ribbon_action(ui, "▶", &label).fill(ui.visuals().selection.bg_fill),
+                            );
+                            button_label(&response, &label);
+                            if response.clicked() {
+                                self.display.layout.form(Form::NewRun);
                             }
-                        }
-                    });
+                            if ribbon_button(ui, "⬇", Form::Acquisition.label(pt)).clicked() {
+                                self.display.layout.form(Form::Acquisition);
+                            }
+                            if ribbon_button(ui, "📥", Form::Forcing.label(pt)).clicked() {
+                                self.display.layout.form(Form::Forcing);
+                            }
+                            if ribbon_button(ui, "🕒", Form::Automation.label(pt)).clicked() {
+                                self.display.layout.form(Form::Automation);
+                            }
+                        });
+                    }
                 });
             });
     }
@@ -2186,27 +2265,9 @@ impl Monitoring {
                 "Rótulos de estações / chuva",
             ),
         );
-        if let Some(stations) = self
-            .display
-            .layers
-            .iter()
-            .find(|layer| layer.kind == "stations")
-        {
-            ui.horizontal_wrapped(|ui| {
-                theme::color_key(
-                    ui,
-                    stations.display_color(),
-                    &text(pt, "Known model link", "Vínculo conhecido"),
-                );
-                theme::color_key(
-                    ui,
-                    stations.display_secondary_color(),
-                    &text(pt, "Unknown link", "Vínculo desconhecido"),
-                );
-            });
-        }
         let mut reorder = None;
         let mut rainfall_color_changed = false;
+        let mut rain_scheme = self.rainfall_color();
         for (i, layer) in self.display.layers.iter_mut().enumerate() {
             let label = match layer.kind.as_str() {
                 "catchments" => text(pt, "Catchments", "Bacias"),
@@ -2219,20 +2280,29 @@ impl Monitoring {
             ui.push_id(layer.kind.clone(), |ui| {
                 let previous_color = layer.display_color();
                 let mut color = previous_color;
-                let expanded = layer_row(ui, pt, &label, &mut color, &mut layer.visible);
-                if color != previous_color {
-                    layer.color = Some(color.to_srgba_unmultiplied());
-                    rainfall_color_changed |= layer.kind == "rainfall";
-                }
+                let expanded = layer_row(ui, pt, &label, &mut layer.visible);
                 if expanded {
                     ui.indent("layer-settings", |ui| {
+                        if layer.kind != "rainfall" {
+                            ui.horizontal_wrapped(|ui| {
+                                let name = if layer.kind == "stations" {
+                                    text(pt, "Known model link", "Vínculo conhecido")
+                                } else {
+                                    text(pt, "Colour", "Cor")
+                                };
+                                theme::color_palette(ui, &mut color, &name, pt);
+                                ui.label(name);
+                            });
+                        }
+
                         layer_opacity(ui, pt, &mut layer.opacity);
                         if layer.kind == "rainfall" {
+                            rainfall_color_changed |= map::scheme_picker(ui, &mut rain_scheme, pt);
                             rainfall_color_changed |= rainfall_scale_controls(
                                 ui,
                                 pt,
                                 &mut self.display.rain_maximum,
-                                color,
+                                rain_scheme,
                             );
                             for side in RainSide::BOTH.into_iter().take(
                                 if self.display.map_mode.comparing() {
@@ -2302,12 +2372,16 @@ impl Monitoring {
                         }
                     });
                 }
+                if color != previous_color {
+                    layer.color = Some(color.to_srgba_unmultiplied());
+                }
             });
         }
         if let Some(i) = reorder {
             self.display.layers.swap(i, i - 1);
         }
         if rainfall_color_changed {
+            self.display.rain_scheme = Some(rain_scheme);
             self.recolor_rainfall();
         }
         ui.separator();
@@ -2349,10 +2423,13 @@ impl Monitoring {
                     style.color[2],
                     style.color[3],
                 );
-                let expanded = layer_row(ui, pt, &name, &mut color, &mut style.visible);
-                style.color = color.to_srgba_unmultiplied();
+                let expanded = layer_row(ui, pt, &name, &mut style.visible);
                 if expanded {
                     ui.indent("local-layer-settings", |ui| {
+                        ui.horizontal(|ui| {
+                            theme::color_palette(ui, &mut color, &name, pt);
+                            ui.label(text(pt, "Colour", "Cor"));
+                        });
                         layer_opacity(ui, pt, &mut style.opacity);
                         layer_width(ui, pt, &mut style.width, 1.);
                         if ui
@@ -2372,6 +2449,7 @@ impl Monitoring {
                         }
                     });
                 }
+                style.color = color.to_srgba_unmultiplied();
             });
         }
         if let Some(i) = reorder {
@@ -2474,8 +2552,8 @@ impl Monitoring {
             Ok(None) => {
                 ui.label(text(
                     pt,
-                    "No active rainfall cache. Use Operation → New run.",
-                    "Sem cache ativo de chuva. Use Operação → Nova execução.",
+                    "No active rainfall cache. Use Processing / Operation / New run.",
+                    "Sem cache ativo de chuva. Use Processamento / Operação / Nova execução.",
                 ));
             }
             Err(error) => {
@@ -3089,15 +3167,15 @@ impl Monitoring {
         }
     }
 
-    fn rainfall_color(&self) -> Color32 {
-        self.display
-            .layers
-            .iter()
-            .find(|layer| layer.kind == "rainfall")
-            .map_or_else(
-                || map::layer_swatch("rainfall"),
-                map::LayerControl::display_color,
-            )
+    fn rainfall_color(&self) -> map::RainScheme {
+        self.display.rain_scheme.unwrap_or_else(|| {
+            self.display
+                .layers
+                .iter()
+                .find(|layer| layer.kind == "rainfall")
+                .and_then(|layer| layer.color)
+                .map_or(map::RainScheme::Blues, map::RainScheme::Legacy)
+        })
     }
 
     fn recolor_rainfall(&mut self) {
@@ -3336,6 +3414,9 @@ impl eframe::App for Monitoring {
             2 => egui::ThemePreference::Dark,
             _ => egui::ThemePreference::Light,
         });
+        // The root Ui is created before App::ui; give all child panels the
+        // selected application style rather than its earlier style snapshot.
+        ui.set_style(ctx.global_style());
         if self.loading.iter().any(|b| *b)
             || self.worker.is_busy()
             || self.chart_worker.is_busy()
@@ -3367,7 +3448,7 @@ impl eframe::App for Monitoring {
             .frame(
                 egui::Frame::side_top_panel(ui.style())
                     .fill(ui.visuals().window_fill())
-                    .inner_margin(egui::Margin::symmetric(12, 6)),
+                    .inner_margin(egui::Margin::symmetric(10, 4)),
             )
             .show(ui, |ui| self.title_strip(ui));
         egui::Panel::top("ribbon")
@@ -3440,6 +3521,7 @@ impl eframe::App for Monitoring {
 
         self.departure_dialog(&ctx);
         theme::text_actions(&ctx, self.preferences.portuguese);
+        chrome::resize_edges(&ctx);
     }
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         self.remember();
@@ -3453,7 +3535,8 @@ fn native_options() -> eframe::NativeOptions {
         persistence_path: eframe::storage_dir(APP_ID).map(|root| root.join("app.ron")),
         viewport: egui::ViewportBuilder::default()
             .with_app_id(WINDOW_APP_ID)
-            .with_decorations(true)
+            .with_decorations(false)
+            .with_min_inner_size([520., 420.])
             .with_icon(icons::window_icon())
             .with_inner_size([1500., 950.]),
         ..Default::default()
@@ -3461,10 +3544,17 @@ fn native_options() -> eframe::NativeOptions {
 }
 
 pub fn run() -> eframe::Result {
+    let integration_error = platform::register_desktop_entry().err();
     eframe::run_native(
         "MGB Ops",
         native_options(),
-        Box::new(|cc| Ok(Box::new(Monitoring::new(cc)))),
+        Box::new(move |cc| {
+            let mut app = Monitoring::new(cc);
+            if let Some(error) = integration_error {
+                app.status = error;
+            }
+            Ok(Box::new(app))
+        }),
     )
 }
 
@@ -3693,7 +3783,7 @@ mod interface_tests {
         assert_eq!(APP_ID, "MGB Ops · Monitoring");
         let options = native_options();
         assert_eq!(options.viewport.app_id.as_deref(), Some(WINDOW_APP_ID));
-        assert_eq!(options.viewport.decorations, Some(true));
+        assert_eq!(options.viewport.decorations, Some(false));
         assert_eq!(
             options.persistence_path,
             eframe::storage_dir(APP_ID).map(|root| root.join("app.ron"))

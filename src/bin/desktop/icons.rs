@@ -1,6 +1,20 @@
 use eframe::egui::{self, Color32};
 use std::io::Cursor;
 
+pub fn desktop_entry() -> &'static str {
+    include_str!("../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop")
+}
+
+pub fn installation_icons() -> [(u32, &'static [u8]); 5] {
+    [
+        (32, include_bytes!("../../../assets/branding/hge-32.png")),
+        (48, include_bytes!("../../../assets/branding/hge-48.png")),
+        (64, include_bytes!("../../../assets/branding/hge-64.png")),
+        (128, include_bytes!("../../../assets/branding/hge-128.png")),
+        (256, include_bytes!("../../../assets/branding/hge-256.png")),
+    ]
+}
+
 fn decode(bytes: &[u8]) -> egui::ColorImage {
     let mut decoder = png::Decoder::new(Cursor::new(bytes));
     decoder.set_transformations(png::Transformations::normalize_to_color8());

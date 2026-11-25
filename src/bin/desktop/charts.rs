@@ -129,15 +129,16 @@ pub fn style_plot(plot: &mut Plot1D, dark: bool) {
     } else {
         (
             Color32::WHITE,
-            Color32::from_rgb(246, 249, 253),
-            Color32::from_rgb(100, 116, 139),
-            Color32::from_rgb(232, 238, 245),
+            Color32::from_rgb(240, 244, 250),
+            Color32::from_rgb(51, 65, 85),
+            Color32::WHITE,
         )
     };
     plot.set_background_colors(surface, data);
     plot.set_foreground_colors(ink, grid);
     plot.set_graph_grid(true);
     plot.set_graph_minor_grid(false);
+    plot.plot_mut().y_max_ticks = Some(5);
 }
 
 impl Charts {
@@ -444,10 +445,24 @@ impl Charts {
                     }
                     let panel = egui::Frame::group(ui.style())
                         .fill(ui.visuals().window_fill())
+                        .stroke(egui::Stroke::new(
+                            1.,
+                            ui.visuals().widgets.noninteractive.bg_stroke.color,
+                        ))
                         .corner_radius(10.)
                         .inner_margin(8)
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(plot_title(index, portuguese)).strong());
+                            ui.horizontal(|ui| {
+                                let accent = ui.visuals().hyperlink_color;
+                                let (mark, _) = ui
+                                    .allocate_exact_size(egui::vec2(3., 16.), egui::Sense::hover());
+                                ui.painter().rect_filled(mark, 1., accent);
+                                ui.label(
+                                    egui::RichText::new(plot_title(index, portuguese)).strong(),
+                                );
+                            });
+                            plot.plot_mut().x_max_ticks =
+                                Some(((ui.available_width() - 90.) / 150.).clamp(2., 7.) as usize);
                             plot.clear_graph_title();
                             // The plotting widget centers end tick labels. Leave room on the right
                             // for the overhang before laying out the plot.

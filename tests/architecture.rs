@@ -337,7 +337,10 @@ impl<'ast> Visit<'ast> for Gate {
                     .iter()
                     .map(|name| format!("../../../assets/icons/{name}.png"))
                     .collect();
-                    assets.push("../../../assets/branding/hge-256.png".into());
+                    assets.extend(
+                        [32, 48, 64, 128, 256]
+                            .map(|size| format!("../../../assets/branding/hge-{size}.png")),
+                    );
                     assets
                 }
                 _ => Vec::new(),
@@ -352,13 +355,19 @@ impl<'ast> Visit<'ast> for Gate {
             return;
         }
         if name == "include_str" {
-            let schema = syn::parse2::<syn::LitStr>(mac.tokens.clone());
+            let asset = syn::parse2::<syn::LitStr>(mac.tokens.clone());
             let valid = mac.path.is_ident("include_str")
-                && self.owner == "store"
-                && self.source.as_deref() == Some(Path::new("store/observations.rs"))
-                && schema.is_ok_and(|literal| literal.value() == "sql/observations.sql");
+                && asset.is_ok_and(|literal| {
+                    self.owner == "store"
+                        && self.source.as_deref() == Some(Path::new("store/observations.rs"))
+                        && literal.value() == "sql/observations.sql"
+                        || self.owner == "interface"
+                            && self.source.as_deref() == Some(Path::new("bin/desktop/icons.rs"))
+                            && literal.value()
+                                == "../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop"
+                });
             if !valid {
-                self.error("include_str permits only the owned observations schema");
+                self.error("include_str permits only approved static text at its designated use");
             }
             return;
         }
@@ -925,6 +934,25 @@ fn desktop_images_are_limited_to_named_assets_in_the_icon_module() {
     ] {
         assert!(!check_source("interface", rejected, 2, Some(source)).is_empty());
     }
+}
+
+#[test]
+fn launcher_template_is_limited_to_the_icon_module() {
+    let template = r#"const ENTRY: &str = include_str!("../../../assets/desktop/br.ufrgs.hge.MgbOps.desktop");"#;
+    let source = Path::new("bin/desktop/icons.rs");
+    assert!(check_source("interface", template, 2, Some(source)).is_empty());
+    assert!(!check_source("store", template, 2, Some(source)).is_empty());
+    assert!(
+        !check_source(
+            "interface",
+            template,
+            2,
+            Some(Path::new("bin/desktop/platform.rs"))
+        )
+        .is_empty()
+    );
+    let outside = r#"const ENTRY: &str = include_str!("../../../src/store.rs");"#;
+    assert!(!check_source("interface", outside, 2, Some(source)).is_empty());
 }
 
 #[test]

@@ -43,8 +43,10 @@ fn start(context: &egui::Context, purpose: &str, current: &Path) -> Option<PathB
     } else {
         current.to_path_buf()
     };
-    existing_directory(&current)
-        .or_else(|| saved.as_deref().and_then(existing_directory))
+    saved
+        .as_deref()
+        .and_then(existing_directory)
+        .or_else(|| existing_directory(&current))
         .or_else(|| workspace.as_deref().and_then(existing_directory))
 }
 
@@ -124,7 +126,7 @@ mod tests {
         );
         assert_eq!(
             start(&restarted, "gis", &imports.join("current.csv")),
-            Some(imports)
+            Some(gis.clone())
         );
         std::fs::remove_dir(&gis).unwrap();
         assert_eq!(

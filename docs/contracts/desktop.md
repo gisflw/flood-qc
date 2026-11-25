@@ -26,23 +26,23 @@ remain independent of runner work.
 
 ## Common tasks
 
-Use **Pages → Assistant** to open an [agent conversation](assistant.md) in the
+Use **Workspace → Pages → Assistant** to open an [agent conversation](assistant.md) in the
 current workspace.
 
 | Task | Control |
 | --- | --- |
-| Open a workspace or import saved data | **Title strip → Open workspace** or **Monitoring → Import data** |
+| Open a workspace or import saved data | **Title strip → Open workspace** or **Workspace → Monitoring → Import data** |
 | Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
 | Step through modeled inundation | Use **Map → Inundation** |
-| Inspect location data or a run | **Pages → Charts**, **Data**, or **Files** |
-| Review observation availability and QC | **Review and runs → Observation review** |
-| Compare runs, prepare a bulletin, or share a run | **Review and runs → Run comparison**, **Bulletins**, or **Share runs** |
-| Edit observations | **Review and runs → Observation review** |
-| Run a workspace operation at a selected reference | **Operation → New run** |
-| Set forcing and state options | **Operation → Forcing and state** |
-| Schedule jobs or monitor and cancel a job | **Operation → Automation** or **Review and runs → Jobs** |
+| Inspect location data or a run | **Workspace → Pages → Charts**, **Data**, or **Files** |
+| Review observation availability and QC | **Processing → Review and runs → Observation review** |
+| Compare runs, prepare a bulletin, or share a run | **Processing → Review and runs → Run comparison**, **Bulletins**, or **Share runs** |
+| Edit observations | **Processing → Review and runs → Observation review** |
+| Run a workspace operation at a selected reference | **Processing → Operation → New run** |
+| Set forcing and state options | **Processing → Operation → Forcing and state** |
+| Schedule jobs or monitor and cancel a job | **Processing → Operation → Automation** or **Processing → Review and runs → Jobs** |
 | Edit workspace settings | **Title strip → Settings** |
-| Edit geometry or soil | **Calibration** |
+| Edit geometry or soil | **Processing → Calibration** |
 
 See [saved-data workflows](saved-data.md) for request formats and outputs and
 [controlled jobs](#controlled-jobs) for execution and cancellation.
@@ -90,7 +90,7 @@ coverage come from the active cache. Negative signed hours end at the reference
 and use observations. Positive hours start at the reference and use the selected
 forecast. Explicit start/end bounds can span both. Cells with incomplete
 coverage display as NA. Scenario changes apply immediately to the current period.
-Use **Apply** to commit a period edit. A successful **Operation → New run → Run All** supplies
+Use **Apply** to commit a period edit. A successful **Processing → Operation → New run → Run All** supplies
 the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
 the desktop is idle.
 
@@ -128,19 +128,27 @@ a basin retains the previous one until its replacement succeeds. Project changes
 The map includes attributed raster basemaps, river segments, catchments, stations,
 an upstream basin outline and accumulated rainfall. Expand the Rainfall layer
 with **+** to show its
-linear colour bar, initially blue, and editable scale maximum. The scale runs
+linear colour bar, colour-scheme picker, and editable scale maximum. The named
+schemes are Blues (default), Spectral, Viridis, Cividis, and Turbo; each choice has
+a gradient preview. Earlier custom hues remain available as the saved Custom
+scheme until another scheme is selected. The scale runs
 from 1 mm to the configured maximum, which defaults to 100 mm. The expanded
 layer also shows the actual loaded grid minimum and maximum in mm for each
 displayed side, including valid zero; an entirely unknown grid shows NA. These
 values describe the loaded data independently of the colour limits. Colors at the
 endpoints also cover values outside that range. Incomplete coverage remains
 transparent and inspection reports NA; the rainfall card omits coverage and NA badges.
-Use the checkbox in a layer row to toggle visibility. Click a colour swatch to
-open the colour matrix or custom picker. Rainfall changes its scale hue; stations
-have separate linked and unknown-link colours. Expand the row with **+** for
-order, opacity, and applicable stroke-thickness controls in display points.
+Collapsed layer rows show only a compact expand button, visibility checkbox, and
+name. Expand a row with **+** for its colour, opacity, order, and applicable
+stroke-thickness controls. Click a small colour swatch to open the compact matrix
+or custom picker. Rainfall offers named schemes; stations have separate linked
+and unknown-link colours. Local GIS colours also appear only when expanded.
 Catchment divisions have a default 1-point outline, including hole boundaries;
-an explicitly saved zero thickness disables their strokes. Upstream basins offer
+an explicitly saved zero thickness disables their strokes. Catchment display geometry
+is prepared in the background at display detail levels. Enabling the layer and
+changing the map view keep controls available while meshes load; hiding it or
+switching projects cancels superseded rendering work. Original geometry supplies
+selection and scientific data. Upstream basins offer
 Outline or Filled; fills preserve holes and separate parts.
 Local vector rows also offer removal controls. Local vector layers affect only the display.
 Polygon parts retain their holes. At regional zoom, river paths are simplified
@@ -153,9 +161,8 @@ The ribbon, left column and right pane use English or Brazilian Portuguese.
 Automatic interface preferences remember file-dialog locations separately by task
 across restarts, as well as recent workspace associations,
 camera, layers, local files, selection, run/scenarios and time controls without a
-new project-file schema. File dialogs start from the current field path when
-supplied, otherwise the
-remembered task location, then the workspace. Missing locations fall back to an
+new project-file schema. File dialogs start from the remembered task location, then the current field path,
+then the workspace. Missing locations fall back to an
 existing ancestor; cancelling leaves the remembered location unchanged. Source
 errors identify the retained view separately.
 
@@ -181,12 +188,19 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 
 ## Layout and settings
 
-The native window title bar uses the operating system’s controls and colors.
-Below it, a title strip shows the HGE emblem and MGB Ops title, followed by compact
-Open workspace, Recent workspaces, Settings, and Close project icons. Hover
+The desktop draws its own title strip and window controls, using the selected
+Light or Dark appearance consistently across platforms. The strip shows the HGE
+emblem, MGB Ops title, workspace name, compact Open workspace, Recent workspaces,
+Settings, and Close project actions, then Minimize, Maximize/Restore, and Close
+application controls at the right. Drag unused strip space to move the window,
+double-click it to maximize or restore, and drag an edge or corner to resize.
+Closing the application follows the existing unsaved-edit and running-job checks.
+Linux registers the HGE icon and application entry on first launch; Windows desktop
+builds embed the executable icon. Hover
 reveals localized action labels; icons also expose accessible names. The ribbon
-uses bundled color emoji in
-Monitoring, Pages, Review and runs, Layout, Operation, and Calibration subgroups. Scroll horizontally when the
+uses bundled color emoji in two tabs. **Workspace** contains **Layout**, **Monitoring**,
+and **Pages**, in that order. **Processing** contains **Review and runs**,
+**Calibration**, and **Operation**. The selected ribbon tab is remembered app-wide. Scroll horizontally when the
 window is narrow; keyboard focus brings actions into view. The map stays visible
 in the center with linked basemap
 attribution in the bottom stripe when tiles are enabled. NASA Blue Marble provides a satellite basemap at regional scale.
@@ -243,7 +257,7 @@ Editable fields retain their ordinary selection and editing behavior.
 the last saved settings. Closing or switching a workspace prompts about
 unsaved workspace settings.
 
-**Operation → New run** opens the workspace defaults. Edit the local reference
+**Processing → Operation → New run** opens the workspace defaults. Edit the local reference
 hour and day horizons. The form shows the resulting coverage and scenarios.
 Use **Restore defaults** to select zero future rain and the latest usable raw
 cycle per product. Add, remove, reorder or pin scenarios for the current run.
@@ -251,13 +265,13 @@ Add a corrected scenario for a specific cycle to edit its transformations and
 preview the raw and corrected grids on the same scale. Run changes are
 temporary. **Save preparation** freezes the selected inputs for later execution.
 
-**Review and runs → Observation review** shows availability and spatial rainfall checks.
+**Processing → Review and runs → Observation review** shows availability and spatial rainfall checks.
 Load, edit, and save the ordered workspace observation edits from the same page.
 
 ## Controlled jobs
 
 **Run All** acquires the configured inputs, prepares and executes, and publishes
-the results and rainfall cache together on success. Use **Operation → Acquire
+the results and rainfall cache together on success. Use **Processing → Operation → Acquire
 inputs** to update the catalog independently. See [acquisition](acquisition.md).
 
 Operational file work and processing run on a dedicated worker, separately from

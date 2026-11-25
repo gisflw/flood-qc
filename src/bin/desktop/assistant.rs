@@ -43,6 +43,7 @@ pub struct Pane {
     conversation: Option<Conversation>,
     draft_prompt: String,
     editor_content_height: f32,
+    ime_composing: bool,
     turns: VecDeque<Turn>,
     next_turn: u64,
     status: String,
@@ -367,33 +368,14 @@ impl MarkdownReply {
 #[derive(Default)]
 struct Message {
     text: String,
-    layout: Option<TextLayout>,
-}
-
-struct TextLayout {
-    width: f32,
-    scale: f32,
-    color: egui::Color32,
-    galley: Arc<egui::Galley>,
 }
 
 impl Message {
     fn show(&mut self, ui: &mut egui::Ui) {
-        let width = ui.available_width();
-        let scale = ui.pixels_per_point();
-        let color = ui.visuals().text_color();
-        if self.layout.as_ref().is_none_or(|layout| {
-            layout.width != width || layout.scale != scale || layout.color != color
-        }) {
-            let font = egui::TextStyle::Body.resolve(ui.style());
-            self.layout = Some(TextLayout {
-                width,
-                scale,
-                color,
-                galley: ui.painter().layout(self.text.clone(), font, color, width),
-            });
-        }
-        ui.add(egui::Label::new(self.layout.as_ref().unwrap().galley.clone()).selectable(true));
+        // Let egui refresh glyphs in its current font atlas. Retaining galleys
+        // outside that cache can leave stale texture coordinates after a reset.
+        // The transcript still skips off-screen turns using their cached height.
+        ui.add(egui::Label::new(&self.text).wrap().selectable(true));
     }
 }
 
@@ -556,7 +538,6 @@ impl Pane {
                     id: id as u64,
                     prompt: Message {
                         text: saved.prompt.clone(),
-                        layout: None,
                     },
                     answer,
                     activity,
@@ -691,7 +672,6 @@ impl Pane {
                     id: self.next_turn,
                     prompt: Message {
                         text: std::mem::take(&mut self.draft_prompt),
-                        layout: None,
                     },
                     answer: MarkdownReply::default(),
                     activity: Vec::new(),
@@ -1418,6 +1398,39 @@ impl Pane {
 
     fn editor(&mut self, ui: &mut egui::Ui, pt: bool, height: f32) {
         let label = ui.weak(text(pt, "Message", "Mensagem"));
+        let editor_id = ui.make_persistent_id("draft-prompt");
+        let focused = ui.memory(|memory| memory.has_focus(editor_id));
+        let submit = focused
+            && ui.input(|input| {
+                let shortcut = submit_shortcut(&input.events, &mut self.ime_composing);
+                shortcut && input.modifiers == egui::Modifiers::NONE
+            });
+        let enter_key = focused
+            && ui.input(|input| {
+                input.events.iter().any(|event| {
+                    matches!(
+                        event,
+                        egui::Event::Key {
+                            key: egui::Key::Enter,
+                            pressed: true,
+                            ..
+                        }
+                    )
+                })
+            });
+        if !focused {
+            self.ime_composing = false;
+        }
+        if submit || enter_key {
+            // Read and consume the shortcut before TextEdit/focus navigation sees
+            // it. Some input methods report an idle preedit or a newline commit
+            // alongside Enter, which is not an active composition.
+            ui.input_mut(|input| {
+                input
+                    .events
+                    .retain(|event| !(submit && plain_enter(event) || ime_enter(event)))
+            });
+        }
         let editor = egui::ScrollArea::vertical()
             .id_salt("message-editor")
             .auto_shrink([false, false])
@@ -1427,7 +1440,7 @@ impl Pane {
             .show(ui, |ui| {
                 ui.add(
                     egui::TextEdit::multiline(&mut self.draft_prompt)
-                        .id_salt("draft-prompt")
+                        .id(editor_id)
                         .desired_width(ui.available_width())
                         .desired_rows(EDITOR_ROWS)
                         .margin(EDITOR_MARGIN)
@@ -1442,7 +1455,6 @@ impl Pane {
         if edit.changed() {
             self.defer_history(ui.ctx());
         }
-        let submit = edit.has_focus() && ui.input(|input| submit_shortcut(&input.events));
         if self.editor_content_height != editor.content_size.y || edit.changed() {
             self.editor_content_height = editor.content_size.y;
             ui.request_repaint();
@@ -1644,13 +1656,37 @@ fn plain_enter(event: &egui::Event) -> bool {
     )
 }
 
-fn submit_shortcut(events: &[egui::Event]) -> bool {
-    // Keyboard events handled by the input method are filtered by egui-winit.
-    // A composition update can still share a frame with an ordinary Enter.
-    events.iter().any(plain_enter)
-        && !events
+fn ime_enter(event: &egui::Event) -> bool {
+    matches!(event, egui::Event::Ime(egui::ImeEvent::Commit(text)) if text == "\n" || text == "\r" || text == "\r\n")
+}
+
+fn submit_shortcut(events: &[egui::Event], composing: &mut bool) -> bool {
+    let mut blocked = *composing;
+    for event in events {
+        match event {
+            egui::Event::Key {
+                key: egui::Key::Enter,
+                pressed: true,
+                modifiers,
+                ..
+            } => {
+                blocked |= *modifiers != egui::Modifiers::NONE;
+            }
+            egui::Event::Ime(egui::ImeEvent::Preedit { text, .. }) => {
+                *composing = !text.is_empty();
+                blocked |= *composing;
+            }
+            egui::Event::Ime(egui::ImeEvent::Commit(text)) => {
+                blocked |= !text.is_empty() && !ime_enter(event);
+                *composing = false;
+            }
+            _ => {}
+        }
+    }
+    !blocked
+        && events
             .iter()
-            .any(|event| matches!(event, egui::Event::Ime(_)))
+            .any(|event| plain_enter(event) || ime_enter(event))
 }
 
 fn setting_picker(
@@ -1800,7 +1836,6 @@ mod tests {
                 id,
                 prompt: Message {
                     text: "A prompt".into(),
-                    layout: None,
                 },
                 answer,
                 activity: Vec::new(),
@@ -2004,13 +2039,19 @@ done
         frame(&mut pane, vec![egui::Event::Text("send this".into())]);
         frame(
             &mut pane,
-            vec![egui::Event::Key {
-                key: egui::Key::Enter,
-                physical_key: None,
-                pressed: true,
-                repeat: false,
-                modifiers: egui::Modifiers::NONE,
-            }],
+            vec![
+                egui::Event::Ime(egui::ImeEvent::Preedit {
+                    text: String::new(),
+                    active_range_chars: None,
+                }),
+                egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
         );
         let request: serde_json::Value = loop {
             if let Ok(bytes) = fs::read(&log)
@@ -2044,7 +2085,6 @@ done
                 id,
                 prompt: Message {
                     text: "a".repeat(30_000),
-                    layout: None,
                 },
                 answer: MarkdownReply::default(),
                 activity: Vec::new(),
@@ -2128,12 +2168,33 @@ done
             text: "あ".into(),
             active_range_chars: None,
         });
-        let ignored = !submit_shortcut(&[enter.clone(), preedit]);
+        let ignored = !submit_shortcut(&[enter.clone(), preedit], &mut false);
         assert!(ignored);
         let commit = egui::Event::Ime(egui::ImeEvent::Commit("あ".into()));
-        let ignored = !submit_shortcut(&[enter.clone(), commit]);
+        let ignored = !submit_shortcut(&[enter.clone(), commit], &mut false);
         assert!(ignored);
-        assert!(submit_shortcut(&[enter]));
+        assert!(submit_shortcut(std::slice::from_ref(&enter), &mut false));
+        let idle = egui::Event::Ime(egui::ImeEvent::Preedit {
+            text: String::new(),
+            active_range_chars: None,
+        });
+        assert!(submit_shortcut(&[idle.clone(), enter.clone()], &mut false));
+        let composing_blocks_enter = !submit_shortcut(&[idle, enter], &mut true);
+        assert!(composing_blocks_enter);
+        assert!(submit_shortcut(
+            &[egui::Event::Ime(egui::ImeEvent::Commit("\n".into()))],
+            &mut false
+        ));
+        let shift_enter = egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::SHIFT,
+        };
+        let newline = egui::Event::Ime(egui::ImeEvent::Commit("\n".into()));
+        let newline_does_not_send = !submit_shortcut(&[shift_enter, newline], &mut false);
+        assert!(newline_does_not_send);
     }
 
     #[test]
