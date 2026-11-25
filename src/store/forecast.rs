@@ -16,7 +16,7 @@ use std::{
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
 pub(super) const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),source_format TEXT NOT NULL CHECK(source_format IN ('grib2','netcdf')),normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));";
-const CORRECTION_SCHEMA: &str = "CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
+pub(super) const CORRECTION_SCHEMA: &str = "CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
 #[derive(Debug, Clone)]
 pub struct ForecastAssetChoice {
     pub asset_id: String,
@@ -362,20 +362,25 @@ impl ForecastCatalog {
         })
     }
     pub(crate) fn check_native_available(&self, asset_id: &str) -> Result<(), StoreError> {
-        let native: String = self.connection.query_row(
-            "SELECT native_path FROM asset WHERE asset_id=?1",
+        let (native, checksum, length): (String, String, i64) = self.connection.query_row(
+            "SELECT native_path,native_sha256,native_byte_length FROM asset WHERE asset_id=?1",
             [asset_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
         let path = resolve(&self.workspace, Path::new(&native))?;
+        let length =
+            u64::try_from(length).map_err(|_| invalid("invalid native forecast length"))?;
         let metadata = fs::metadata(&path)?;
-        if !metadata.is_file() || metadata.len() == 0 {
-            return Err(invalid(format!(
-                "unavailable forecast file {}",
+        if !metadata.is_file()
+            || length == 0
+            || metadata.len() != length
+            || digest(&path)? != (checksum, length)
+        {
+            return Err(StoreError::Integrity(format!(
+                "unavailable or corrupt forecast file {}",
                 path.display()
             )));
         }
-        File::open(path)?;
         Ok(())
     }
     pub fn open(

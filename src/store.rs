@@ -38,6 +38,7 @@ pub use self::operation::{
     publish_directory, read_operation_manifest, read_retained_manifest, sync_directory, sync_tree,
     verify_inputs, write_run_manifest,
 };
+pub(crate) use self::operation::{copy_staged_tree, stage_working_inputs};
 
 mod sharing;
 pub(crate) use self::sharing::{BundleManifest, copy_member, payload_index, validate_bundle};

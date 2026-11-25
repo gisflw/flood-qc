@@ -251,6 +251,7 @@ impl ObservationStore {
             tx.execute_batch(SCHEMA)?;
             if operation {
                 tx.execute_batch(super::forecast::SCHEMA)?;
+                tx.execute_batch(super::forecast::CORRECTION_SCHEMA)?;
                 tx.execute_batch(super::run_cache::RUN_SCHEMA)?;
             }
             tx.execute(

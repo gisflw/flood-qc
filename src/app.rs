@@ -28,9 +28,9 @@ pub use self::migration_export::{
 };
 pub use self::operation::{
     BatchStatus, ExecutionReport, ExecutionRequest, OperationControl, OperationError,
-    OperationProgress, OperationStage, PreparationReport, PreparationRequest, ScenarioExecution,
-    ScenarioProgress, TrialCache, discover_trials, execute_prepared, execute_prepared_controlled,
-    read_trial, tail_log, with_active_run,
+    OperationEvent, OperationLogStream, OperationProgress, OperationStage, PreparationReport,
+    PreparationRequest, ScenarioExecution, ScenarioProgress, TrialCache, discover_trials,
+    execute_prepared, execute_prepared_controlled, read_trial, tail_log, with_active_run,
 };
 pub use self::request::{
     CalibrationDocument, EngineDocument, ForcingDocument, ForecastsDocument, GeometryDocument,
@@ -42,8 +42,8 @@ mod acquisition;
 mod forecast;
 pub use self::acquisition::{
     AcquisitionKind, AcquisitionReport, AcquisitionRequest, AnaAcquisitionReport,
-    AnaStationOutcome, ForecastAcquisitionOutcome, acquire_inputs, export_workspace_inventory,
-    import_ana_csv, import_workspace_inventory,
+    AnaStationOutcome, DownloadEvent, ForecastAcquisitionOutcome, acquire_inputs,
+    export_workspace_inventory, import_ana_csv, import_workspace_inventory,
 };
 pub use self::forecast::{
     CanonicalForecastDocument, NormalizeForecastDocument, NormalizeForecastError,
@@ -116,4 +116,9 @@ pub use self::assistant::{
     AgentPreset, AgentSetting, AgentSettings, AssistantEvent, AssistantStage, Conversation,
     FieldChange, PermissionOption, ProposalReview, SETUP_NOTICE, SettingChoice, SettingKind,
     assistant_mcp_stdio,
+};
+
+mod source_acquisition;
+pub use self::source_acquisition::{
+    AcquisitionSource, SourceAcquisitionReport, SourceAcquisitionRequest, acquire_source,
 };

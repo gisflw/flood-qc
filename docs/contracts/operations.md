@@ -78,7 +78,7 @@ geometry and verified zero forecast intervals. Rainfall and basin summaries read
 the selected generation. A missing cache returns no rainfall. Missing or corrupt
 members produce findings.
 
-The database records each attempt's status and workspace-relative manifest path.
+The database records each attempt and its status.
 The active generation keeps its manifest under `cache/run/`. Retiring it
 archives the manifest under `runs/history/` and reclaims its results. Failed
 attempts retain their manifest and bounded diagnostics. Export a bundle before
@@ -87,11 +87,14 @@ for exact reruns.
 
 ## Execution lifecycle
 
-Under the workspace lock, execution verifies a snapshot of the preparation and
-runs a history-only worker before launching isolated scenario workers. It then
-joins workers, validates all requested scenarios, stages rainfall from the same
-prepared inputs, and cleans up temporary inputs. The final commit publishes the
-results and rainfall together.
+Under the workspace lock, execution verifies a private preparation and runs a
+history-only worker. A run that prepares its own inputs uses that preparation
+directly. Execution of a saved preparation takes a verified private copy.
+After history completes, each isolated forecast worker stages its own inputs
+and starts MGB as soon as those inputs are ready. Execution joins the workers,
+validates all requested scenarios, stages rainfall from the same prepared
+inputs, and removes temporary inputs. It syncs the generation before committing
+the results and rainfall together.
 
 A cancellation before the commit stops and reaps owned engines. Failed
 execution, rainfall preparation, or publication leaves the previous active
@@ -147,10 +150,23 @@ execution. Run All holds the workspace lock from acquisition through publication
 and removes its temporary preparation on completion.
 
 Cloned controls expose `cancel()`, `is_cancelled()` and the latest `progress()`.
-Progress identifies preparation, history, scenarios and finalization, includes the
+Progress identifies acquisition, preparation, history, scenarios and finalization, includes the
 attempt path when known and per-scenario state, and leaves unknown fractions
-absent. `tail_log(path, max_bytes)` reads at most 65,536 trailing bytes without
-loading the entire file. JSON stdout contains the result, not progress text.
+absent. `OperationControl::with_observer` also delivers milestones, download
+updates and engine log chunks to a callback that can be called from concurrent workers.
+`tail_log(path, max_bytes)` reads at most 65,536 trailing bytes without loading the
+entire file.
+
+`operation prepare`, `operation execute`, `operation run-all` and
+`run regenerate` print live run milestones. The CLI displays
+engine output as the executable flushes it. Each line identifies the shared
+history or scenario and the engine's stdout or stderr.
+Text commands use stdout. Commands returning JSON use stderr for live output,
+including `run regenerate` without `--json`. JSON reports
+are single documents on stdout. If the console falls behind, its output names
+the affected stream and the number of skipped bytes. Engine log files retain
+their original bytes under the usual run retention rules.
+See the [acquisition contract](acquisition.md) for the download display.
 
 CLI SIGINT requests cancellation. Controlled cancellation checks preparation
 boundaries, stops and reaps owned engines, joins concurrent workers, and finishes

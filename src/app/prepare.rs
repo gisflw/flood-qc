@@ -76,7 +76,7 @@ use super::request::{
 use crate::analysis::{ForecastPreparationRequest, prepare_forecast, prepare_zero_forecast};
 use crate::store::{
     BasinForcing, ForecastCatalog, ForecastSnapshotSelection, ObservationBatch, OperationManifest,
-    ScenarioRecord, collect_inputs, copy_tree, digest_file, finalize_prepared, sync_tree,
+    ScenarioRecord, collect_inputs, copy_staged_tree, digest_file, finalize_prepared, sync_tree,
     write_basin_forcing, write_grid_frame, write_grid_series, write_run_manifest,
 };
 use crate::store::{ForecastCorrection, ObservationReplacement};
@@ -268,6 +268,7 @@ fn prepare_accepted(
 ) -> Result<PreparationReport, OperationError> {
     control.set_progress(super::OperationStage::Preparation, None, None);
     control.check()?;
+    control.selection(&accepted.document);
     if output.exists() {
         return Err(OperationError::InvalidRequest {
             field: "output".into(),
@@ -555,7 +556,7 @@ fn prepare_accepted(
                 ] {
                     if !target.exists() {
                         let source = workspace.join(source);
-                        copy_tree(&source, &target).map_err(|e| source_error(&source, e))?;
+                        copy_staged_tree(&source, &target).map_err(|e| source_error(&source, e))?;
                         if digest_file(&source).map_err(|e| source_error(&source, e))?
                             != digest_file(&target).map_err(|e| source_error(&target, e))?
                         {
@@ -618,9 +619,9 @@ fn prepare_accepted(
             )
             .map_err(|e| source_error(&stage, e))?;
         }
-        copy_tree(&doc.engine.input_dir, &stage.join("baseline/Input"))
+        copy_staged_tree(&doc.engine.input_dir, &stage.join("baseline/Input"))
             .map_err(|e| source_error(&doc.engine.input_dir, e))?;
-        copy_tree(
+        copy_staged_tree(
             &doc.engine.executable,
             &stage.join(crate::store::PREPARED_ENGINE),
         )

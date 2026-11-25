@@ -859,7 +859,7 @@ impl Forms {
                 (text(pt, "Model", "Modelo"), &mut self.forecast_model),
                 (text(pt, "Product", "Produto"), &mut self.forecast_product),
                 (
-                    text(pt, "Cycle (RFC3339)", "Ciclo (RFC3339)"),
+                    text(pt, "Cycle (local time)", "Ciclo (hora local)"),
                     &mut self.forecast_cycle,
                 ),
             ] {
@@ -907,18 +907,29 @@ impl Forms {
                 Task::ObservationBatch(self.database.clone(), self.input.clone())
             }
             Intake::Inventory => Task::Inventory(self.database.clone(), self.input.clone()),
-            Intake::Forecast => match self.forecast_cycle.parse() {
-                Ok(cycle_utc) => Task::Forecast(
+            Intake::Forecast => match self
+                .forecast_cycle
+                .trim()
+                .parse::<NaiveDateTime>()
+                .ok()
+                .zip(zone.parse::<chrono_tz::Tz>().ok())
+                .and_then(|(cycle, zone)| cycle.and_local_timezone(zone).single())
+            {
+                Some(cycle) => Task::Forecast(
                     self.input.clone(),
                     mgb_ops::store::CanonicalForecastMetadata {
                         provider: self.forecast_provider.trim().into(),
                         model: self.forecast_model.trim().into(),
                         product: self.forecast_product.trim().into(),
-                        cycle_utc,
+                        cycle_utc: cycle.to_utc(),
                     },
                 ),
-                Err(error) => {
-                    self.notice = format!("Invalid forecast cycle: {error}");
+                None => {
+                    self.notice = text(
+                        pt,
+                        "Enter an unambiguous local cycle time as YYYY-MM-DDTHH:MM:SS",
+                        "Informe um horário local de ciclo sem ambiguidades como AAAA-MM-DDTHH:MM:SS",
+                    );
                     return None;
                 }
             },

@@ -136,6 +136,35 @@ kind = "zero"
     .unwrap();
     batch
 }
+fn configure_workspace(root: &Path, batch: &ObservationBatch) {
+    fs::write(
+        root.join("config.toml"),
+        r#"
+[run]
+time_zone = "UTC"
+reference_time = "2026-01-01T02:00:00"
+lookback_days = 0
+forecast_days = 1
+[spatial]
+bounds = [-1.0,-1.0,1.0,1.0]
+resolution_degrees = 1.0
+[model]
+executable = "engine"
+input_dir = "Input"
+omp_threads = 1
+[precipitation_interpolation]
+nearest_stations = 1
+"#,
+    )
+    .unwrap();
+
+    mgb_ops::app::initialize_workspace(root).unwrap();
+    ObservationStore::open_writable(&root.join("operation.sqlite"))
+        .unwrap()
+        .write_batch(batch)
+        .unwrap();
+}
+
 #[test]
 fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
     let _guard = serialize_fixture();
@@ -184,6 +213,150 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
             .unwrap();
     assert_eq!(stations.level_cm, [40, 40, 40]);
     assert_eq!(stations.level_valid, [true, true, true]);
+}
+
+#[cfg(unix)]
+#[test]
+fn cli_streams_live_engine_output_without_holding_up_publication() {
+    use std::{
+        io::{BufRead, BufReader, Read},
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let directory = tempfile::tempdir_in("runs").unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    let mut batch = fixture(&root);
+    batch.samples.push(ObservationSample {
+        series_id: "r".into(),
+        observed_at: time("2026-01-01T00:00:00"),
+        value: Some(ObservationValue::RainMm(1.0)),
+    });
+    configure_workspace(&root, &batch);
+    fs::write(
+        root.join("Input/control.txt"),
+        "log:.history\nwait:.history\nlog:zero\nwait:zero\nlarge:zero\n",
+    )
+    .unwrap();
+
+    let prepare = |destination: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+            .args(["operation", "prepare", "--workspace"])
+            .arg(&root)
+            .arg("--output")
+            .arg(destination)
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    let prepared = root.join("prepared");
+    let preparation = prepare(&prepared);
+    assert!(preparation.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&preparation.stdout).unwrap();
+    assert_eq!(report["prepared"].as_str(), prepared.to_str());
+    let progress = String::from_utf8(preparation.stderr).unwrap();
+    assert!(progress.contains("Preparing operation\n"));
+    assert!(progress.contains("Reference time: 2026-01-01T02:00:00 (UTC)\n"));
+    assert!(progress.contains("Scenarios: zero\n"));
+    assert!(progress.contains("Prepared: "));
+
+    let execute = |path: &Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mgb-ops"));
+        command
+            .args(["operation", "execute", "--workspace"])
+            .arg(&root)
+            .arg("--prepared")
+            .arg(path);
+        command
+    };
+    let mut child = execute(&prepared).stdout(Stdio::piped()).spawn().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let cache = root.join("cache/run");
+    let published = || mgb_ops::app::rainfall_cache_info(&root).unwrap().is_some();
+    let release = |scenario: &str| {
+        let worker = fs::read_dir(&cache)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("scenarios").join(scenario))
+            .find(|path| path.is_dir())
+            .unwrap();
+        assert!(!published());
+        fs::write(worker.join("continue"), b"").unwrap();
+    };
+    assert!(
+        output
+            .by_ref()
+            .lines()
+            .any(|line| { line.unwrap() == "[MGB history stderr] diagnostic for .history" })
+    );
+    release(".history");
+    assert!(
+        output
+            .by_ref()
+            .lines()
+            .any(|line| { line.unwrap() == "[MGB scenario zero stderr] diagnostic for zero" })
+    );
+    release("zero");
+
+    // Hold the pipe full until the operation commits, then drain the console.
+    let deadline = Instant::now() + Duration::from_secs(90);
+    while !published() {
+        assert!(
+            Instant::now() < deadline,
+            "console output blocked publication"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut rest = String::new();
+    output.read_to_string(&mut rest).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(rest.contains("bytes of console output"));
+    assert!(rest.contains("Scenario zero: completed"));
+    assert!(rest.contains("Finalizing run"));
+    assert!(rest.contains("Run artifact: "));
+    assert!(rest.lines().all(|line| line.len() < 17 * 1024));
+
+    let published = mgb_ops::discover_trials(&root).unwrap().pop().unwrap();
+    let mut expected = b"output for zero\r\n".to_vec();
+    expected.extend(std::iter::repeat_n(b'x', 2_000_000));
+    assert_eq!(
+        fs::read(published.join("scenarios/zero/logs/stdout.log")).unwrap(),
+        expected
+    );
+    let mut expected = b"diagnostic for zero\n".to_vec();
+    expected.extend(std::iter::repeat_n(b'y', 2_000_000));
+    assert_eq!(
+        fs::read(published.join("scenarios/zero/logs/stderr.log")).unwrap(),
+        expected
+    );
+
+    fs::write(root.join("Input/control.txt"), "log:.history\nlog:zero\n").unwrap();
+    let second_preparation = root.join("prepared-fast");
+    assert!(prepare(&second_preparation).status.success());
+    let fast = execute(&second_preparation).arg("--json").output().unwrap();
+    assert!(fast.status.success());
+    let fast_report: serde_json::Value = serde_json::from_slice(&fast.stdout).unwrap();
+    assert_eq!(fast_report["status"], "completed");
+    let diagnostics = String::from_utf8(fast.stderr).unwrap();
+    assert!(diagnostics.contains("[MGB history stdout] output for .history\n"));
+    assert!(diagnostics.contains("[MGB scenario zero stdout] output for zero\n"));
+    assert!(diagnostics.contains("[MGB scenario zero stderr] diagnostic for zero\n"));
+
+    // Close the progress pipe while the CLI continues writing its JSON report.
+    let mut child = execute(&second_preparation)
+        .arg("--json")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let closed = child.wait_with_output().unwrap();
+    assert!(closed.status.success());
+    let closed_report: serde_json::Value = serde_json::from_slice(&closed.stdout).unwrap();
+    let published = mgb_ops::discover_trials(&root).unwrap();
+    assert_eq!(published.len(), 1);
+    assert_eq!(closed_report["run_root"].as_str(), published[0].to_str());
+    assert_ne!(closed_report["run_root"], fast_report["run_root"]);
 }
 
 #[test]
@@ -349,17 +522,24 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
         )
         .is_err()
     );
-    let repeated = mgb_ops::regenerate_run(
-        &target,
-        &imported.root,
-        &source.join("engine"),
-        &Default::default(),
-    )
-    .unwrap();
-    assert_ne!(repeated.run_root, imported.root);
+    let repeated = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+        .args(["run", "regenerate", "--workspace"])
+        .arg(&target)
+        .arg("--bundle")
+        .arg(&imported.root)
+        .arg("--engine")
+        .arg(source.join("engine"))
+        .output()
+        .unwrap();
+    let progress = String::from_utf8(repeated.stderr).unwrap();
+    assert!(repeated.status.success(), "{progress}");
+    assert!(progress.contains("Running shared MGB history"));
+    let report: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    let repeated_root = Path::new(report["run_root"].as_str().unwrap());
+    assert_ne!(repeated_root, imported.root);
     let raw = "scenarios/zero/Output/YTUDO.MGB";
     assert_eq!(
-        fs::read(repeated.run_root.join(raw)).unwrap(),
+        fs::read(repeated_root.join(raw)).unwrap(),
         fs::read(imported.root.join(raw)).unwrap()
     );
     fs::write(bundle.join(raw), b"corrupt").unwrap();
@@ -377,7 +557,7 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
     fixture(&path);
-    fs::write(path.join("Input/control.txt"), "fail:other\n").unwrap();
+    fs::write(path.join("Input/control.txt"), "log:other\nfail:other\n").unwrap();
     mgb_ops::app::prepare(mgb_ops::app::PreparationRequest {
         workspace: path.clone(),
         invocation_dir: path.clone(),
@@ -420,6 +600,10 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
     assert_eq!(cli_run.status.code(), Some(1));
     let cli_result: serde_json::Value = serde_json::from_slice(&cli_run.stdout).unwrap();
     assert_eq!(cli_result["report"]["status"], "failed");
+    let progress = String::from_utf8(cli_run.stderr).unwrap();
+    assert!(progress.contains("[MGB scenario other stdout] output for other"));
+    assert!(progress.contains("Scenario other: failed"));
+    assert!(progress.contains(cli_result["report"]["run_artifact"].as_str().unwrap()));
     let missing = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
         .current_dir("/")
         .args(["operation", "execute", "--workspace"])
@@ -1051,7 +1235,11 @@ fn cli_sigint_cancels_history_and_reaps_child() {
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
     fixture(&root);
-    fs::write(root.join("Input/control.txt"), "sleep:.history\n").unwrap();
+    fs::write(
+        root.join("Input/control.txt"),
+        "log:.history\nsleep:.history\n",
+    )
+    .unwrap();
     mgb_ops::prepare(mgb_ops::PreparationRequest {
         workspace: root.clone(),
         invocation_dir: root.clone(),
@@ -1066,6 +1254,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
         .arg(root.join("prepared"))
         .arg("--json")
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(90);
@@ -1092,6 +1281,9 @@ fn cli_sigint_cancels_history_and_reaps_child() {
     assert!(!output.status.success());
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["kind"], "batch_failed");
+    let progress = String::from_utf8(output.stderr).unwrap();
+    assert!(progress.contains("[MGB history stdout] output for .history"));
+    assert!(progress.contains("Run failed: operation cancelled"));
     assert!(!attempt.exists());
     let archive = Path::new(result["report"]["run_artifact"].as_str().unwrap());
     let manifest: serde_json::Value = serde_json::from_slice(&fs::read(archive).unwrap()).unwrap();
@@ -1325,32 +1517,7 @@ fn workspace_parameters_resolve_cycles_and_freeze_forecast_corrections_once() {
         value: Some(ObservationValue::RainMm(1.0)),
     });
     let database = root.join("operation.sqlite");
-    fs::write(
-        root.join("config.toml"),
-        r#"
-[run]
-time_zone = "UTC"
-reference_time = "2026-01-01T02:00:00"
-lookback_days = 0
-forecast_days = 1
-[spatial]
-bounds = [-1.0,-1.0,1.0,1.0]
-resolution_degrees = 1.0
-[model]
-executable = "engine"
-input_dir = "Input"
-omp_threads = 1
-[precipitation_interpolation]
-nearest_stations = 1
-"#,
-    )
-    .unwrap();
-
-    mgb_ops::app::initialize_workspace(&root).unwrap();
-    ObservationStore::open_writable(&database)
-        .unwrap()
-        .write_batch(&batch)
-        .unwrap();
+    configure_workspace(&root, &batch);
 
     let reference = time("2026-01-01T02:00:00");
     let grid = RegularGridSpec::new([-1.0, -1.0, 1.0, 1.0], 1.0).unwrap();
@@ -1412,6 +1579,26 @@ nearest_stations = 1
         ]
     );
     assert_eq!(operation.available_forecasts().unwrap().len(), 3);
+    let newest = catalog
+        .asset_choices()
+        .unwrap()
+        .into_iter()
+        .find(|asset| asset.product == "hourly" && asset.cycle_utc == "2026-01-01T02:00:00Z")
+        .unwrap();
+    let (newest, _) = catalog.load_native(&newest.asset_id).unwrap();
+    let native = root.join(&newest.native_artifact);
+    let mut corrupted = fs::read(&native).unwrap();
+    let original_bytes = corrupted.clone();
+    corrupted[0] ^= 1;
+    fs::write(&native, corrupted).unwrap();
+    let defaults = operation.default_scenarios().unwrap();
+    assert_eq!(
+        defaults[2],
+        RunScenario::Raw {
+            forecast: "fixture/native/hourly@2026-01-01T00:00:00Z".into(),
+        }
+    );
+    fs::write(&native, original_bytes).unwrap();
     let scenario = RunScenario::Corrected {
         forecast: forecast.into(),
         corrections: [2.0, 3.0]
@@ -1476,14 +1663,7 @@ nearest_stations = 1
             .contains("multiplication_factor")
     );
     let index = rusqlite::Connection::open(&database).unwrap();
-    let has_corrections = index
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE name='correction')",
-            [],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap();
-    assert!(!has_corrections);
+    assert!(catalog.correction_choices().unwrap().is_empty());
 
     operation
         .set_scenarios(&[
@@ -1501,11 +1681,11 @@ nearest_stations = 1
         *edits
     );
     let asset_index: String = index
-        .query_row("SELECT manifest_path FROM run_attempt", [], |row| {
-            row.get(0)
-        })
+        .query_row("SELECT manifest FROM run_attempt", [], |row| row.get(0))
         .unwrap();
-    assert_eq!(root.join(asset_index), first.run_root.join("manifest.json"));
+    let indexed: serde_json::Value = serde_json::from_str(&asset_index).unwrap();
+    assert_eq!(indexed["state"], "completed");
+    assert_eq!(indexed["attempt_id"], first.run_id);
 
     fs::remove_dir_all(root.join("assets")).unwrap();
     operation.set_scenarios(&[forecast.into()]).unwrap();
@@ -1532,13 +1712,17 @@ nearest_stations = 1
         .unwrap();
     let archived: String = index
         .query_row(
-            "SELECT manifest_path FROM run_attempt WHERE attempt_id=?1",
+            "SELECT manifest FROM run_attempt WHERE attempt_id=?1",
             [id],
             |row| row.get(0),
         )
         .unwrap();
-    let archive: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join(archived)).unwrap()).unwrap();
+    let archive: serde_json::Value = serde_json::from_str(&archived).unwrap();
+    let saved: serde_json::Value = serde_json::from_slice(
+        &fs::read(root.join("runs/history").join(format!("{id}.json"))).unwrap(),
+    )
+    .unwrap();
+    assert_eq!(archive, saved);
     assert_eq!(
         archive["operation"]["recipe"]["workspace_scenarios"][2]["corrections"],
         *edits

@@ -193,6 +193,15 @@ pub(super) fn verify_input_contents(path: &Path, input: &InputReference) -> Resu
 }
 
 pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_tree_inner(source, destination, true)
+}
+
+/// Copy into private staging. The caller discards the copy or syncs it before publication.
+pub(crate) fn copy_staged_tree(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_tree_inner(source, destination, false)
+}
+
+fn copy_tree_inner(source: &Path, destination: &Path, sync: bool) -> Result<(), String> {
     let metadata = fs::symlink_metadata(source).map_err(|e| e.to_string())?;
     if metadata.file_type().is_symlink() {
         return Err(format!("symlink not permitted: {}", source.display()));
@@ -201,9 +210,11 @@ pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
         fs::create_dir(destination).map_err(|e| e.to_string())?;
         for entry in fs::read_dir(source).map_err(|e| e.to_string())? {
             let entry = entry.map_err(|e| e.to_string())?;
-            copy_tree(&entry.path(), &destination.join(entry.file_name()))?;
+            copy_tree_inner(&entry.path(), &destination.join(entry.file_name()), sync)?;
         }
-        sync_directory(destination)?;
+        if sync {
+            sync_directory(destination)?;
+        }
     } else if metadata.is_file() {
         let before = digest_file(source)?;
         let mut input = File::open(source).map_err(|e| e.to_string())?;
@@ -216,7 +227,9 @@ pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
         output
             .set_permissions(metadata.permissions())
             .map_err(|e| e.to_string())?;
-        output.sync_all().map_err(|e| e.to_string())?;
+        if sync {
+            output.sync_all().map_err(|e| e.to_string())?;
+        }
         if digest_file(source)? != before || digest_file(destination)? != before {
             return Err(format!("input changed while copying: {}", source.display()));
         }
@@ -228,6 +241,11 @@ pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
 
 pub fn copy_working_inputs(source: &Path, destination: &Path) -> Result<(), String> {
     copy_tree(source, destination)?;
+    make_working_input_writable(destination)
+}
+
+pub(crate) fn stage_working_inputs(source: &Path, destination: &Path) -> Result<(), String> {
+    copy_staged_tree(source, destination)?;
     make_working_input_writable(destination)
 }
 

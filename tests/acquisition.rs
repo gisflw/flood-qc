@@ -1,10 +1,56 @@
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use mgb_ops::app::{AcquisitionRequest, OperationControl, import_ana_csv};
 use mgb_ops::store::{
     IntervalAxis, ObservationSelection, ObservationStore, ObservationValue, TimeInterval,
 };
+
+#[test]
+fn cli_acquisition_routes_live_failures_away_from_json() {
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let workspace = dir.path().canonicalize().unwrap();
+    fs::write(
+        workspace.join("config.toml"),
+        "[run]\ntime_zone = \"UTC\"\n[acquisition]\nobservation_providers = [\"ana\"]\n",
+    )
+    .unwrap();
+    let acquire = |json| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mgb-ops"));
+        command
+            .args(["observation", "acquire", "--workspace"])
+            .arg(&workspace)
+            .args(["--reference-time", "2026-07-20T16:00:00"])
+            .env("TERM", "xterm");
+        if json {
+            command.arg("--json");
+        }
+        let result = command.output().unwrap();
+        assert_eq!(result.status.code(), Some(1), "{result:?}");
+        result
+    };
+    let check_progress = |progress| {
+        let progress = String::from_utf8(progress).unwrap();
+        assert!(progress.contains("Acquiring inputs for 2026-07-20 16:00:00\n"));
+        assert!(
+            progress.contains("ANA failed: Import the ANA station inventory before acquisition\n")
+        );
+        assert!(progress.ends_with("Acquisition finished with errors\n"));
+        assert!(!progress.contains('\x1b'));
+    };
+    let text = acquire(false);
+    check_progress(text.stdout);
+    assert!(text.stderr.is_empty());
+    let json = acquire(true);
+    check_progress(json.stderr);
+    let report: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(
+        report["ana"]["error"],
+        "Import the ANA station inventory before acquisition"
+    );
+}
 
 #[test]
 fn legacy_ana_csv_bootstraps_and_revises_raw_samples_idempotently() {
