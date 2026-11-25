@@ -1461,13 +1461,7 @@ impl Monitoring {
                             self.depart(Departure::Close);
                         }
                     });
-                    let name = self
-                        .display
-                        .workspace
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy();
-                    chrome::title_space(ui, &name, &self.display.workspace.display().to_string());
+                    chrome::title_space(ui);
                 },
             );
             if chrome::controls(ui, pt) {

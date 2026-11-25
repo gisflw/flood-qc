@@ -1,28 +1,14 @@
 //! Application-drawn title-bar controls and frameless window gestures.
 use eframe::egui::{self, Color32, CursorIcon, ResizeDirection, Stroke, Vec2, ViewportCommand};
 
-pub const CONTROLS_WIDTH: f32 = 118.;
+pub const CONTROLS_WIDTH: f32 = 100.;
 
-pub fn title_space(ui: &mut egui::Ui, label: &str, tooltip: &str) {
-    let (rect, response) = ui.allocate_exact_size(
+pub fn title_space(ui: &mut egui::Ui) {
+    let (_, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), 32.),
         egui::Sense::click_and_drag(),
     );
-    ui.painter()
-        .with_clip_rect(ui.clip_rect().intersect(rect))
-        .text(
-            rect.left_center(),
-            egui::Align2::LEFT_CENTER,
-            label,
-            egui::TextStyle::Body.resolve(ui.style()),
-            ui.visuals().text_color().gamma_multiply(0.72),
-        );
-    response
-        .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, ui.is_enabled(), label));
     drag(ui, &response);
-    if !tooltip.is_empty() {
-        response.on_hover_text(tooltip);
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -39,7 +25,7 @@ fn button(ui: &mut egui::Ui, action: Action, maximized: bool, pt: bool) -> egui:
         Action::Maximize => super::text(pt, "Maximize", "Maximizar"),
         Action::Close => super::text(pt, "Close application", "Fechar aplicativo"),
     };
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(38., 30.), egui::Sense::click());
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(32., 26.), egui::Sense::click());
     let visuals = ui.style().interact(&response);
     let closing = matches!(action, Action::Close);
     let highlighted = response.hovered() || response.has_focus();
@@ -235,7 +221,7 @@ mod tests {
                     events,
                     ..Default::default()
                 },
-                |ui| title_space(ui, "workspace", "workspace"),
+                title_space,
             );
             output.textures_delta.clear();
             output
@@ -274,8 +260,7 @@ mod tests {
                     ..Default::default()
                 },
                 |ui| {
-                    egui::Panel::top("title")
-                        .show(ui, |ui| title_space(ui, "workspace", "workspace"));
+                    egui::Panel::top("title").show(ui, title_space);
                 },
             );
             output.textures_delta.clear();
@@ -314,7 +299,7 @@ mod tests {
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(118., 30.),
+                        egui::vec2(CONTROLS_WIDTH, 26.),
                     )),
                     events,
                     ..Default::default()
@@ -329,11 +314,11 @@ mod tests {
         frame(Vec::new());
         frame(Vec::new());
         for (x, expected) in [
-            (15., Some(ViewportCommand::Minimized(true))),
-            (58., Some(ViewportCommand::Maximized(true))),
-            (98., None),
+            (16., Some(ViewportCommand::Minimized(true))),
+            (50., Some(ViewportCommand::Maximized(true))),
+            (84., None),
         ] {
-            let pos = egui::pos2(x, 15.);
+            let pos = egui::pos2(x, 13.);
             for pressed in [true, false] {
                 let output = frame(vec![
                     egui::Event::PointerMoved(pos),

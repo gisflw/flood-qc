@@ -190,7 +190,7 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 
 The desktop draws its own title strip and window controls, using the selected
 Light or Dark appearance consistently across platforms. The strip shows the HGE
-emblem, MGB Ops title, workspace name, compact Open workspace, Recent workspaces,
+emblem, MGB Ops title, compact Open workspace, Recent workspaces,
 Settings, and Close project actions, then Minimize, Maximize/Restore, and Close
 application controls at the right. Drag unused strip space to move the window,
 double-click it to maximize or restore, and drag an edge or corner to resize.
@@ -211,7 +211,7 @@ keys to move it. Both comparison modes show left and right scenario and period
 controls in Rainfall. The views share the basemap, layers, and selected feature.
 The wheel zooms without Ctrl, and the middle or primary button pans. On-map
 buttons in the upper-right corner zoom in/out and fit the regional extent. The uncovered map background
-matches the right dock groups in Light and Dark appearances.
+matches the backing around the right dock groups in Light and Dark appearances.
 
 Map updates retain the last successful rainfall, basin, or inundation display
 while replacements load or fail. Retained displays keep their original source

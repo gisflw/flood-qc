@@ -114,7 +114,7 @@ pub fn primary(_ui: &egui::Ui, label: String) -> egui::Button<'static> {
 }
 
 pub fn map_surface(ui: &egui::Ui) -> Color32 {
-    ui.visuals().window_fill()
+    ui.visuals().faint_bg_color
 }
 
 #[derive(Clone, Copy)]
@@ -148,17 +148,31 @@ pub fn action_button(
             )
         })
         .inner;
-    let size = if compact { 14. } else { 16. };
+    let size = if compact { 12. } else { 16. };
     let rect = egui::Rect::from_center_size(response.rect.center(), egui::Vec2::splat(size));
     let mut ink = ui.style().interact(&response).fg_stroke.color;
     if !response.enabled() {
         ink = ink.gamma_multiply(0.45);
+    } else if compact
+        && !matches!(icon, ActionIcon::Check)
+        && !response.hovered()
+        && !response.has_focus()
+    {
+        ink = ink.gamma_multiply(0.6);
     }
-    let stroke = Stroke::new(1.7, ink);
+    let stroke = Stroke::new(if compact { 1.5 } else { 1.7 }, ink);
     let p = |x: f32, y: f32| rect.min + egui::vec2(x, y) * (size / 16.);
     let painter = ui
         .painter()
         .with_clip_rect(response.rect.intersect(ui.clip_rect()));
+    if compact && response.has_focus() {
+        painter.rect_stroke(
+            response.rect,
+            4.,
+            ui.visuals().selection.stroke,
+            egui::StrokeKind::Inside,
+        );
+    }
     match icon {
         ActionIcon::Send => {
             painter.add(egui::Shape::line(
