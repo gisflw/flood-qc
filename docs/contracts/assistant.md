@@ -12,12 +12,14 @@ adapter and the agent's own sign-in. Put one of these executables on `PATH`.
 
 The selected agent and its provider may receive prompts and tool results. The
 installed agent's settings govern its native file, shell, and network permissions.
-MGB Ops keeps its transcript in memory and revokes its tool connection when the
-conversation closes. The agent starts in a separate local working directory.
+The desktop saves conversations and drafts locally, separately for each workspace,
+in the application's private data directory. The CLI keeps its transcript in memory.
+MGB Ops revokes the tool connection when a conversation closes. Each saved desktop
+conversation has a separate working directory; connection credentials are temporary.
 
 ## Desktop and CLI
 
-In the desktop, open **View → Pages → Assistant** and select an agent. The
+In the desktop, open **Pages → Assistant** and select an agent. The
 **Model** and **Reasoning effort** controls show the values offered by the
 installed adapter. Set them before sending a prompt or between turns. A model
 change can change the available effort values. The desktop remembers confirmed
@@ -30,11 +32,23 @@ Markdown as they stream, including headings, lists, code, links, and tables.
 Wide tables wrap within the transcript and show their rows as labeled fields
 when columns would be too
 narrow. A loading icon appears while waiting for the first reply text.
-Expand **Thinking** to read available adapter activity for that turn.
+Expand **Thinking** to read available adapter summaries and tool progress for
+that turn. Summaries render Markdown; tool rows distinguish progress, completion,
+and failure. Use message copy controls to copy the prompt or reply Markdown.
 The assistant uses the open workspace, the run source selected
 in **Files**, and the current run parameters. **Stop** cancels the active prompt.
-Closing the tab keeps the conversation open. **Reset conversation** starts
-a fresh connection and keeps the current run parameters.
+Closing the tab keeps the conversation open. **New chat** starts another
+conversation and keeps the current run parameters. **History** lists saved chats
+for the workspace and offers selection, rename, and deletion. The last viewed
+chat and unsent draft return after restart. **Load older messages** reveals earlier
+turns without deleting stored history.
+
+The desktop asks the adapter to resume a saved session when supported. If the
+session cannot be resumed, **Continue with transcript** starts a new session with
+available prior user/assistant text. The interface reports omitted older context;
+tool state and approvals are not replayed. Interrupted turns remain marked.
+Deleting a chat removes its MGB Ops history and working directory; installed agents
+may retain their own session records.
 
 Start the interactive CLI with an explicit workspace and agent.
 

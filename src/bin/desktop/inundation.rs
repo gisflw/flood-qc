@@ -22,7 +22,7 @@ pub const KIND: &str = "inundation";
 pub const COLOR: Color32 = Color32::from_rgb(135, 44, 191);
 
 const TILE_SIZE: usize = 256;
-const CACHE_SIZE: usize = 96;
+const CACHE_SIZE: usize = 168;
 const TILES_PER_PANE: usize = 40;
 const BATCH_SIZE: usize = 4;
 
@@ -196,7 +196,7 @@ fn tile_color(level: InundationLevel, value: u8) -> Color32 {
         (InundationLevel::Full, _) => return Color32::TRANSPARENT,
         (_, coverage) => (u16::from(coverage) * 255 / 100) as u8,
     };
-    Color32::from_rgba_unmultiplied(COLOR.r(), COLOR.g(), COLOR.b(), alpha)
+    Color32::from_rgba_unmultiplied(255, 255, 255, alpha)
 }
 
 struct TileImage {
@@ -204,6 +204,7 @@ struct TileImage {
     geometry: TileGeometry,
 }
 
+#[derive(Clone)]
 struct TileGeometry {
     vertices: Vec<((f64, f64), egui::Pos2)>,
     indices: Vec<u32>,
@@ -257,6 +258,7 @@ fn tile_geometry(
 struct OpenMask {
     reader: InundationMask,
     to_wgs84: Transformer,
+    geometry: std::cell::RefCell<HashMap<Tile, TileGeometry>>,
 }
 
 impl OpenMask {
@@ -288,7 +290,14 @@ impl OpenMask {
         };
         let to_wgs84 = transform(meta.epsg as u32, 4326)?;
         let to_source = transform(4326, meta.epsg as u32)?;
-        Ok((Self { reader, to_wgs84 }, Grid { meta, to_source }))
+        Ok((
+            Self {
+                reader,
+                to_wgs84,
+                geometry: std::cell::RefCell::new(HashMap::new()),
+            },
+            Grid { meta, to_source },
+        ))
     }
 
     fn tile(&self, frame: usize, tile: Tile) -> Result<Option<TileImage>, String> {
@@ -304,9 +313,21 @@ impl OpenMask {
         if pixels.iter().all(|color| *color == Color32::TRANSPARENT) {
             return Ok(None);
         }
+        let cached_geometry = self.geometry.borrow().get(&tile).cloned();
+        let geometry = if let Some(geometry) = cached_geometry {
+            geometry
+        } else {
+            let geometry = tile_geometry(meta, &self.to_wgs84, tile)?;
+            let mut cache = self.geometry.borrow_mut();
+            if cache.len() >= CACHE_SIZE {
+                cache.clear();
+            }
+            cache.insert(tile, geometry.clone());
+            geometry
+        };
         Ok(Some(TileImage {
             image: egui::ColorImage::new([width, height], pixels),
-            geometry: tile_geometry(meta, &self.to_wgs84, tile)?,
+            geometry,
         }))
     }
 }
@@ -422,6 +443,13 @@ struct Texture {
     geometry: TileGeometry,
 }
 
+struct Previous {
+    source: Source,
+    grid: Box<Grid>,
+    frame: usize,
+    cache: HashMap<(usize, Tile), CachedTile>,
+}
+
 struct CachedTile {
     texture: Option<Texture>,
     used: u64,
@@ -433,8 +461,10 @@ pub struct Inundation {
     grid: Option<Box<Grid>>,
     finding: Option<Finding>,
     frame: Option<usize>,
-    hour_input: String,
-    invalid_hour: bool,
+    displayed: Option<usize>,
+    previous: Option<Previous>,
+    calendar_month: Option<chrono::NaiveDate>,
+    viewport_seen: bool,
     cache: HashMap<(usize, Tile), CachedTile>,
     demand: HashMap<Tile, f64>,
     pass: u64,
@@ -450,8 +480,10 @@ impl Inundation {
             grid: None,
             finding: None,
             frame: None,
-            hour_input: String::new(),
-            invalid_hour: false,
+            displayed: None,
+            previous: None,
+            calendar_month: None,
+            viewport_seen: false,
             cache: HashMap::new(),
             demand: HashMap::new(),
             pass: 0,
@@ -462,27 +494,63 @@ impl Inundation {
 
     pub fn select(&mut self, source: Option<Source>) {
         if source != self.source {
+            if source.is_none() {
+                self.previous = None;
+                self.displayed = None;
+                self.grid = None;
+                self.cache.clear();
+            } else {
+                self.preserve_display();
+            }
             self.source = source;
             self.frame = None;
-            self.refresh();
+            self.reset_pending();
         }
     }
 
-    pub fn refresh(&mut self) {
+    fn preserve_display(&mut self) {
+        if let (Some(source), Some(grid), Some(frame)) =
+            (self.source.clone(), self.grid.take(), self.displayed.take())
+        {
+            let mut cache = std::mem::take(&mut self.cache);
+            cache.retain(|(cached_frame, _), _| *cached_frame == frame);
+            while cache.len() > TILES_PER_PANE * 2 {
+                let Some((&key, _)) = cache.iter().min_by_key(|(_, tile)| tile.used) else {
+                    break;
+                };
+                cache.remove(&key);
+            }
+            self.previous = Some(Previous {
+                source,
+                grid,
+                frame,
+                cache,
+            });
+        }
+    }
+
+    fn reset_pending(&mut self) {
         self.worker.close();
-        self.hour_input.clear();
-        self.invalid_hour = false;
+        self.calendar_month = None;
+        self.viewport_seen = false;
         self.grid = None;
+        self.displayed = None;
         self.finding = None;
         self.cache.clear();
         self.demand.clear();
         self.previous_truncated = false;
     }
 
+    pub fn refresh(&mut self) {
+        self.preserve_display();
+        self.reset_pending();
+    }
+
     fn change_frame(&mut self, frame: usize) {
         if self.frame != Some(frame) {
             self.frame = Some(frame);
             self.worker.invalidate();
+            self.finding = None;
             self.demand.clear();
         }
     }
@@ -496,7 +564,11 @@ impl Inundation {
             let last = meta.timeline.bounds.len() - 1;
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(frame > 0, egui::Button::new("←"))
+                    .add_enabled(
+                        frame > 0,
+                        egui::Button::new(egui::RichText::new("←").size(20.0))
+                            .min_size(egui::vec2(32.0, 28.0)),
+                    )
                     .on_hover_text(text(pt, "Previous hour", "Hora anterior"))
                     .clicked()
                 {
@@ -504,55 +576,75 @@ impl Inundation {
                 }
                 hour_slider(ui, &mut frame, last, pt);
                 if ui
-                    .add_enabled(frame < last, egui::Button::new("→"))
+                    .add_enabled(
+                        frame < last,
+                        egui::Button::new(egui::RichText::new("→").size(20.0))
+                            .min_size(egui::vec2(32.0, 28.0)),
+                    )
                     .on_hover_text(text(pt, "Next hour", "Próxima hora"))
                     .clicked()
                 {
                     frame += 1;
                 }
             });
-            if self.frame != Some(frame) {
-                self.hour_input = timestamp(meta.timeline.bounds[frame].end);
-                self.invalid_hour = false;
-            }
-            let apply = ui
-                .horizontal(|ui| {
-                    ui.label(text(pt, "Jump to", "Ir para"));
-                    let input = ui.add(
-                        egui::TextEdit::singleline(&mut self.hour_input)
-                            .desired_width(100.0)
-                            .hint_text("YYYYMMDD-HH"),
-                    );
-                    let enter = (input.has_focus() || input.lost_focus())
-                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    ui.button(text(pt, "Go", "Ir")).clicked() || enter
-                })
-                .inner;
-            if apply {
-                if let Some(index) = frame_at_hour(&meta.timeline.bounds, &self.hour_input) {
+            let current = meta.timeline.bounds[frame].end;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(text(pt, "Date", "Data"));
+                if let Some(date) = calendar_picker(
+                    ui,
+                    current.date(),
+                    &mut self.calendar_month,
+                    &meta.timeline.bounds,
+                    pt,
+                ) && let Some(index) =
+                    frame_for_date(&meta.timeline.bounds, date, current.time())
+                {
                     frame = index;
-                    self.invalid_hour = false;
-                } else {
-                    self.invalid_hour = true;
                 }
-            }
-            if self.invalid_hour {
-                ui.colored_label(
-                    ui.visuals().error_fg_color,
-                    text(
-                        pt,
-                        "Enter an available hour as YYYYMMDD-HH.",
-                        "Digite uma hora disponível no formato AAAAMMDD-HH.",
-                    ),
-                );
-            }
+                let date = meta.timeline.bounds[frame].end.date();
+                use chrono::Timelike;
+                let format = if meta
+                    .timeline
+                    .bounds
+                    .iter()
+                    .any(|bound| bound.end.second() != 0)
+                {
+                    "%H:%M:%S"
+                } else {
+                    "%H:%M"
+                };
+                egui::ComboBox::from_id_salt("inundation-time")
+                    .selected_text(meta.timeline.bounds[frame].end.format(format).to_string())
+                    .show_ui(ui, |ui| {
+                        for (index, bound) in meta
+                            .timeline
+                            .bounds
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, bound)| bound.end.date() == date)
+                        {
+                            ui.selectable_value(
+                                &mut frame,
+                                index,
+                                bound.end.format(format).to_string(),
+                            );
+                        }
+                    });
+            });
             let forecast = meta.timeline.bounds.get(meta.historical_count);
             let current = if frame < meta.historical_count {
                 text(pt, "Historical", "Histórico")
             } else {
                 text(pt, "Forecast", "Previsão")
             };
-            let display_format = text(pt, "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M");
+            let display_format = if meta.timeline.bounds.iter().any(|bound| {
+                use chrono::Timelike;
+                bound.start.second() != 0 || bound.end.second() != 0
+            }) {
+                text(pt, "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S")
+            } else {
+                text(pt, "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M")
+            };
             ui.label(format!(
                 "{} · {current}",
                 meta.timeline.bounds[frame].end.format(&display_format),
@@ -575,6 +667,39 @@ impl Inundation {
             }
             self.change_frame(frame);
         }
+        if let Some(previous) = &self.previous {
+            ui.small(format!(
+                "{}: {} · {}",
+                text(
+                    pt,
+                    "Showing previous inundation",
+                    "Exibindo inundação anterior"
+                ),
+                previous.source.scenario,
+                local_timestamp(previous.grid.meta.timeline.bounds[previous.frame].end, pt)
+            ));
+        } else if let (Some(displayed), Some(requested), Some(grid)) =
+            (self.displayed, self.frame, &self.grid)
+            && displayed != requested
+        {
+            ui.small(format!(
+                "{}: {}",
+                text(
+                    pt,
+                    "Showing previous inundation",
+                    "Exibindo inundação anterior"
+                ),
+                local_timestamp(grid.meta.timeline.bounds[displayed].end, pt)
+            ));
+        }
+        if self.finding.is_none()
+            && (self.previous.is_some() || (self.frame.is_some() && self.displayed != self.frame))
+        {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(text(pt, "Loading inundation", "Carregando inundação"));
+            });
+        }
         match self.finding.as_ref() {
             Some(Finding::Missing) => {
                 ui.label(text(
@@ -594,7 +719,7 @@ impl Inundation {
                 )
                 .on_hover_text(error);
             }
-            None if self.grid.is_none() => {
+            None if self.grid.is_none() && self.previous.is_none() => {
                 ui.horizontal(|ui| {
                     ui.spinner();
                     ui.label(text(pt, "Loading inundation", "Carregando inundação"));
@@ -611,31 +736,40 @@ impl Inundation {
         rect: egui::Rect,
         zoom: f64,
         opacity: f32,
+        tint: Color32,
     ) {
-        let (Some(grid), Some(frame)) = (&self.grid, self.frame) else {
-            return;
-        };
-        if self.finding.is_some() {
-            return;
-        }
         let clip = ui.clip_rect().intersect(rect);
         if !clip.is_positive() {
             return;
         }
+        self.viewport_seen = true;
         let world_width = 256. * 2f64.powf(zoom) * f64::from(ui.ctx().pixels_per_point());
+        if let Some(grid) = &self.grid
+            && let Some(visible) = grid.visible_tiles(projector, clip, world_width)
+        {
+            self.truncated |= visible.truncated;
+            for (tile, distance) in visible.tiles {
+                self.demand
+                    .entry(tile)
+                    .and_modify(|old| *old = old.min(distance))
+                    .or_insert(distance);
+            }
+        }
+        let (grid, frame, cache) = if let Some(previous) = &mut self.previous {
+            (&previous.grid, previous.frame, &mut previous.cache)
+        } else if let (Some(grid), Some(frame)) = (&self.grid, self.displayed) {
+            (grid, frame, &mut self.cache)
+        } else {
+            return;
+        };
         let Some(visible) = grid.visible_tiles(projector, clip, world_width) else {
             return;
         };
-        self.truncated |= visible.truncated;
         let painter = ui.painter().with_clip_rect(clip);
         let transform = map::ScreenTransform::new(projector, rect, zoom);
-        let color = Color32::WHITE.gamma_multiply(opacity);
-        for (tile, distance) in visible.tiles {
-            self.demand
-                .entry(tile)
-                .and_modify(|old| *old = old.min(distance))
-                .or_insert(distance);
-            let Some(cached) = self.cache.get_mut(&(frame, tile)) else {
+        let color = tint.gamma_multiply(opacity);
+        for (tile, _) in visible.tiles {
+            let Some(cached) = cache.get_mut(&(frame, tile)) else {
                 continue;
             };
             cached.used = self.pass;
@@ -676,6 +810,21 @@ impl Inundation {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
+        if visible
+            && self.finding.is_none()
+            && let Some(frame) = self.frame
+            && self.grid.is_some()
+            && self.viewport_seen
+            && self
+                .demand
+                .keys()
+                .all(|tile| self.cache.contains_key(&(frame, *tile)))
+            && (self.displayed != Some(frame) || self.previous.is_some())
+        {
+            self.displayed = Some(frame);
+            self.previous = None;
+            context.request_repaint();
+        }
         if visible && !self.worker.in_flight && self.finding.is_none() {
             let job = match (&self.source, &self.grid, self.frame) {
                 (Some(source), None, _) => Some(Job::Open(source.clone())),
@@ -711,6 +860,7 @@ impl Inundation {
             context.request_repaint();
         }
         self.truncated = false;
+        self.viewport_seen = false;
         self.demand.clear();
         self.pass += 1;
     }
@@ -721,7 +871,6 @@ impl Inundation {
                 let last = grid.meta.timeline.bounds.len() - 1;
                 let frame = self.frame.unwrap_or(grid.meta.historical_count).min(last);
                 self.frame = Some(frame);
-                self.hour_input = timestamp(grid.meta.timeline.bounds[frame].end);
                 self.grid = Some(grid);
             }
             Loaded::Open(Err(error)) => self.finding = Some(error),
@@ -758,7 +907,14 @@ impl Inundation {
                     }
                 }
                 while self.cache.len() > CACHE_SIZE {
-                    let Some((&key, _)) = self.cache.iter().min_by_key(|(_, cached)| cached.used)
+                    let Some((&key, _)) = self
+                        .cache
+                        .iter()
+                        .filter(|((frame, tile), _)| {
+                            !(self.demand.contains_key(tile)
+                                && (Some(*frame) == self.frame || Some(*frame) == self.displayed))
+                        })
+                        .min_by_key(|(_, cached)| cached.used)
                     else {
                         break;
                     };
@@ -769,14 +925,143 @@ impl Inundation {
     }
 }
 
-fn timestamp(value: chrono::NaiveDateTime) -> String {
-    value.format("%Y%m%d-%H").to_string()
+fn local_timestamp(value: chrono::NaiveDateTime, pt: bool) -> String {
+    use chrono::Timelike;
+    let format = match (pt, value.second() != 0) {
+        (false, false) => "%Y-%m-%d %H:%M",
+        (false, true) => "%Y-%m-%d %H:%M:%S",
+        (true, false) => "%d/%m/%Y %H:%M",
+        (true, true) => "%d/%m/%Y %H:%M:%S",
+    };
+    value.format(format).to_string()
 }
 
-fn frame_at_hour(bounds: &[mgb_ops::store::TimeInterval], input: &str) -> Option<usize> {
+fn calendar_picker(
+    ui: &mut egui::Ui,
+    selected: chrono::NaiveDate,
+    month: &mut Option<chrono::NaiveDate>,
+    bounds: &[mgb_ops::store::TimeInterval],
+    pt: bool,
+) -> Option<chrono::NaiveDate> {
+    use chrono::Datelike;
+    let first = bounds.first()?.end.date().with_day(1)?;
+    let last = bounds.last()?.end.date().with_day(1)?;
+    let current = month.get_or_insert(selected.with_day(1)?);
+    *current = (*current).clamp(first, last);
+    let months = if pt {
+        [
+            "Janeiro",
+            "Fevereiro",
+            "Março",
+            "Abril",
+            "Maio",
+            "Junho",
+            "Julho",
+            "Agosto",
+            "Setembro",
+            "Outubro",
+            "Novembro",
+            "Dezembro",
+        ]
+    } else {
+        [
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ]
+    };
+    let weekdays = if pt {
+        ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
+    } else {
+        ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    };
+    let mut choice = None;
+    let response = ui.menu_button(
+        selected
+            .format(if pt { "%d/%m/%Y" } else { "%Y-%m-%d" })
+            .to_string(),
+        |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(*current > first, egui::Button::new("←"))
+                    .clicked()
+                    && let Some(previous) = current.checked_sub_months(chrono::Months::new(1))
+                {
+                    *current = previous;
+                }
+                ui.label(format!(
+                    "{} {}",
+                    months[current.month0() as usize],
+                    current.year()
+                ));
+                if ui
+                    .add_enabled(*current < last, egui::Button::new("→"))
+                    .clicked()
+                    && let Some(next) = current.checked_add_months(chrono::Months::new(1))
+                {
+                    *current = next;
+                }
+            });
+            egui::Grid::new("inundation-calendar").show(ui, |ui| {
+                for day in weekdays {
+                    ui.label(day);
+                }
+                ui.end_row();
+                let offset = current.weekday().num_days_from_monday();
+                for slot in 0..42 {
+                    let day = slot as i64 - i64::from(offset) + 1;
+                    if day > 0
+                        && let Some(date) =
+                            current.checked_add_signed(chrono::Duration::days(day - 1))
+                        && date.month() == current.month()
+                    {
+                        let available = bounds.iter().any(|bound| bound.end.date() == date);
+                        if ui
+                            .add_enabled(
+                                available,
+                                egui::Button::selectable(date == selected, day.to_string()),
+                            )
+                            .clicked()
+                        {
+                            choice = Some(date);
+                            ui.close();
+                        }
+                    } else {
+                        ui.label("");
+                    }
+                    if slot % 7 == 6 {
+                        ui.end_row();
+                    }
+                }
+            });
+        },
+    );
+    if response.response.clicked() {
+        *month = selected.with_day(1);
+    }
+    choice
+}
+
+fn frame_for_date(
+    bounds: &[mgb_ops::store::TimeInterval],
+    date: chrono::NaiveDate,
+    time: chrono::NaiveTime,
+) -> Option<usize> {
     bounds
         .iter()
-        .position(|bound| timestamp(bound.end) == input)
+        .enumerate()
+        .filter(|(_, bound)| bound.end.date() == date)
+        .min_by_key(|(_, bound)| (bound.end.time() - time).num_seconds().unsigned_abs())
+        .map(|(index, _)| index)
 }
 
 fn hour_slider(ui: &mut egui::Ui, frame: &mut usize, last: usize, pt: bool) -> egui::Response {
@@ -799,6 +1084,10 @@ mod tests {
     use mgb_ops::store::{IntervalAxis, TimeInterval};
     use std::time::{Duration as Wait, Instant};
     use walkers::{MapMemory, lon_lat};
+
+    fn timestamp(value: chrono::NaiveDateTime) -> String {
+        value.format("%Y%m%d-%H").to_string()
+    }
 
     fn transformer(from: u32, to: u32) -> Transformer {
         Transformer::new(
@@ -937,7 +1226,7 @@ mod tests {
             )));
         }
         assert_eq!(tile_color(InundationLevel::Full, 0), Color32::TRANSPARENT);
-        assert_eq!(tile_color(InundationLevel::Full, 1), COLOR);
+        assert_eq!(tile_color(InundationLevel::Full, 1), Color32::WHITE);
         assert_eq!(
             tile_color(InundationLevel::Overview4, 255),
             Color32::TRANSPARENT
@@ -963,11 +1252,19 @@ mod tests {
         );
 
         assert_eq!(
-            frame_at_hour(&grid.meta.timeline.bounds, "20261121-13"),
+            frame_for_date(
+                &grid.meta.timeline.bounds,
+                chrono::NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+                chrono::NaiveTime::from_hms_opt(13, 0, 0).unwrap()
+            ),
             Some(boundary)
         );
         assert_eq!(
-            frame_at_hour(&grid.meta.timeline.bounds, "20262111-13"),
+            frame_for_date(
+                &grid.meta.timeline.bounds,
+                chrono::NaiveDate::from_ymd_opt(2026, 12, 21).unwrap(),
+                chrono::NaiveTime::from_hms_opt(13, 0, 0).unwrap()
+            ),
             None
         );
 
@@ -1130,5 +1427,145 @@ mod tests {
             state.cache.is_empty(),
             "request fell outside the new viewport"
         );
+    }
+    #[test]
+    fn visible_tiles_swap_together_and_failure_keeps_displayed_frame() {
+        let context = egui::Context::default();
+        let mut state = Inundation::new(context.clone());
+        let (jobs, _pending) = mpsc::channel();
+        let (_ready, replies) = mpsc::channel();
+        state.worker = Worker {
+            jobs,
+            replies,
+            epoch: Arc::new(AtomicU64::new(0)),
+            in_flight: true,
+        };
+        state.source = Some(Source {
+            selection: None,
+            root: PathBuf::from("run"),
+            scenario: "test".into(),
+        });
+        state.grid = Some(Box::new(grid(4326)));
+        state.frame = Some(4);
+        state.displayed = Some(3);
+        let left = Tile {
+            level: InundationLevel::Full,
+            x: 0,
+            y: 0,
+        };
+        let right = Tile { x: 1, ..left };
+        state.viewport_seen = true;
+        state.demand.extend([(left, 0.), (right, 0.)]);
+        state.cache.insert(
+            (4, left),
+            CachedTile {
+                texture: None,
+                used: 0,
+            },
+        );
+        state.finish_view(&context, true);
+        assert_eq!(state.displayed, Some(3));
+        state.viewport_seen = true;
+        state.demand.extend([(left, 0.), (right, 0.)]);
+        state.cache.insert(
+            (4, right),
+            CachedTile {
+                texture: None,
+                used: 0,
+            },
+        );
+        state.finish_view(&context, true);
+        assert_eq!(
+            state.displayed,
+            Some(4),
+            "transparent tiles count as completed"
+        );
+        state.change_frame(5);
+        state.finding = Some(Finding::Invalid("read failed".into()));
+        state.demand.insert(left, 0.);
+        state.finish_view(&context, true);
+        assert_eq!(state.displayed, Some(4));
+    }
+
+    #[test]
+    fn replacing_a_source_retains_old_identity_until_ready() {
+        let context = egui::Context::default();
+        let mut state = Inundation::new(context);
+        let old = Source {
+            selection: None,
+            root: PathBuf::from("old"),
+            scenario: "first".into(),
+        };
+        state.source = Some(old.clone());
+        state.grid = Some(Box::new(grid(4326)));
+        state.frame = Some(3);
+        state.displayed = Some(3);
+        state.select(Some(Source {
+            root: PathBuf::from("new"),
+            scenario: "second".into(),
+            ..old.clone()
+        }));
+        assert!(
+            state
+                .previous
+                .as_ref()
+                .is_some_and(|previous| previous.source == old)
+        );
+        assert_eq!(
+            state.previous.as_ref().map(|previous| previous.frame),
+            Some(3)
+        );
+        state.select(None);
+        assert!(state.previous.is_none());
+    }
+    #[test]
+    fn empty_visible_set_completes_only_after_a_viewport_was_drawn() {
+        let context = egui::Context::default();
+        let mut state = Inundation::new(context.clone());
+        state.grid = Some(Box::new(grid(4326)));
+        state.frame = Some(4);
+        state.displayed = Some(3);
+        state.finish_view(&context, true);
+        assert_eq!(state.displayed, Some(3));
+        state.viewport_seen = true;
+        state.finish_view(&context, true);
+        assert_eq!(state.displayed, Some(4));
+    }
+
+    #[test]
+    fn failed_visible_tile_stays_failed_without_automatic_retry() {
+        let context = egui::Context::default();
+        let mut state = Inundation::new(context.clone());
+        let (jobs, pending) = mpsc::channel();
+        let (ready, replies) = mpsc::channel();
+        state.worker = Worker {
+            jobs,
+            replies,
+            epoch: Arc::new(AtomicU64::new(0)),
+            in_flight: true,
+        };
+        state.grid = Some(Box::new(grid(4326)));
+        state.frame = Some(4);
+        state.displayed = Some(3);
+        let tile = Tile {
+            level: InundationLevel::Full,
+            x: 0,
+            y: 0,
+        };
+        state.demand.insert(tile, 0.);
+        state.viewport_seen = true;
+        ready
+            .send((0, Loaded::Tiles(vec![(tile, Err("failure".into()))])))
+            .unwrap();
+        state.finish_view(&context, true);
+        let failed = matches!(state.finding, Some(Finding::Invalid(_)));
+        assert!(failed);
+        assert_eq!(state.displayed, Some(3));
+        state.demand.insert(tile, 0.);
+        state.viewport_seen = true;
+        state.finish_view(&context, true);
+        let failed = matches!(state.finding, Some(Finding::Invalid(_)));
+        assert!(failed);
+        assert!(pending.try_recv().is_err());
     }
 }

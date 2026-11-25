@@ -26,23 +26,23 @@ remain independent of runner work.
 
 ## Common tasks
 
-Use **View → Pages → Assistant** to open an [agent conversation](assistant.md) in the
+Use **Pages → Assistant** to open an [agent conversation](assistant.md) in the
 current workspace.
 
 | Task | Control |
 | --- | --- |
-| Open a workspace or import saved data | **Project → Open workspace** or **Import data** |
+| Open a workspace or import saved data | **Workspace → Open workspace** or **Import data** |
 | Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
 | Step through modeled inundation | Use **Map → Inundation** |
-| Inspect location data or a run | **View → Charts**, **Data**, or **Files** |
-| Review observation availability and QC | **View → Observation review** |
-| Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
-| Edit observations | **View → Observation review** |
-| Run a workspace operation at a selected reference | **Processing → New run** |
-| Set forcing and state options | **Processing → Forcing and state** |
-| Schedule jobs or monitor and cancel a job | **Processing → Operation → Automation** or **View → Review and runs → Jobs** |
-| Edit workspace settings | **Project → Workspace → Settings** |
-| Edit geometry or soil | **Processing → Calibration** |
+| Inspect location data or a run | **Pages → Charts**, **Data**, or **Files** |
+| Review observation availability and QC | **Review and runs → Observation review** |
+| Compare runs, prepare a bulletin, or share a run | **Review and runs → Run comparison**, **Bulletins**, or **Share runs** |
+| Edit observations | **Review and runs → Observation review** |
+| Run a workspace operation at a selected reference | **Operation → New run** |
+| Set forcing and state options | **Operation → Forcing and state** |
+| Schedule jobs or monitor and cancel a job | **Operation → Automation** or **Review and runs → Jobs** |
+| Edit workspace settings | **Workspace → Settings** |
+| Edit geometry or soil | **Calibration** |
 
 See [saved-data workflows](saved-data.md) for request formats and outputs and
 [controlled jobs](#controlled-jobs) for execution and cancellation.
@@ -53,8 +53,8 @@ The interface reads configured regional mini segments/catchments and MINI.gtp,
 `operation.sqlite`, the [active rainfall
 cache](operations.md#active-run-and-rainfall-cache), and the workspace's active run.
 Charts, Files and Map open the active generation automatically. While viewing
-the active run, a newly published generation updates all three views and clears
-the previous scenario, inundation frame, and tiles. Files shows the displayed
+the active run, a newly published generation updates all three views. Map overlays
+retain the previous display until the new generation is ready. Files shows the displayed
 run's status and provenance. Missing or corrupt scenario outputs produce
 findings. For previous attempts, see the [run history](operations.md#active-run-and-rainfall-cache).
 
@@ -90,16 +90,16 @@ coverage come from the active cache. Negative signed hours end at the reference
 and use observations. Positive hours start at the reference and use the selected
 forecast. Explicit start/end bounds can span both. Cells with incomplete
 coverage display as NA. Scenario changes apply immediately to the current period.
-Use **Apply** to commit a period edit. A successful **Processing → New run → Run All** supplies
+Use **Apply** to commit a period edit. A successful **Operation → New run → Run All** supplies
 the new active cache and refreshes the open view. Use Refresh/F5 to load a generation published by a separate process while
 the desktop is idle.
 
 Enable **Inundation** under **Map → Layers** to see the displayed run's scenario
-mask and controls. Choose the scenario and step through model hours with the slider or arrow keys while it has
-focus. The control starts at the first forecast hour and displays the model's
-local time. Double and Swipe use the same inundation frame on both sides. Use
-Refresh/F5 after generating a mask for an open run. Refresh resets the scenario
-and inundation frame. See
+mask and controls. Step through available frames with the previous/next buttons,
+slider, or arrow keys while the slider has focus. The calendar and time selector
+jump to an available local timestamp; unavailable dates are disabled. The control
+starts at the first forecast hour. Double and Swipe use the same frame on both
+sides. Refresh/F5 reloads generated masks and retains a valid scenario and frame. See
 [inundation processing](inundation.md) for the command and regional inputs.
 
 Open **Settings** on the Charts toolbar to edit the location, date window,
@@ -111,25 +111,30 @@ replacement fails, a retained comparison keeps its original displayed IDs and
 exports.
 Rainfall inspection returns the accumulated original numeric cell, including NA
 and supplied zero. Display opacity does not alter accumulation or recreate its
-texture. The map's **Upstream basin rainfall over period** shows the area-weighted
-mean accumulation in mm, coverage, and period for each displayed side. The
+texture. The selected MINI or linked-station card's **Upstream basin rainfall over
+period** shows the area-weighted mean accumulation in mm, scenario, and period
+for each displayed side. The
 rainfall total and selected basin area include the outlet catchment and all its
 upstream catchments. The totals use frozen MINI topology and local areas.
 Project topology supplies the area when a frozen summary is unavailable. Load
 upstream basin uses the clicked MINI or the station's linked MINI when
 topology is available. Layers names the loaded basin by its outlet MINI and
 allows it to be hidden or cleared independently of later selections. Replacing
-a basin clears the previous one as loading starts. Project changes release it.
+a basin retains the previous one until its replacement succeeds. Project changes release it.
 
 ## Display and exports
 
 The map includes attributed raster basemaps, river segments, catchments, stations,
 an upstream basin outline and accumulated rainfall. The map shows the rainfall scale when a
-loaded overlay is visible. The Map tab shows a linear blue bar from 1 mm to the configured maximum, which defaults to 100 mm. Colors at the
-endpoints also cover values outside that range. An NA swatch marks incomplete
-coverage. Use the checkbox in a layer row to toggle visibility. Expand the row
-with **+** for order and opacity controls. Expanded local vector rows also offer
-color and removal controls. Local vector layers affect only the display.
+loaded overlay is visible. The Map tab shows a linear colour bar, initially blue, from 1 mm to the configured maximum, which defaults to 100 mm. Colors at the
+endpoints also cover values outside that range. Incomplete coverage remains
+transparent and inspection reports NA; the rainfall card omits coverage and NA badges.
+Use the checkbox in a layer row to toggle visibility. Click a colour swatch to
+open the colour matrix or custom picker. Rainfall changes its scale hue; stations
+have separate linked and unknown-link colours. Expand the row with **+** for
+order, opacity, and applicable stroke-thickness controls in display points.
+Upstream basins offer Outline or Filled; fills preserve holes and separate parts.
+Local vector rows also offer removal controls. Local vector layers affect only the display.
 Polygon parts retain their holes. At regional zoom, river paths are simplified
 with at most half a display pixel of error. Close zoom and river hit testing use
 the original paths. Rainfall uses projected latitude strips to keep
@@ -161,13 +166,25 @@ legends at 1×, 2× or 3×, replacing its destination atomically.
 
 ## Layout and settings
 
-The ribbon has Project, View and Processing tabs. The map stays visible in the center with linked basemap
+The ribbon shows all actions together in Workspace, Monitoring, Pages, Review and
+runs, Layout, Operation, and Calibration subgroups. Scroll horizontally when the
+window is narrow; keyboard focus brings actions into view. The map stays visible
+in the center with linked basemap
 attribution in the bottom stripe when tiles are enabled. NASA Blue Marble provides a satellite basemap at regional scale.
 **Map view** offers **Single**, **Double**, and **Swipe**. Double synchronizes the
 center and zoom of two side-by-side maps. Swipe compares the overlays at the same
 scale and location using a draggable divider. Focus the divider and use the arrow
 keys to move it. Both comparison modes show left and right scenario and period
 controls in Rainfall. The views share the basemap, layers, and selected feature.
+The wheel zooms without Ctrl, and the middle or primary button pans. On-map
+buttons zoom in/out and fit the regional extent. The uncovered map background
+matches the right dock groups in Light and Dark appearances.
+
+Map updates retain the last successful rainfall, basin, or inundation display
+while replacements load or fail. Retained displays keep their original source
+and time labels. Inundation switches visible tiles together after the new frame
+is ready, including fully transparent results. A committed workspace switch
+releases the previous workspace's overlays.
 The one-line bottom stripe shows map hover coordinates and rainfall, along with the displayed run's reference time and timezone,
 observed and forecast horizons, and available scenarios. The summary comes from
 the loaded run and its frozen settings. Day horizons appear only when the saved
@@ -188,7 +205,7 @@ or focus the group that already contains the tab. Each page stays within its
 group. Hover over scrollable content to reveal its vertical scrollbar. Wide
 tables can present rows as labeled fields in narrow groups.
 
-The **Layout** group under **View** has a language button, a Light/Dark control,
+The **Layout** group has a language button, a Light/Dark control,
 and **Reset layout**. The control highlights the active appearance. Language and appearance changes apply immediately and
 are remembered app-wide. Light is the default. Preferences remember each project's right pane, map view, divider position,
 and applied rainfall settings. Projects saved before map comparisons open in Single
@@ -196,15 +213,18 @@ with their previous rainfall settings. Projects saved with a flat right pane ope
 pane and keeps results, selections and unfinished edits. Tab navigation and ribbon
 actions are keyboard accessible. Ctrl+1 focuses **Map view**, Ctrl+2/3 opens Charts/Data,
 Ctrl+S saves workspace settings, Ctrl+Q requests exit, and F5 refreshes monitoring.
+Reading text outside map and chart canvases supports drag selection and keyboard
+copy. Double-click reading text to select a word and open Copy/Select all actions.
+Editable fields retain their ordinary selection and editing behavior.
 
 ## Workspace settings and run parameters
 
-**Project → Workspace → Settings** edits the geometry and engine paths in
+**Workspace → Settings** edits the geometry and engine paths in
 `config.toml`. Save validates and atomically replaces the file. Revert restores
 the last saved settings. Closing or switching a workspace prompts about
 unsaved workspace settings.
 
-**Processing → New run** opens the workspace defaults. Edit the local reference
+**Operation → New run** opens the workspace defaults. Edit the local reference
 hour and day horizons. The form shows the resulting coverage and scenarios.
 Use **Restore defaults** to select zero future rain and the latest usable raw
 cycle per product. Add, remove, reorder or pin scenarios for the current run.
@@ -212,13 +232,13 @@ Add a corrected scenario for a specific cycle to edit its transformations and
 preview the raw and corrected grids on the same scale. Run changes are
 temporary. **Save preparation** freezes the selected inputs for later execution.
 
-**View → Observation review** shows availability and spatial rainfall checks.
+**Review and runs → Observation review** shows availability and spatial rainfall checks.
 Load, edit, and save the ordered workspace observation edits from the same page.
 
 ## Controlled jobs
 
 **Run All** acquires the configured inputs, prepares and executes, and publishes
-the results and rainfall cache together on success. Use **Processing → Acquire
+the results and rainfall cache together on success. Use **Operation → Acquire
 inputs** to update the catalog independently. See [acquisition](acquisition.md).
 
 Operational file work and processing run on a dedicated worker, separately from

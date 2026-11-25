@@ -76,10 +76,18 @@ impl Terminal {
                 }
                 AssistantEvent::ToolConnected => writeln!(out, "MGB Ops tools connected.")?,
                 AssistantEvent::Text(text) => write!(out, "{text}")?,
-                AssistantEvent::Thought(_)
+                AssistantEvent::SessionStarted(_)
+                | AssistantEvent::ResumeUnavailable(_)
+                | AssistantEvent::Thought(_)
                 | AssistantEvent::Settings(_)
                 | AssistantEvent::SettingChanged { .. } => {}
-                AssistantEvent::ToolStatus(status) => writeln!(out, "\n{status}")?,
+                AssistantEvent::ToolStatus { id, title, status } => {
+                    let parts = [title.as_deref(), status.as_deref(), id.as_deref()]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>();
+                    writeln!(out, "\n{}", parts.join(" · "))?;
+                }
                 AssistantEvent::Permission {
                     request,
                     operation,

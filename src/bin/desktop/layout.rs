@@ -325,8 +325,8 @@ impl Layout {
             empty.centered_and_justified(|ui| {
                 ui.weak(super::text(
                     pt,
-                    "Open a tab from the Pages group on the View ribbon.",
-                    "Abra uma aba no grupo Páginas da guia Exibir.",
+                    "Open a tab from the Pages group on the ribbon.",
+                    "Abra uma aba no grupo Páginas da faixa superior.",
                 ));
             });
             return None;

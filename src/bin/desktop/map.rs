@@ -217,6 +217,27 @@ pub struct LayerControl {
     pub kind: String,
     pub visible: bool,
     pub opacity: f32,
+    #[serde(default)]
+    pub color: Option<[u8; 4]>,
+    #[serde(default)]
+    pub secondary_color: Option<[u8; 4]>,
+    #[serde(default)]
+    pub width: Option<f32>,
+    #[serde(default)]
+    pub filled: bool,
+}
+impl LayerControl {
+    pub fn display_color(&self) -> Color32 {
+        self.color.map_or_else(
+            || layer_swatch(&self.kind),
+            |c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]),
+        )
+    }
+    pub fn display_secondary_color(&self) -> Color32 {
+        self.secondary_color.map_or(Color32::GRAY, |c| {
+            Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3])
+        })
+    }
 }
 pub fn default_layers() -> Vec<LayerControl> {
     [
@@ -232,6 +253,10 @@ pub fn default_layers() -> Vec<LayerControl> {
         kind: kind.into(),
         visible,
         opacity,
+        color: None,
+        secondary_color: None,
+        width: None,
+        filled: false,
     })
     .collect()
 }
@@ -406,6 +431,46 @@ pub(super) fn world((lon, lat): (f64, f64)) -> (f64, f64) {
         (1. - lat.to_radians().tan().asinh() / std::f64::consts::PI) / 2.,
     )
 }
+/// Fit all regional catchment and river geometry into a map viewport.
+pub fn fit_extent(project: &Project, viewport: Vec2, camera: &mut MapMemory) -> bool {
+    let mut min = (f64::INFINITY, f64::INFINITY);
+    let mut max = (f64::NEG_INFINITY, f64::NEG_INFINITY);
+    for point in project
+        .fills
+        .iter()
+        .flat_map(|f| f.fill.projected.iter())
+        .chain(
+            project
+                .segments
+                .iter()
+                .flat_map(|f| f.paths.iter())
+                .flat_map(|p| p.points.iter()),
+        )
+    {
+        if point.0.is_finite() && point.1.is_finite() {
+            min = (min.0.min(point.0), min.1.min(point.1));
+            max = (max.0.max(point.0), max.1.max(point.1));
+        }
+    }
+    if min.0 > max.0 || viewport.x <= 0. || viewport.y <= 0. {
+        return false;
+    }
+    let center = ((min.0 + max.0) / 2., (min.1 + max.1) / 2.);
+    let lon = center.0 * 360. - 180.;
+    let lat = (std::f64::consts::PI * (1. - 2. * center.1))
+        .sinh()
+        .atan()
+        .to_degrees();
+    let dx = (max.0 - min.0).max(1e-12);
+    let dy = (max.1 - min.1).max(1e-12);
+    let scale = (f64::from(viewport.x) * 0.9 / dx).min(f64::from(viewport.y) * 0.9 / dy);
+    let zoom = (scale / 256.).log2().clamp(0., 26.);
+    if camera.set_zoom(zoom).is_err() {
+        return false;
+    }
+    camera.center_at(lon_lat(lon, lat));
+    true
+}
 pub(super) struct ScreenTransform {
     center: (f64, f64),
     scale: f64,
@@ -480,17 +545,31 @@ fn color(kind: &str) -> Color32 {
 const RAIN_MIN_MM: f64 = 1.;
 pub const RAIN_MAX_MM: f64 = 100.;
 
-pub fn rain_color(value: Option<f64>, maximum: f64) -> Color32 {
+#[cfg(test)]
+fn rain_color(value: Option<f64>, maximum: f64) -> Color32 {
+    rain_color_with(value, maximum, Color32::from_rgb(5, 40, 135))
+}
+pub fn rain_color_with(value: Option<f64>, maximum: f64, hue: Color32) -> Color32 {
     let Some(value) = value else {
         return Color32::TRANSPARENT;
     };
     let fraction = ((value - RAIN_MIN_MM) / (maximum - RAIN_MIN_MM)).clamp(0., 1.);
     let channel = |light: f64, dark: f64| (light + (dark - light) * fraction).round() as u8;
-    Color32::from_rgb(channel(174., 5.), channel(214., 40.), channel(250., 135.))
+    let default = Color32::from_rgb(5, 40, 135);
+    if hue == default {
+        Color32::from_rgb(channel(174., 5.), channel(214., 40.), channel(250., 135.))
+    } else {
+        let light = |c: u8| 255. - (255. - f64::from(c)) * 0.32;
+        Color32::from_rgb(
+            channel(light(hue.r()), f64::from(hue.r())),
+            channel(light(hue.g()), f64::from(hue.g())),
+            channel(light(hue.b()), f64::from(hue.b())),
+        )
+    }
 }
 pub fn layer_swatch(kind: &str) -> Color32 {
     if kind == "rainfall" {
-        rain_color(Some(10.), RAIN_MAX_MM)
+        Color32::from_rgb(5, 40, 135)
     } else if kind == inundation::KIND {
         inundation::COLOR
     } else {
@@ -498,7 +577,7 @@ pub fn layer_swatch(kind: &str) -> Color32 {
     }
 }
 
-pub fn rain_legend(ui: &mut egui::Ui, pt: bool, maximum: f64) {
+pub fn rain_legend_with(ui: &mut egui::Ui, pt: bool, maximum: f64, hue: Color32) {
     ui.strong(super::text(
         pt,
         "Accumulated rainfall (mm)",
@@ -510,9 +589,10 @@ pub fn rain_legend(ui: &mut egui::Ui, pt: bool, maximum: f64) {
     for step in 0..=32 {
         let fraction = step as f32 / 32.;
         let x = egui::lerp(bar.x_range(), fraction);
-        let color = rain_color(
+        let color = rain_color_with(
             Some(RAIN_MIN_MM + f64::from(fraction) * (maximum - RAIN_MIN_MM)),
             maximum,
+            hue,
         );
         mesh.colored_vertex(egui::pos2(x, bar.top()), color);
         mesh.colored_vertex(egui::pos2(x, bar.bottom()), color);
@@ -551,11 +631,6 @@ pub fn rain_legend(ui: &mut egui::Ui, pt: bool, maximum: f64) {
             ui.visuals().text_color(),
         );
     }
-    super::theme::color_key(ui, rain_color(None, RAIN_MAX_MM), "NA").on_hover_text(super::text(
-        pt,
-        "Incomplete coverage",
-        "Cobertura incompleta",
-    ));
 }
 
 fn screen(projector: &Projector, p: (f64, f64)) -> Pos2 {
@@ -599,23 +674,28 @@ pub struct RainImage {
     pub rain: Arc<Rain>,
 }
 impl RainImage {
-    fn colors(rain: &Rain, maximum: f64) -> egui::ColorImage {
+    fn colors(rain: &Rain, maximum: f64, hue: Color32) -> egui::ColorImage {
         egui::ColorImage::new(
             [rain.grid.longitudes.len(), rain.grid.latitudes.len()],
             rain.values
                 .iter()
-                .map(|v| rain_color(*v, maximum))
+                .map(|v| rain_color_with(*v, maximum, hue))
                 .collect(),
         )
     }
-    pub fn recolor(&mut self, maximum: f64) {
+    pub fn recolor_with_color(&mut self, maximum: f64, hue: Color32) {
         self.texture.set(
-            Self::colors(&self.rain, maximum),
+            Self::colors(&self.rain, maximum, hue),
             egui::TextureOptions::NEAREST,
         );
     }
-    pub fn new(context: &egui::Context, rain: Arc<Rain>, maximum: f64) -> Self {
-        let image = Self::colors(&rain, maximum);
+    pub fn new_with_color(
+        context: &egui::Context,
+        rain: Arc<Rain>,
+        maximum: f64,
+        hue: Color32,
+    ) -> Self {
+        let image = Self::colors(&rain, maximum, hue);
         let texture =
             context.load_texture("accumulated-rainfall", image, egui::TextureOptions::NEAREST);
         Self { texture, rain }
@@ -690,14 +770,41 @@ const PAN_MARGIN: f32 = 128.;
 // Retain enough geometry for stroke edges and river hit targets at the viewport edge.
 const GEOMETRY_MARGIN: f32 = PAN_MARGIN + 16.;
 type CameraKey = (egui::Rect, f64, usize, usize, f32);
-pub type BasinPaths = Arc<Vec<ProjectedPath>>;
+pub type BasinPaths = Arc<BasinGeometry>;
+pub struct BasinGeometry {
+    paths: Vec<ProjectedPath>,
+    fill: Option<Fill>,
+}
+impl BasinGeometry {
+    pub fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+}
+#[cfg(test)]
 pub fn prepare_basin(paths: Vec<Vec<Point>>) -> BasinPaths {
-    Arc::new(paths.into_iter().map(ProjectedPath::new).collect())
+    Arc::new(BasinGeometry {
+        paths: paths.into_iter().map(ProjectedPath::new).collect(),
+        fill: None,
+    })
+}
+pub fn prepare_upstream(project: &Project, ids: &[i64]) -> Result<BasinPaths, String> {
+    let polygons = upstream_polygons(project, ids);
+    let paths = polygons
+        .iter()
+        .map(|p| &p.exterior)
+        .map(|ring| ProjectedPath::new(ring.iter().copied().map(world).collect()))
+        .collect();
+    let fill = prepare_fill(&polygons)?;
+    Ok(Arc::new(BasinGeometry {
+        paths,
+        fill: Some(fill),
+    }))
 }
 struct BasinOverlay {
     paths: BasinPaths,
-    opacity: f32,
+    style: (f32, Color32, f32, bool),
     outline: Vec<OverlayMesh>,
+    fill: Option<OverlayMesh>,
 }
 
 struct OverlayMesh {
@@ -762,10 +869,10 @@ pub struct StaticCache {
     key: Option<CameraKey>,
     anchor: Option<ScreenTransform>,
     offset: egui::Vec2,
-    tinted_rivers: Option<(f32, Vec<OverlayMesh>)>,
+    tinted_rivers: Option<((f32, Color32, f32), Vec<OverlayMesh>)>,
     basin: Option<BasinOverlay>,
     hits: Vec<RiverHit>,
-    tinted_catchments: Option<(f32, OverlayMesh)>,
+    tinted_catchments: Option<((f32, Color32, f32), OverlayMesh)>,
 }
 impl StaticCache {
     pub fn clear(&mut self) {
@@ -804,11 +911,21 @@ impl StaticCache {
         self.anchor = Some(transform);
     }
 
-    fn rivers(&mut self, project: &Project, opacity: f32, context: &egui::Context) {
+    fn rivers(
+        &mut self,
+        project: &Project,
+        opacity: f32,
+        tint: Color32,
+        width: Option<f32>,
+        context: &egui::Context,
+    ) {
+        let zoom = self.key.expect("map view prepared").1;
+        let width = width.unwrap_or(if zoom < 10. { 0.8 } else { 1.2 });
+        let style = (opacity, tint, width);
         if self
             .tinted_rivers
             .as_ref()
-            .is_some_and(|(cached, _)| *cached == opacity)
+            .is_some_and(|(cached, _)| *cached == style)
         {
             return;
         }
@@ -837,8 +954,7 @@ impl StaticCache {
                 })
                 .collect();
         }
-        let width = if zoom < 10. { 0.8 } else { 1.2 };
-        let tint = color("rivers").gamma_multiply(opacity);
+        let tint = tint.gamma_multiply(opacity);
         let meshes = line_meshes(
             context,
             clip,
@@ -864,14 +980,22 @@ impl StaticCache {
                     .collect()
             },
         );
-        self.tinted_rivers = Some((opacity, meshes));
+        self.tinted_rivers = Some((style, meshes));
     }
 
-    fn catchments(&mut self, project: &Project, opacity: f32) {
+    fn catchments(
+        &mut self,
+        project: &Project,
+        opacity: f32,
+        tint: Color32,
+        width: Option<f32>,
+        context: &egui::Context,
+    ) {
+        let style = (opacity, tint, width.unwrap_or(0.));
         if self
             .tinted_catchments
             .as_ref()
-            .is_some_and(|(cached, _)| *cached == opacity)
+            .is_some_and(|(cached, _)| *cached == style)
         {
             return;
         }
@@ -882,7 +1006,7 @@ impl StaticCache {
             .expand(GEOMETRY_MARGIN);
         let transform = self.anchor.as_ref().expect("map view prepared");
         let mut combined = egui::Mesh::default();
-        let tint = color("catchments").gamma_multiply(opacity);
+        let tint = tint.gamma_multiply(opacity);
         for feature in project
             .fills
             .iter()
@@ -890,13 +1014,42 @@ impl StaticCache {
         {
             combined.append(mesh(&feature.fill, transform, tint));
         }
-        self.tinted_catchments = Some((opacity, OverlayMesh::new(combined)));
+        if style.2 > 0. {
+            for feature in project.catchments.iter() {
+                for path in &feature.paths {
+                    let points = path
+                        .iter()
+                        .copied()
+                        .map(world)
+                        .map(|p| transform.project(p))
+                        .collect();
+                    let shapes = line_meshes(
+                        context,
+                        clip,
+                        vec![egui::Shape::line(points, Stroke::new(style.2, tint))],
+                    );
+                    for overlay in shapes {
+                        combined.append((*overlay.anchor).clone());
+                    }
+                }
+            }
+        }
+        self.tinted_catchments = Some((style, OverlayMesh::new(combined)));
     }
-    fn basin(&mut self, paths: &BasinPaths, opacity: f32, context: &egui::Context) {
+    fn basin(
+        &mut self,
+        paths: &BasinPaths,
+        opacity: f32,
+        tint: Color32,
+        width: Option<f32>,
+        filled: bool,
+        context: &egui::Context,
+    ) {
+        let style = (opacity, tint, width.unwrap_or(1.), filled);
         if self
             .basin
             .as_ref()
-            .is_some_and(|cached| Arc::ptr_eq(&cached.paths, paths) && cached.opacity == opacity)
+            .is_some_and(|cached| Arc::ptr_eq(&cached.paths, paths) && cached.style == style)
         {
             return;
         }
@@ -906,21 +1059,31 @@ impl StaticCache {
             .0
             .expand(GEOMETRY_MARGIN);
         let transform = self.anchor.as_ref().expect("map view prepared");
-        let tint = color("upstream").gamma_multiply(opacity);
+        let tint = tint.gamma_multiply(opacity);
         let outline = paths
+            .paths
             .iter()
             .filter(|path| path.bounds.intersects(transform, clip))
             .map(|path| {
                 egui::Shape::line(
                     path.points.iter().map(|p| transform.project(*p)).collect(),
-                    Stroke::new(1., tint),
+                    Stroke::new(style.2, tint),
                 )
             })
             .collect();
+        let fill = if filled {
+            paths
+                .fill
+                .as_ref()
+                .map(|fill| OverlayMesh::new(mesh(fill, transform, tint)))
+        } else {
+            None
+        };
         self.basin = Some(BasinOverlay {
             paths: paths.clone(),
-            opacity,
+            style,
             outline: line_meshes(context, clip, outline),
+            fill,
         });
     }
 }
@@ -936,6 +1099,8 @@ pub struct LocalDisplay {
     pub visible: bool,
     pub opacity: f32,
     pub color: [u8; 4],
+    #[serde(default)]
+    pub width: Option<f32>,
 }
 
 pub struct Overlay<'a> {
@@ -952,6 +1117,18 @@ pub struct Overlay<'a> {
     pub local: &'a [LocalLayer],
     pub local_display: &'a [LocalDisplay],
 }
+fn configure_map<'a, 'b, 'c>(map: Map<'a, 'b, 'c>, interactive: bool) -> Map<'a, 'b, 'c> {
+    let map = map
+        .zoom_with_ctrl(false)
+        .drag_pan_buttons(egui::DragPanButtons::PRIMARY | egui::DragPanButtons::MIDDLE);
+    if interactive {
+        map
+    } else {
+        map.zoom_gesture(false)
+            .panning(false)
+            .drag_pan_buttons(egui::DragPanButtons::empty())
+    }
+}
 impl Overlay<'_> {
     pub fn show(
         mut self,
@@ -962,14 +1139,7 @@ impl Overlay<'_> {
         swipe: Option<&mut f32>,
         pt: bool,
     ) -> egui::InnerResponse<Option<String>> {
-        let map = Map::new(tiles, camera, lon_lat(-52., -30.));
-        let map = if interactive {
-            map
-        } else {
-            map.zoom_gesture(false)
-                .panning(false)
-                .drag_pan_buttons(egui::DragPanButtons::empty())
-        };
+        let map = configure_map(Map::new(tiles, camera, lon_lat(-52., -30.)), interactive);
         map.show(ui, |ui, response, projector, memory| {
             let rect = response.rect;
             ui.set_clip_rect(ui.clip_rect().intersect(rect));
@@ -1051,20 +1221,40 @@ impl Overlay<'_> {
                         }
                     }
                 }
-                inundation::KIND => {
-                    self.inundation
-                        .draw(ui, projector, response.rect, memory.zoom(), layer.opacity)
-                }
+                inundation::KIND => self.inundation.draw(
+                    ui,
+                    projector,
+                    response.rect,
+                    memory.zoom(),
+                    layer.opacity,
+                    layer.display_color(),
+                ),
                 "catchments" => {
-                    self.cache.catchments(self.project, layer.opacity);
+                    self.cache.catchments(
+                        self.project,
+                        layer.opacity,
+                        layer.display_color(),
+                        layer.width,
+                        ui.ctx(),
+                    );
                     if let Some((_, mesh)) = &mut self.cache.tinted_catchments {
                         mesh.paint(ui, self.cache.offset);
                     }
                 }
                 "upstream" => {
                     if let Some(paths) = self.upstream {
-                        self.cache.basin(paths, layer.opacity, ui.ctx());
+                        self.cache.basin(
+                            paths,
+                            layer.opacity,
+                            layer.display_color(),
+                            layer.width,
+                            layer.filled,
+                            ui.ctx(),
+                        );
                         if let Some(basin) = &mut self.cache.basin {
+                            if let Some(fill) = &mut basin.fill {
+                                fill.paint(ui, self.cache.offset);
+                            }
                             for mesh in &mut basin.outline {
                                 mesh.paint(ui, self.cache.offset);
                             }
@@ -1074,7 +1264,13 @@ impl Overlay<'_> {
                     }
                 }
                 "rivers" => {
-                    self.cache.rivers(self.project, layer.opacity, ui.ctx());
+                    self.cache.rivers(
+                        self.project,
+                        layer.opacity,
+                        layer.display_color(),
+                        layer.width,
+                        ui.ctx(),
+                    );
                     if let Some((_, meshes)) = &mut self.cache.tinted_rivers {
                         for mesh in meshes {
                             mesh.paint(ui, self.cache.offset);
@@ -1109,12 +1305,15 @@ impl Overlay<'_> {
                                 if selected {
                                     Color32::YELLOW
                                 } else if entry.offset.is_some() {
-                                    Color32::LIGHT_GREEN
+                                    layer.display_color()
                                 } else {
-                                    Color32::GRAY
+                                    layer.display_secondary_color()
                                 }
                                 .gamma_multiply(layer.opacity),
-                                Stroke::new(1., Color32::BLACK.gamma_multiply(layer.opacity)),
+                                Stroke::new(
+                                    layer.width.unwrap_or(1.),
+                                    Color32::BLACK.gamma_multiply(layer.opacity),
+                                ),
                             );
                             if self.labels && memory.zoom() >= 10.0 {
                                 map_label(
@@ -1163,7 +1362,7 @@ impl Overlay<'_> {
                 for path in &layer.projected_paths {
                     ui.painter().add(egui::Shape::line(
                         path.iter().map(|p| transform.project(*p)).collect(),
-                        Stroke::new(1., tint),
+                        Stroke::new(style.width.unwrap_or(1.), tint),
                     ));
                 }
             }
@@ -1369,7 +1568,7 @@ fn contains(polygon: &MapPolygon, p: (f64, f64)) -> bool {
     inside(&polygon.exterior, p) && !polygon.interiors.iter().any(|r| inside(r, p))
 }
 
-pub fn upstream_boundary(project: &Project, ids: &[i64]) -> Vec<Vec<(f64, f64)>> {
+fn upstream_polygons(project: &Project, ids: &[i64]) -> Vec<MapPolygon> {
     use geo::{LineString, Orient, Polygon};
     let ids: HashSet<_> = ids.iter().copied().collect();
     let ring = |points: &[(f64, f64)]| LineString::from(points.to_vec());
@@ -1390,13 +1589,19 @@ pub fn upstream_boundary(project: &Project, ids: &[i64]) -> Vec<Vec<(f64, f64)>>
         .0
         .iter()
         .map(|polygon| {
-            polygon
-                .exterior()
-                .0
-                .iter()
-                .map(|p| world((p.x, p.y)))
-                .collect()
+            let points = |ring: &LineString<f64>| ring.0.iter().map(|p| (p.x, p.y)).collect();
+            MapPolygon {
+                exterior: points(polygon.exterior()),
+                interiors: polygon.interiors().iter().map(points).collect(),
+            }
         })
+        .collect()
+}
+#[cfg(test)]
+pub fn upstream_boundary(project: &Project, ids: &[i64]) -> Vec<Vec<(f64, f64)>> {
+    upstream_polygons(project, ids)
+        .into_iter()
+        .map(|p| p.exterior.into_iter().map(world).collect())
         .collect()
 }
 
@@ -1515,6 +1720,63 @@ mod tests {
         let (_, before_move) = run(vec![]);
         let (_, after_move) = run(vec![egui::Event::PointerMoved(left + egui::vec2(10., 0.))]);
         assert_ne!(before_move, after_move);
+    }
+
+    #[test]
+    fn wheel_and_middle_drag_work_in_each_map_mode() {
+        for mode in [Mode::Single, Mode::Double, Mode::Swipe] {
+            let ctx = egui::Context::default();
+            let mut camera = MapMemory::default();
+            camera.set_zoom(7.).unwrap();
+            camera.center_at(lon_lat(-52., -30.));
+            let mut fraction = 0.5;
+            let mut run = |events| {
+                render_frame(&ctx, events, |ui| {
+                    if mode == Mode::Double {
+                        double(ui, &mut camera, |ui, _, camera, active| {
+                            let response =
+                                configure_map(Map::new(None, camera, lon_lat(-52., -30.)), active)
+                                    .show(ui, |_, _, _, _| ())
+                                    .response;
+                            (response, None)
+                        });
+                    } else {
+                        configure_map(Map::new(None, &mut camera, lon_lat(-52., -30.)), true).show(
+                            ui,
+                            |ui, response, _, _| {
+                                if mode == Mode::Swipe {
+                                    swipe_control(ui, response.rect, &mut fraction, false);
+                                }
+                            },
+                        );
+                    }
+                });
+                (camera.zoom(), camera.detached())
+            };
+            let pos = egui::pos2(100., 100.);
+            run(vec![egui::Event::PointerMoved(pos)]);
+            let before = run(vec![]).0;
+            let after = run(vec![egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                delta: egui::vec2(0., 120.),
+                phase: egui::TouchPhase::Move,
+                modifiers: egui::Modifiers::NONE,
+            }])
+            .0;
+            assert!(after > before, "plain wheel did not zoom in {mode:?}");
+            let middle = |pos, pressed| egui::Event::PointerButton {
+                pos,
+                pressed,
+                button: egui::PointerButton::Middle,
+                modifiers: egui::Modifiers::NONE,
+            };
+            run(vec![middle(pos, true)]);
+            let center = run(vec![]).1;
+            let moved = pos + egui::vec2(30., 10.);
+            let after_drag = run(vec![egui::Event::PointerMoved(moved)]).1;
+            assert_ne!(center, after_drag, "middle drag did not pan in {mode:?}");
+            run(vec![middle(moved, false)]);
+        }
     }
 
     #[test]
@@ -1704,6 +1966,31 @@ mod tests {
         project_mut.segments = Arc::new(river_segments(std::slice::from_ref(&feature)));
         project_mut.overview_segments = Arc::new(overview_segments(&project_mut.segments));
         project_mut.catchments = Arc::new(vec![feature, neighbor]);
+        let basin = prepare_upstream(&project, &[1, 2]).unwrap();
+        assert_eq!(basin.paths.len(), 1); // default outline remains exterior-only
+        let fill = basin.fill.as_ref().unwrap();
+        let area: f64 = fill
+            .indices
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .map(|tri| {
+                let [a, b, c] = [
+                    fill.vertices[tri[0] as usize],
+                    fill.vertices[tri[1] as usize],
+                    fill.vertices[tri[2] as usize],
+                ];
+                ((b.0 - a.0) * (c.1 - a.1) - (b.1 - a.1) * (c.0 - a.0)).abs() / 2.
+            })
+            .sum();
+        assert!((area - 1.64).abs() < 1e-5);
+        let mut camera = MapMemory::default();
+        assert!(fit_extent(&project, egui::vec2(500., 300.), &mut camera));
+        let fitted = camera.detached().unwrap();
+        assert!((fitted.x() - 0.5).abs() < 1e-8);
+        let wide_zoom = camera.zoom();
+        assert!(fit_extent(&project, egui::vec2(100., 300.), &mut camera));
+        assert!(camera.zoom() < wide_zoom);
         let outline = upstream_boundary(&project, &[1, 2]);
         assert_eq!(outline.len(), 1);
         assert!(
@@ -1734,12 +2021,12 @@ mod tests {
                         assert!(cache.tinted_catchments.is_none());
                         assert!(cache.hits.is_empty());
                     }
-                    cache.rivers(&project, 0.8, ui.ctx());
+                    cache.rivers(&project, 0.8, color("rivers"), None, ui.ctx());
                     if longitude != 4.0 {
                         let actual = cache.hits[0].points[0] + cache.offset;
                         assert!(actual.distance(screen(&projector, (0., 0.))) < 0.001);
                     }
-                    cache.basin(&boundary, 0.3, ui.ctx());
+                    cache.basin(&boundary, 0.3, color("upstream"), None, false, ui.ctx());
                 },
             );
             frame.textures_delta.clear();
@@ -1762,6 +2049,27 @@ mod tests {
         cache.clear();
         assert!(cache.basin.is_none());
     }
+    #[test]
+    fn old_and_new_layer_styles_round_trip() {
+        let mut layer: LayerControl =
+            serde_json::from_str(r#"{"kind":"rivers","visible":true,"opacity":0.85}"#).unwrap();
+        assert_eq!(layer.display_color(), color("rivers"));
+        assert_eq!(layer.width, None);
+        let outline_only = !layer.filled;
+        assert!(outline_only);
+        layer.color = Some([10, 20, 30, 255]);
+        layer.width = Some(3.);
+        layer.filled = true;
+        let restored: LayerControl =
+            serde_json::from_str(&serde_json::to_string(&layer).unwrap()).unwrap();
+        assert_eq!(restored.display_color(), Color32::from_rgb(10, 20, 30));
+        assert_eq!(restored.width, Some(3.));
+        assert!(restored.filled);
+        let hue = Color32::from_rgb(100, 30, 10);
+        assert_eq!(rain_color_with(None, 100., hue), Color32::TRANSPARENT);
+        assert_eq!(rain_color_with(Some(100.), 100., hue), hue);
+    }
+
     #[test]
     fn overview_selection_bounds_error_in_physical_pixels() {
         for zoom in [5., 7., 7.01, 9., 11., 11.5, 11.99, 12.] {

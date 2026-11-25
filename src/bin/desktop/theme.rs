@@ -20,6 +20,7 @@ pub fn install(context: &egui::Context) {
     context.set_fonts(fonts);
     for theme in [Theme::Light, Theme::Dark] {
         context.style_mut_of(theme, |style| {
+            style.interaction.selectable_labels = true;
             let dark = theme == Theme::Dark;
             let color = |light, dark_color| rgb(if dark { dark_color } else { light });
             let surface = color(0xf7f9fc, 0x202a34);
@@ -179,9 +180,237 @@ pub fn fitted_table(
     }
 }
 
-pub fn swatch(ui: &mut egui::Ui, color: Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(10., 10.), egui::Sense::hover());
-    paint_swatch(ui, rect, color);
+pub fn color_palette(ui: &mut egui::Ui, color: &mut Color32, label: &str, pt: bool) {
+    let button = ui
+        .add(
+            egui::Button::new(" ")
+                .fill(*color)
+                .min_size(egui::vec2(22., 20.)),
+        )
+        .on_hover_text(super::text(
+            pt,
+            "Choose layer colour",
+            "Escolher cor da camada",
+        ));
+    button.widget_info(|| {
+        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), label)
+    });
+    egui::Popup::from_toggle_button_response(&button).show(|ui| {
+        ui.strong(label);
+        let palette: [u32; 40] = [
+            0xffffff, 0xe2e8f0, 0x94a3b8, 0x475569, 0x1e293b, 0x000000, 0xffedd5, 0x7c2d12,
+            0xfee2e2, 0xfecaca, 0xf87171, 0xef4444, 0xb91c1c, 0x7f1d1d, 0xfed7aa, 0xf97316,
+            0xfef9c3, 0xfde047, 0xeab308, 0xa16207, 0xdcfce7, 0x86efac, 0x22c55e, 0x15803d,
+            0xccfbf1, 0x5eead4, 0x0d9488, 0x115e59, 0xdbeafe, 0x93c5fd, 0x3b82f6, 0x052887,
+            0xede9fe, 0xc4b5fd, 0x8b5cf6, 0x6d28d9, 0xfae8ff, 0xe879f9, 0xdb2777, 0x831843,
+        ];
+        egui::Grid::new("colour-matrix")
+            .spacing(egui::vec2(4., 4.))
+            .show(ui, |ui| {
+                for (index, value) in palette.into_iter().enumerate() {
+                    let choice = rgb(value);
+                    let name = format!("#{value:06X}");
+                    let response = ui
+                        .add(
+                            egui::Button::new(" ")
+                                .fill(choice)
+                                .stroke(if choice == *color {
+                                    Stroke::new(2., ui.visuals().text_color())
+                                } else {
+                                    Stroke::NONE
+                                })
+                                .min_size(egui::vec2(22., 22.)),
+                        )
+                        .on_hover_text(&name);
+                    response.widget_info(|| {
+                        egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), &name)
+                    });
+                    if response.clicked() {
+                        *color = Color32::from_rgba_unmultiplied(
+                            choice.r(),
+                            choice.g(),
+                            choice.b(),
+                            color.a(),
+                        );
+                        ui.close();
+                    }
+                    if index % 8 == 7 {
+                        ui.end_row();
+                    }
+                }
+            });
+        ui.separator();
+        ui.horizontal(|ui| {
+            ui.label(super::text(pt, "Custom colour", "Cor personalizada"));
+            ui.color_edit_button_srgba(color);
+        });
+    });
+}
+
+#[derive(Clone)]
+struct TextActions {
+    text: String,
+    selection: egui::text::CCursorRange,
+    position: egui::Pos2,
+    initialized: bool,
+}
+
+fn text_actions_id() -> egui::Id {
+    egui::Id::new("desktop-text-actions")
+}
+fn text_exclusions_id() -> egui::Id {
+    egui::Id::new("desktop-text-exclusions")
+}
+
+pub fn begin_text_actions(ctx: &egui::Context) {
+    ctx.data_mut(|data| data.insert_temp(text_exclusions_id(), Vec::<egui::Rect>::new()));
+}
+
+pub fn exclude_text_actions(ctx: &egui::Context, rect: egui::Rect) {
+    ctx.data_mut(|data| {
+        let mut excluded = data
+            .get_temp::<Vec<egui::Rect>>(text_exclusions_id())
+            .unwrap_or_default();
+        excluded.push(rect);
+        data.insert_temp(text_exclusions_id(), excluded);
+    });
+}
+
+fn word_range(text: &str, cursor: usize) -> egui::text::CCursorRange {
+    let chars: Vec<_> = text.chars().collect();
+    let mut start = cursor.min(chars.len().saturating_sub(1));
+    let mut end = start;
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    if chars.get(start).is_some_and(|c| word(*c)) {
+        while start > 0 && word(chars[start - 1]) {
+            start -= 1;
+        }
+        while end < chars.len() && word(chars[end]) {
+            end += 1;
+        }
+    } else {
+        end = (end + 1).min(chars.len());
+    }
+    egui::text::CCursorRange::two(
+        egui::text::CCursor::new(start),
+        egui::text::CCursor::new(end),
+    )
+}
+
+fn text_at(shape: &egui::Shape, pointer: egui::Pos2) -> Option<(String, usize)> {
+    match shape {
+        egui::Shape::Text(text) if text.visual_bounding_rect().contains(pointer) => {
+            let cursor = text.galley.cursor_from_pos(pointer - text.pos).index;
+            Some((text.galley.text().to_owned(), cursor.into()))
+        }
+        egui::Shape::Vec(shapes) => shapes
+            .iter()
+            .rev()
+            .find_map(|shape| text_at(shape, pointer)),
+        _ => None,
+    }
+}
+
+/// Offers text actions over reading surfaces without intercepting their normal gestures.
+pub fn text_actions(ctx: &egui::Context, pt: bool) {
+    let clicked = ctx.input(|input| {
+        input
+            .pointer
+            .button_double_clicked(egui::PointerButton::Primary)
+    });
+    if clicked && let Some(pointer) = ctx.pointer_interact_pos() {
+        let excluded = ctx.data(|data| {
+            data.get_temp::<Vec<egui::Rect>>(text_exclusions_id())
+                .unwrap_or_default()
+        });
+        if !ctx.egui_wants_keyboard_input()
+            && !excluded.iter().any(|rect| rect.contains(pointer))
+            && let Some(layer) = ctx.layer_id_at(pointer)
+        {
+            let text = ctx.graphics(|graphics| {
+                graphics.get(layer).and_then(|list| {
+                    list.all_entries()
+                        .filter(|item| item.clip_rect.contains(pointer))
+                        .filter_map(|item| text_at(&item.shape, pointer))
+                        .last()
+                })
+            });
+            if let Some((text, cursor)) = text {
+                ctx.data_mut(|data| {
+                    data.insert_temp(
+                        text_actions_id(),
+                        TextActions {
+                            selection: word_range(&text, cursor),
+                            text,
+                            position: pointer,
+                            initialized: false,
+                        },
+                    )
+                });
+            }
+        }
+    }
+    let Some(mut actions) = ctx.data(|data| data.get_temp::<TextActions>(text_actions_id())) else {
+        return;
+    };
+    let mut open = true;
+    let mut close = ctx.input(|input| input.key_pressed(egui::Key::Escape));
+    egui::Window::new(super::text(pt, "Text actions", "Ações de texto"))
+        .id(text_actions_id())
+        .open(&mut open)
+        .default_pos(actions.position)
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            let id = ui.id().with("selected-text");
+            if !actions.initialized {
+                let mut state = egui::TextEdit::load_state(ctx, id).unwrap_or_default();
+                state.cursor.set_char_range(Some(actions.selection));
+                state.store(ctx, id);
+                actions.initialized = true;
+                ui.memory_mut(|memory| memory.request_focus(id));
+            }
+            let mut readonly = actions.text.as_str();
+            let output = egui::ScrollArea::vertical()
+                .max_height(150.)
+                .show(ui, |ui| {
+                    egui::TextEdit::multiline(&mut readonly)
+                        .id(id)
+                        .desired_width(280.)
+                        .desired_rows(1)
+                        .show(ui)
+                })
+                .inner;
+            if let Some(selection) = output.cursor_range {
+                actions.selection = selection;
+            }
+            ui.horizontal(|ui| {
+                if ui.button(super::text(pt, "Copy", "Copiar")).clicked() {
+                    ui.copy_text(actions.selection.slice_str(&actions.text).to_owned());
+                    close = true;
+                }
+                if ui
+                    .button(super::text(pt, "Select all", "Selecionar tudo"))
+                    .clicked()
+                {
+                    actions.selection = egui::text::CCursorRange::two(
+                        egui::text::CCursor::new(0),
+                        egui::text::CCursor::new(actions.text.chars().count()),
+                    );
+                    let mut state = output.state;
+                    state.cursor.set_char_range(Some(actions.selection));
+                    state.store(ctx, id);
+                    output.response.request_focus();
+                }
+            });
+        });
+    ctx.data_mut(|data| {
+        if !open || close {
+            data.remove::<TextActions>(text_actions_id());
+        } else {
+            data.insert_temp(text_actions_id(), actions);
+        }
+    });
 }
 
 pub fn color_key(ui: &mut egui::Ui, color: Color32, label: &str) -> egui::Response {
@@ -225,4 +454,81 @@ pub fn legend_key(
         },
     )
     .response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn text_word_selection_uses_unicode_character_offsets() {
+        assert_eq!(
+            word_range("Rio São João", 5).slice_str("Rio São João"),
+            "São"
+        );
+        assert_eq!(word_range("流域 dados", 1).slice_str("流域 dados"), "流域");
+        assert_eq!(word_range("", 0).slice_str(""), "");
+    }
+
+    #[test]
+    fn double_click_offers_label_actions_and_preserves_editable_field_focus() {
+        for editable in [false, true] {
+            let ctx = egui::Context::default();
+            let mut value = "Rio São Francisco".to_owned();
+            let mut target = egui::Rect::NOTHING;
+            let mut time = 0.;
+            let mut frame = |events| {
+                time += 0.04;
+                let mut output = ctx.run_ui(
+                    egui::RawInput {
+                        events,
+                        time: Some(time),
+                        screen_rect: Some(egui::Rect::from_min_size(
+                            egui::Pos2::ZERO,
+                            egui::vec2(500., 400.),
+                        )),
+                        ..Default::default()
+                    },
+                    |ui| {
+                        begin_text_actions(ui.ctx());
+                        target = if editable {
+                            ui.text_edit_singleline(&mut value).rect
+                        } else {
+                            ui.label(&value).rect
+                        };
+                        text_actions(ui.ctx(), false);
+                    },
+                );
+                output.textures_delta.clear();
+                output
+            };
+            frame(Vec::new());
+            frame(Vec::new());
+            let pointer = egui::pos2(25., 12.);
+            frame(vec![egui::Event::PointerMoved(pointer)]);
+            for _ in 0..2 {
+                for pressed in [true, false] {
+                    frame(vec![egui::Event::PointerButton {
+                        pos: pointer,
+                        pressed,
+                        button: egui::PointerButton::Primary,
+                        modifiers: egui::Modifiers::NONE,
+                    }]);
+                }
+            }
+            let menu = ctx.data(|data| data.get_temp::<TextActions>(text_actions_id()));
+            if editable {
+                assert!(
+                    menu.is_none(),
+                    "editing a word must not open a competing window"
+                );
+                assert!(ctx.memory(|memory| memory.focused().is_some()));
+            } else {
+                let menu = menu.expect("double-click reading text opens copy actions");
+                assert_eq!(menu.text, "Rio São Francisco");
+                let has_word = !menu.selection.slice_str(&menu.text).is_empty();
+                assert!(has_word);
+            }
+        }
+    }
 }

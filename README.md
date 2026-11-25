@@ -38,14 +38,14 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Task | Start with | Details |
 | --- | --- | --- |
 | Inspect a regional workspace | `workspace inspect` | [Configuration and checks](docs/contracts/workspace.md) |
-| Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
+| Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Operation → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
 | Acquire standalone IMERG, BNDMET rain and wind, or ONS hourly flow files | `acquisition` | [Standalone acquisition](docs/contracts/acquisition.md#standalone-source-acquisition) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
 | Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#run-from-a-workspace) |
-| Run an operation and update the rainfall display | Desktop **Processing → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
-| Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
+| Run an operation and update the rainfall display | Desktop **Operation → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
+| Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **Review and runs → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
 | Generate and view an inundation mask | `inundation process`, then desktop **Map → Inundation** | [Inundation inputs and processing](docs/contracts/inundation.md) |
-| Inspect a workspace or review a run parameter change with an installed agent | `assistant` or desktop **View → Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
+| Inspect a workspace or review a run parameter change with an installed agent | `assistant` or desktop **Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
 | Review observations, export a bulletin, share runs, or schedule a job | CLI or desktop workflows | [Saved-data workflows](docs/contracts/saved-data.md) |
 
 ### Inspect a workspace
