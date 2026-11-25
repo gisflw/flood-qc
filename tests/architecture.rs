@@ -83,7 +83,6 @@ impl Gate {
                         "RegistrationMapping",
                         "normalize_forecast",
                         "import_level_references",
-                        "upgrade_level_references",
                         "NormalizeForecastRequest",
                         "NormalizeForecastReport",
                         "NormalizeForecastError",
@@ -342,14 +341,7 @@ impl<'ast> Visit<'ast> for Gate {
             let valid = mac.path.is_ident("include_str")
                 && self.owner == "store"
                 && self.source.as_deref() == Some(Path::new("store/observations.rs"))
-                && schema.is_ok_and(|literal| {
-                    matches!(
-                        literal.value().as_str(),
-                        "sql/observations_v1.sql"
-                            | "sql/observations_v2.sql"
-                            | "sql/observations_v3.sql"
-                    )
-                });
+                && schema.is_ok_and(|literal| literal.value() == "sql/observations.sql");
             if !valid {
                 self.error("include_str permits only the owned observations schema");
             }
@@ -633,7 +625,7 @@ fn owned_sources_obey_graph() {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
     sources(&dir, &mut files);
-    assert!(files.contains(&dir.join("lib.rs")) && files.contains(&dir.join("main.rs")));
+    assert!(files.contains(&dir.join("lib.rs")) && files.contains(&dir.join("bin/cli/main.rs")));
     for file in files {
         let relative = file.strip_prefix(&dir).unwrap();
         let first = relative
@@ -770,14 +762,10 @@ fn graph_fixtures() {
 
 #[test]
 fn schema_inclusion_is_limited_to_its_owner_and_static_path() {
-    let source = Path::new("store/observations.rs");
-    for version in 1..=3 {
-        let accepted =
-            format!(r#"const DDL: &str = include_str!("sql/observations_v{version}.sql");"#);
-        assert!(check_source("store", &accepted, 1, Some(source)).is_empty());
-        assert!(!check_source("analysis", &accepted, 1, Some(source)).is_empty());
-        assert!(!check_source("store", &accepted, 1, Some(Path::new("store/other.rs"))).is_empty());
-    }
+    let source = r#"const DDL: &str = include_str!("sql/observations.sql");"#;
+    let path = Path::new("store/observations.rs");
+    assert!(check_source("store", source, 1, Some(path)).is_empty());
+    assert!(!check_source("app", source, 1, Some(path)).is_empty());
     for expression in [
         r#"include_str!(SCHEMA)"#,
         r#"include_str!("../store/sql/observations_v1.sql")"#,
@@ -787,9 +775,9 @@ fn schema_inclusion_is_limited_to_its_owner_and_static_path() {
         r#"include!("sql/observations_v1.sql")"#,
     ] {
         let code = format!("const DDL: &str = {expression};");
-        assert!(!check_source("store", &code, 1, Some(source)).is_empty());
+        assert!(!check_source("store", &code, 1, Some(path)).is_empty());
     }
-    assert!(!check_source("store", "pub use crate::adapters::Thing;", 1, Some(source)).is_empty());
+    assert!(!check_source("store", "pub use crate::adapters::Thing;", 1, Some(path)).is_empty());
 }
 
 #[test]

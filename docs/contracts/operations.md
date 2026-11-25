@@ -4,10 +4,10 @@
 
 | Action | Start with | Publishes after success |
 | --- | --- | --- |
-| `operation prepare` | Complete operation TOML | A reusable preparation at the requested path |
+| `operation prepare` | Workspace configuration and saved inputs | A reusable preparation at the requested path |
 | `operation execute` | Saved preparation | A replacement active run |
 | `draft run` or **Run experiment** | Draft with accepted inputs | A replacement active run |
-| **Processing → New run → Run All** | Operation TOML with inputs accepted for the chosen local reference | A replacement active run |
+| **Processing → New run → Run All** | Workspace configuration and a selected local reference | A replacement active run |
 | `run replay` | Workspace attempt manifest | A replacement active run |
 
 Use [operation drafts](drafts.md) to edit and preview a recipe, or the
@@ -16,9 +16,14 @@ reference. The shared library exposes `prepare(PreparationRequest)` and
 `execute_prepared(ExecutionRequest)`, also available through the CLI.
 
 ```sh
-mgb-ops operation prepare --workspace /regional/workspace --request request.toml --output prepared --json
+mgb-ops operation prepare --workspace /regional/workspace --output prepared --json
 mgb-ops operation execute --workspace /regional/workspace --prepared prepared --json
 ```
+
+Use `--reference-time` to prepare a saved historical window. Set a repeatable
+`--scenario` when choosing a scenario explicitly. Use `zero`, `ecmwf`, or `noaa`,
+pin a cycle with `ecmwf@2026-07-20T00:00:00Z`, or use
+`corrected:ecmwf@2026-07-20T00:00:00Z` for a cycle with stored corrections.
 
 Workspace, request, output and prepared arguments resolve from the invocation
 directory. Paths inside the request resolve from the selected workspace.
@@ -40,20 +45,15 @@ can execute after the original sources are removed.
 [Editable drafts](drafts.md) provide incomplete JSON recipes, explicit source
 acceptance and unregistered previews over this same typed preparation workflow.
 
-The desktop's [standalone run form](desktop.md#controlled-jobs) uses
-`app::OperationalRun` to load an explicitly selected TOML recipe, substitute
-the selected local reference and require acceptance before preparing or running.
-Version 2 recalculates the day horizons. Version 1 shifts the explicit boundary
-labels by the same number of local hours as the reference. Other selections,
-including asset and correction IDs and any explicit state-capture timestamp,
-retain their saved values and are validated against the chosen reference.
-The [acquisition-enabled Run All workflow](acquisition.md#run-all) resolves
-provider scenarios before freezing the inputs.
+The desktop's [standalone run form](desktop.md#controlled-jobs) loads the same
+workspace settings and supports explicit reference and scenario choices.
+Acquisition-enabled runs resolve their forecast assets before freezing values.
+The [acquisition contract](acquisition.md#run-all) covers Run All.
 
 ## Active run and rainfall cache
 
 Each workspace has one active run after its first successful execution. The
-pointer at `data/cache/run/active.json` selects the generation that supplies
+active generation recorded in `operation.sqlite` selects the generation that supplies
 model results, rainfall, and any processed inundation masks. Successful
 execution publishes the whole generation together and reclaims the previous
 generation. An unsuccessful or cancelled execution preserves the active run.
@@ -69,7 +69,7 @@ the selected generation. A missing cache returns no rainfall. Missing or corrupt
 members produce findings.
 
 The workspace retains only a small attempt manifest for past executions under
-`data/run-manifests/`. This includes the recipe, recorded input identities,
+`runs/history/`. This includes the recipe, recorded input identities,
 outcome, and diagnostic excerpts. To keep full results, export a bundle or copy
 the active run to a user-owned location before another successful run.
 Explicitly saved preparations remain reusable. See
@@ -95,7 +95,7 @@ legacy entry.
 ## Request
 
 The separate UTF-8 TOML request is strict at every table: unknown keys fail.
-Inspection's `config/workspace.toml` remains separate. This small example selects
+Use an explicit request for a standalone preparation outside the normal workspace workflow. This small example selects
 saved observations and a zero-rain forecast; replace paths and times for the
 selected regional baseline:
 

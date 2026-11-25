@@ -44,8 +44,7 @@ inventory = "inventory.csv"
     fs::write(&csv, record(0.)).unwrap();
     assert_eq!(import(), 1);
 
-    let store =
-        ObservationStore::open_read_only(&workspace.join("data/observations.sqlite")).unwrap();
+    let store = ObservationStore::open_read_only(&workspace.join("operation.sqlite")).unwrap();
     let start = "2026-07-20T15:00:00".parse().unwrap();
     let end = "2026-07-20T16:00:00".parse().unwrap();
     let (inputs, _) = store

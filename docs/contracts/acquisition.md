@@ -8,7 +8,7 @@ selection workflows.
 mgb-ops observation acquire --workspace /regional/workspace --json
 mgb-ops observation import-ana-csv --workspace /regional/workspace --input saved/observed.csv --json
 mgb-ops forecast acquire --workspace /regional/workspace --json
-mgb-ops operation run-all --workspace /regional/workspace --request config/operation.toml --json
+mgb-ops operation run-all --workspace /regional/workspace --json
 ```
 
 In desktop Processing, **Acquire inputs** exposes the first three actions and
@@ -19,16 +19,25 @@ current hour in the acquisition timezone, or supply a local, hour-aligned
 the current bounded request or write and preserves committed data. NOAA spacing
 is interruptible.
 
-Acquire commands read `config/acquisition.toml` by default. An explicit
-`--request`, the Run All recipe, CSV inputs, and paths in the TOML resolve against
-the selected workspace. An absolute path can select another input or catalog.
-Forecast artifact roots and ANA captures are confined to the workspace. Library
-callers use `app::acquire_inputs`, `app::import_ana_csv`, and
-`OperationalRun::run_all_report` with an `OperationControl`. CLI JSON is a single
-report with station or provider outcomes. Standalone commands exit 1 for
-failed outcomes or cancellation and keep successful sibling results.
+Workspace commands read `config.toml`. Set the enabled providers under
+`[acquisition]` and the forecast bounds under `[spatial]`. Defaults are 90
+observation days, 30 days per request window, a 15-second timeout, four forecast
+cycles, and a 2.0 buffer fraction. The adapters aggregate rain by sum and level
+and flow by mean. Use `--reference-time` to override `run.reference_time`.
 
-## Acquisition request
+```sh
+mgb-ops observation import-inventory --workspace /regional/workspace --input /regional/workspace/source/history_station_inventory.csv
+```
+
+Import the ANA station inventory before acquisition. Use `observation
+export-inventory --workspace /regional/workspace --output inventory.csv` to
+export the saved inventory for editing. Per-station variables are
+stored in `operation.sqlite`. Acquire commands write to that database and retain
+originals under `downloads/`. CLI JSON reports station or provider outcomes.
+Standalone acquisition keeps successful sibling results on failure or cancellation.
+
+
+## Explicit acquisition requests
 
 Each optional provider section enables its corresponding update. The example
 shows the defaults plus a required model bounding box for forecasts.
@@ -82,7 +91,7 @@ variable has no saved raw value that day, plus the reference date. Each complete
 station retains `observed.csv` with columns `provider_code`, `station_code`,
 `observed_at`, `variable_code`, and `value`. Source response XML uses
 `YYYYMMDD__YYYYMMDD.xml` beside the CSV under
-`data/downloads/ana/<attempt>/<station>/`. An unsuccessful station still reports
+`downloads/ana/<attempt>/<station>/`. An unsuccessful station still reports
 any XML already captured. [ANA ServiceANA operation](https://telemetriaws1.ana.gov.br/serviceana.asmx?op=DadosHidrometeorologicos)
 
 Source timestamps are reduced to minutes and normalized to São Paulo local
@@ -118,26 +127,9 @@ A failed provider leaves successfully registered sibling forecasts available.
 
 ## Run All
 
-Add the following section to an [operation recipe](operations.md#request) to
-enable acquisition. Each raw scenario can select a provider as shown, or an
-explicit `asset_id`. Corrections use a pinned asset, and a zero scenario remains
-available with `kind = "zero"`.
-
-```toml
-[acquisition]
-request = "config/acquisition.toml"
-
-[[scenarios]]
-id = "ifs"
-kind = "raw"
-forecast_provider = "ecmwf"
-```
-
-Run All checks the shared paths, bounds, and timezone, acquires the enabled
-inputs, resolves each provider scenario to the latest covering verified asset,
-then validates, accepts, freezes, and executes the resolved recipe. Forecast
-update failures stop the job. Individual ANA station failures permit execution
-when the existing forcing checks pass. A forecast that ends before the
-operation horizon is reported as insufficient. The retained operation manifest
-contains the concrete asset IDs. A failed or cancelled operation leaves the
-previous active generation available.
+Run All resolves the selected reference once, acquires the enabled inputs, then
+freezes the input selection and executes. Default scenarios use the latest
+covering local forecast for each enabled forecast provider. Missing coverage is
+reported before execution. Use the [operation selection options](operations.md)
+to select a zero or pinned forecast scenario. A failed or cancelled run leaves
+the previous active generation available.

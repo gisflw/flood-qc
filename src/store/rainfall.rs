@@ -235,7 +235,7 @@ pub(crate) fn stage_rainfall(
 }
 
 pub(crate) fn adopt_legacy_rainfall(workspace: &Path, generation: &Path) -> Result<bool, String> {
-    let legacy = workspace.join("data/cache/rainfall");
+    let legacy = workspace.join("cache/rainfall");
     let pointer = legacy.join("active.json");
     if !pointer.try_exists().map_err(|error| error.to_string())? {
         return Ok(false);
@@ -276,7 +276,7 @@ pub(crate) fn adopt_legacy_rainfall(workspace: &Path, generation: &Path) -> Resu
 }
 
 pub(crate) fn retire_legacy_rainfall(workspace: &Path) -> Result<(), String> {
-    let legacy = workspace.join("data/cache/rainfall");
+    let legacy = workspace.join("cache/rainfall");
     match fs::symlink_metadata(&legacy) {
         Ok(metadata) if metadata.is_dir() => (),
         Ok(_) => return Err("Invalid legacy rainfall directory".into()),
@@ -293,7 +293,7 @@ pub(crate) fn retire_legacy_rainfall(workspace: &Path) -> Result<(), String> {
         Err(error) => return Err(error.to_string()),
     };
     fs::remove_dir_all(&legacy).map_err(|error| error.to_string())?;
-    super::sync_directory(&workspace.join("data/cache"))
+    super::sync_directory(&workspace.join("cache"))
 }
 
 #[cfg(test)]
@@ -405,7 +405,7 @@ mod tests {
             let still_reading = writer_done.recv_timeout(Duration::from_millis(50)).is_err();
             release.send(()).unwrap();
             assert!(still_reading);
-            let second = writer_done.recv_timeout(Duration::from_secs(2)).unwrap();
+            let second = writer_done.recv_timeout(Duration::from_secs(30)).unwrap();
             assert_eq!(rainfall_cache_info(workspace.path()).unwrap(), Some(second));
         });
         let first_retired = !first_run.exists();

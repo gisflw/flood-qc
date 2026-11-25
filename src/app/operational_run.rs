@@ -32,9 +32,12 @@ pub struct OperationalRun {
     time_zone: String,
     scenarios: Vec<String>,
     reference: String,
+    opened_at: DateTime<Utc>,
     accepted: Option<DraftSources>,
     acquisition: Option<AcquisitionRecipe>,
     forecast_selectors: Vec<(usize, ForecastProvider)>,
+    settings: Option<super::WorkspaceConfig>,
+    requested_scenarios: Vec<super::workspace::RunScenario>,
 }
 impl OperationalRun {
     /// Load the selected TOML once. Resource paths in the recipe are workspace-relative.
@@ -97,10 +100,72 @@ impl OperationalRun {
             time_zone: document.time_zone,
             scenarios,
             reference,
+            opened_at: now,
             accepted: None,
             acquisition,
             forecast_selectors,
+            settings: None,
+            requested_scenarios: Vec::new(),
         })
+    }
+
+    pub fn open_workspace(workspace: PathBuf, now: DateTime<Utc>) -> Result<Self, String> {
+        let workspace = workspace.canonicalize().map_err(|e| e.to_string())?;
+        let recipe_path = super::workspace_config_path(&workspace);
+        let settings = super::read_workspace_config(&recipe_path)?;
+        let reference =
+            super::workspace::reference(&settings.run.clone().unwrap_or_default(), None, now)?;
+        let document =
+            super::workspace::operational_document(&workspace, &settings, reference, false, &[])?;
+        Ok(Self {
+            workspace,
+            recipe_path,
+            recipe: serde_json::Value::Null,
+            time_zone: document.time_zone,
+            scenarios: document.scenarios.into_iter().map(|item| item.id).collect(),
+            reference: document.reference_time,
+            opened_at: now,
+            accepted: None,
+            acquisition: None,
+            forecast_selectors: Vec::new(),
+            settings: Some(settings),
+            requested_scenarios: Vec::new(),
+        })
+    }
+
+    fn workspace_doc(
+        &self,
+        settings: &super::WorkspaceConfig,
+        resolve_sources: bool,
+    ) -> Result<PreparationDocument, String> {
+        let reference = super::workspace::reference(
+            &settings.run.clone().unwrap_or_default(),
+            Some(&self.reference),
+            self.opened_at,
+        )?;
+        super::workspace::operational_document(
+            &self.workspace,
+            settings,
+            reference,
+            resolve_sources,
+            &self.requested_scenarios,
+        )
+    }
+
+    pub fn prepare_saved(
+        &self,
+        invocation_dir: PathBuf,
+        output: PathBuf,
+        control: &OperationControl,
+    ) -> Result<super::PreparationReport, OperationError> {
+        let error = |message| OperationError::InvalidRequest {
+            field: "workspace".into(),
+            message,
+        };
+        let mut selection = self.selection().map_err(error)?;
+        selection.refresh_inputs().map_err(error)?;
+        let _lock = super::operation::lock_workspace_job(&self.workspace)?;
+        selection.prepare_selected(invocation_dir, output, false, control)
     }
 
     pub fn recipe_path(&self) -> &Path {
@@ -116,11 +181,59 @@ impl OperationalRun {
         &self.scenarios
     }
 
+    pub fn set_scenarios(&mut self, selections: &[String]) -> Result<(), String> {
+        let config = self
+            .settings
+            .as_ref()
+            .ok_or("Scenario overrides require workspace settings")?;
+        let selected = selections
+            .iter()
+            .map(|value| super::workspace::RunScenario::parse(value))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut names = std::collections::BTreeSet::new();
+        if selected.iter().any(|item| !names.insert(item.name())) {
+            return Err("Duplicate scenario selections".into());
+        }
+        let reference = super::workspace::reference(
+            &config.run.clone().unwrap_or_default(),
+            Some(&self.reference),
+            self.opened_at,
+        )?;
+        let document = super::workspace::operational_document(
+            &self.workspace,
+            config,
+            reference,
+            false,
+            &selected,
+        )?;
+        self.requested_scenarios = selected;
+        self.scenarios = document
+            .scenarios
+            .into_iter()
+            .map(|scenario| scenario.id)
+            .collect();
+        self.accepted = None;
+        Ok(())
+    }
+
     pub fn reference(&self) -> &str {
         &self.reference
     }
 
     pub fn set_reference(&mut self, reference: String) {
+        let reference = if reference == "now" {
+            self.time_zone
+                .parse::<chrono_tz::Tz>()
+                .ok()
+                .map_or(reference, |zone| {
+                    self.opened_at
+                        .with_timezone(&zone)
+                        .format("%Y-%m-%dT%H:00:00")
+                        .to_string()
+                })
+        } else {
+            reference
+        };
         if self.reference != reference {
             self.reference = reference;
             self.accepted = None;
@@ -128,6 +241,9 @@ impl OperationalRun {
     }
 
     fn document(&self) -> Result<super::PreparationDocument, String> {
+        if let Some(settings) = &self.settings {
+            return self.workspace_doc(settings, true);
+        }
         let mut recipe = self.recipe.clone();
         let reference = timestamp("reference_time", &self.reference).map_err(|e| e.to_string())?;
         if recipe["schema_version"].as_u64() == Some(1) {
@@ -160,7 +276,11 @@ impl OperationalRun {
 
     /// Return first and last interval-end labels for observations, then for forecasts.
     pub fn coverage(&self) -> Result<[String; 4], String> {
-        coverage(&serde_json::to_value(self.document()?).map_err(|e| e.to_string())?)
+        let document = match &self.settings {
+            Some(settings) => self.workspace_doc(settings, false)?,
+            None => self.document()?,
+        };
+        coverage(&serde_json::to_value(document).map_err(|e| e.to_string())?)
     }
 
     // Reuse the typed selection and source acceptance checks used by draft experiments.
@@ -180,10 +300,24 @@ impl OperationalRun {
 
     pub fn acquires_inputs(&self) -> bool {
         self.acquisition.is_some()
+            || self
+                .settings
+                .as_ref()
+                .and_then(|config| config.acquisition.as_ref())
+                .is_some_and(|a| {
+                    !a.observation_providers.is_empty() || !a.forecast_providers.is_empty()
+                })
     }
 
     pub fn validate(&self) -> Vec<String> {
         if self.acquires_inputs() {
+            if let Some(settings) = &self.settings {
+                return AcquisitionDocument::from_workspace(settings)
+                    .and_then(|_| self.workspace_doc(settings, false))
+                    .err()
+                    .into_iter()
+                    .collect();
+            }
             return self.acquisition_setup().err().into_iter().collect();
         }
         match self.selection() {
@@ -316,9 +450,29 @@ impl OperationalRun {
             field: "acquisition".into(),
             message,
         };
+        if let Some(settings) = &self.settings {
+            let document = AcquisitionDocument::from_workspace(settings).map_err(error)?;
+            let reference = document
+                .reference(Some(&self.reference), self.opened_at)
+                .map_err(error)?;
+            super::workspace::initialize_database(workspace, reference.timezone())
+                .map_err(error)?;
+            let acquired = report.insert(
+                document
+                    .acquire_locked(workspace, reference, None, control)
+                    .map_err(error)?,
+            );
+            control.check()?;
+            if let Some(message) = acquired.run_blocker() {
+                return Err(error(message.into()));
+            }
+            let mut selection = self.selection().map_err(error)?;
+            selection.refresh_inputs().map_err(error)?;
+            return Ok(selection);
+        }
         let (document, mut recipe) = self.acquisition_setup().map_err(error)?;
         let reference = document
-            .reference(Some(&self.reference), Utc::now())
+            .reference(Some(&self.reference), self.opened_at)
             .map_err(error)?;
         let acquired = report.insert(
             document

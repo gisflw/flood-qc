@@ -218,3 +218,108 @@ fn visit_ids(
     }
     Ok(())
 }
+
+pub(crate) fn cache_catchments(
+    geometry: &Path,
+    hand_path: &Path,
+    cache: &Path,
+) -> Result<PathBuf, StoreError> {
+    use terrio::ops::rasterize::{Grid, RasterizeOptions, rasterize};
+
+    let hand = InputRaster::open(hand_path)?;
+    let contents = digest_file(geometry).map_err(format_error)?.0;
+    let mut wal = geometry.as_os_str().to_os_string();
+    wal.push("-wal");
+    let wal = PathBuf::from(wal);
+    let pending = wal
+        .is_file()
+        .then(|| digest_file(&wal).map(|value| value.0))
+        .transpose()
+        .map_err(format_error)?
+        .unwrap_or_default();
+    let stamp = {
+        use sha2::{Digest, Sha256};
+        let inputs = format!("{contents}:{pending}:{}:{:?}", hand.sha256, hand.sidecars);
+        format!("{:x}", Sha256::digest(inputs))
+    };
+    let target = cache.join(format!("catchments-{stamp}.tif"));
+    if target.is_file() {
+        InundationRasters::open(hand_path, &target)?;
+        return Ok(target);
+    }
+    let data =
+        terrio::open_vector(path_str(geometry)?, &Default::default()).map_err(format_error)?;
+    let layer = data
+        .layers
+        .into_iter()
+        .find(|layer| layer.name == "mini_catchments")
+        .ok_or_else(|| schema("missing mini_catchments layer"))?;
+    let mini = layer
+        .schema
+        .field_index("mini_id")
+        .ok_or_else(|| schema("missing mini_id field"))?;
+    if layer.features.iter().any(|feature| {
+        !matches!(feature.attributes.get(mini), Some(wbvector::FieldValue::Integer(id)) if u32::try_from(*id).is_ok() && *id > 0)
+            || !matches!(feature.geometry, Some(wbvector::Geometry::Polygon { .. } | wbvector::Geometry::MultiPolygon(_)))
+    }) {
+        return Err(schema("mini_catchments requires polygon features and positive integer MINI IDs"));
+    }
+    let cols = hand.raster.width();
+    let rows = hand.raster.height();
+    let geo_transform = hand.raster.geo_transform();
+    let crs = hand.raster.crs();
+    validate_grid(
+        cols,
+        rows,
+        crs.epsg
+            .and_then(|value| i32::try_from(value).ok())
+            .unwrap_or_default(),
+        geo_transform,
+    )?;
+    let raster = rasterize(
+        &[layer],
+        &RasterizeOptions {
+            attribute: Some("mini_id".into()),
+            grid: Some(Grid {
+                geo_transform,
+                cols,
+                rows,
+                crs,
+            }),
+            data_type: Some(DataType::U32),
+            nodata: Some(0.0),
+            ..RasterizeOptions::default()
+        },
+    )
+    .map_err(format_error)?;
+    std::fs::create_dir_all(cache)?;
+    let stage = tempfile::tempdir_in(cache)?;
+    let staged = stage.path().join("catchments.tif");
+    terrio::write_raster_dataset(
+        &raster,
+        path_str(&staged)?,
+        &terrio::RasterWriteOptions {
+            compression: Some("DEFLATE".into()),
+            tile_size: Some(256),
+            ..Default::default()
+        },
+    )
+    .map_err(format_error)?;
+    hand.verify()?;
+    if digest_file(geometry).map_err(format_error)?.0 != contents {
+        return Err(StoreError::Integrity(
+            "Geometry changed while rasterizing catchments".into(),
+        ));
+    }
+    InundationRasters::open(hand_path, &staged)?;
+    std::fs::File::open(&staged)?.sync_all()?;
+    match std::fs::rename(&staged, &target) {
+        Ok(()) => {}
+        Err(_) if target.is_file() => {
+            InundationRasters::open(hand_path, &target)?;
+        }
+        Err(error) => return Err(error.into()),
+    }
+    super::super::sync_directory(cache).map_err(format_error)?;
+    Ok(target)
+}

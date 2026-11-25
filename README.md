@@ -36,7 +36,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Inspect a regional workspace | `workspace inspect` | [Configuration and checks](docs/contracts/workspace.md) |
 | Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
-| Prepare and execute a saved recipe | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#choose-an-execution-path) |
+| Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#choose-an-execution-path) |
 | Run an operation and update the rainfall display | Desktop **Processing → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
 | Edit, preview, or run an experiment | `draft` commands or **Draft → Run experiment** | [Draft workflow](docs/contracts/drafts.md#editing-source-acceptance-and-previews) |
 | Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
@@ -47,13 +47,13 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 ### Inspect a workspace
 
 For a workspace without a configuration file, set the workspace path, create
-its configuration directory, and generate example TOML. Set the regional
-`spatial.gpkg_path` in that file before inspecting.
+the root directory, and generate example TOML. Set the regional
+`spatial.mini_layers` in that file before inspecting.
 
 ```sh
 workspace=/regional/workspace
-mkdir -p "$workspace/config"
-cargo run -- config example > "$workspace/config/workspace.toml"
+mkdir -p "$workspace"
+cargo run -- config example > "$workspace/config.toml"
 ```
 
 ```sh
@@ -66,21 +66,15 @@ The built `target/debug/mgb-ops` can run from other directories. See the
 path rules, findings, and inspection limits. Library callers use the same
 [inspection API](docs/contracts/workspace.md#library-api).
 
-### Prepare and execute a saved recipe
+### Prepare and execute an operation
 
-If your operation uses a saved GRIB2 forecast, normalize it with
-[an example normalization request](docs/contracts/forecasts.md).
-
-```sh
-cargo run -- forecast normalize --workspace "$workspace" --request normalize.toml --json
-```
-
-Create `operation.toml` from the [example operation request](docs/contracts/operations.md#request).
-Set the asset ID returned by normalization if you are using that forecast.
-Prepare to a new destination and execute the preparation.
+Set the run window and providers in the workspace's `config.toml`. Import
+station metadata and acquire inputs as described in the
+[acquisition contract](docs/contracts/acquisition.md). Prepare to a new
+destination, then execute that preparation.
 
 ```sh
-cargo run -- operation prepare --workspace "$workspace" --request operation.toml --output prepared --json
+cargo run -- operation prepare --workspace "$workspace" --output prepared --json
 cargo run -- operation execute --workspace "$workspace" --prepared prepared --json
 ```
 
@@ -105,10 +99,10 @@ cargo run -- draft run --workspace "$workspace" --draft draft.json --json
 
 ```sh
 workspace=/regional/workspace
-cargo run --locked --features desktop --bin mgb-ops-desktop -- "$workspace/config/workspace.toml"
+cargo run --locked --features desktop --bin mgb-ops-desktop -- "$workspace"
 ```
 
-Use **Open TOML** to open another project. The desktop keeps the map visible
+Use **Open workspace** to open another project. The desktop keeps the map visible
 alongside Layers and the right-hand tabs and forms. See the
 [desktop task index](docs/contracts/desktop.md#common-tasks) and
 [qualification limits](docs/contracts/desktop.md#current-qualification-limits).

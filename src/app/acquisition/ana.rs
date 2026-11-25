@@ -19,17 +19,6 @@ fn prepare(
     config: &AnaDocument,
     zone: Tz,
 ) -> Result<(ObservationStore, Vec<AnaStation>), String> {
-    let inventory = workspace.join(&config.inventory);
-    let mut stations = read_ana_inventory(
-        File::open(&inventory).map_err(|e| format!("{}: {e}", inventory.display()))?,
-    )?;
-    let mut selected = BTreeSet::new();
-    for code in &config.station_codes {
-        let code = ana_station_code(code)?;
-        if !selected.insert(code) || !stations.iter().any(|s| s.station.station_code == code) {
-            return Err(format!("unknown or duplicate requested ANA station {code}"));
-        }
-    }
     let database = workspace.join(&config.database);
     let mut store = match database.try_exists() {
         Ok(true) => ObservationStore::open_writable(&database),
@@ -48,6 +37,38 @@ fn prepare(
     let db_zone = store.time_zone().map_err(|e| e.to_string())?;
     if db_zone != zone.name() {
         return Err("ANA observation database timezone differs from acquisition settings".into());
+    }
+    let Some(inventory) = &config.inventory else {
+        let mut stations = Vec::new();
+        for location in store.station_locations().map_err(|e| e.to_string())? {
+            let station = location.station;
+            if station.provider_code == "ana" {
+                let variables = store
+                    .observed_variables(&station.station_id)
+                    .map_err(|e| e.to_string())?
+                    .iter()
+                    .map(|value| crate::adapters::AnaVariable::parse(value))
+                    .collect::<Result<BTreeSet<_>, _>>()?;
+                if !variables.is_empty() {
+                    stations.push(AnaStation { station, variables });
+                }
+            }
+        }
+        if stations.is_empty() {
+            return Err("Import the ANA station inventory before acquisition".into());
+        }
+        return Ok((store, stations));
+    };
+    let inventory = workspace.join(inventory);
+    let mut stations = read_ana_inventory(
+        File::open(&inventory).map_err(|e| format!("{}: {e}", inventory.display()))?,
+    )?;
+    let mut selected = BTreeSet::new();
+    for code in &config.station_codes {
+        let code = ana_station_code(code)?;
+        if !selected.insert(code) || !stations.iter().any(|s| s.station.station_code == code) {
+            return Err(format!("unknown or duplicate requested ANA station {code}"));
+        }
     }
     let mut existing = BTreeMap::<String, Vec<_>>::new();
     for entry in store.station_locations().map_err(|e| e.to_string())? {
@@ -252,7 +273,7 @@ pub(super) fn acquire(
         control.check().map_err(|e| e.to_string())?;
         let dates = date_range(reference, config.request_days)?;
         let (mut store, stations) = prepare(workspace, config, reference.timezone())?;
-        let root = Path::new("data/downloads/ana");
+        let root = Path::new("downloads/ana");
         create_workspace_dir(workspace, root).map_err(|e| e.to_string())?;
         let directory = tempfile::Builder::new()
             .prefix(&format!("{}-", reference.format("%Y%m%dT%H%M%S")))
@@ -358,7 +379,7 @@ mod tests {
         let inventory = workspace.path().join("inventory.csv");
         fs::write(&inventory, "provider_code,station_code,station_name,latitude,longitude,observed_variables\nana,123,Station,0,0,\"rain,level\"\n").unwrap();
         let config = AnaDocument {
-            inventory,
+            inventory: Some(inventory),
             ..Default::default()
         };
         let (mut store, stations) = prepare(workspace.path(), &config, Sao_Paulo).unwrap();

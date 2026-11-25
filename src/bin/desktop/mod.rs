@@ -657,15 +657,20 @@ impl Monitoring {
         self.preferences.recent.truncate(10);
     }
     fn choose_project(&mut self) {
-        if let Some(path) = rfd::FileDialog::new()
-            .add_filter("TOML", &["toml"])
-            .pick_file()
-        {
-            self.open_path(path);
+        if let Some(workspace) = rfd::FileDialog::new().pick_folder() {
+            self.depart(Departure::Project(
+                mgb_ops::app::workspace_config_path(&workspace),
+                workspace,
+            ));
         }
     }
 
     fn open_path(&mut self, config: PathBuf) {
+        if config.is_dir() {
+            let path = mgb_ops::app::workspace_config_path(&config);
+            self.depart(Departure::Project(path, config));
+            return;
+        }
         let workspace = self
             .preferences
             .recent
@@ -1364,7 +1369,7 @@ impl Monitoring {
                 ui.horizontal(|ui| match self.ribbon {
                     Ribbon::Project => {
                         ribbon_group(ui, text(pt, "Workspace", "Área de trabalho"), |ui| {
-                            let label = text(pt, "Open TOML…", "Abrir TOML…");
+                            let label = text(pt, "Open workspace…", "Abrir área de trabalho…");
                             let button = ribbon_action(ui, "📂", &label);
                             let open = ui.add(if self.project.is_none() {
                                 button.fill(ui.visuals().selection.bg_fill)
@@ -2908,7 +2913,10 @@ impl Monitoring {
                                 "Abra um projeto regional",
                             ));
                             if ui
-                                .add(theme::primary(ui, text(pt, "Open TOML…", "Abrir TOML…")))
+                                .add(theme::primary(
+                                    ui,
+                                    text(pt, "Open workspace…", "Abrir área de trabalho…"),
+                                ))
                                 .clicked()
                             {
                                 self.choose_project();
@@ -3624,14 +3632,14 @@ mod interface_tests {
         display.draft = Some("different-stale-file.json".into());
         assert_eq!(display.selected_operation_zone("UTC"), "Asia/Tokyo");
         let legacy: Display = serde_json::from_str(
-            r#"{"config":"region/config/workspace.toml","run":"region/data/runs/run-1",
+            r#"{"config":"region/config.toml","run":"region/data/runs/run-1",
                  "layout":{"dock":{"Tabs":{"pages":["Map","Data"],"active":1}},
                            "left":false,"tabs":["Files",{"Form":"Prepare"}]},
                  "operation_zone":"America/Sao_Paulo","basemap":2}"#,
         )
         .unwrap();
         assert_eq!(legacy.selected_operation_zone("UTC"), "America/Sao_Paulo");
-        assert_eq!(legacy.config, PathBuf::from("region/config/workspace.toml"));
+        assert_eq!(legacy.config, PathBuf::from("region/config.toml"));
         assert!(serde_json::to_value(&legacy).unwrap().get("run").is_none());
         assert_eq!(legacy.basemap, 2);
         assert_eq!(legacy.layout.focused_tab(), Some(SideTab::Map));

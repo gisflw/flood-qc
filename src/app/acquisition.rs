@@ -104,7 +104,7 @@ pub(super) struct AcquisitionDocument {
 #[serde(default, deny_unknown_fields)]
 pub(super) struct AnaDocument {
     pub(super) database: PathBuf,
-    inventory: PathBuf,
+    inventory: Option<PathBuf>,
     request_days: u32,
     fetch_window_days: u32,
     timeout_seconds: u64,
@@ -115,8 +115,8 @@ pub(super) struct AnaDocument {
 impl Default for AnaDocument {
     fn default() -> Self {
         Self {
-            database: "data/observations.sqlite".into(),
-            inventory: "data/source/history_station_inventory.csv".into(),
+            database: "operation.sqlite".into(),
+            inventory: Some("source/history_station_inventory.csv".into()),
             request_days: 90,
             fetch_window_days: 30,
             timeout_seconds: 15,
@@ -143,10 +143,10 @@ pub(super) struct ForecastDocument {
 }
 
 fn default_catalog() -> PathBuf {
-    "data/forecasts.sqlite".into()
+    "operation.sqlite".into()
 }
 fn default_artifact_root() -> PathBuf {
-    "data/forecasts".into()
+    "assets".into()
 }
 fn default_providers() -> Vec<ForecastProvider> {
     vec![ForecastProvider::Ecmwf, ForecastProvider::Noaa]
@@ -180,6 +180,63 @@ impl ForecastDocument {
 }
 
 impl AcquisitionDocument {
+    pub(super) fn from_workspace(config: &super::WorkspaceConfig) -> Result<Self, String> {
+        let run = config.run.clone().unwrap_or_default();
+        let options = config.acquisition.clone().unwrap_or_default();
+        if options
+            .observation_providers
+            .iter()
+            .any(|provider| provider != "ana")
+            || options.observation_providers.len() > 1
+            || options.request_days == 0
+            || !(1..=30).contains(&options.fetch_window_days)
+            || !(1..=120).contains(&options.timeout_seconds)
+            || options
+                .forecast_providers
+                .iter()
+                .enumerate()
+                .any(|(index, provider)| options.forecast_providers[..index].contains(provider))
+            || options.lookback_cycles == 0
+        {
+            return Err(
+                "Invalid acquisition providers, request window, timeout, or forecast lookback"
+                    .into(),
+            );
+        }
+        let ana = (!options.observation_providers.is_empty()).then(|| AnaDocument {
+            database: super::workspace::DATABASE_PATH.into(),
+            inventory: None,
+            request_days: options.request_days,
+            fetch_window_days: options.fetch_window_days,
+            timeout_seconds: options.timeout_seconds,
+            ..AnaDocument::default()
+        });
+        let forecasts = if options.forecast_providers.is_empty() {
+            None
+        } else {
+            let document = ForecastDocument {
+                catalog: super::workspace::DATABASE_PATH.into(),
+                artifact_root: "assets".into(),
+                providers: options.forecast_providers,
+                lookback_cycles: options.lookback_cycles,
+                buffer_fraction: options.buffer_fraction,
+                model_bbox: config
+                    .spatial
+                    .as_ref()
+                    .and_then(|s| s.bounds)
+                    .ok_or("Set spatial.bounds")?,
+            };
+            document.buffered_bbox()?;
+            Some(document)
+        };
+        Ok(Self {
+            schema_version: 1,
+            time_zone: run.time_zone.ok_or("Set run.time_zone")?,
+            ana,
+            forecasts,
+        })
+    }
+
     pub(super) fn read(workspace: &Path, request: &Path) -> Result<Self, String> {
         let path = workspace.join(request);
         let content = fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -198,7 +255,9 @@ impl AcquisitionDocument {
                 return Err("ANA requires positive request_days, fetch_window_days of 1–30, and timeout_seconds of 1–120".into());
             }
             require_path(&ana.database)?;
-            require_path(&ana.inventory)?;
+            if let Some(inventory) = &ana.inventory {
+                require_path(inventory)?;
+            }
         }
         if let Some(forecasts) = &document.forecasts {
             if forecasts.lookback_cycles == 0
@@ -290,15 +349,32 @@ pub fn acquire_inputs(
         .workspace
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let document = AcquisitionDocument::read(&workspace, &request.request_file)?;
+    let settings = (request.request_file == Path::new(super::workspace::CONFIG_PATH))
+        .then(|| super::read_workspace_config(&super::workspace_config_path(&workspace)))
+        .transpose()?;
+    let document = match &settings {
+        Some(config) => AcquisitionDocument::from_workspace(config)?,
+        None => AcquisitionDocument::read(&workspace, &request.request_file)?,
+    };
     if match kind {
         AcquisitionKind::Observations => document.ana.is_none(),
         AcquisitionKind::Forecasts => document.forecasts.is_none(),
     } {
         return Err("selected acquisition section is missing".into());
     }
-    let reference = document.reference(request.reference_time.as_deref(), Utc::now())?;
+    let now = Utc::now();
+    let reference = match &settings {
+        Some(config) => super::workspace::reference(
+            &config.run.clone().unwrap_or_default(),
+            request.reference_time.as_deref(),
+            now,
+        )?,
+        None => document.reference(request.reference_time.as_deref(), now)?,
+    };
     let _lock = lock_workspace_job(&workspace).map_err(|e| e.to_string())?;
+    if settings.is_some() {
+        super::workspace::initialize_database(&workspace, document.time_zone)?;
+    }
     document.acquire_locked(&workspace, reference, Some(kind), control)
 }
 
@@ -311,13 +387,30 @@ pub fn import_ana_csv(
         .workspace
         .canonicalize()
         .map_err(|e| e.to_string())?;
-    let document = AcquisitionDocument::read(&workspace, &request.request_file)?;
-    let reference = document.reference(request.reference_time.as_deref(), Utc::now())?;
+    let settings = (request.request_file == Path::new(super::workspace::CONFIG_PATH))
+        .then(|| super::read_workspace_config(&super::workspace_config_path(&workspace)))
+        .transpose()?;
+    let document = match &settings {
+        Some(config) => AcquisitionDocument::from_workspace(config)?,
+        None => AcquisitionDocument::read(&workspace, &request.request_file)?,
+    };
+    let now = Utc::now();
+    let reference = match &settings {
+        Some(config) => super::workspace::reference(
+            &config.run.clone().unwrap_or_default(),
+            request.reference_time.as_deref(),
+            now,
+        )?,
+        None => document.reference(request.reference_time.as_deref(), now)?,
+    };
     let ana = document
         .ana
         .as_ref()
         .ok_or("selected acquisition section is missing")?;
     let _lock = lock_workspace_job(&workspace).map_err(|e| e.to_string())?;
+    if settings.is_some() {
+        super::workspace::initialize_database(&workspace, document.time_zone)?;
+    }
     let outcome = ana::replay(&workspace, ana, reference, paths, control)?;
     Ok(AcquisitionReport {
         reference_time: reference.naive_local(),
@@ -325,4 +418,99 @@ pub fn import_ana_csv(
         forecasts: Vec::new(),
         cancelled: control.is_cancelled(),
     })
+}
+
+pub fn import_workspace_inventory(workspace: &Path, inventory: &Path) -> Result<usize, String> {
+    let workspace = workspace.canonicalize().map_err(|e| e.to_string())?;
+    let settings = super::read_workspace_config(&super::workspace_config_path(&workspace))?;
+    let zone = settings
+        .run
+        .and_then(|run| run.time_zone)
+        .ok_or("Set run.time_zone")?;
+    let input = fs::File::open(inventory).map_err(|e| e.to_string())?;
+    let stations = crate::adapters::read_ana_inventory(input)?;
+    let _lock = lock_workspace_job(&workspace).map_err(|e| e.to_string())?;
+    super::workspace::initialize_database(&workspace, zone)?;
+    let mut db =
+        crate::store::ObservationStore::open_writable(&super::operation_database(&workspace))
+            .map_err(|e| e.to_string())?;
+    if db.time_zone().map_err(|e| e.to_string())? != zone.name() {
+        return Err("observation database timezone differs from run.time_zone".into());
+    }
+    let existing = db.station_locations().map_err(|e| e.to_string())?;
+    let mut entries = Vec::new();
+    let mut variables = Vec::new();
+    for mut entry in stations {
+        if let Some(prior) = existing.iter().find(|item| {
+            item.station.provider_code == "ana"
+                && crate::adapters::ana_station_code(&item.station.station_code)
+                    .is_ok_and(|code| code == entry.station.station_code)
+        }) {
+            entry
+                .station
+                .station_id
+                .clone_from(&prior.station.station_id);
+            entry
+                .station
+                .station_code
+                .clone_from(&prior.station.station_code);
+        }
+        variables.push((
+            entry.station.station_id.clone(),
+            entry
+                .variables
+                .iter()
+                .map(|value| value.code().to_owned())
+                .collect(),
+        ));
+        entries.push(entry.station);
+    }
+    db.import_ana_inventory(&entries, &variables)
+        .map_err(|e| e.to_string())?;
+    Ok(entries.len())
+}
+
+pub fn export_workspace_inventory(workspace: &Path, output: &Path) -> Result<usize, String> {
+    let db = crate::store::ObservationStore::open_read_only(&super::operation_database(workspace))
+        .map_err(|error| error.to_string())?;
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer
+        .write_record([
+            "provider_code",
+            "station_code",
+            "station_name",
+            "latitude",
+            "longitude",
+            "observed_variables",
+        ])
+        .map_err(|error| error.to_string())?;
+    let mut count = 0;
+    for entry in db.station_locations().map_err(|error| error.to_string())? {
+        let station = entry.station;
+        if station.provider_code != "ana" {
+            continue;
+        }
+        let variables = db
+            .observed_variables(&station.station_id)
+            .map_err(|error| error.to_string())?;
+        let variables = if variables.is_empty() {
+            "none".into()
+        } else {
+            variables.join(",")
+        };
+        writer
+            .serialize((
+                station.provider_code,
+                station.station_code,
+                station.name,
+                station.latitude,
+                station.longitude,
+                variables,
+            ))
+            .map_err(|error| error.to_string())?;
+        count += 1;
+    }
+    let data = writer.into_inner().map_err(|error| error.to_string())?;
+    crate::store::write_new_atomic(output, &data)?;
+    Ok(count)
 }

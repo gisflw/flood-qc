@@ -31,8 +31,13 @@ mgb-ops inundation process \
   --catchments /region/data/source/catchments.tif
 ```
 
-Use the `run_root` returned by execution or the active generation selected in
-`data/cache/run/active.json`. The chosen scenario must be complete and have `results/<scenario>/flood_source.nc`.
+Use `--workspace /region --scenario <scenario-id>` to process the active run
+using paths from `config.toml`. When `spatial.catchment_raster` is omitted,
+rasterize the GeoPackage's `mini_catchments.mini_id` polygons by pixel centre
+on the HAND grid. Cache the aligned raster under `cache/spatial/` for reuse
+with the same inputs. An explicit run uses its selected raster pair.
+
+The chosen scenario must be complete and have `results/<scenario>/flood_source.nc`.
 Supported new runs capture this compact source from the history-only and
 scenario engine streams. It retains the time and MINI axes and the channel
 depths supplied to that run. Existing runs without the source remain available

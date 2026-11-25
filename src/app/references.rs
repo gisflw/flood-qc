@@ -64,9 +64,3 @@ pub fn import_level_references(
         unmatched_codes: unmatched.into_iter().collect(),
     })
 }
-
-/// Explicitly upgrade the observation database for level references.
-pub fn upgrade_level_references(database: &Path) -> Result<(), String> {
-    let mut store = ObservationStore::open_writable(database).map_err(|e| e.to_string())?;
-    store.upgrade_references().map_err(|e| e.to_string())
-}

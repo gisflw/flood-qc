@@ -269,3 +269,41 @@ fn preserves_existing_mask_on_conflict_failure_and_cancellation() {
         [255]
     );
 }
+
+#[test]
+fn workspace_inundation_derives_and_reuses_aligned_catchments() {
+    fs::create_dir_all("runs").unwrap();
+    let dir = tempfile::tempdir_in("runs").unwrap();
+    let root = dir.path();
+    let request = fixture(root);
+    hand(&request.hand, -51., Some(4326));
+    fs::write(root.join("mini_catchments.geojson"), r#"{
+       "type":"FeatureCollection", "name":"mini_catchments",
+       "features":[{"type":"Feature","properties":{"mini_id":1},
+       "geometry":{"type":"Polygon","coordinates":[[[-52,-31],[-48,-31],[-48,-29],[-52,-29],[-52,-31]]]}}]
+    }"#).unwrap();
+    fs::write(
+        root.join("config.toml"),
+        "[spatial]\nmini_layers='mini_catchments.geojson'\nhand_raster='hand.tif'\n",
+    )
+    .unwrap();
+    let process = || {
+        super::process_workspace_inundation(
+            root,
+            Some(root.into()),
+            "reference".into(),
+            false,
+            &OperationControl::default(),
+        )
+    };
+    let first = process().unwrap();
+    assert_eq!(first.status, InundationProcessStatus::Created);
+    let mask = InundationMask::open(&first.path).unwrap();
+    assert_eq!(
+        mask.read_window(InundationLevel::Full, 0, 0, 0, 5, 1)
+            .unwrap(),
+        [0, 1, 255, 255, 0]
+    );
+    assert_eq!(process().unwrap().status, InundationProcessStatus::Reused);
+    assert_eq!(fs::read_dir(root.join("cache/spatial")).unwrap().count(), 1);
+}

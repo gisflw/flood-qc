@@ -208,6 +208,7 @@ pub(super) fn capture(
                 .cloned()
                 .collect(),
             series: vec![series],
+            excluded_rain: Default::default(),
         };
         let points = crate::analysis::effective_flow_observations(&selected, &request.historical)
             .map_err(|e| e.to_string())?;

@@ -23,7 +23,7 @@ The `mgb_ops` crate re-exports `inspect`, `InspectionRequest`, `InspectionReport
 `FindingStatus`, `FindingCode`, and `example_config`. `example_config()` returns
 the editable TOML as a `String`.
 `read_workspace_config(path)` and `write_workspace_config(path, config)` use the
-same typed TOML schema (`WorkspaceConfig`, `WorkspaceSpatial`, `WorkspaceEngine`).
+same typed TOML schema (`WorkspaceConfig` and its typed sections).
 Paths inside the document remain unchanged. Saving validates nonempty configured
 paths and atomically replaces the destination; a failed save preserves its bytes.
 `inspect(request)` returns an `InspectionReport`, including expected failures;
@@ -47,20 +47,20 @@ to the workspace, just like CLI overrides.
 Rust reads TOML, never Python's `config/custom.yaml`. Generate an editable example:
 
 ```sh
-mgb-ops config example > /selected/workspace/config/workspace.toml
+mgb-ops config example > /selected/workspace/config.toml
 ```
 
 The command prints commented TOML to stdout; shell redirection owns file creation.
 The parent directory must already exist. The example geometry is a placeholder
 and must be edited for the region. Inspection always requires a configuration
 file, even when flags supply every setting. Its default location is
-`<workspace>/config/workspace.toml`; `--config` selects another file.
+`<workspace>/config.toml`; `--config` selects another file.
 
 | Key | Default | Invocation override |
 | --- | --- | --- |
-| `spatial.gpkg_path` | Required nonempty string | `--gpkg-path` |
-| `engine.executable` | Linux: `mgb_runner/MGB_Inercial_Prev_RSH`; Windows: `mgb_runner/MGB_Inercial_PrevRS_FORTRAN.exe` | `--engine-executable` |
-| `engine.input_dir` | `mgb_runner/Input` | `--engine-input-dir` |
+| `spatial.mini_layers` | Required nonempty string | `--gpkg-path` |
+| `model.executable` | Linux `model/engine`, Windows `model/engine.exe` | `--engine-executable` |
+| `model.input_dir` | `model/Input` | `--engine-input-dir` |
 
 Precedence is defaults, file, then explicit flags. Omitted tables are permitted
 when defaults/flags supply all required values. Reject unknown keys at every
@@ -70,6 +70,23 @@ or wrong types. Reject all-whitespace effective paths; preserve whitespace in
 other paths. Do not echo source configuration lines or unrelated values in errors.
 There are no profiles, includes, environment/dotenv loading, generic parameter
 flags, implicit variable/tilde expansion, YAML fallback, or migration commands.
+
+## Operating layout
+
+Select the same workspace directory in the CLI and desktop. Its root contains
+`config.toml` and `operation.sqlite`. Use `source/` for regional geometry,
+rasters and inventory CSVs, `model/` for MGB prerequisites, `downloads/` for
+original provider files, `assets/` for normalized forecast grids, `runs/` for
+saved preparations and replay manifests, and `cache/` for active results and
+derived rasters. The database records the active generation under `cache/run/`. Run
+`mgb-ops workspace init --workspace /region` to create the database explicitly.
+Inventory import and acquisition can also initialize it.
+
+The [acquisition](acquisition.md) and [operation](operations.md) commands use this
+same TOML. Run settings, provider choices, precipitation interpolation and
+exclusion rules apply defaults when omitted. Station inventory and edits are
+database records. There is no version setting for the workspace configuration
+or the SQLite database.
 
 ## Path resolution
 
@@ -120,9 +137,9 @@ rainfall preparation establish the list. Do not require every discovered input,
 `HAND_Flood.asc`, backups, forcing binaries, observed flows/levels, wind, saved
 state, or run-specific dates/horizons.
 
-Only report metadata presence of `data/history.sqlite`, `data/cache`, and
-`data/cache/run/active.json`. Absence or inaccessible metadata is informational. Do not open
-SQLite or inspect `current_run.sqlite` or sidecars.
+Report metadata presence of `operation.sqlite`, `cache/`, and
+`cache/run/`. Absence or inaccessible metadata is informational. Inspection
+does not open SQLite or determine which generation is active.
 
 Always report unchecked geometry/input contents, forcing, saved state, runtime
 compatibility, and actual execution. Linux executable-bit checks do not establish
@@ -151,7 +168,7 @@ Stable `check` identifiers:
 | `engine.executable`, `engine.input_dir` | Engine executable and required input directory |
 | `engine.input.<filename>` | One required input, using the exact filename from the bounded-checks table |
 | `engine.inputs` | Individual input checks suppressed by input-directory failure |
-| `optional.history`, `optional.cache`, `optional.runs` | Metadata presence of the three optional resources |
+| `optional.database`, `optional.cache`, `optional.runs` | Metadata presence of the three optional resources |
 | `scope.contents`, `scope.forcing`, `scope.state`, `scope.runtime`, `scope.execution` | The five unchecked areas, always reported |
 
 Order is workspace, config, geometry, executable, input directory, required inputs

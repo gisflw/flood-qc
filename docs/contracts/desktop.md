@@ -3,13 +3,11 @@
 Build/run the optional native interface:
 
 ```sh
-cargo run --locked --features desktop --bin mgb-ops-desktop -- /region/config/workspace.toml
+cargo run --locked --features desktop --bin mgb-ops-desktop -- /region
 ```
 
-With no argument, reopen the most recent project or use Open TOML. Standard
-`config/workspace.toml` locations infer their workspace; other locations ask for
-a folder and remember the association. Relative resource paths still resolve
-against that workspace under the [workspace contract](workspace.md).
+With no argument, reopen the most recent project or use **Open workspace** to
+select its directory. The desktop loads `config.toml` from that directory.
 
 Project opening and monitoring Refresh/F5 are read-only. Missing engine prerequisites, caches,
 geometry or observations report findings without preventing unrelated available
@@ -33,7 +31,7 @@ current workspace.
 
 | Task | Control |
 | --- | --- |
-| Open a workspace or import saved data | **Project → Open TOML** or **Import data** |
+| Open a workspace or import saved data | **Project → Open workspace** or **Import data** |
 | Compare map rainfall | **Map → Rainfall** and **Map view** above the map |
 | Step through modeled inundation | Use **Map → Inundation** |
 | Inspect location data or a run | **View → Charts**, **Data**, or **Files** |
@@ -41,7 +39,7 @@ current workspace.
 | Compare runs, prepare a bulletin, or share a run | **View → Run comparison**, **Bulletins**, or **Share runs** |
 | Edit staged observation replacements and forecast corrections | **Draft → Review instructions** |
 | Run an editable draft | **Draft → Run experiment** |
-| Run a saved operation TOML at a selected reference | **Processing → New run** |
+| Run a workspace operation at a selected reference | **Processing → New run** |
 | Set forcing and state options | **Processing → Forcing and state** |
 | Schedule jobs or monitor and cancel a job | **Processing → Operation → Automation** or **View → Review and runs → Jobs** |
 | Edit workspace settings | **Project → Workspace → Settings** |
@@ -53,7 +51,7 @@ See [saved-data workflows](saved-data.md) for request formats and outputs and
 ## Data and selection
 
 The interface reads configured regional mini segments/catchments and MINI.gtp,
-`data/history.sqlite`, `data/forecasts.sqlite`, the [active rainfall
+`operation.sqlite`, the [active rainfall
 cache](operations.md#active-run-and-rainfall-cache), and the workspace's active run.
 Charts, Files and Map open the active generation automatically. While viewing
 the active run, a newly published generation updates all three views and clears

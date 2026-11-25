@@ -1,3 +1,9 @@
+mod assistant;
+mod draft;
+mod output;
+
+use self::draft::draft_action;
+use self::output::{acquisition_result, acquisition_text, operation_result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -20,6 +26,10 @@ enum Command {
     Report {
         #[command(subcommand)]
         command: ReportCommand,
+    },
+    Edits {
+        #[command(subcommand)]
+        command: EditsCommand,
     },
     Observation {
         #[command(subcommand)]
@@ -226,6 +236,27 @@ fn automation_action(
 }
 
 #[derive(Subcommand)]
+enum EditsCommand {
+    /// Replace the ordered edits for observations or a forecast cycle.
+    Import {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        forecast: Option<String>,
+    },
+    Export {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long)]
+        forecast: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
 enum ObservationCommand {
     /// Download ANA observations and import the normalized hourly values.
     Acquire(AcquisitionOptions),
@@ -242,15 +273,23 @@ enum ObservationCommand {
         #[arg(long)]
         time_zone: String,
     },
-    Upgrade {
-        #[arg(long)]
-        database: PathBuf,
-    },
     Import {
         #[arg(long)]
         database: PathBuf,
         #[arg(long)]
         input: PathBuf,
+    },
+    ImportInventory {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        input: PathBuf,
+    },
+    ExportInventory {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
     },
     Inventory {
         #[arg(long)]
@@ -288,9 +327,7 @@ impl AcquisitionOptions {
     fn request(self) -> mgb_ops::app::AcquisitionRequest {
         mgb_ops::app::AcquisitionRequest {
             workspace: self.workspace,
-            request_file: self
-                .request
-                .unwrap_or_else(|| "config/acquisition.toml".into()),
+            request_file: self.request.unwrap_or_else(|| "config.toml".into()),
             reference_time: self.reference_time,
         }
     }
@@ -437,10 +474,6 @@ enum RunCommand {
 }
 #[derive(Subcommand)]
 enum ReferenceCommand {
-    Upgrade {
-        #[arg(long)]
-        database: PathBuf,
-    },
     Import {
         #[arg(long)]
         database: PathBuf,
@@ -580,213 +613,20 @@ enum DraftCommand {
     },
 }
 
-fn draft_action(
-    command: DraftCommand,
-    invocation: &std::path::Path,
-    control: &mgb_ops::OperationControl,
-) -> Result<serde_json::Value, String> {
-    fn value<T: serde::Serialize>(data: T) -> Result<serde_json::Value, String> {
-        serde_json::to_value(data).map_err(|e| e.to_string())
-    }
-    fn path(invocation: &std::path::Path, path: &std::path::Path) -> PathBuf {
-        if path.is_absolute() {
-            path.into()
-        } else {
-            invocation.join(path)
-        }
-    }
-    match command {
-        DraftCommand::New {
-            workspace,
-            output,
-            reference,
-            time_zone,
-        } => {
-            let mut draft = mgb_ops::Draft::new(workspace, invocation);
-            if let (Some(reference), Some(zone)) = (reference, time_zone) {
-                draft.initialize_anchor(&reference, &zone)?;
-            }
-            draft.save(&path(invocation, &output), true)?;
-            value(draft.document)
-        }
-        DraftCommand::Open { workspace, draft } => {
-            let draft = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            let mut result = serde_json::Map::new();
-            result.insert("document".into(), value(draft.document)?);
-            result.insert("findings".into(), value(draft.findings)?);
-            Ok(result.into())
-        }
-        DraftCommand::Save {
-            workspace,
-            draft,
-            output,
-            omit_visualization,
-        } => {
-            let mut current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            current.save(&output, !omit_visualization)?;
-            let saved = mgb_ops::Draft::open(current.workspace.clone(), invocation, &output)?;
-            value(saved.document)
-        }
-        DraftCommand::ImportToml {
-            workspace,
-            request,
-            output,
-        } => {
-            let mut draft = mgb_ops::Draft::import_toml(workspace, invocation, &request)?;
-            draft.save(&path(invocation, &output), true)?;
-            value(draft.document)
-        }
-        DraftCommand::ImportManifest {
-            workspace,
-            manifest,
-            output,
-        } => {
-            let mut draft = mgb_ops::Draft::import_manifest(workspace, invocation, &manifest)?;
-            draft.save(&path(invocation, &output), true)?;
-            value(draft.document)
-        }
-        DraftCommand::Edit {
-            workspace,
-            draft,
-            document,
-        } => {
-            let mut replacement = mgb_ops::Draft::open(workspace.clone(), invocation, &document)?;
-            if replacement
-                .findings
-                .iter()
-                .any(|v| v == "saved workspace differs from selected workspace")
-            {
-                return Err("saved workspace differs from selected workspace".into());
-            }
-            let mut current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            let existing = &current.document.operation;
-            let proposed = &replacement.document.operation;
-            if (existing.reference_time.is_none() || existing.time_zone.is_none())
-                && let (Some(reference), Some(zone)) =
-                    (&proposed.reference_time, &proposed.time_zone)
-            {
-                current.initialize_anchor(reference, zone)?;
-                replacement.document.sources = Default::default();
-            }
-            current.document = replacement.document;
-            current.save(&path(invocation, &draft), true)?;
-            value(current.document)
-        }
-        DraftCommand::Validate {
-            workspace,
-            draft,
-            action,
-            scenario,
-        } => {
-            let draft = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            let action = match action.as_str() {
-                "preparation" => mgb_ops::DraftAction::Preparation,
-                "observations" => mgb_ops::DraftAction::ObservationPreview,
-                "forecast" => mgb_ops::DraftAction::ForecastPreview {
-                    scenario: scenario.ok_or("forecast validation requires --scenario")?,
-                },
-                _ => return Err("action must be preparation, observations or forecast".into()),
-            };
-            value(draft.validate(action))
-        }
-        DraftCommand::Refresh {
-            workspace,
-            draft,
-            source,
-            scenario,
-        } => {
-            let mut current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            match source.as_str() {
-                "all" => current.refresh_inputs()?,
-                "observations" => current.refresh_observations()?,
-                "forecast" => current
-                    .refresh_forecast(scenario.ok_or("forecast refresh requires --scenario")?)?,
-                _ => return Err("source must be all, observations or forecast".into()),
-            }
-            current.save(&path(invocation, &draft), true)?;
-            value(current.document)
-        }
-        DraftCommand::PreviewObservations { workspace, draft } => {
-            value(mgb_ops::Draft::open(workspace, invocation, &draft)?.preview_observations()?)
-        }
-        DraftCommand::PreviewForecast {
-            workspace,
-            draft,
-            scenario,
-        } => {
-            value(mgb_ops::Draft::open(workspace, invocation, &draft)?.preview_forecast(scenario)?)
-        }
-        DraftCommand::Materialize {
-            workspace,
-            draft,
-            source,
-            scenario,
-        } => {
-            let mut current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            match source.as_str() {
-                "observations" => current.materialize_replacements()?,
-                "forecast" => current.materialize_corrections(
-                    scenario.ok_or("forecast materialization requires --scenario")?,
-                )?,
-                _ => return Err("source must be observations or forecast".into()),
-            }
-            current.save(&path(invocation, &draft), true)?;
-            value(current.document)
-        }
-        DraftCommand::CopyRegisteredForEdit {
-            workspace,
-            draft,
-            mapping,
-        } => {
-            let mut current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            let mapping: mgb_ops::RegistrationMapping = serde_json::from_slice(
-                &std::fs::read(path(invocation, &mapping)).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            current.copy_registered_for_edit(&mapping)?;
-            current.save(&path(invocation, &draft), true)?;
-            value(current.document)
-        }
-        DraftCommand::Register {
-            workspace,
-            draft,
-            selection,
-        } => {
-            let current = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            let selection: mgb_ops::RegistrationSelection = serde_json::from_slice(
-                &std::fs::read(path(invocation, &selection)).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-            value(current.register_selected(&selection))
-        }
-        DraftCommand::Run { workspace, draft } => {
-            let draft = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            value(mgb_ops::run_draft(&draft, control).map_err(|e| e.to_string())?)
-        }
-        DraftCommand::Prepare {
-            workspace,
-            draft,
-            output,
-        } => value(
-            mgb_ops::Draft::open(workspace, invocation, &draft)?
-                .prepare_controlled(invocation.into(), output, control)
-                .map_err(|e| e.to_string())?,
-        ),
-    }
-}
-
 #[derive(Subcommand)]
 enum InundationCommand {
     /// Process an aligned HAND and catchments GeoTIFF pair for a retained scenario.
     Process {
         #[arg(long)]
-        run: PathBuf,
+        run: Option<PathBuf>,
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[arg(long)]
         scenario: String,
         #[arg(long)]
-        hand: PathBuf,
+        hand: Option<PathBuf>,
         #[arg(long)]
-        catchments: PathBuf,
+        catchments: Option<PathBuf>,
         #[arg(long)]
         replace: bool,
         #[arg(long)]
@@ -800,9 +640,11 @@ enum OperationCommand {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
-        request: PathBuf,
+        request: Option<PathBuf>,
         #[arg(long)]
         reference_time: Option<String>,
+        #[arg(long = "scenario")]
+        scenarios: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -810,9 +652,13 @@ enum OperationCommand {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
-        request: PathBuf,
+        request: Option<PathBuf>,
         #[arg(long)]
         output: PathBuf,
+        #[arg(long)]
+        reference_time: Option<String>,
+        #[arg(long = "scenario")]
+        scenarios: Vec<String>,
         #[arg(long)]
         json: bool,
     },
@@ -857,94 +703,17 @@ enum ForecastCommand {
     },
 }
 
-fn acquisition_text(
-    report: &mgb_ops::app::AcquisitionReport,
-    out: &mut impl Write,
-) -> io::Result<()> {
-    writeln!(out, "Reference {}", report.reference_time)?;
-    if let Some(ana) = &report.ana {
-        if let Some(error) = &ana.error {
-            writeln!(out, "ANA: {error}")?;
-        }
-        for station in &ana.stations {
-            writeln!(
-                out,
-                "ANA {}: {} requested days, {} skipped, {} rows, {} changed samples",
-                station.station_code,
-                station.requested_days,
-                station.skipped_days,
-                station.normalized_rows,
-                station.changed_samples
-            )?;
-            if let Some(error) = &station.error {
-                writeln!(out, "  {error}")?;
-            }
-            if let Some(path) = &station.csv {
-                writeln!(out, "  {}", path.display())?;
-            }
-            for path in &station.raw_xml {
-                writeln!(out, "  {}", path.display())?;
-            }
-        }
-    }
-    for forecast in &report.forecasts {
-        if let Some(error) = &forecast.error {
-            writeln!(
-                out,
-                "{:?} ({} cycles tried): {error}",
-                forecast.provider,
-                forecast.attempted_cycles.len()
-            )?;
-        } else if let Some(id) = &forecast.asset_id {
-            let action = if forecast.reused {
-                "reused"
-            } else {
-                "registered"
-            };
-            writeln!(out, "{:?} {action} {id}", forecast.provider)?;
-            for path in [&forecast.retained_source, &forecast.native_artifact]
-                .into_iter()
-                .flatten()
-            {
-                writeln!(out, "  {}", path.display())?;
-            }
-        }
-    }
-    if report.cancelled {
-        writeln!(out, "Acquisition cancelled")?;
-    }
-    Ok(())
-}
-
-fn acquisition_result(
-    result: Result<mgb_ops::app::AcquisitionReport, String>,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<bool, Box<dyn std::error::Error>> {
-    match result {
-        Ok(report) => {
-            if json {
-                serde_json::to_writer(&mut *out, &report)?;
-                writeln!(out)?;
-            } else {
-                acquisition_text(&report, out)?;
-            }
-            Ok(report.is_complete())
-        }
-        Err(error) if json => {
-            serde_json::to_writer(&mut *out, &BTreeMap::from([("error", error)]))?;
-            writeln!(out)?;
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
 #[derive(Subcommand)]
 enum ConfigCommand {
     Example,
 }
 #[derive(Subcommand)]
 enum WorkspaceCommand {
+    /// Initialize the workspace database using config.toml.
+    Init {
+        #[arg(long)]
+        workspace: PathBuf,
+    },
     Inspect {
         #[arg(long)]
         workspace: PathBuf,
@@ -959,22 +728,6 @@ enum WorkspaceCommand {
         #[arg(long)]
         json: bool,
     },
-}
-fn operation_result<T>(
-    result: Result<T, mgb_ops::OperationError>,
-    json: bool,
-    out: &mut impl Write,
-) -> Result<Option<T>, Box<dyn std::error::Error>> {
-    match result {
-        Ok(report) => Ok(Some(report)),
-        Err(error) if json => {
-            serde_json::to_writer(&mut *out, &error)?;
-            writeln!(out)?;
-            out.flush()?;
-            Ok(None)
-        }
-        Err(error) => Err(Box::new(error)),
-    }
 }
 fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let cli = Cli::parse();
@@ -1023,6 +776,24 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             writeln!(out)?;
             Ok(true)
         }
+        Command::Edits { command } => {
+            let count = match command {
+                EditsCommand::Import {
+                    workspace,
+                    input,
+                    forecast,
+                } => mgb_ops::app::import_workspace_edits(&workspace, &input, forecast.as_deref())?,
+                EditsCommand::Export {
+                    workspace,
+                    output,
+                    forecast,
+                } => {
+                    mgb_ops::app::export_workspace_edits(&workspace, &output, forecast.as_deref())?
+                }
+            };
+            writeln!(out, "{count} edits")?;
+            Ok(true)
+        }
         Command::Observation { command } => {
             use mgb_ops::store::ObservationStore;
             let result = match command {
@@ -1053,10 +824,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     ObservationStore::create(&database, &time_zone)?;
                     serde_json::to_value(BTreeMap::from([("database", database)]))?
                 }
-                ObservationCommand::Upgrade { database } => {
-                    ObservationStore::open_writable(&database)?.upgrade_replacements()?;
-                    serde_json::to_value(BTreeMap::from([("database", database)]))?
-                }
                 ObservationCommand::Import { database, input } => {
                     let batch: mgb_ops::store::ObservationBatch = read_json(&input)?;
                     ObservationStore::open_writable(&database)?.ingest_batch(&batch)?;
@@ -1064,6 +831,14 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                         ("stations", batch.stations.len()),
                         ("samples", batch.samples.len()),
                     ]))?
+                }
+                ObservationCommand::ImportInventory { workspace, input } => {
+                    let count = mgb_ops::app::import_workspace_inventory(&workspace, &input)?;
+                    serde_json::to_value(BTreeMap::from([("stations", count)]))?
+                }
+                ObservationCommand::ExportInventory { workspace, output } => {
+                    let count = mgb_ops::app::export_workspace_inventory(&workspace, &output)?;
+                    serde_json::to_value(BTreeMap::from([("stations", count)]))?
                 }
                 ObservationCommand::Inventory { database, input } => {
                     let stations: Vec<mgb_ops::store::Station> = read_json(&input)?;
@@ -1109,6 +884,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             command:
                 InundationCommand::Process {
                     run,
+                    workspace,
                     scenario,
                     hand,
                     catchments,
@@ -1118,17 +894,25 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         } => {
             use mgb_ops::app::{
                 InundationProcessRequest, InundationProcessStatus, process_inundation,
+                process_workspace_inundation,
             };
-            let result = process_inundation(
-                InundationProcessRequest {
-                    run,
-                    scenario,
-                    hand,
-                    catchments,
-                    replace,
-                },
-                &control,
-            );
+            let result = if let Some(workspace) = workspace {
+                if hand.is_some() || catchments.is_some() {
+                    return Err("--workspace uses the raster paths in config.toml".into());
+                }
+                process_workspace_inundation(&workspace, run, scenario, replace, &control)
+            } else {
+                process_inundation(
+                    InundationProcessRequest {
+                        run: run.ok_or("Select --workspace or --run")?,
+                        scenario,
+                        hand: hand.ok_or("Set --hand with an explicit run")?,
+                        catchments: catchments.ok_or("Set --catchments with an explicit run")?,
+                        replace,
+                    },
+                    &control,
+                )
+            };
             match result {
                 Ok(report) if json => serde_json::to_writer(&mut out, &report)?,
                 Ok(report) => {
@@ -1270,9 +1054,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         }
         Command::References { command, json } => {
             let result = match command {
-                ReferenceCommand::Upgrade { database } => {
-                    mgb_ops::upgrade_level_references(&database).map(|()| serde_json::Value::Null)
-                }
                 ReferenceCommand::Import {
                     database,
                     provider,
@@ -1299,12 +1080,8 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 Ok(ok)
             } else {
                 let value = result?;
-                if value.is_null() {
-                    writeln!(out, "reference schema upgraded")?;
-                } else {
-                    serde_json::to_writer(&mut out, &value)?;
-                    writeln!(out)?;
-                }
+                serde_json::to_writer(&mut out, &value)?;
+                writeln!(out)?;
                 Ok(true)
             }
         }
@@ -1339,14 +1116,21 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     workspace,
                     request,
                     reference_time,
+                    scenarios,
                     json,
                 },
         } => {
             let report = (|| {
-                let mut operation =
-                    mgb_ops::app::OperationalRun::open(workspace, &request, chrono::Utc::now())?;
+                let now = chrono::Utc::now();
+                let mut operation = match request {
+                    Some(path) => mgb_ops::app::OperationalRun::open(workspace, &path, now)?,
+                    None => mgb_ops::app::OperationalRun::open_workspace(workspace, now)?,
+                };
                 if let Some(reference) = reference_time {
                     operation.set_reference(reference);
+                }
+                if !scenarios.is_empty() {
+                    operation.set_scenarios(&scenarios)?;
                 }
                 if !operation.acquires_inputs() {
                     operation.accept_inputs()?;
@@ -1389,18 +1173,45 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     workspace,
                     request,
                     output,
+                    reference_time,
+                    scenarios,
                     json,
                 },
         } => {
-            let result = mgb_ops::prepare_controlled(
-                mgb_ops::PreparationRequest {
-                    workspace,
-                    invocation_dir: std::env::current_dir()?,
-                    request_file: request,
-                    output,
-                },
-                &control,
-            );
+            let invocation_dir = std::env::current_dir()?;
+            let result = if let Some(request_file) = request {
+                if reference_time.is_some() || !scenarios.is_empty() {
+                    return Err("--reference-time and --scenario use workspace settings".into());
+                }
+                mgb_ops::prepare_controlled(
+                    mgb_ops::PreparationRequest {
+                        workspace,
+                        invocation_dir,
+                        request_file,
+                        output,
+                    },
+                    &control,
+                )
+            } else {
+                let mut operation =
+                    mgb_ops::app::OperationalRun::open_workspace(workspace, chrono::Utc::now())
+                        .map_err(|message| mgb_ops::app::OperationError::InvalidRequest {
+                            field: "workspace".into(),
+                            message,
+                        })?;
+                if let Some(reference) = reference_time {
+                    operation.set_reference(reference);
+                }
+                if !scenarios.is_empty() {
+                    operation.set_scenarios(&scenarios).map_err(|message| {
+                        mgb_ops::app::OperationError::InvalidRequest {
+                            field: "scenarios".into(),
+                            message,
+                        }
+                    })?;
+                }
+                operation.prepare_saved(invocation_dir, output, &control)
+            };
             let Some(report) = operation_result(result, json, &mut out)? else {
                 return Ok(false);
             };
@@ -1523,6 +1334,13 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             Ok(true)
         }
         Command::Workspace {
+            command: WorkspaceCommand::Init { workspace },
+        } => {
+            let database = mgb_ops::app::initialize_workspace(&workspace)?;
+            writeln!(out, "{}", database.display())?;
+            Ok(true)
+        }
+        Command::Workspace {
             command:
                 WorkspaceCommand::Inspect {
                     workspace,
@@ -1587,328 +1405,6 @@ fn main() {
         Err(e) => {
             eprintln!("{e}");
             std::process::exit(1);
-        }
-    }
-}
-
-mod assistant {
-    use clap::{Args, ValueEnum};
-    use mgb_ops::app::{
-        AgentPreset, AssistantEvent, Conversation, InspectionRequest, PermissionOption,
-        RunSelection, SETUP_NOTICE, Session,
-    };
-    use std::{
-        io::{self, Write},
-        path::PathBuf,
-        sync::{
-            Arc,
-            atomic::{AtomicBool, Ordering},
-            mpsc::{RecvTimeoutError, sync_channel},
-        },
-        thread,
-        time::Duration,
-    };
-
-    #[derive(Args)]
-    pub(crate) struct Options {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long, value_enum)]
-        agent: Agent,
-        #[arg(long)]
-        config: Option<PathBuf>,
-        #[arg(long)]
-        saved_run: Option<PathBuf>,
-        #[arg(long)]
-        draft: Option<PathBuf>,
-    }
-
-    #[derive(Clone, ValueEnum)]
-    enum Agent {
-        Codex,
-        Gemini,
-        Claude,
-    }
-
-    impl From<Agent> for AgentPreset {
-        fn from(agent: Agent) -> Self {
-            match agent {
-                Agent::Codex => Self::Codex,
-                Agent::Gemini => Self::Gemini,
-                Agent::Claude => Self::Claude,
-            }
-        }
-    }
-
-    struct Terminal {
-        agent: AgentPreset,
-        session: Session,
-        executable: PathBuf,
-        conversation: Conversation,
-        ready: bool,
-        active: bool,
-        permission: Option<(String, Vec<PermissionOption>)>,
-        departure: bool,
-    }
-
-    impl Terminal {
-        fn reset(&mut self) {
-            self.conversation.close();
-            self.conversation =
-                Conversation::start(self.session.clone(), self.agent, self.executable.clone());
-            self.ready = false;
-            self.active = false;
-            self.permission = None;
-        }
-
-        fn events(&mut self, out: &mut impl Write) -> io::Result<bool> {
-            while let Some(event) = self.conversation.try_event() {
-                match event {
-                    AssistantEvent::Handshake => {
-                        writeln!(out, "{} negotiated ACP v1.", self.agent.label())?
-                    }
-                    AssistantEvent::Ready => {
-                        self.ready = true;
-                        writeln!(out, "Ready for a prompt.")?;
-                    }
-                    AssistantEvent::ToolConnected => writeln!(out, "MGB Ops tools connected.")?,
-                    AssistantEvent::Text(text) => write!(out, "{text}")?,
-                    AssistantEvent::Thought(_)
-                    | AssistantEvent::Settings(_)
-                    | AssistantEvent::SettingChanged { .. } => {}
-                    AssistantEvent::ToolStatus(status) => writeln!(out, "\n{status}")?,
-                    AssistantEvent::Permission {
-                        request,
-                        operation,
-                        options,
-                    } => {
-                        writeln!(out, "\nPermission requested\n{operation:#}")?;
-                        for (index, option) in options.iter().enumerate() {
-                            writeln!(out, "{}. {}", index + 1, option.label)?;
-                        }
-                        writeln!(out, "Enter an option number or :stop.")?;
-                        self.permission = Some((request, options));
-                    }
-                    AssistantEvent::PermissionCleared => self.permission = None,
-                    AssistantEvent::ReviewStaged => {
-                        if let Some(review) = self.conversation.review() {
-                            writeln!(out, "\nDraft proposal")?;
-                            for field in review.changes {
-                                let scenario =
-                                    field.scenario_index.map_or(String::new(), |index| {
-                                        format!(
-                                            " · scenario {index} ({})",
-                                            field.scenario_id.as_deref().unwrap_or("unnamed")
-                                        )
-                                    });
-                                writeln!(
-                                    out,
-                                    "  {}{scenario}  {} → {}",
-                                    field.field, field.current, field.proposed
-                                )?;
-                            }
-                            for finding in review.readiness {
-                                writeln!(out, "  {finding}")?;
-                            }
-                            writeln!(out, "Use :apply or :reject.")?;
-                        }
-                    }
-                    AssistantEvent::Finished { cancelled } => {
-                        self.active = false;
-                        self.permission = None;
-                        writeln!(out, "{}", if cancelled { "\nPrompt stopped." } else { "" })?;
-                    }
-                    AssistantEvent::Failed {
-                        stage,
-                        message,
-                        closed,
-                    } => {
-                        writeln!(out, "\n{} · {stage} · {message}", self.agent.label())?;
-                        if closed {
-                            self.active = false;
-                            self.ready = false;
-                            self.permission = None;
-                            return Ok(false);
-                        }
-                    }
-                }
-            }
-            out.flush()?;
-            Ok(true)
-        }
-
-        fn dirty(&self) -> bool {
-            self.session
-                .draft()
-                .is_some_and(|snapshot| snapshot.draft.is_dirty())
-        }
-
-        fn save(&self) -> Result<(), String> {
-            let job = self
-                .session
-                .start_draft_job()
-                .map_err(|error| error.to_string())?;
-            let mut draft = job.snapshot.as_ref().ok_or("No open draft")?.draft.clone();
-            let path = draft.path.clone().ok_or("No opened draft path")?;
-            draft.save(&path, true)?;
-            job.commit(draft, false).map_err(|error| error.to_string())
-        }
-
-        fn line(&mut self, line: &str, out: &mut impl Write) -> io::Result<bool> {
-            let input = line.trim();
-            if self.departure {
-                self.departure = false;
-                if matches!(input, "y" | "Y" | "yes" | "Yes") {
-                    writeln!(out, "Discarded unsaved draft edits.")?;
-                    return Ok(false);
-                }
-                writeln!(out, "Continuing the conversation.")?;
-                return Ok(true);
-            }
-            let result = match input {
-                ":quit" => {
-                    if !self.dirty() {
-                        return Ok(false);
-                    }
-                    self.departure = true;
-                    writeln!(out, "Discard unsaved draft edits and quit? [y/N]")?;
-                    Ok(())
-                }
-                ":reset" => {
-                    self.reset();
-                    writeln!(out, "Conversation reset.")?;
-                    Ok(())
-                }
-                ":stop" => self.conversation.stop(),
-                ":save" => match self.save() {
-                    Ok(()) => {
-                        writeln!(out, "Saved working draft.")?;
-                        Ok(())
-                    }
-                    Err(error) => Err(error),
-                },
-                ":apply" => match self.conversation.apply() {
-                    Ok(()) => {
-                        writeln!(
-                            out,
-                            "Applied to the working draft. Use :save to write the file."
-                        )?;
-                        Ok(())
-                    }
-                    Err(error) => Err(error),
-                },
-                ":reject" => {
-                    let message = if self.conversation.reject() {
-                        "Rejected draft proposal."
-                    } else {
-                        "No pending draft proposal."
-                    };
-                    writeln!(out, "{message}")?;
-                    Ok(())
-                }
-                "" => Ok(()),
-                _ if self.permission.is_some() => {
-                    let (request, options) = self.permission.as_ref().unwrap();
-                    match input
-                        .parse::<usize>()
-                        .ok()
-                        .and_then(|index| index.checked_sub(1))
-                        .and_then(|index| options.get(index))
-                    {
-                        Some(option) => {
-                            self.conversation.answer(request.clone(), option.id.clone())
-                        }
-                        None => Err("Enter an offered option number or :stop".into()),
-                    }
-                }
-                _ if !self.ready => Err("Wait for the agent or use :reset".into()),
-                _ if self.active => Err("A prompt is active. Use :stop to cancel it.".into()),
-                _ => self
-                    .conversation
-                    .prompt(line.to_owned())
-                    .map(|()| self.active = true),
-            };
-            if let Err(message) = result {
-                writeln!(out, "{message}")?;
-            }
-            out.flush()?;
-            Ok(true)
-        }
-    }
-
-    pub(crate) fn run(options: Options) -> Result<bool, Box<dyn std::error::Error>> {
-        let session = Session::new(InspectionRequest {
-            workspace: options.workspace,
-            invocation_dir: std::env::current_dir()?,
-            config: options.config,
-            gpkg_path: None,
-            engine_executable: None,
-            engine_input_dir: None,
-        });
-        if let Some(path) = options.saved_run {
-            session.select_run(RunSelection::Saved(path))?;
-        }
-        if let Some(path) = options.draft {
-            session.replace_draft(session.open_draft(&path)?)?;
-        }
-        let executable = std::env::current_exe()?;
-        let agent = options.agent.into();
-        let mut out = io::stdout().lock();
-        writeln!(out, "{SETUP_NOTICE}")?;
-        writeln!(
-            out,
-            "Enter a prompt or use :stop, :reset, :apply, :reject, :save, :quit."
-        )?;
-        out.flush()?;
-
-        let interrupted = Arc::new(AtomicBool::new(false));
-        let signal = interrupted.clone();
-        ctrlc::set_handler(move || signal.store(true, Ordering::Release))?;
-        let (sender, lines) = sync_channel(1);
-        thread::spawn(move || {
-            for line in io::stdin().lines() {
-                if sender.send(line).is_err() {
-                    break;
-                }
-            }
-        });
-        let conversation = Conversation::start(session.clone(), agent, executable.clone());
-        let mut terminal = Terminal {
-            agent,
-            session,
-            executable,
-            conversation,
-            ready: false,
-            active: false,
-            permission: None,
-            departure: false,
-        };
-        let mut failed = false;
-        loop {
-            if interrupted.swap(false, Ordering::AcqRel) && terminal.active {
-                terminal.conversation.stop()?;
-            }
-            if !terminal.events(&mut out)? {
-                failed = true;
-            }
-            match lines.recv_timeout(Duration::from_millis(20)) {
-                Ok(line) => {
-                    let line = line?;
-                    if !terminal.line(&line, &mut out)? {
-                        return Ok(!failed);
-                    }
-                    if line.trim() == ":reset" {
-                        failed = false;
-                    }
-                }
-                Err(RecvTimeoutError::Disconnected) => {
-                    if terminal.dirty() {
-                        writeln!(out, "End of input. Discarded unsaved draft edits.")?;
-                    }
-                    return Ok(!failed);
-                }
-                Err(RecvTimeoutError::Timeout) => {}
-            }
         }
     }
 }

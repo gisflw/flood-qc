@@ -242,7 +242,7 @@ fn observation_db(path: &Path) {
             ..Default::default()
         })
         .unwrap();
-    store.upgrade_references().unwrap();
+
     store
         .replace_level_references(&[LevelReference {
             station_id: "s".into(),

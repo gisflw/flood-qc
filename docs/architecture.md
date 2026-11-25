@@ -87,27 +87,23 @@ Durable actions continue to use the explicit application workflows. See the
 
 ## Operational data decisions
 
-Saved operations use Rust-owned canonical formats. SQLite holds
-observations, station metadata, and observation review instructions, without a
-source/provenance table or source foreign keys. A separate
-SQLite holds a two-table forecast asset/correction catalog. Each run generates
-a JSON manifest containing its resolved recipe, ordered instruction values,
-input references, scenario outcomes and output paths for CLI consumption.
-There is no workspace-wide operations database or official-run pointer. NetCDF
-holds native forecast grids, working grids, basin forcing/results, and station-level results.
-Store owns these schemas and persistence; adapters return normalized canonical
-data without choosing persistence. Concrete layouts grow with the capabilities.
+Saved operations use Rust-owned canonical formats. The workspace's
+`operation.sqlite` holds observations, station metadata, review instructions,
+forecast records, run attempts, and the active generation. Initialize the
+complete schema without database schema versioning. NetCDF holds large
+scientific arrays. Store owns the schemas and the lifecycle of those files.
+An attempt manifest carries resolved inputs and outcomes for replay and export.
 
 Geometry and CRS readers are store capabilities using the pinned Terrio vector
 integration. Analysis derives upstream membership from validated model topology and local areas, not map-coordinate
 area estimates. Reference CSV adapters parse values; app resolves explicit station
-identities and store replaces references transactionally after an explicit schema
-upgrade. Read-only opens never migrate. See the [spatial](contracts/spatial.md) and
+identities and store replaces references transactionally. Read-only opens never migrate. See the [spatial](contracts/spatial.md) and
 [reference-level](contracts/observations.md#station-reference-levels) contracts.
 
 Observation replacements preserve raw measurements and support a point or a
 [start,end) period, with an absent end meaning indefinitely. NA replacements
-express exclusions; ordered selected instructions apply with last match winning.
+express exclusions. Automatic precipitation flags mask raw rainfall in the
+final observation view before replacements; ordered selected instructions apply with last match winning.
 There is no separate review-set or station-exclusion entity. Forecast scenarios
 select an asset and an explicit ordered list of correction IDs. Run artifacts
 record the actual selected instruction values, not only mutable IDs.

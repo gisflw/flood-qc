@@ -7,9 +7,7 @@ use rusqlite::{
 };
 use serde::{Deserialize, Serialize};
 
-const SCHEMA: &str = include_str!("sql/observations_v1.sql");
-const REFERENCES_SCHEMA: &str = include_str!("sql/observations_v2.sql");
-const REPLACEMENTS_SCHEMA: &str = include_str!("sql/observations_v3.sql");
+pub(super) const SCHEMA: &str = include_str!("sql/observations.sql");
 const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -125,6 +123,8 @@ pub struct ObservationInputs {
     pub series: Vec<ObservationSeries>,
     pub samples: Vec<ObservationSample>,
     pub replacements: Vec<ObservationReplacement>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub excluded_rain: std::collections::BTreeSet<(String, NaiveDateTime)>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ObservationBatch {
@@ -224,6 +224,18 @@ pub struct ObservationStore {
 }
 impl ObservationStore {
     pub fn create(path: &Path, time_zone: &str) -> Result<Self, ObservationError> {
+        Self::create_inner(path, time_zone, false)
+    }
+
+    pub(crate) fn create_operation(path: &Path, time_zone: &str) -> Result<Self, ObservationError> {
+        Self::create_inner(path, time_zone, true)
+    }
+
+    fn create_inner(
+        path: &Path,
+        time_zone: &str,
+        operation: bool,
+    ) -> Result<Self, ObservationError> {
         time_zone
             .parse::<chrono_tz::Tz>()
             .map_err(|_| error(format!("invalid time zone {time_zone}")))?;
@@ -237,6 +249,10 @@ impl ObservationStore {
             connection.execute_batch("PRAGMA foreign_keys=ON;")?;
             let tx = connection.unchecked_transaction()?;
             tx.execute_batch(SCHEMA)?;
+            if operation {
+                tx.execute_batch(super::forecast::SCHEMA)?;
+                tx.execute_batch(super::run_cache::RUN_SCHEMA)?;
+            }
             tx.execute(
                 "INSERT INTO metadata VALUES ('format','mgb-ops-observations')",
                 [],
@@ -263,28 +279,10 @@ impl ObservationStore {
         Ok(Self { connection })
     }
     fn verify(connection: &Connection) -> Result<String, ObservationError> {
-        let version: i64 = connection.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if !matches!(version, 1..=3) {
-            return Err(error(format!(
-                "unsupported observation schema version {version}"
-            )));
-        }
-        if version >= 2 {
-            let table_exists: bool = connection.query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='level_reference')",
-                [],
-                |row| row.get(0),
-            )?;
-            if !table_exists
-                || connection
-                    .prepare("SELECT station_id,kind,date,level_cm FROM level_reference LIMIT 0")
-                    .is_err()
-            {
-                return Err(error(format!(
-                    "invalid observation schema version {version}: missing reference table or columns"
-                )));
-            }
-        }
+        connection.prepare("SELECT station_id,kind,date,level_cm FROM level_reference LIMIT 0")?;
+        connection.prepare(
+            "SELECT series_id,observed_at,raw_value,value FROM final_observation LIMIT 0",
+        )?;
         let format: String =
             connection.query_row("SELECT value FROM metadata WHERE key='format'", [], |r| {
                 r.get(0)
@@ -305,11 +303,11 @@ impl ObservationStore {
         Self::verify(&self.connection)
     }
     pub fn write_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
-        self.write_batch_inner(batch, false)
+        self.write_batch_inner(batch, false, false)
     }
     /// Insert canonical records or accept complete equality with existing records.
     pub fn ingest_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
-        self.write_batch_inner(batch, true)
+        self.write_batch_inner(batch, true, false)
     }
 
     pub(crate) fn seed_ana_stations(
@@ -319,6 +317,12 @@ impl ObservationStore {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        Self::upsert_ana_stations(&tx, stations)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn upsert_ana_stations(tx: &Connection, stations: &[Station]) -> Result<(), ObservationError> {
         for station in stations {
             validate_station(station)?;
             if station.provider_code != "ana" || tx.execute(
@@ -332,7 +336,6 @@ impl ObservationStore {
                 return Err(error(format!("conflicting ANA station identity {}", station.station_id)));
             }
         }
-        tx.commit()?;
         Ok(())
     }
 
@@ -435,7 +438,14 @@ impl ObservationStore {
                     }
                     _ => return Err(error(format!("{id}: invalid ANA raw value at {at}"))),
                 };
-                written += upsert.execute(params![id, label(*at), value])?;
+                let changed = upsert.execute(params![id, label(*at), value])?;
+                if changed != 0 && *variable == "rain" {
+                    tx.execute(
+                        "DELETE FROM precipitation_flag WHERE series_id=?1 AND observed_at=?2",
+                        params![id, label(*at)],
+                    )?;
+                }
+                written += changed;
             }
         }
         tx.commit()?;
@@ -481,17 +491,35 @@ impl ObservationStore {
                 ..ObservationBatch::default()
             },
             true,
+            false,
         )
     }
+    pub(crate) fn replace_replacements(
+        &mut self,
+        replacements: Vec<ObservationReplacement>,
+    ) -> Result<(), ObservationError> {
+        self.write_batch_inner(
+            &ObservationBatch {
+                replacements,
+                ..Default::default()
+            },
+            false,
+            true,
+        )
+    }
+
     fn write_batch_inner(
         &mut self,
         batch: &ObservationBatch,
         idempotent: bool,
+        replace_edits: bool,
     ) -> Result<(), ObservationError> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if replace_edits {
+            tx.execute("DELETE FROM observation_replacement", [])?;
+        }
         let zone: chrono_tz::Tz = Self::verify(&tx)?
             .parse()
             .map_err(|_| error("invalid time zone"))?;
@@ -618,11 +646,6 @@ impl ObservationStore {
         }
         for r in &batch.replacements {
             validate_replacement(r)?;
-            if r.variable == "flow" && version < 3 {
-                return Err(error(
-                    "flow replacements require the observation replacement schema upgrade",
-                ));
-            }
             unique(r.start_at, &r.replacement_id)?;
             if let Some(end) = r.end_at {
                 unique(end, &r.replacement_id)?;
@@ -802,7 +825,7 @@ impl ObservationStore {
             }
         }
         {
-            let mut stmt = tx.prepare("SELECT observed_at,value FROM observation WHERE series_id=?1 AND observed_at>=?2 AND observed_at<=?3 ORDER BY observed_at")?;
+            let mut stmt = tx.prepare("SELECT observed_at,raw_value,raw_value IS NOT NULL AND value IS NULL FROM final_observation WHERE series_id=?1 AND observed_at>=?2 AND observed_at<=?3 ORDER BY observed_at")?;
             let (start_label, end_label) = (label(start), label(end));
             for series in &inputs.series {
                 let id = &series.series_id;
@@ -831,6 +854,9 @@ impl ObservationStore {
                             )));
                         }
                     };
+                    if r.get::<_, bool>(2)? {
+                        inputs.excluded_rain.insert((id.clone(), at));
+                    }
                     let s = ObservationSample {
                         series_id: id.clone(),
                         observed_at: at,
@@ -980,31 +1006,108 @@ fn validate_level_references(references: &[LevelReference]) -> Result<(), Observ
 }
 
 impl ObservationStore {
-    /// Explicitly upgrade an existing writable database to reference schema v2.
-    pub fn upgrade_references(&mut self) -> Result<(), ObservationError> {
-        self.upgrade_schema(2)
+    pub(crate) fn observed_variables(
+        &self,
+        station_id: &str,
+    ) -> Result<Vec<String>, ObservationError> {
+        let mut statement = self.connection.prepare(
+            "SELECT variable FROM station_observed_variable WHERE station_id=?1 ORDER BY variable",
+        )?;
+        let rows = statement.query_map([station_id], |row| row.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Explicitly add flow replacement support, preserving existing observations and references.
-    pub fn upgrade_replacements(&mut self) -> Result<(), ObservationError> {
-        self.upgrade_schema(3)
-    }
-
-    fn upgrade_schema(&mut self, target: i64) -> Result<(), ObservationError> {
+    pub(crate) fn import_ana_inventory(
+        &mut self,
+        stations: &[Station],
+        entries: &[(String, Vec<String>)],
+    ) -> Result<(), ObservationError> {
         let tx = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        Self::verify(&tx)?;
-        let version: i64 = tx.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version < 2 {
-            tx.execute_batch(REFERENCES_SCHEMA)?;
-        }
-        if version < 3 && target == 3 {
-            tx.execute_batch(REPLACEMENTS_SCHEMA)?;
+        Self::upsert_ana_stations(&tx, stations)?;
+        for (station, variables) in entries {
+            tx.execute(
+                "DELETE FROM station_observed_variable WHERE station_id=?1",
+                [station],
+            )?;
+            for variable in variables {
+                tx.execute(
+                    "INSERT INTO station_observed_variable VALUES (?1,?2)",
+                    params![station, variable],
+                )?;
+            }
         }
         tx.commit()?;
         Ok(())
     }
+
+    pub(crate) fn replace_precipitation_flags(
+        &mut self,
+        series_ids: &[String],
+        window: &super::IntervalAxis,
+        flags: &[(String, NaiveDateTime, String)],
+        expected: Option<&[ObservationSample]>,
+    ) -> Result<std::collections::BTreeSet<(String, NaiveDateTime)>, ObservationError> {
+        window.validate().map_err(|e| error(e.to_string()))?;
+        let start = window.bounds.first().unwrap().start;
+        let end = window.bounds.last().unwrap().end;
+        let tx = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if let Some(expected) = expected {
+            let mut lookup = tx.prepare(
+                "SELECT observed_at,value FROM observation WHERE series_id=?1
+                 AND observed_at>?2 AND observed_at<=?3",
+            )?;
+            for id in series_ids {
+                let mut current = std::collections::BTreeMap::new();
+                let mut rows = lookup.query(params![id, label(start), label(end)])?;
+                while let Some(row) = rows.next()? {
+                    let at = timestamp(&row.get::<_, String>(0)?, id)?;
+                    let value: Option<f64> = row.get(1)?;
+                    current.insert(at, value.map(ObservationValue::RainMm));
+                }
+                let expected: std::collections::BTreeMap<_, _> = expected
+                    .iter()
+                    .filter(|sample| sample.series_id == *id)
+                    .map(|sample| (sample.observed_at, sample.value))
+                    .collect();
+                if current != expected {
+                    return Err(error(format!(
+                        "{id}: rain changed while evaluating exclusions"
+                    )));
+                }
+            }
+        }
+        for id in series_ids {
+            tx.execute(
+                "DELETE FROM precipitation_flag WHERE series_id=?1 AND observed_at>?2 AND observed_at<=?3",
+                params![id,label(start),label(end)],
+            )?;
+        }
+        for (id, at, reason) in flags {
+            tx.execute(
+                "INSERT INTO precipitation_flag VALUES (?1,?2,?3)",
+                params![id, label(*at), reason],
+            )?;
+        }
+        let mut excluded = std::collections::BTreeSet::new();
+        {
+            let mut query = tx.prepare(
+                "SELECT raw_value IS NOT NULL AND value IS NULL
+                FROM final_observation WHERE series_id=?1 AND observed_at=?2",
+            )?;
+            for (id, at, _) in flags {
+                if query.query_row(params![id, label(*at)], |row| row.get::<_, bool>(0))? {
+                    excluded.insert((id.clone(), *at));
+                }
+            }
+        }
+        tx.commit()?;
+        Ok(excluded)
+    }
+
     pub fn station_locations(&self) -> Result<Vec<StationLocation>, ObservationError> {
         let mut stmt = self.connection.prepare("SELECT s.station_id,s.provider_code,s.station_code,s.name,s.latitude,s.longitude,o.mini_id,o.offset_m FROM station s LEFT JOIN station_offset o ON o.station_id=s.station_id ORDER BY s.station_id")?;
         let rows = stmt.query_map([], |r| {
@@ -1045,19 +1148,13 @@ impl ObservationStore {
         Ok(rows.collect::<Result<_, _>>()?)
     }
     pub fn replacement_choices(&self) -> Result<Vec<String>, ObservationError> {
-        let mut statement = self.connection.prepare(
-            "SELECT replacement_id FROM observation_replacement ORDER BY replacement_id",
-        )?;
+        let mut statement = self
+            .connection
+            .prepare("SELECT replacement_id FROM observation_replacement ORDER BY rowid")?;
         let rows = statement.query_map([], |row| row.get(0))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
     pub fn read_level_references(&self) -> Result<Vec<LevelReference>, ObservationError> {
-        let version: i64 = self
-            .connection
-            .query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version == 1 {
-            return Ok(Vec::new());
-        }
         let mut stmt = self.connection.prepare("SELECT station_id,kind,date,level_cm FROM level_reference ORDER BY station_id,kind,date,level_cm")?;
         let rows = stmt.query_map([], |r| {
             Ok((
@@ -1102,10 +1199,6 @@ impl ObservationStore {
     ) -> Result<(), ObservationError> {
         validate_level_references(references)?;
         let tx = self.connection.transaction()?;
-        let version: i64 = tx.query_row("PRAGMA user_version", [], |r| r.get(0))?;
-        if version < 2 {
-            return Err(error("reference schema upgrade required"));
-        }
         tx.execute("DELETE FROM level_reference", [])?;
         for r in references {
             tx.execute(
@@ -1122,5 +1215,64 @@ impl ObservationStore {
         }
         tx.commit()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod precipitation_tests {
+    use super::*;
+
+    #[test]
+    fn final_view_masks_a_rain_sample_and_rejects_stale_flag_updates() {
+        std::fs::create_dir_all("runs").unwrap();
+        let fixture = tempfile::tempdir_in("runs").unwrap();
+        let mut db =
+            ObservationStore::create_operation(&fixture.path().join("operation.sqlite"), "UTC")
+                .unwrap();
+        db.connection.execute_batch(
+            "INSERT INTO station VALUES ('s','ana','1','Station',0,0);
+             INSERT INTO observation_series VALUES ('rain','s','rain','raw','mm',3600,'2026-01-01T00:00:00');
+             INSERT INTO observation VALUES ('rain','2026-01-01T01:00:00',65.0);"
+        ).unwrap();
+        let start = timestamp("2026-01-01T00:00:00", "test").unwrap();
+        let end = timestamp("2026-01-01T01:00:00", "test").unwrap();
+        let window = super::super::IntervalAxis {
+            time_zone: "UTC".into(),
+            bounds: vec![super::super::TimeInterval { start, end }],
+        };
+        let sample = ObservationSample {
+            series_id: "rain".into(),
+            observed_at: end,
+            value: Some(ObservationValue::RainMm(65.0)),
+        };
+        let series = ["rain".into()];
+        let flags = [("rain".into(), end, "threshold".into())];
+        assert_eq!(
+            db.replace_precipitation_flags(
+                &series,
+                &window,
+                &flags,
+                Some(std::slice::from_ref(&sample))
+            )
+            .unwrap()
+            .len(),
+            1
+        );
+        let final_values = |db: &ObservationStore| {
+            db.connection
+                .query_row("SELECT raw_value,value FROM final_observation", [], |row| {
+                    Ok((row.get::<_, f64>(0)?, row.get::<_, Option<f64>>(1)?))
+                })
+                .unwrap()
+        };
+        assert_eq!(final_values(&db), (65.0, None));
+        assert!(
+            db.replace_precipitation_flags(&series, &window, &[], Some(&[]))
+                .is_err()
+        );
+        assert_eq!(final_values(&db), (65.0, None));
+        db.replace_precipitation_flags(&series, &window, &[], Some(&[sample]))
+            .unwrap();
+        assert_eq!(final_values(&db), (65.0, Some(65.0)));
     }
 }

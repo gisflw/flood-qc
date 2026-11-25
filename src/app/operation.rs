@@ -933,7 +933,7 @@ fn execute_in_stage(
     let report = ExecutionReport {
         run_artifact: run_root.join("manifest.json"),
         attempt_manifest: workspace
-            .join("data/run-manifests")
+            .join("runs/history")
             .join(format!("{}.json", attempt.attempt_id)),
         run_root: run_root.to_path_buf(),
         status: if complete && !cancelled {
@@ -1288,7 +1288,7 @@ pub fn with_active_run<T>(
 }
 
 pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
-    if let Some(workspace) = root.ancestors().nth(4)
+    if let Some(workspace) = root.ancestors().nth(3)
         && root.parent() == Some(run_cache_root(workspace).as_path())
     {
         return with_active_run(workspace, |active| {

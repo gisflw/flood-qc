@@ -63,8 +63,7 @@ features and no GDAL dependency. The adapter additionally checks raw GRIB2 grid
 sections because the driver otherwise pads/crops later fields to the first grid.
 Changed grids, malformed messages and unsupported multi-field messages fail.
 
-`store::ForecastCatalog` owns a version-1 SQLite catalog with exactly `asset` and
-`correction` tables. It preserves immutable source/native files, hashes, sizes,
+`store::ForecastCatalog` owns the `asset` and `correction` tables in the workspace database. It preserves immutable source/native files, hashes, sizes,
 normalization metadata and canonical coverage. Source IDs identify content and
 normalization settings; asset IDs identify catalog records. These are distinct
 from legacy asset labels. Loading verifies retained content and canonical schema.

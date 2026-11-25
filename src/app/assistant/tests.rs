@@ -997,9 +997,9 @@ fn location_search_returns_sorted_ambiguous_station_matches() {
     use crate::store::{ObservationBatch, ObservationStore, Station};
     let dir = temp();
     let session = session(dir.path());
-    let data = session.workspace().join("data");
-    fs::create_dir(&data).unwrap();
-    let mut store = ObservationStore::create(&data.join("history.sqlite"), "UTC").unwrap();
+    let mut store =
+        ObservationStore::create(&crate::app::operation_database(session.workspace()), "UTC")
+            .unwrap();
     let station = |number: &str| Station {
         station_id: format!("ana:{number}"),
         provider_code: "ana".into(),

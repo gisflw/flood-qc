@@ -24,7 +24,7 @@ impl AnaVariable {
         }
     }
 
-    fn parse(text: &str) -> Result<Self, String> {
+    pub(crate) fn parse(text: &str) -> Result<Self, String> {
         match text.trim().to_ascii_lowercase().as_str() {
             "rain" => Ok(Self::Rain),
             "level" => Ok(Self::Level),

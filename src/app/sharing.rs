@@ -29,12 +29,9 @@ fn check_detached_destination(workspace: &Path, destination: &Path) -> Result<()
             .file_name()
             .ok_or("destination needs a filename")?,
     );
-    let data = workspace
-        .canonicalize()
-        .map_err(|e| e.to_string())?
-        .join("data");
+    let data = workspace.canonicalize().map_err(|e| e.to_string())?;
     let resolved_data = data.canonicalize().unwrap_or_else(|_| data.clone());
-    for managed in ["cache", "run-manifests", "runs"] {
+    for managed in ["cache", "runs/history"] {
         let managed_path = data.join(managed);
         if resolved_destination.starts_with(resolved_data.join(managed))
             || resolved_destination.starts_with(&managed_path)
@@ -140,8 +137,8 @@ pub fn export_run(
         .file_name()
         .and_then(|name| name.to_str())
         .ok_or("expected a run directory name")?;
-    if let Some(workspace) = run_path.ancestors().nth(4)
-        && run_path.parent() == Some(workspace.join("data/cache/run").as_path())
+    if let Some(workspace) = run_path.ancestors().nth(3)
+        && run_path.parent() == Some(workspace.join("cache/run").as_path())
         && let Some(run_id) = name.strip_prefix("generation-")
     {
         return super::operation::with_active_run(workspace, |active| {
@@ -376,7 +373,7 @@ pub fn regenerate_run(
     let workspace = workspace
         .canonicalize()
         .map_err(|error| fail(error.to_string()))?;
-    let base = workspace.join("data");
+    let base = workspace.join("cache");
     fs::create_dir_all(&base).map_err(|error| fail(error.to_string()))?;
     let snapshot = base.join(format!(
         ".regenerate-{}-{}",

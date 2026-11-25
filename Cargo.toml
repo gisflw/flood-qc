@@ -69,6 +69,10 @@ desktop = [
 ]
 
 [[bin]]
+name = "mgb-ops"
+path = "src/bin/cli/main.rs"
+
+[[bin]]
 name = "mgb-ops-desktop"
 path = "src/bin/monitor.rs"
 required-features = ["desktop"]

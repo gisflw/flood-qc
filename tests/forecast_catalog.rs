@@ -51,16 +51,12 @@ fn retained_source_is_immutable_and_correction_order_is_explicit() {
             processing: serde_json::json!({"normalization":settings}),
         },
     };
-    let mut c = ForecastCatalog::open(
-        dir.path(),
-        "data/forecasts.sqlite".as_ref(),
-        "data/forecasts".as_ref(),
-    )
-    .unwrap();
+    let mut c =
+        ForecastCatalog::open(dir.path(), "operation.sqlite".as_ref(), "assets".as_ref()).unwrap();
     let mut bad_source = source.clone();
     bad_source.byte_length = 7;
     assert!(c.register_native(&src, &bad_source, &native).is_err());
-    let db = rusqlite::Connection::open(dir.path().join("data/forecasts.sqlite")).unwrap();
+    let db = rusqlite::Connection::open(dir.path().join("operation.sqlite")).unwrap();
     let count: i64 = db
         .query_row("SELECT count(*) FROM asset", [], |r| r.get(0))
         .unwrap();

@@ -50,6 +50,62 @@ pub fn process_inundation(
     }
 }
 
+pub fn process_workspace_inundation(
+    workspace: &std::path::Path,
+    run: Option<PathBuf>,
+    scenario: String,
+    replace: bool,
+    control: &OperationControl,
+) -> Result<InundationProcessReport, StoreError> {
+    #[cfg(feature = "inundation-write")]
+    {
+        let workspace = workspace.canonicalize()?;
+        let config = super::read_workspace_config(&super::workspace_config_path(&workspace))
+            .map_err(StoreError::Format)?;
+        let spatial = config.spatial.unwrap_or_default();
+        let hand = workspace.join(
+            spatial
+                .hand_raster
+                .ok_or_else(|| StoreError::Format("Set spatial.hand_raster".into()))?,
+        );
+        let catchments = match spatial.catchment_raster {
+            Some(path) => workspace.join(path),
+            None => {
+                let geometry = workspace.join(
+                    spatial
+                        .gpkg_path
+                        .ok_or_else(|| StoreError::Format("Set spatial.mini_layers".into()))?,
+                );
+                crate::store::cache_catchments(&geometry, &hand, &workspace.join("cache/spatial"))?
+            }
+        };
+        let run = match run {
+            Some(path) => path,
+            None => crate::store::active_run(&workspace)
+                .map_err(StoreError::Format)?
+                .ok_or_else(|| StoreError::Format("Workspace has no active run".into()))?,
+        };
+        process_inundation(
+            InundationProcessRequest {
+                run,
+                scenario,
+                hand,
+                catchments,
+                replace,
+            },
+            control,
+        )
+    }
+    #[cfg(not(feature = "inundation-write"))]
+    {
+        let _ = (workspace, run, scenario, replace, control);
+        Err(StoreError::Format(
+            "inundation processing requires --features inundation-write and system libnetcdf"
+                .into(),
+        ))
+    }
+}
+
 #[cfg(feature = "inundation-write")]
 mod enabled {
     use super::{
@@ -76,7 +132,7 @@ mod enabled {
     ) -> Result<InundationProcessReport, StoreError> {
         cancelled(control)?;
         let run = request.run.canonicalize()?;
-        let workspace = run.ancestors().nth(4).filter(|workspace| {
+        let workspace = run.ancestors().nth(3).filter(|workspace| {
             run.parent()
                 .is_some_and(|parent| parent == run_cache_root(workspace))
         });
@@ -184,9 +240,7 @@ mod enabled {
                 .and_then(|name| name.to_str())
                 .and_then(|name| name.strip_prefix("generation-"))
                 .ok_or_else(|| StoreError::Integrity("invalid managed run ID".into()))?;
-            let archive = workspace
-                .join("data/run-manifests")
-                .join(format!("{id}.json"));
+            let archive = workspace.join("runs/history").join(format!("{id}.json"));
             let mut attempt = read_run_attempt(&archive).map_err(StoreError::Integrity)?;
             let recipe = InundationRecipe {
                 hand: request.hand.canonicalize()?,

@@ -15,7 +15,7 @@ use std::{
 
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
-const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT UNIQUE NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),schema_version INTEGER NOT NULL,normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
+pub(super) const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),source_format TEXT NOT NULL CHECK(source_format IN ('grib2','netcdf')),normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
 #[derive(Debug, Clone)]
 pub struct ForecastAssetChoice {
     pub asset_id: String,
@@ -292,10 +292,41 @@ impl ForecastCatalog {
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
+    pub(crate) fn covering_asset(
+        &self,
+        provider: &str,
+        cycle_at_or_before: DateTime<chrono::Utc>,
+        start: chrono::NaiveDateTime,
+        end: chrono::NaiveDateTime,
+        zone: &str,
+    ) -> Result<Option<String>, StoreError> {
+        let mut statement = self.connection.prepare(
+            "SELECT asset_id FROM asset WHERE provider=?1 AND cycle_utc<=?2 AND valid_from<=?3
+             AND valid_to>=?4 AND operation_timezone=?5 ORDER BY cycle_utc DESC,asset_id",
+        )?;
+        let rows = statement.query_map(
+            params![
+                provider,
+                cycle_at_or_before.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                start.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                end.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                zone
+            ],
+            |row| row.get::<_, String>(0),
+        )?;
+        for id in rows {
+            let id = id?;
+            if self.check_asset_available(&id).is_ok() {
+                return Ok(Some(id));
+            }
+        }
+        Ok(None)
+    }
+
     pub fn correction_choices(&self) -> Result<Vec<(String, String)>, StoreError> {
         let mut statement = self
             .connection
-            .prepare("SELECT correction_id,asset_id FROM correction ORDER BY correction_id")?;
+            .prepare("SELECT correction_id,asset_id FROM correction ORDER BY rowid")?;
         let rows = statement.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
@@ -321,12 +352,8 @@ impl ForecastCatalog {
             },
         )?;
         connection.pragma_update(None, "foreign_keys", true)?;
-        let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-        if version != 1 {
-            return Err(StoreError::Schema(format!(
-                "unsupported forecast catalog version {version}"
-            )));
-        }
+        connection.prepare("SELECT source_format, native_path FROM asset LIMIT 0")?;
+        connection.prepare("SELECT correction_id FROM correction LIMIT 0")?;
         Ok(Self {
             workspace,
             root: PathBuf::new(),
@@ -383,20 +410,16 @@ impl ForecastCatalog {
         let mut connection = Connection::open(cat)?;
         connection.pragma_update(None, "foreign_keys", true)?;
         let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version == 0 {
-            let tables:i64=tx.query_row("SELECT count(*) FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",[],|r|r.get(0))?;
-            if tables != 0 {
-                return Err(StoreError::Schema(
-                    "unversioned nonempty forecast catalog".into(),
-                ));
-            }
+        let count: i64 = tx.query_row(
+            "SELECT count(*) FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            [],
+            |row| row.get(0),
+        )?;
+        if count == 0 {
             tx.execute_batch(SCHEMA)?;
-            tx.pragma_update(None, "user_version", 1)?;
-        } else if version != 1 {
-            return Err(StoreError::Schema(format!(
-                "unsupported forecast catalog version {version}"
-            )));
+        } else {
+            tx.prepare("SELECT source_format, native_path FROM asset LIMIT 0")?;
+            tx.prepare("SELECT correction_id FROM correction LIMIT 0")?;
         }
         tx.commit()?;
         Ok(Self {
@@ -503,7 +526,7 @@ impl ForecastCatalog {
                 text(&native_artifact)?,
                 sha,
                 length_i64,
-                2,
+                "netcdf",
                 settings,
                 series.timeline.time_zone,
                 first,
@@ -548,32 +571,88 @@ impl ForecastCatalog {
             return self.load_native(&asset_id).map(|(asset, _)| asset);
         }
         let root = resolve(&self.workspace, &self.root)?;
-        let rel_dir = self.root.join(&asset_id);
-        let dir = self.workspace.join(&rel_dir);
-        let retained_source = rel_dir.join("source.grib2");
-        let native_artifact = rel_dir.join("native.nc");
-        let created = if !dir.exists() {
-            let stage = tempfile::Builder::new()
-                .prefix(".native-")
-                .tempdir_in(&root)?;
-            let staged_source = stage.path().join("source.grib2");
-            copy_source(source_path, &staged_source)?;
-            if digest(&staged_source)? != (source.sha256.clone(), source.byte_length) {
+        let (retained_source, native_artifact, created) = if self.root == Path::new("assets") {
+            let provider = match source.provider {
+                super::ForecastProvider::Ecmwf => "ecmwf",
+                super::ForecastProvider::Noaa => "noaa",
+            };
+            let stem = format!(
+                "{}_{}_{}",
+                source.model,
+                source.product,
+                source.cycle_utc.format("%Y%m%dT%H%MZ")
+            );
+            let source_dir = Path::new("downloads").join(provider);
+            let native_dir = self.root.join(provider);
+            create_workspace_dir(&self.workspace, &source_dir)?;
+            create_workspace_dir(&self.workspace, &native_dir)?;
+            let retained = source_dir.join(format!("{stem}.grib2"));
+            let native_path = native_dir.join(format!("{stem}-{}.nc", &asset_id[..12]));
+            let original = self.workspace.join(&retained);
+            if !original.exists() {
+                let staged = tempfile::Builder::new()
+                    .prefix(".download-")
+                    .tempdir_in(self.workspace.join(&source_dir))?;
+                let raw = staged.path().join("source.grib2");
+                copy_source(source_path, &raw)?;
+                if digest(&raw)? != (source.sha256.clone(), source.byte_length) {
+                    return Err(StoreError::Integrity(
+                        "retained source hash mismatch".into(),
+                    ));
+                }
+                fs::rename(raw, original)?;
+                super::sync_directory(&self.workspace.join(&source_dir))
+                    .map_err(std::io::Error::other)?;
+            }
+            let original = resolve(&self.workspace, &retained)?;
+            if digest(&original)? != (source.sha256.clone(), source.byte_length) {
                 return Err(StoreError::Integrity(
-                    "retained source hash mismatch".into(),
+                    "download for the same forecast cycle has different bytes".into(),
                 ));
             }
-            let staged_native = stage.path().join("native.nc");
-            write_grid_series(&staged_native, native)?;
-            File::open(&staged_native)?.sync_all()?;
-            super::sync_directory(stage.path()).map_err(std::io::Error::other)?;
-            match fs::rename(stage.path(), &dir) {
-                Ok(()) => true,
-                Err(_) if dir.is_dir() => false,
-                Err(error) => return Err(error.into()),
+            let target = self.workspace.join(&native_path);
+            let created = !target.exists();
+            if created {
+                let staged = tempfile::Builder::new()
+                    .prefix(".native-")
+                    .tempdir_in(self.workspace.join(&native_dir))?;
+                let normalized = staged.path().join("native.nc");
+                write_grid_series(&normalized, native)?;
+                File::open(&normalized)?.sync_all()?;
+                fs::rename(normalized, target)?;
+                super::sync_directory(&self.workspace.join(&native_dir))
+                    .map_err(std::io::Error::other)?;
             }
+            (retained, native_path, created)
         } else {
-            false
+            let rel_dir = self.root.join(&asset_id);
+            let dir = self.workspace.join(&rel_dir);
+            let retained_source = rel_dir.join("source.grib2");
+            let native_artifact = rel_dir.join("native.nc");
+            let created = if !dir.exists() {
+                let stage = tempfile::Builder::new()
+                    .prefix(".native-")
+                    .tempdir_in(&root)?;
+                let staged_source = stage.path().join("source.grib2");
+                copy_source(source_path, &staged_source)?;
+                if digest(&staged_source)? != (source.sha256.clone(), source.byte_length) {
+                    return Err(StoreError::Integrity(
+                        "retained source hash mismatch".into(),
+                    ));
+                }
+                let staged_native = stage.path().join("native.nc");
+                write_grid_series(&staged_native, native)?;
+                File::open(&staged_native)?.sync_all()?;
+                super::sync_directory(stage.path()).map_err(std::io::Error::other)?;
+                match fs::rename(stage.path(), &dir) {
+                    Ok(()) => true,
+                    Err(_) if dir.is_dir() => false,
+                    Err(error) => return Err(error.into()),
+                }
+            } else {
+                false
+            };
+            (retained_source, native_artifact, created)
         };
         let source_file = resolve(&self.workspace, &retained_source)?;
         let native_file = resolve(&self.workspace, &native_artifact)?;
@@ -638,7 +717,7 @@ impl ForecastCatalog {
                 text(&native_artifact)?,
                 native_sha,
                 native_len,
-                1,
+                "grib2",
                 settings,
                 native.timeline.time_zone,
                 first.format("%Y-%m-%dT%H:%M:%S").to_string(),
@@ -654,7 +733,7 @@ impl ForecastCatalog {
         })
     }
     pub fn load_native(&self, asset_id: &str) -> Result<(ForecastAsset, GridSeries), StoreError> {
-        let row=self.connection.query_row("SELECT source_id,source_path,source_sha256,source_byte_length,native_path,native_sha256,native_byte_length,schema_version,operation_timezone,valid_from,valid_to FROM asset WHERE asset_id=?",[asset_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,i64>(6)?,r.get::<_,i64>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?))).optional()?.ok_or_else(||invalid("unknown asset"))?;
+        let row=self.connection.query_row("SELECT source_id,source_path,source_sha256,source_byte_length,native_path,native_sha256,native_byte_length,source_format,operation_timezone,valid_from,valid_to FROM asset WHERE asset_id=?",[asset_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,i64>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?))).optional()?.ok_or_else(||invalid("unknown asset"))?;
         let (
             source_id,
             src,
@@ -663,7 +742,7 @@ impl ForecastCatalog {
             native,
             native_sha,
             native_len,
-            version,
+            source_format,
             zone,
             start,
             end,
@@ -672,7 +751,7 @@ impl ForecastCatalog {
         let native_artifact = PathBuf::from(native);
         let source_file = resolve(&self.workspace, &retained_source)?;
         let native_file = resolve(&self.workspace, &native_artifact)?;
-        if !matches!(version, 1 | 2)
+        if !matches!(source_format.as_str(), "grib2" | "netcdf")
             || src_len < 0
             || native_len < 0
             || digest(&source_file)? != (src_sha.clone(), src_len as u64)
@@ -684,7 +763,7 @@ impl ForecastCatalog {
         }
         let series = read_grid_series(&native_file)?;
         let (provider,model,product,cycle,settings):(String,String,String,String,String)=self.connection.query_row("SELECT provider,model,product,cycle_utc,normalization_json FROM asset WHERE asset_id=?",[asset_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
-        if version == 2 {
+        if source_format == "netcdf" {
             let metadata: CanonicalForecastMetadata = serde_json::from_str(&settings)
                 .map_err(|e| StoreError::Integrity(e.to_string()))?;
             if metadata.provider != provider
@@ -766,7 +845,29 @@ impl ForecastCatalog {
         &self,
         corrections: &[ForecastCorrection],
     ) -> Result<(), StoreError> {
+        self.write_corrections(corrections, None)
+    }
+
+    pub(crate) fn replace_corrections(
+        &self,
+        asset: &str,
+        corrections: &[ForecastCorrection],
+    ) -> Result<(), StoreError> {
+        self.write_corrections(corrections, Some(asset))
+    }
+
+    fn write_corrections(
+        &self,
+        corrections: &[ForecastCorrection],
+        replace_asset: Option<&str>,
+    ) -> Result<(), StoreError> {
         let tx = self.connection.unchecked_transaction()?;
+        if let Some(asset) = replace_asset {
+            if corrections.iter().any(|row| row.asset_id != asset) {
+                return Err(invalid("correction asset differs from the selected cycle"));
+            }
+            tx.execute("DELETE FROM correction WHERE asset_id=?1", [asset])?;
+        }
         for c in corrections {
             check_correction(c)?;
             let existing: Option<bool> = tx.query_row(
@@ -875,7 +976,6 @@ impl ForecastCatalog {
         let tx = self.connection.unchecked_transaction()?;
         let mut destination_db = Connection::open(destination)?;
         destination_db.execute_batch(SCHEMA)?;
-        destination_db.pragma_update(None, "user_version", 1)?;
         let destination_tx = destination_db.transaction()?;
         let mut selected = Vec::new();
         let mut asset_ids = HashSet::new();

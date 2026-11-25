@@ -35,7 +35,7 @@ fn topology_validates_and_multipart_geometry_matches_ids() {
 }
 
 #[test]
-fn upgrade_and_reference_import_preserve_station_and_offset_on_failure() {
+fn reference_import_preserves_station_and_offset_on_failure() {
     let d = tempfile::tempdir().unwrap();
     let db = d.path().join("obs.sqlite");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
@@ -104,11 +104,6 @@ fn upgrade_and_reference_import_preserve_station_and_offset_on_failure() {
         "station_code,level_registered,date\r\n123,5.125,2020-01-02\r\n",
     )
     .unwrap();
-    assert!(import_level_references(&db, "ana", &thresholds, &history).is_err());
-    let mut store = ObservationStore::open_writable(&db).unwrap();
-    store.upgrade_references().unwrap();
-    drop(store);
-    assert_eq!(sample(), original_sample);
     let report = import_level_references(&db, "ana", &thresholds, &history).unwrap();
     assert_eq!(sample(), original_sample);
     assert_eq!(report.imported, 3);
@@ -149,7 +144,7 @@ fn rs_geometry_and_reference_coverage() {
     let mini = d.path().join("MINI.gtp");
     let gpkg = d.path().join("geometry.gpkg");
     fs::copy(root.join("mgb_runner/Input/MINI.gtp"), &mini).unwrap();
-    fs::copy(root.join("data/source/rs_hydro.gpkg"), &gpkg).unwrap();
+    fs::copy(root.join("source/rs_hydro.gpkg"), &gpkg).unwrap();
     let (_, topology) = read_mini_topology(&mini).unwrap();
     assert_eq!(topology.len(), 8649);
     for layer in ["mini_segments", "mini_catchments"] {
@@ -169,7 +164,7 @@ fn rs_geometry_and_reference_coverage() {
     let db = d.path().join("obs.sqlite");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     let mut reader =
-        csv::Reader::from_path(root.join("data/source/history_station_inventory.csv")).unwrap();
+        csv::Reader::from_path(root.join("source/history_station_inventory.csv")).unwrap();
     let mut stations = Vec::new();
     for row in reader.records() {
         let row = row.unwrap();
@@ -190,13 +185,13 @@ fn rs_geometry_and_reference_coverage() {
             ..Default::default()
         })
         .unwrap();
-    store.upgrade_references().unwrap();
+
     drop(store);
     let report = import_level_references(
         &db,
         "ana",
-        &root.join("data/source/station_level_reference.csv"),
-        &root.join("data/source/registered_floods.csv"),
+        &root.join("source/station_level_reference.csv"),
+        &root.join("source/registered_floods.csv"),
     )
     .unwrap();
     assert_eq!(report.imported, 154);
@@ -230,7 +225,7 @@ fn duplicate_keys_and_cli_share_the_import() {
             ..Default::default()
         })
         .unwrap();
-    store.upgrade_references().unwrap();
+
     drop(store);
     let thresholds = d.path().join("t.csv");
     let history = d.path().join("h.csv");
@@ -387,7 +382,7 @@ fn detached_reference_reader_rejects_duplicate_and_invalid_records() {
             ..Default::default()
         })
         .unwrap();
-    store.upgrade_references().unwrap();
+
     drop(store);
     let conn = rusqlite::Connection::open(&db).unwrap();
     conn.execute_batch("DROP INDEX level_threshold_key; INSERT INTO level_reference VALUES ('a','alert','',1),('a','alert','',2);").unwrap();
@@ -446,13 +441,6 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     let dbs = db.to_str().unwrap();
     let ts = t.to_str().unwrap();
     let hs = h.to_str().unwrap();
-    let upgraded = run(&["references", "upgrade", "--database", dbs, "--json"]);
-    assert!(upgraded.status.success());
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&upgraded.stdout).unwrap()["ok"],
-        true
-    );
-    assert!(upgraded.stderr.is_empty());
     let imported = run(&[
         "references",
         "import",
@@ -489,9 +477,15 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     ]);
     let missing = run(&[
         "references",
-        "upgrade",
+        "import",
         "--database",
         d.path().join("missing").to_str().unwrap(),
+        "--provider",
+        "ana",
+        "--thresholds",
+        ts,
+        "--history",
+        hs,
         "--json",
     ]);
     fs::write(&h, "station_code,level_registered,date\n1,3,invalid\n").unwrap();
@@ -526,6 +520,6 @@ fn reference_json_cli_reports_success_and_operational_failures() {
             .unwrap(),
         before
     );
-    let invalid_args = run(&["references", "upgrade", "--json"]);
+    let invalid_args = run(&["references", "import", "--json"]);
     assert_eq!(invalid_args.status.code(), Some(2));
 }

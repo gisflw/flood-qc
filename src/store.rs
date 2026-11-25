@@ -94,7 +94,7 @@ pub use self::inundation::{
 #[cfg(feature = "inundation-write")]
 pub(crate) use self::inundation::{
     INUNDATION_ADOPTION, INUNDATION_TILE, InundationAdoption, InundationRasters, InundationStage,
-    InundationWriter,
+    InundationWriter, cache_catchments,
 };
 
 mod flood_source;

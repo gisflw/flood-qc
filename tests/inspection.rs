@@ -26,30 +26,20 @@ fn fixture() -> TempDir {
     let temp = tempfile::tempdir().unwrap();
     let w = temp.path();
     put(
-        &w.join("config/workspace.toml"),
+        &w.join("config.toml"),
         b"[spatial]\ngpkg_path = 'geometry.gpkg'\n",
     );
     put(&w.join("geometry.gpkg"), b"geometry");
-    put(
-        &w.join("mgb_runner/MGB_Inercial_Prev_RSH"),
-        b"#!/bin/sh\ntouch MARKER\n",
-    );
+    put(&w.join("model/engine"), b"#!/bin/sh\ntouch MARKER\n");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(
-            w.join("mgb_runner/MGB_Inercial_Prev_RSH"),
-            fs::Permissions::from_mode(0o755),
-        )
-        .unwrap();
+        fs::set_permissions(w.join("model/engine"), fs::Permissions::from_mode(0o755)).unwrap();
     }
     #[cfg(windows)]
-    put(
-        &w.join("mgb_runner/MGB_Inercial_PrevRS_FORTRAN.exe"),
-        b"engine",
-    );
+    put(&w.join("model/engine.exe"), b"engine");
     for name in INPUTS {
-        put(&w.join("mgb_runner/Input").join(name), b"data");
+        put(&w.join("model/Input").join(name), b"data");
     }
     temp
 }
@@ -90,7 +80,7 @@ fn example_and_configuration_contract() {
         "spatial: x",
         "[spatial]\ngpkg_path = '   '",
     ] {
-        put(&w.join("config/workspace.toml"), invalid.as_bytes());
+        put(&w.join("config.toml"), invalid.as_bytes());
         let mut r = request(w);
         if !invalid.contains("'   '") {
             r.gpkg_path = Some("geometry.gpkg".into());
@@ -102,15 +92,15 @@ fn example_and_configuration_contract() {
         );
     }
     put(
-        &w.join("config/workspace.toml"),
+        &w.join("config.toml"),
         b"[spatial]\ngpkg_path = ''\n[engine]\nexecutable = ''\ninput_dir = ''\n",
     );
     let mut r = request(w);
     r.gpkg_path = Some("geometry.gpkg".into());
-    r.engine_executable = Some("mgb_runner/MGB_Inercial_Prev_RSH".into());
-    r.engine_input_dir = Some("mgb_runner/Input".into());
+    r.engine_executable = Some("model/engine".into());
+    r.engine_input_dir = Some("model/Input".into());
     assert!(inspect(r).ok);
-    fs::remove_file(w.join("config/workspace.toml")).unwrap();
+    fs::remove_file(w.join("config.toml")).unwrap();
     let mut r = request(w);
     r.gpkg_path = Some("geometry.gpkg".into());
     assert_eq!(code(&inspect(r), "config"), mgb_ops::FindingCode::Missing);
@@ -120,9 +110,9 @@ fn aggregates_failures_and_suppresses_children() {
     let t = fixture();
     let w = t.path();
     fs::remove_file(w.join("geometry.gpkg")).unwrap();
-    put(&w.join("mgb_runner/Input/MINI.gtp"), b"");
-    fs::remove_file(w.join("mgb_runner/Input/Cell.hig")).unwrap();
-    fs::create_dir(w.join("mgb_runner/Input/Cell.hig")).unwrap();
+    put(&w.join("model/Input/MINI.gtp"), b"");
+    fs::remove_file(w.join("model/Input/Cell.hig")).unwrap();
+    fs::create_dir(w.join("model/Input/Cell.hig")).unwrap();
     let r = inspect(request(w));
     assert!(!r.ok);
     assert_eq!(code(&r, "geometry"), mgb_ops::FindingCode::Missing);
@@ -134,7 +124,7 @@ fn aggregates_failures_and_suppresses_children() {
         code(&r, "engine.input.Cell.hig"),
         mgb_ops::FindingCode::WrongKind
     );
-    assert_eq!(code(&r, "optional.history"), mgb_ops::FindingCode::Absent);
+    assert_eq!(code(&r, "optional.database"), mgb_ops::FindingCode::Absent);
     assert_eq!(
         code(&r, "scope.execution"),
         mgb_ops::FindingCode::OutsideScope
@@ -158,7 +148,7 @@ fn permissions_and_symlinks() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let t = fixture();
     let w = t.path();
-    let engine = w.join("mgb_runner/MGB_Inercial_Prev_RSH");
+    let engine = w.join("model/engine");
     fs::set_permissions(&engine, fs::Permissions::from_mode(0o644)).unwrap();
     assert_eq!(
         code(&inspect(request(w)), "engine.executable"),
@@ -175,7 +165,7 @@ fn permissions_and_symlinks() {
         code(&inspect(request(w)), "geometry"),
         mgb_ops::FindingCode::Missing
     );
-    let input = w.join("mgb_runner/Input/MINI.gtp");
+    let input = w.join("model/Input/MINI.gtp");
     fs::set_permissions(&input, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::File::open(&input).is_err() {
         assert_eq!(
@@ -221,8 +211,12 @@ fn cli_paths_output_and_preservation() {
         &external_config,
         b"[spatial]\ngpkg_path = 'geometry.gpkg'\n",
     );
-    for name in ["history.sqlite", "history.sqlite-wal", "history.sqlite-shm"] {
-        put(&w.join("data").join(name), b"sentinel");
+    for name in [
+        "operation.sqlite",
+        "operation.sqlite-wal",
+        "operation.sqlite-shm",
+    ] {
+        put(&w.join(name), b"sentinel");
     }
     let mut before = Vec::new();
     inventory(w, w, &mut before);
@@ -288,7 +282,7 @@ fn cli_paths_output_and_preservation() {
 fn config_precedence_and_invalid_values() {
     let t = fixture();
     let w = t.path();
-    let cfg = w.join("config/workspace.toml");
+    let cfg = w.join("config.toml");
     put(&cfg, b"[spatial]\ngpkg_path='geometry.gpkg'\n[engine]\nexecutable='no-engine'\ninput_dir='no-input'\n");
     let report = inspect(request(w));
     assert_eq!(
@@ -300,8 +294,8 @@ fn config_precedence_and_invalid_values() {
         mgb_ops::FindingCode::Missing
     );
     let mut req = request(w);
-    req.engine_executable = Some("mgb_runner/MGB_Inercial_Prev_RSH".into());
-    req.engine_input_dir = Some("mgb_runner/Input".into());
+    req.engine_executable = Some("model/engine".into());
+    req.engine_input_dir = Some("model/Input".into());
     assert!(inspect(req).ok);
     for source in ["", "[spatial]\n", "[engine]\n"] {
         put(&cfg, source.as_bytes());
@@ -322,8 +316,8 @@ fn config_precedence_and_invalid_values() {
         put(&cfg, source.as_bytes());
         let mut req = request(w);
         req.gpkg_path = Some("geometry.gpkg".into());
-        req.engine_executable = Some("mgb_runner/MGB_Inercial_Prev_RSH".into());
-        req.engine_input_dir = Some("mgb_runner/Input".into());
+        req.engine_executable = Some("model/engine".into());
+        req.engine_input_dir = Some("model/Input".into());
         let report = inspect(req);
         assert_eq!(
             code(&report, "config"),
@@ -402,7 +396,7 @@ fn native_paths_and_output_errors() {
             .unwrap()
             .contains('\u{fffd}')
     );
-    let cfg = w.join("config/workspace.toml");
+    let cfg = w.join("config.toml");
     fs::set_permissions(&cfg, fs::Permissions::from_mode(0o000)).unwrap();
     if fs::File::open(&cfg).is_err() {
         assert_eq!(

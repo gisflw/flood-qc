@@ -12,8 +12,8 @@ cycle_utc = "2026-07-20T00:00:00Z"
 operation_timezone = "America/Sao_Paulo"
 source = "missing.grib2"
 crop_bbox = [-60.0,-35.0,-50.0,-25.0]
-catalog = "data/forecasts.sqlite"
-artifact_root = "data/forecasts"
+catalog = "operation.sqlite"
+artifact_root = "assets"
 "#
     .into()
 }
@@ -116,5 +116,5 @@ fn library_and_cli_normalize_the_same_canonical_values() {
         std::fs::read(&report.retained_source).unwrap(),
         std::fs::read(&fixture).unwrap()
     );
-    assert!(!dir.path().join("library/data/observations.sqlite").exists());
+    assert!(dir.path().join("library/operation.sqlite").is_file());
 }

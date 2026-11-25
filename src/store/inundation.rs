@@ -12,7 +12,7 @@ mod raster;
 #[cfg(feature = "inundation-write")]
 mod write;
 #[cfg(feature = "inundation-write")]
-pub(crate) use self::raster::InundationRasters;
+pub(crate) use self::raster::{InundationRasters, cache_catchments};
 #[cfg(feature = "inundation-write")]
 pub(crate) use self::write::{InundationStage, InundationWriter};
 #[cfg(feature = "inundation-write")]

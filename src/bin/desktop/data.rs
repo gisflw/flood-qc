@@ -88,12 +88,17 @@ pub fn open(
     let workspace = session.workspace().to_path_buf();
     let settings = mgb_ops::app::read_workspace_config(&config)
         .map_err(|e| format!("{}: {e}", config.display()))?;
+    let configured_zone = settings
+        .run
+        .as_ref()
+        .and_then(|run| run.time_zone)
+        .map_or_else(|| "America/Sao_Paulo".into(), |zone| zone.name().to_owned());
     let previous = previous.filter(|p| p.config == config && p.workspace == workspace);
     let session = previous.map_or(session, |project| project.session.clone());
     let input = settings
         .engine
         .and_then(|e| e.input_dir)
-        .unwrap_or_else(|| "mgb_runner/Input".into());
+        .unwrap_or_else(|| "model/Input".into());
     let mini = workspace.join(input).join("MINI.gtp");
     let geometry_source = settings
         .spatial
@@ -116,7 +121,7 @@ pub fn open(
         series: vec![],
         assets: vec![],
         findings: vec![],
-        time_zone: "America/Sao_Paulo".into(),
+        time_zone: configured_zone,
         retained_sources: vec![],
         geometry_source,
         static_version,
@@ -180,7 +185,7 @@ pub fn open(
             );
         }
     }
-    let history = project.workspace.join("data/history.sqlite");
+    let history = mgb_ops::app::operation_database(&project.workspace);
     match canonical::ObservationStore::open_read_only(&history) {
         Ok(observations) => {
             match observations.time_zone() {
@@ -239,7 +244,7 @@ pub fn open(
             }
         }
     }
-    let catalog = project.workspace.join("data/forecasts.sqlite");
+    let catalog = mgb_ops::app::operation_database(&project.workspace);
     if catalog.exists() {
         match canonical::ForecastCatalog::open_read_only(&project.workspace, &catalog)
             .and_then(|c| c.asset_choices())
@@ -456,7 +461,7 @@ pub fn chart_selections(
                 _ => continue,
             };
             selections.push(SeriesSelection::Observation {
-                database: project.workspace.join("data/history.sqlite"),
+                database: mgb_ops::app::operation_database(&project.workspace),
                 series_id: series.clone(),
                 variable,
                 effective: false,
@@ -742,9 +747,7 @@ impl Drop for Worker {
 }
 
 pub fn infer_workspace(config: &Path) -> Option<PathBuf> {
-    (config.file_name()?.to_str()? == "workspace.toml"
-        && config.parent()?.file_name()?.to_str()? == "config")
-        .then(|| config.parent().unwrap().parent().unwrap().to_path_buf())
+    (config.file_name()?.to_str()? == "config.toml").then(|| config.parent().unwrap().to_path_buf())
 }
 
 #[cfg(test)]
@@ -958,9 +961,9 @@ mod tests {
         std::fs::create_dir_all(root.join("config")).unwrap();
         std::fs::create_dir_all(root.join("data")).unwrap();
         std::fs::write(
-            root.join("config/workspace.toml"),
+            root.join("config.toml"),
             r#"[spatial]
-gpkg_path = "/workspace/rs_hydro_forecast/data/source/rs_hydro.gpkg"
+gpkg_path = "/workspace/rs_hydro_forecast/source/rs_hydro.gpkg"
 [engine]
 input_dir = "/workspace/rs_hydro_forecast/mgb_runner/Input"
 executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
@@ -976,7 +979,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             std::fs::remove_dir_all(&synthetic).unwrap();
         }
         saved_trial(&synthetic, geometry.longitudes[0], geometry.latitudes[0]);
-        let history = root.join("data/history.sqlite");
+        let history = root.join("operation.sqlite");
         if !history.exists() {
             let mut database = canonical::ObservationStore::create(&history, "UTC").unwrap();
             let station_id = "002".to_owned();
@@ -1015,7 +1018,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
                 })
                 .unwrap();
         }
-        let config = std::path::absolute(root.join("config/workspace.toml")).unwrap();
+        let config = std::path::absolute(root.join("config.toml")).unwrap();
         let workspace = std::path::absolute(root).unwrap();
         let first = open(config.clone(), workspace.clone(), None).unwrap();
         let second = open(config, workspace, Some(&first)).unwrap();
@@ -1072,7 +1075,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         assert!(result.rainfall.is_none());
         assert!(result.summary.is_none());
         assert_eq!(result.area_km2, Some(4.));
-        let cache_missing = !root.join("data/cache/rainfall").exists();
+        let cache_missing = !root.join("cache/rainfall").exists();
         assert!(cache_missing);
     }
     #[test]
@@ -1095,7 +1098,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         }]));
         std::fs::create_dir_all(root.join("data")).unwrap();
         let mut database =
-            canonical::ObservationStore::create(&root.join("data/history.sqlite"), "UTC").unwrap();
+            canonical::ObservationStore::create(&root.join("operation.sqlite"), "UTC").unwrap();
         database
             .write_batch(&canonical::ObservationBatch {
                 stations: vec![canonical::Station {
@@ -1128,11 +1131,11 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         let root = dir.path();
         std::fs::create_dir_all(root.join("config")).unwrap();
         std::fs::create_dir_all(root.join("data")).unwrap();
-        let config = root.join("config/workspace.toml");
+        let config = root.join("config.toml");
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
         let original = std::fs::read(&config).unwrap();
         let mut database =
-            canonical::ObservationStore::create(&root.join("data/history.sqlite"), "UTC").unwrap();
+            canonical::ObservationStore::create(&root.join("operation.sqlite"), "UTC").unwrap();
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         database
             .write_batch(&canonical::ObservationBatch {
@@ -1183,7 +1186,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
     #[test]
     fn standard_config_association_only() {
         assert_eq!(
-            infer_workspace(Path::new("/region/config/workspace.toml")),
+            infer_workspace(Path::new("/region/config.toml")),
             Some(PathBuf::from("/region"))
         );
         assert_eq!(infer_workspace(Path::new("/region/custom.toml")), None);

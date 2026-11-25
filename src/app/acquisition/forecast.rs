@@ -151,6 +151,26 @@ impl Download<'_> {
                 self.record(outcome, cycle, asset, &grid, true);
                 return Ok(());
             }
+            let retained = self
+                .workspace
+                .join("downloads")
+                .join(code)
+                .join(format!("{model}_fc_{}.grib2", cycle.format("%Y%m%dT%H%MZ")));
+            if self.config.artifact_root == Path::new("assets") && retained.is_file() {
+                let forecast =
+                    normalize_saved_forecast(&retained, &request).map_err(|e| e.to_string())?;
+                if !complete_grid(&forecast.native, &request, self.config.model_bbox, &leads) {
+                    return Err(format!(
+                        "{code}: retained forecast has incomplete schedule or coverage"
+                    ));
+                }
+                self.control.check().map_err(|e| e.to_string())?;
+                let asset = catalog
+                    .register_native(&retained, &forecast.source, &forecast.native)
+                    .map_err(|e| e.to_string())?;
+                self.record(outcome, cycle, asset, &forecast.native, true);
+                return Ok(());
+            }
             match self.download(&request, &leads, &mut noaa_last) {
                 Ok(staged) => {
                     let forecast = normalize_saved_forecast(staged.path(), &request)

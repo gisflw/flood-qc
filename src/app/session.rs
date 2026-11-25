@@ -79,7 +79,7 @@ impl Session {
     pub fn new(mut settings: InspectionRequest) -> Self {
         settings.workspace = absolute(&settings.invocation_dir, &settings.workspace);
         settings.config = Some(settings.config.as_deref().map_or_else(
-            || settings.workspace.join("config/workspace.toml"),
+            || super::workspace_config_path(&settings.workspace),
             |path| absolute(&settings.invocation_dir, path),
         ));
         Self {

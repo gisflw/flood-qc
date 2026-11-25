@@ -11,13 +11,27 @@ These workflows are available in the shared Rust library, the CLI, and the optio
 
 ## Canonical data and review
 
-- `mgb-ops observation init --database history.sqlite --time-zone America/Sao_Paulo` creates a canonical observation store. `observation import --database ... --input batch.json` accepts the serialized `ObservationBatch`. An identical row is a safe retry. Conflicting raw series or samples reject the batch. `observation inventory` accepts an array of `Station` records and updates metadata for existing provider and station identities.
-- `mgb-ops observation upgrade --database ...` explicitly upgrades the database to schema version 3 for flow replacements. Read-only opens can still read versions 1 and 2. The upgrade preserves level references and existing rainfall instructions. Point and period edits target a station and variable. Selected instructions apply in order, with the last matching instruction winning. A null edit excludes a value. Effective flow uses exact hourly labels and shows unchanged off-hour observations in series views.
+- `mgb-ops workspace init --workspace /region` initializes the workspace database. `observation import --database ... --input batch.json` accepts the serialized `ObservationBatch`. An identical row is a safe retry. Conflicting raw series or samples reject the batch. `observation inventory` accepts an array of `Station` records and updates metadata for existing provider and station identities.
+- Point and period edits target a station and variable. Selected instructions apply in order, with the last matching instruction winning. A null edit excludes a value. Effective flow uses exact hourly labels and shows unchanged off-hour observations in series views.
 - `mgb-ops forecast import-canonical --workspace ... --request forecast.json` accepts fields `source`, `catalog`, `artifact_root`, and `metadata`. `metadata` contains `provider`, `model`, `product`, and RFC3339 `cycle_utc`. Paths follow workspace-relative forecast rules. The source is a canonical native forecast NetCDF grid. The catalog retains the source bytes and recorded digest. Legacy-normalized GRIB assets remain readable.
 - `mgb-ops observation availability --request review.json` accepts an `ObservationReviewRequest`. Select the database, station IDs or provider codes, variable, local `end`, and `window.kind` (`recent72_hours`, `month`, or `explicit` with `start`). The month query uses the calendar month containing `end`. Select series and ordered replacement IDs or inline instruction values when needed. The result distinguishes missing rows, nulls, exclusions, and valid values.
 - `mgb-ops observation spatial-qc --request review.json --interpolation idw.json` compares each target station's raw rainfall to IDW from other stations' effective rainfall. Use `--station` for one target. Totals and residuals use matching valid hourly pairs. The report includes expected, observed, and matched hours. Findings do not change stored measurements.
 
 Use **Import data**, **Observation review**, and **Review instructions** in the desktop. Draft previews have a source generation and prompt for explicit source acceptance when the selected data change. Forecast preview uses the same intervals and color scale for the original and corrected maps.
+
+Export and edit the workspace's ordered instructions as CSV.
+
+```sh
+mgb-ops edits export --workspace /region --output replacements.csv
+mgb-ops edits import --workspace /region --input replacements.csv
+mgb-ops edits export --workspace /region --forecast ecmwf@2026-07-20T00:00:00Z --output corrections.csv
+mgb-ops edits import --workspace /region --forecast ecmwf@2026-07-20T00:00:00Z --input corrections.csv
+```
+
+Import replaces the selected observation or forecast edit list in a single
+transaction and preserves row order. A header-only CSV clears that list. An empty
+observation value excludes the measurement. A forecast selection identifies one
+catalog cycle. Export writes to a new path.
 
 ## Forcing, state, and calibration
 
@@ -63,7 +77,7 @@ save_at = "2026-07-11T01:00:00"
 
 - `mgb-ops run export --run ... --output ... [--prepared ...]` writes a verified directory bundle. Export before replacing the active run to keep charts, raw results, and inundation products. Include the exact retained preparation to enable source-independent regeneration with a matching local executable. The bundle excludes the executable.
 - `mgb-ops run import --workspace ... --bundle ... --output ...` verifies a bundle and copies it to an explicitly selected location outside the managed cache. Open that directory as a comparison run in the desktop. `run regenerate --workspace ... --bundle ... --engine ...` republishes the active run after successful execution with a matching local executable.
-- `mgb-ops run replay --workspace ... --manifest data/run-manifests/<run-id>.json` prepares and executes the recorded recipe using the referenced inputs. The command validates the recorded identities and reports missing or changed inputs before replacing the active run. Earlier manifests can only verify identities they recorded. Archived manifests do not contain the input data.
+- `mgb-ops run replay --workspace ... --manifest runs/history/<run-id>.json` prepares and executes the recorded recipe using the referenced inputs. The command validates the recorded identities and reports missing or changed inputs before replacing the active run. Earlier manifests can only verify identities they recorded. Archived manifests do not contain the input data.
 - `mgb-ops automation validate --workspace ... --config ...` checks a scheduler TOML. Set `schema_version = 1` and one or more `[[jobs]]` with `id`, `time_zone`, `hour`, optional `minute`, and `[[jobs.steps]]`. Step `kind` is `prepare`, `execute`, or `run_all`. Select `draft` for the draft actions or `prepared` for execute. A draft step can set `rolling = true` to create a separate draft selection at each scheduled local reference and accept its sources afresh. It preserves staged instruction values and dates and leaves the saved draft unchanged. An execution step can select `export = true`, `email = true`, and `[jobs.steps.report]` with `profile`, `observations`, `geometry`, `scenario_id`, and optional `map_geometry`.
 - Run `automation serve --workspace ... --config ...` in a foreground process or start scheduling in the desktop. `automation status --workspace ...` lists durable per-slot outcomes. `automation run-now --workspace ... --config ... --job ...` runs an explicit job. The scheduler uses the workspace lock and records interrupted or missed slots without automatically rerunning them. An elapsed slot is not replayed on startup.
 - Configure a local `[smtp]` table with `host`, `tls` (`implicit` or `starttls`), `from`, `to`, optional `port`, and paired `username` and `password_env` when authentication is required. Keep the password in the named environment variable. Configured execution steps send their attachments after successful production. `automation send` takes a subject, body file, and optional repeated attachment paths to deliver existing files. SMTP delivery has its own recorded outcome.

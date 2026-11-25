@@ -51,6 +51,7 @@ fn ranking_gaps_and_review_order() {
         reason: "review".into(),
     };
     let inputs = ObservationInputs {
+        excluded_rain: Default::default(),
         stations: vec![Station {
             station_id: "s".into(),
             provider_code: "ana".into(),
@@ -135,6 +136,7 @@ fn preparation_interpolates_zero_and_reports_missing_coverage() {
         }],
     };
     let mut inputs = ObservationInputs {
+        excluded_rain: Default::default(),
         stations: vec![Station {
             station_id: "s".into(),
             provider_code: "ana".into(),
@@ -223,6 +225,7 @@ fn open_period_overrides_and_invalid_inputs_fail() {
             .collect(),
     };
     let mut inputs = ObservationInputs {
+        excluded_rain: Default::default(),
         stations: vec![Station {
             station_id: "s".into(),
             provider_code: "ana".into(),
@@ -308,6 +311,7 @@ fn pure_input_rejects_duplicates_orphans_and_incomplete_axes() {
         longitude: Some(0.0),
     };
     let mut inputs = ObservationInputs {
+        excluded_rain: Default::default(),
         stations: vec![station.clone(), station],
         series: vec![series("r", "raw")],
         samples: vec![],

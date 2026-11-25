@@ -63,6 +63,7 @@ pub(super) fn observation_identity(
     inputs
         .samples
         .retain(|s| inputs.series.iter().any(|v| v.series_id == s.series_id));
+    inputs.excluded_rain.clear();
     identity(&(inputs, timeline))
 }
 
@@ -488,7 +489,7 @@ impl DraftAnchor {
 impl Draft {
     pub fn new(workspace: PathBuf, invocation_dir: &Path) -> Self {
         let workspace = super::absolute(invocation_dir, &workspace);
-        let config = super::read_workspace_config(&workspace.join("config/workspace.toml")).ok();
+        let config = super::read_workspace_config(&workspace.join("config.toml")).ok();
         Self::new_with_workspace_config(workspace, invocation_dir, config.as_ref())
     }
 
@@ -517,7 +518,7 @@ impl Draft {
                 input_dir: Some(
                     engine
                         .input_dir
-                        .map_or_else(|| PathBuf::from("mgb_runner/Input"), PathBuf::from),
+                        .map_or_else(|| PathBuf::from("model/Input"), PathBuf::from),
                 ),
                 omp_threads: None,
             });
@@ -543,8 +544,8 @@ impl Draft {
         let mut draft = Self::new_with_workspace_config(workspace, invocation_dir, config);
         draft.initialize_anchor(reference, zone)?;
         for (path, kind) in [
-            (PathBuf::from("data/history.sqlite"), 0),
-            (PathBuf::from("data/forecasts.sqlite"), 1),
+            (PathBuf::from("operation.sqlite"), 0),
+            (PathBuf::from("operation.sqlite"), 1),
         ] {
             if super::absolute(&draft.workspace, &path).is_file() {
                 if kind == 0 {
@@ -2267,7 +2268,7 @@ mod tests {
             ForecastCatalog::open(&root, Path::new("forecast.sqlite"), Path::new("assets"))
                 .unwrap();
         let db = rusqlite::Connection::open(root.join("forecast.sqlite")).unwrap();
-        db.execute("INSERT INTO asset VALUES ('asset','source','p','m','p','cycle','source','hash',1,'native','hash',1,1,'{}','UTC','a','b')", []).unwrap();
+        db.execute("INSERT INTO asset VALUES ('asset','source','p','m','p','cycle','source','hash',1,'native','hash',1,'grib2','{}','UTC','a','b')", []).unwrap();
         drop(catalog);
         let mut draft = Draft::new(root.clone(), &root);
         draft.document.operation.observed = Some(DraftObserved {

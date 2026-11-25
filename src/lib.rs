@@ -45,7 +45,7 @@ pub use app::{
     RegistrationOutcome, RegistrationReport, RegistrationSelection,
 };
 
-pub use app::{ReferenceImportReport, import_level_references, upgrade_level_references};
+pub use app::{ReferenceImportReport, import_level_references};
 pub use app::{RunBundleReport, export_run, import_run, import_run_to, regenerate_run, replay_run};
 
 pub use analysis::{

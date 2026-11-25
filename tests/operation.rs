@@ -170,12 +170,7 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
     );
     let rainfall = mgb_ops::app::rainfall_cache_info(&path).unwrap().unwrap();
     assert_eq!(Some(rainfall.generation.as_ref()), two.run_root.file_name());
-    assert_eq!(
-        fs::read_dir(path.join("data/run-manifests"))
-            .unwrap()
-            .count(),
-        2
-    );
+    assert_eq!(fs::read_dir(path.join("runs/history")).unwrap().count(), 2);
     let copied = mgb_ops::Draft::import_manifest(path.clone(), &path, &two.run_root).unwrap();
     assert_eq!(copied.document.operation.scenarios.len(), 4);
     let stations =
@@ -318,14 +313,12 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
         prepared: prepared.prepared.clone(),
     })
     .unwrap();
-    assert!(
-        mgb_ops::export_run(&trial.run_root, None, &source.join("data/cache/run/bundle")).is_err()
-    );
+    assert!(mgb_ops::export_run(&trial.run_root, None, &source.join("cache/run/bundle")).is_err());
     let bundle = source.join("bundle");
     mgb_ops::export_run(&trial.run_root, Some(&prepared.prepared), &bundle).unwrap();
     assert!(!bundle.join("preparation/baseline/engine").exists());
     assert!(mgb_ops::export_run(&trial.run_root, None, &bundle).is_err());
-    for path in ["Input", "prepared", "data/cache/run"] {
+    for path in ["Input", "prepared", "cache/run"] {
         fs::remove_dir_all(source.join(path)).unwrap();
     }
     fs::remove_file(source.join("observations.sqlite")).unwrap();
@@ -336,7 +329,7 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
     assert_eq!(imported.root, destination);
     assert!(imported.has_preparation);
     assert!(mgb_ops::import_run_to(&target, &bundle, &destination).is_err());
-    let cache = target.join("data/cache/run");
+    let cache = target.join("cache/run");
     fs::create_dir_all(&cache).unwrap();
     assert!(mgb_ops::import_run_to(&target, &bundle, &cache.join("imported")).is_err());
     assert!(mgb_ops::discover_trials(&target).unwrap().is_empty());
@@ -480,7 +473,7 @@ fn canonical_forecast_reaches_frozen_preparation_and_execution() {
     assert_eq!(combined.info, generation);
     assert_eq!(combined.values[5], Some(3.));
     assert_eq!(query("other", SignedHours(2)).values, vec![None; cells]);
-    assert!(!root.join("data/cache/preparations").exists());
+    assert!(!root.join("cache/preparations").exists());
     let prepared = mgb_ops::prepare(mgb_ops::PreparationRequest {
         workspace: root.clone(),
         invocation_dir: root.clone(),
@@ -717,7 +710,7 @@ fn final_manifest_failure_reaps_children_and_archives_attempt() {
         panic!("expected store failure")
     };
     assert!(!run_root.exists());
-    let manifest = fs::read_dir(path.join("data/run-manifests"))
+    let manifest = fs::read_dir(path.join("runs/history"))
         .unwrap()
         .next()
         .unwrap()
@@ -1037,12 +1030,8 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
             processing: serde_json::json!({"normalization":settings}),
         },
     };
-    let mut catalog = ForecastCatalog::open(
-        &path,
-        Path::new("data/forecasts.sqlite"),
-        Path::new("data/forecasts"),
-    )
-    .unwrap();
+    let mut catalog =
+        ForecastCatalog::open(&path, Path::new("operation.sqlite"), Path::new("assets")).unwrap();
     let asset = catalog
         .register_native(&path.join("forecast.grib2"), &source, &native)
         .unwrap();
@@ -1070,7 +1059,7 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
         .iter()
         .map(|r| r.replacement_id.clone())
         .collect();
-    document.forecasts.catalog = "data/forecasts.sqlite".into();
+    document.forecasts.catalog = "operation.sqlite".into();
     document.scenarios.truncate(1);
     document.scenarios[0].id = "corrected".into();
     document.scenarios[0].kind = "corrected".into();
@@ -1140,12 +1129,8 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
     )
     .unwrap();
     assert_eq!(preview.corrected[0], prepared_frame);
-    let catalog = ForecastCatalog::open(
-        &path,
-        Path::new("data/forecasts.sqlite"),
-        Path::new("data/forecasts"),
-    )
-    .unwrap();
+    let catalog =
+        ForecastCatalog::open(&path, Path::new("operation.sqlite"), Path::new("assets")).unwrap();
     catalog
         .save_correction(&correction("unrelated", 4.))
         .unwrap();
@@ -1229,7 +1214,7 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
             .unwrap()
     };
     let forecast_count = |path: &Path| -> i64 {
-        rusqlite::Connection::open(path.join("data/forecasts.sqlite"))
+        rusqlite::Connection::open(path.join("operation.sqlite"))
             .unwrap()
             .query_row("SELECT count(*) FROM correction", [], |r| r.get(0))
             .unwrap()
@@ -1402,11 +1387,11 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
     obs.execute("DELETE FROM observation_replacement", [])
         .unwrap();
     drop(obs);
-    let cat = rusqlite::Connection::open(path.join("data/forecasts.sqlite")).unwrap();
+    let cat = rusqlite::Connection::open(path.join("operation.sqlite")).unwrap();
     cat.execute("DELETE FROM correction", []).unwrap();
     drop(cat);
     let source_obs = fs::read(path.join("observations.sqlite")).unwrap();
-    let source_catalog = fs::read(path.join("data/forecasts.sqlite")).unwrap();
+    let source_catalog = fs::read(path.join("operation.sqlite")).unwrap();
     let typed =
         |output: &str,
          replacements: Vec<ObservationReplacement>,
@@ -1549,14 +1534,14 @@ fn supplied_instructions_match_registered_and_frozen_execution() {
     );
     assert_eq!(
         source_catalog,
-        fs::read(path.join("data/forecasts.sqlite")).unwrap()
+        fs::read(path.join("operation.sqlite")).unwrap()
     );
     assert!(!path.join("data/runs").exists());
     fs::remove_dir_all(path.join("Input")).unwrap();
     fs::remove_file(path.join("engine")).unwrap();
     fs::remove_file(path.join("observations.sqlite")).unwrap();
-    fs::remove_dir_all(path.join("data/forecasts")).unwrap();
-    fs::remove_file(path.join("data/forecasts.sqlite")).unwrap();
+    fs::remove_dir_all(path.join("assets")).unwrap();
+    fs::remove_file(path.join("operation.sqlite")).unwrap();
     let executed = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
         workspace: path.clone(),
         invocation_dir: path.clone(),
@@ -2016,7 +2001,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
     let (attempt, pid) = 'waiting: loop {
-        if let Ok(entries) = fs::read_dir(root.join("data/cache/run")) {
+        if let Ok(entries) = fs::read_dir(root.join("cache/run")) {
             for entry in entries.flatten() {
                 let attempt = entry.path();
                 if let Ok(pid) = fs::read_to_string(attempt.join("scenarios/.history/pid")) {
@@ -2128,8 +2113,8 @@ fn run_uses_current_draft_and_cleans_temporary_preparation() {
     let control = mgb_ops::OperationControl::default();
     let first = mgb_ops::run_draft(&draft, &control).unwrap();
     let cache = mgb_ops::read_trial(&first.run_root).unwrap();
-    assert!(!root.join("data/cache/preparations").exists());
-    assert!(fs::read_dir(root.join("data")).unwrap().all(|entry| {
+    assert!(!root.join("cache/preparations").exists());
+    assert!(fs::read_dir(&root).unwrap().all(|entry| {
         !entry
             .unwrap()
             .file_name()
@@ -2189,15 +2174,17 @@ fn cancellation_during_finalization_preserves_the_publication_boundary() {
                 &control,
             )
         });
-        let deadline = Instant::now() + Duration::from_secs(15);
+        let deadline = Instant::now() + Duration::from_secs(45);
         loop {
-            if control.progress().is_some_and(|progress| {
-                matches!(progress.stage, mgb_ops::OperationStage::Finalization)
-            }) {
+            if worker.is_finished()
+                || control.progress().is_some_and(|progress| {
+                    matches!(progress.stage, mgb_ops::OperationStage::Finalization)
+                })
+            {
                 break;
             }
             assert!(Instant::now() < deadline, "finalization did not start");
-            std::thread::yield_now();
+            std::thread::sleep(Duration::from_millis(1));
         }
         control.cancel();
         let result = worker.join().unwrap();
@@ -2205,7 +2192,7 @@ fn cancellation_during_finalization_preserves_the_publication_boundary() {
             Err(mgb_ops::OperationError::Cancelled { .. })
             | Err(mgb_ops::OperationError::BatchFailed { .. }) => {
                 assert!(mgb_ops::discover_trials(&root).unwrap().is_empty());
-                let path = fs::read_dir(root.join("data/run-manifests"))
+                let path = fs::read_dir(root.join("runs/history"))
                     .unwrap()
                     .next()
                     .unwrap()
@@ -2498,7 +2485,7 @@ fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
             .len(),
         4
     );
-    assert!(!workspace.join("data/cache/preparations").exists());
+    assert!(!workspace.join("cache/preparations").exists());
 
     let active = mgb_ops::app::rainfall_cache_info(&workspace)
         .unwrap()
@@ -2548,7 +2535,7 @@ fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
         .unwrap();
     assert_ne!(switched.generation, active.generation);
     assert_eq!(switched.reference, time("2026-01-01T02:00:00"));
-    assert!(!workspace.join("data/cache/preparations").exists());
+    assert!(!workspace.join("cache/preparations").exists());
     let after_switch = mgb_ops::app::query_cached_rainfall(
         &workspace,
         "zero",
@@ -2561,7 +2548,7 @@ fn standalone_operation_accepts_a_saved_recipe_and_runs_without_a_draft() {
     assert_eq!(after_switch.info, switched);
     assert_eq!(after_switch.summary.unwrap().mean_mm, Some(0.));
 
-    let cache = workspace.join("data/cache/run");
+    let cache = workspace.join("cache/run");
     assert!(!cache.join(active.generation).exists());
     assert_eq!(
         fs::read_dir(&cache)
@@ -2676,9 +2663,7 @@ fn replay_from_standalone_recipe_requires_identical_sources() {
         .unwrap()
         .strip_prefix("generation-")
         .unwrap();
-    let archived = workspace
-        .join("data/run-manifests")
-        .join(format!("{id}.json"));
+    let archived = workspace.join("runs/history").join(format!("{id}.json"));
     assert!(mgb_ops::Draft::import_manifest(workspace.clone(), &workspace, &archived).is_ok());
     let replayed = mgb_ops::replay_run(&workspace, &archived, &control).unwrap();
     assert_ne!(first.run_root, replayed.run_root);

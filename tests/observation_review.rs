@@ -66,7 +66,7 @@ fn flow_availability_keeps_data_states_and_exact_calendar_hours() {
     let dir = tempfile::tempdir().unwrap();
     let db = dir.path().join("observations.sqlite");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
-    store.upgrade_replacements().unwrap();
+
     let flow_edit = point("s", "flow", "2026-02-28T21:00:00", None);
     let insert = point("s", "flow", "2026-02-28T23:00:00", Some(0.0));
     let rain_edit = point("s", "rain", "2026-02-28T23:00:00", Some(99.0));

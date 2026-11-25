@@ -162,6 +162,7 @@ impl Drop for Active {
 pub struct Runners {
     session: Option<Session>,
     operation: Option<OperationalRun>,
+    operation_scenarios: String,
     operational_readiness: Option<Vec<String>>,
     pub config: Option<WorkspaceConfig>,
     baseline: Option<WorkspaceConfig>,
@@ -462,8 +463,12 @@ impl Runners {
                         Ok(Outcome::Choices(load_choices(&draft.ok_or("No draft")?)))
                     }
                     Action::OpenOperation { workspace, recipe } => {
-                        let operation =
-                            OperationalRun::open(workspace, &recipe, chrono::Utc::now())?;
+                        let operation = if recipe == mgb_ops::app::workspace_config_path(&workspace)
+                        {
+                            OperationalRun::open_workspace(workspace, chrono::Utc::now())?
+                        } else {
+                            OperationalRun::open(workspace, &recipe, chrono::Utc::now())?
+                        };
                         Ok(Outcome::Operation(Box::new(operation), None))
                     }
                     Action::ValidateOperation => Ok(Outcome::OperationalReadiness(
@@ -656,6 +661,9 @@ impl Runners {
                         None
                     }
                     Outcome::Operation(operation, readiness) => {
+                        if readiness.is_none() {
+                            self.operation_scenarios.clear();
+                        }
                         self.operation = Some(*operation);
                         self.operational_readiness = readiness;
                         None
@@ -826,21 +834,13 @@ impl Runners {
             return;
         };
         if ui
-            .button(text(
-                pt,
-                "Select operation TOML…",
-                "Selecionar TOML da operação…",
-            ))
+            .button(text(pt, "Load workspace settings", "Carregar configuração"))
             .clicked()
-            && let Some(recipe) = rfd::FileDialog::new()
-                .set_directory(workspace)
-                .add_filter("Operation TOML", &["toml"])
-                .pick_file()
         {
             self.start(
                 Action::OpenOperation {
                     workspace: workspace.to_path_buf(),
-                    recipe,
+                    recipe: mgb_ops::app::workspace_config_path(workspace),
                 },
                 ui.ctx(),
             );
@@ -849,6 +849,26 @@ impl Runners {
         let Some(operation) = &mut self.operation else {
             return;
         };
+        ui.label(text(pt, "Scenario overrides", "Cenários opcionais"));
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut self.operation_scenarios)
+                    .hint_text("zero, ecmwf, noaa"),
+            );
+            if ui.button(text(pt, "Apply", "Aplicar")).clicked() {
+                let choices: Vec<_> = self
+                    .operation_scenarios
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_owned)
+                    .collect();
+                self.operational_readiness = match operation.set_scenarios(&choices) {
+                    Ok(()) => None,
+                    Err(error) => Some(vec![error]),
+                };
+            }
+        });
         ui.label(operation.recipe_path().display().to_string());
         ui.label(text(pt, "Reference hour", "Hora de referência"));
         let mut reference = operation.reference().to_owned();
@@ -1658,8 +1678,10 @@ mod worker_tests {
         let config = WorkspaceConfig {
             spatial: Some(mgb_ops::app::WorkspaceSpatial {
                 gpkg_path: Some("geometry.gpkg".into()),
+                ..Default::default()
             }),
             engine: None,
+            ..Default::default()
         };
         let mut runner = Runners::new(test_session(&root));
         runner
@@ -1945,7 +1967,7 @@ mod worker_tests {
         let ctx = egui::Context::default();
         let mut runner = Runners::new(test_session(&root));
         runner.config =
-            Some(mgb_ops::app::read_workspace_config(&root.join("config/workspace.toml")).unwrap());
+            Some(mgb_ops::app::read_workspace_config(&root.join("config.toml")).unwrap());
         runner.baseline = runner.config.clone();
         runner
             .session

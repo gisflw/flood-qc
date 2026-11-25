@@ -125,7 +125,7 @@ fn integer_levels_null_and_atomic_rollback() {
     assert_eq!(store.time_zone().unwrap(), "America/Sao_Paulo");
 }
 #[test]
-fn fractional_level_and_schema_versions_are_rejected() {
+fn fractional_level_and_missing_schema_are_rejected() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("observations.sqlite");
     let mut store = ObservationStore::create(&path, "UTC").unwrap();
@@ -165,18 +165,7 @@ fn fractional_level_and_schema_versions_are_rejected() {
     );
     drop(store);
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("PRAGMA user_version=2").unwrap();
-    drop(conn);
-    assert!(ObservationStore::open_read_only(&path).is_err());
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE level_reference(station_id TEXT,kind TEXT,date TEXT); PRAGMA user_version=2;",
-    )
-    .unwrap();
-    drop(conn);
-    assert!(ObservationStore::open_read_only(&path).is_err());
-    let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("PRAGMA user_version=3").unwrap();
+    conn.execute_batch("DROP TABLE level_reference").unwrap();
     drop(conn);
     assert!(ObservationStore::open_read_only(&path).is_err());
 }
@@ -518,10 +507,10 @@ fn canonical_ingest_retries_and_inventory_changes_preserve_identity() {
 }
 
 #[test]
-fn explicit_flow_upgrade_preserves_v1_and_v2_records() {
+fn fresh_schema_supports_flow_edits_and_references() {
     use mgb_ops::store::LevelReference;
     use mgb_ops::{ObservationReplacement, ReplacementKind};
-    for upgrade_references_first in [false, true] {
+    for write_references in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("observations.sqlite");
         let mut store = ObservationStore::create(&path, "UTC").unwrap();
@@ -548,8 +537,7 @@ fn explicit_flow_upgrade_preserves_v1_and_v2_records() {
                 ..Default::default()
             })
             .unwrap();
-        let references = if upgrade_references_first {
-            store.upgrade_references().unwrap();
+        let references = if write_references {
             let references = vec![LevelReference {
                 station_id: "s".into(),
                 kind: "flood".into(),
@@ -561,24 +549,6 @@ fn explicit_flow_upgrade_preserves_v1_and_v2_records() {
         } else {
             Vec::new()
         };
-        assert!(store.register_replacements(vec![flow.clone()]).is_err());
-        assert_eq!(
-            ObservationStore::open_read_only(&path)
-                .unwrap()
-                .read_level_references()
-                .unwrap(),
-            references
-        );
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        let version = || {
-            conn.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
-                .unwrap()
-        };
-        assert_eq!(version(), if upgrade_references_first { 2 } else { 1 });
-        store.upgrade_replacements().unwrap();
-        store.upgrade_replacements().unwrap();
-        store.upgrade_references().unwrap();
-        assert_eq!(version(), 3);
         store.register_replacements(vec![flow.clone()]).unwrap();
         let read = ObservationStore::open_read_only(&path).unwrap();
         assert_eq!(

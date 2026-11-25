@@ -38,7 +38,7 @@ pub fn migrate_cache(
     let base = workspace.join("data/runs");
     let keep = base.join(keep_run);
     let destination = workspace
-        .join("data/cache/run")
+        .join("cache/run")
         .join(format!("generation-{keep_run}"));
     let current = active_run(&workspace)?;
     if current.as_ref().is_some_and(|path| *path != destination) {
@@ -131,11 +131,8 @@ pub fn migrate_cache(
                 .file_name()
                 .and_then(|name| name.to_str())
                 .ok_or("invalid run ID")?;
-            let archived = read_run_attempt(
-                &workspace
-                    .join("data/run-manifests")
-                    .join(format!("{id}.json")),
-            )?;
+            let archived =
+                read_run_attempt(&workspace.join("runs/history").join(format!("{id}.json")))?;
             if serde_json::to_value(&archived.operation).map_err(|error| error.to_string())?
                 != serde_json::to_value(&legacy_attempt(path, id)?.operation)
                     .map_err(|error| error.to_string())?
@@ -381,8 +378,8 @@ fn adopt_inundation(
     if donor_recipe != keep_recipe || donor_manifest.state != "completed" {
         return Err("inundation donor has a different model recipe or an incomplete run".into());
     }
-    let hand = workspace.join("data/source/HAND_Flood.tif");
-    let catchments = workspace.join("data/source/catchments.tif");
+    let hand = workspace.join("source/HAND_Flood.tif");
+    let catchments = workspace.join("source/catchments.tif");
     let rasters = InundationRasters::open(&hand, &catchments).map_err(|error| error.to_string())?;
     let (hand_hash, catchments_hash) = rasters.input_hashes();
     let (hand_sidecars, catchments_sidecars) = rasters.sidecar_hashes();

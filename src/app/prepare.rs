@@ -473,6 +473,53 @@ fn prepare_accepted(
             }
             write_json(&stage.join("forcing/additional.json"), &additional.prepared)?;
         }
+        let mut precipitation_flags = Vec::new();
+        let workspace_selection = doc.observed.path == super::operation_database(&workspace)
+            && super::read_workspace_config(&super::workspace_config_path(&workspace))
+                .is_ok_and(|config| config.run.is_some());
+        if workspace_selection {
+            let raw: Vec<_> = inputs
+                .samples
+                .iter()
+                .filter_map(|sample| {
+                    let series = selected.iter().find(|s| s.series_id == sample.series_id)?;
+                    let value = match sample.value {
+                        Some(crate::store::ObservationValue::RainMm(value)) => Some(value),
+                        _ => None,
+                    };
+                    Some(crate::analysis::SelectedObservation {
+                        station_id: series.station_id.clone(),
+                        series_id: series.series_id.clone(),
+                        observed_at: sample.observed_at,
+                        longitude: None,
+                        latitude: None,
+                        value,
+                    })
+                })
+                .collect();
+            let found = crate::analysis::detect_suspect_precipitation(&raw, &accepted.qc)
+                .map_err(|e| source_error(&doc.observed.path, e))?;
+            for finding in found {
+                if let Some(series) = selected.iter().find(|s| s.station_id == finding.station_id) {
+                    precipitation_flags.push((
+                        series.series_id.clone(),
+                        finding.observed_at,
+                        finding.match_type,
+                    ));
+                }
+            }
+            let selected_ids: Vec<_> = selected.iter().map(|s| s.series_id.clone()).collect();
+            inputs.excluded_rain = ObservationStore::open_writable(&doc.observed.path)
+                .and_then(|mut db| {
+                    db.replace_precipitation_flags(
+                        &selected_ids,
+                        &accepted.historical,
+                        &precipitation_flags,
+                        Some(&inputs.samples),
+                    )
+                })
+                .map_err(|e| source_error(&doc.observed.path, e))?;
+        }
         for offset in &offsets {
             if !geometry.mini_ids.contains(&offset.mini_id) {
                 return Err(source_error(
@@ -484,15 +531,6 @@ fn prepare_accepted(
         let obs_path = stage.join("sources/observations.sqlite");
         let mut subset = ObservationStore::create(&obs_path, &doc.time_zone)
             .map_err(|e| source_error(&obs_path, e))?;
-        if inputs
-            .replacements
-            .iter()
-            .any(|item| item.variable == "flow")
-        {
-            subset
-                .upgrade_replacements()
-                .map_err(|e| source_error(&obs_path, e))?;
-        }
         subset
             .write_batch(&ObservationBatch {
                 stations: inputs.stations.clone(),
@@ -502,6 +540,11 @@ fn prepare_accepted(
                 offsets: offsets.clone(),
             })
             .map_err(|e| source_error(&obs_path, e))?;
+        if !precipitation_flags.is_empty() {
+            subset
+                .replace_precipitation_flags(&[], &accepted.historical, &precipitation_flags, None)
+                .map_err(|e| source_error(&obs_path, e))?;
+        }
         drop(subset);
         control.check()?;
         let observed = prepare_observed_forcing(

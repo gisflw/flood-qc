@@ -1,20 +1,17 @@
 # Canonical observations and observed forcing
 
-The Rust observation APIs use a separate, explicitly selected SQLite file,
-conventionally `data/observations.sqlite`. They do not read Python history schemas
-or reinterpret inspection's optional `data/history.sqlite` path.
+Workspaces store observations and station metadata in `operation.sqlite`.
+Standalone observation APIs also accept an explicit canonical SQLite path.
 
 ## Persistence
 
 `ObservationStore::create(path, time_zone)` creates a new database and rejects an
 existing destination. `open_read_only(path)` validates its format, schema version
-and IANA timezone without creating a database. `write_batch` validates and commits
-all supplied rows together; an invalid row rolls back the batch. Every connection
-enables foreign keys. New databases use `PRAGMA user_version=1`; an explicit reference upgrade produces
-version 2. Read-only access supports both versions without migration. Metadata is
-`format=mgb-ops-observations` and `time_zone`.
+and IANA timezone without creating a database. `write_batch` commits all
+supplied rows together and rolls back invalid batches. Connections enable
+foreign keys. Initialization creates the complete current schema.
 
-The [owned SQL schema](../../src/store/sql/observations_v1.sql) defines stations,
+The [owned SQL schema](../../src/store/sql/observations.sql) defines stations,
 observation series, samples, rainfall replacements and station offsets. IDs are
 nonempty strings. Station coordinates are both present or both absent. Missing
 station coordinates are permitted for search and data-only review; forcing
@@ -74,6 +71,12 @@ and consecutive hourly sequences strictly between supplied lower/upper limits.
 Missing values, missing hours and nonqualifying values break a sequence. Detection
 does not create review instructions. All policy values are explicit and validated.
 
+Workspace preparation refreshes automatic precipitation exclusion flags in
+SQLite using the configured thresholds. The final observation view masks
+flagged values while retaining the raw measurement and flag reason. Ordered
+manual replacements apply to the masked values. Prepared data freezes the
+selected raw values, flags and edits together.
+
 `prepare_observed_forcing` requires consecutive hour-aligned intervals, a regular
 working grid, ordered basin geometry, IDW settings and a QC policy. Rainfall totals
 cover `(start,end]`, labelled at end. It returns effective rows, QC findings,
@@ -102,24 +105,21 @@ validity remain unverified.
 
 ## Station reference levels
 
-Upgrade an existing canonical observation database explicitly before importing:
+Import station reference levels into an initialized database.
 
 ```sh
-mgb-ops references upgrade --database /regional/workspace/data/observations.sqlite --json
-mgb-ops references import --database /regional/workspace/data/observations.sqlite --provider ana --thresholds station_level_reference.csv --history registered_floods.csv --json
+mgb-ops references import --database /regional/workspace/operation.sqlite --provider ana --thresholds station_level_reference.csv --history registered_floods.csv --json
 ```
 
-The corresponding shared actions are `upgrade_level_references(database)` and
-`import_level_references(database, provider, thresholds, history)`. Paths resolve
+The shared action is `import_level_references(database, provider, thresholds, history)`. Paths resolve
 from the invocation directory. JSON mode returns `{ok:true,result:...}` or
 `{ok:false,error:...}` on stdout, with exit 0 for success, 1 for operational
 failure and 2 for invalid arguments. Import results contain the imported record
 count and sorted unmatched station codes; upgrade returns a null result. Without
-`--json`, import prints the report and upgrade prints a completion message. It replaces all threshold/historical reference
+`--json`, import prints the report. It replaces all threshold/historical reference
 records together, without changing stations, observation samples, replacements or
 model offsets. Both files must validate before replacement. Validation or persistence
-failure preserves the previous records. Upgrade is transactional and preserves
-existing canonical contents; a v1 reference read returns an empty collection.
+failure preserves the previous records. An initialized catalog with no imported references returns an empty collection.
 
 Threshold CSV columns are `station_code`, `station_name`, `level_atention`,
 `level_alert`, `level_flood`, `level_severe`; the spelling `atention` is intentional.
@@ -140,6 +140,6 @@ are created by import.
 `ObservationStore::read_level_references()` returns detached `LevelReference`
 values with kinds `attention`, `alert`, `flood`, `severe` or dated `historical`.
 `replace_level_references` provides the same transactional storage boundary for
-validated supplied records, after `upgrade_references`. References are optional
+validated supplied records. References are optional
 chart lines, independent of offsets. Station coordinates and explicit mini-link
 availability follow the [spatial contract](spatial.md).

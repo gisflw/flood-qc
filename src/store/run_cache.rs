@@ -13,15 +13,52 @@ use std::{
 const GENERATION_PREFIX: &str = "generation-";
 const JOURNAL: &str = "attempt.json";
 
+pub(super) const RUN_SCHEMA: &str = "
+    CREATE TABLE active_run(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation TEXT NOT NULL);
+    CREATE TABLE run_attempt(attempt_id TEXT PRIMARY KEY, manifest TEXT NOT NULL);
+";
+
+fn run_index(workspace: &Path, writable: bool) -> Result<Option<rusqlite::Connection>, String> {
+    let path = workspace.join("operation.sqlite");
+    if !path.try_exists().map_err(|error| error.to_string())? {
+        return Ok(None);
+    }
+    let flags = if writable {
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE
+    } else {
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
+    };
+    let connection =
+        rusqlite::Connection::open_with_flags(path, flags).map_err(|error| error.to_string())?;
+    let available: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='active_run')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(available.then_some(connection))
+}
+
+fn active_generation(root: &Path, generation: String) -> Result<Option<PathBuf>, String> {
+    if !generation
+        .strip_prefix(GENERATION_PREFIX)
+        .is_some_and(valid_run_id)
+    {
+        return Err("Invalid active run pointer".into());
+    }
+    Ok(Some(root.join(generation)))
+}
+
 pub(crate) fn run_cache_root(workspace: &Path) -> PathBuf {
-    workspace.join("data/cache/run")
+    workspace.join("cache/run")
 }
 
 pub(crate) fn is_managed_run_path(workspace: &Path, resolved: &Path) -> bool {
     let cache = run_cache_root(workspace);
     resolved.starts_with(cache.canonicalize().unwrap_or(cache))
         || resolved.ancestors().any(|path| {
-            path.ends_with("data/cache/run")
+            path.ends_with("cache/run")
                 || (run_stage_id(path).is_ok()
                     && path
                         .parent()
@@ -47,6 +84,21 @@ fn valid_run_id(id: &str) -> bool {
 
 pub(crate) fn active_run(workspace: &Path) -> Result<Option<PathBuf>, String> {
     let root = run_cache_root(workspace);
+    if let Some(connection) = run_index(workspace, false)? {
+        use rusqlite::OptionalExtension;
+        let generation: Option<String> = connection
+            .query_row(
+                "SELECT generation FROM active_run WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        return match generation {
+            Some(value) => active_generation(&root, value),
+            None => Ok(None),
+        };
+    }
     let file = match File::open(root.join("active.json")) {
         Ok(file) => file,
         Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
@@ -147,13 +199,32 @@ pub(crate) fn publish_run_checked(
     let lock = access_lock(&root, true)?;
     lock.lock().map_err(|error| error.to_string())?;
     checked_commit(&|| {
-        write_draft(
-            &root.join("active.json"),
-            &ActiveRun {
-                schema_version: 1,
-                generation: format!("{GENERATION_PREFIX}{id}"),
-            },
-        )
+        let name = format!("{GENERATION_PREFIX}{id}");
+        if let Some(mut index) = run_index(workspace, true)? {
+            let tx = index.transaction().map_err(|error| error.to_string())?;
+            if generation.join(JOURNAL).is_file() {
+                let attempt = read_run_attempt(&generation.join(JOURNAL))?;
+                if attempt.attempt_id != id || attempt.state != "completed" {
+                    return Err("Published run journal does not match its generation".into());
+                }
+                index_attempt(&tx, &attempt)?;
+            }
+            tx.execute(
+                "INSERT INTO active_run VALUES (1,?1)
+                ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation",
+                [name],
+            )
+            .map_err(|error| error.to_string())?;
+            tx.commit().map_err(|error| error.to_string())
+        } else {
+            write_draft(
+                &root.join("active.json"),
+                &ActiveRun {
+                    schema_version: 1,
+                    generation: name,
+                },
+            )
+        }
     })?;
     // Preserve the previous generation until the contents of the pointer are durable.
     if sync_directory(&root).is_ok() {
@@ -279,6 +350,18 @@ pub(crate) fn write_run_journal(path: &Path, attempt: &RunAttemptManifest) -> Re
     sync_directory(path)
 }
 
+fn index_attempt(index: &rusqlite::Connection, attempt: &RunAttemptManifest) -> Result<(), String> {
+    let manifest = serde_json::to_string(attempt).map_err(|error| error.to_string())?;
+    index
+        .execute(
+            "INSERT INTO run_attempt VALUES (?1,?2)
+        ON CONFLICT(attempt_id) DO UPDATE SET manifest=excluded.manifest",
+            rusqlite::params![attempt.attempt_id, manifest],
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 pub(crate) fn write_run_attempt(
     workspace: &Path,
     attempt: &RunAttemptManifest,
@@ -286,9 +369,12 @@ pub(crate) fn write_run_attempt(
     if !valid_run_id(&attempt.attempt_id) {
         return Err("Invalid run attempt ID".into());
     }
-    let directory = workspace.join("data/run-manifests");
+    if let Some(index) = run_index(workspace, true)? {
+        index_attempt(&index, attempt)?;
+    }
+    let directory = workspace.join("runs/history");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    sync_directory(&workspace.join("data"))?;
+    sync_directory(&workspace.join("runs"))?;
     let path = directory.join(format!("{}.json", attempt.attempt_id));
     write_draft(&path, attempt)?;
     sync_directory(&directory)?;
@@ -430,11 +516,57 @@ mod tests {
         assert!(active_journal_clean);
         assert!(interrupted_stage_clean);
         for (id, state) in [("active", "completed"), ("interrupted", "interrupted")] {
-            let archive = workspace
-                .join("data/run-manifests")
-                .join(format!("{id}.json"));
+            let archive = workspace.join("runs/history").join(format!("{id}.json"));
             let record = read_run_attempt(&archive).unwrap();
             assert_eq!(record.state, state);
         }
+    }
+}
+
+#[cfg(test)]
+mod database_publication_tests {
+    use super::*;
+
+    #[test]
+    fn operation_database_only_advances_after_a_durable_generation() {
+        std::fs::create_dir_all("runs").unwrap();
+        let fixture = tempfile::tempdir_in("runs").unwrap();
+        let root = fixture.path();
+        super::super::ObservationStore::create_operation(&root.join("operation.sqlite"), "UTC")
+            .unwrap();
+        let first = new_run_stage_for(root, "first").unwrap();
+        fs::write(first.join("manifest.json"), b"{}").unwrap();
+        let mut attempt = RunAttemptManifest::new("first".into());
+        attempt.finish("completed", None);
+        write_run_journal(&first, &attempt).unwrap();
+        assert_eq!(active_run(root).unwrap(), None);
+        publish_run(root, &first).unwrap();
+        assert_eq!(active_run(root).unwrap(), Some(first.clone()));
+        let database_only = !run_cache_root(root).join("active.json").exists();
+        assert!(database_only);
+        let second = new_run_stage_for(root, "second").unwrap();
+        fs::write(second.join("manifest.json"), b"{}").unwrap();
+        assert!(publish_run_checked(root, &second, |_| Err("cancelled".into())).is_err());
+        assert_eq!(
+            with_active_run(root, |path| Ok(path.to_path_buf())).unwrap(),
+            Some(first)
+        );
+        recover_run_cache(root).unwrap();
+        let abandoned = !second.exists();
+        assert!(abandoned);
+        let index = run_index(root, false).unwrap().unwrap();
+        let manifest: String = index
+            .query_row(
+                "SELECT manifest FROM run_attempt WHERE attempt_id='first'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<RunAttemptManifest>(&manifest)
+                .unwrap()
+                .state,
+            "completed"
+        );
     }
 }

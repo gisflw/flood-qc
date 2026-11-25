@@ -39,7 +39,7 @@ pub struct EffectiveObservation {
     pub applied_instruction_ids: Vec<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(default, deny_unknown_fields)]
 pub struct PrecipitationQcPolicy {
     pub high_threshold_mm: f64,
     pub sequence_lower_mm: f64,
@@ -477,7 +477,14 @@ pub fn effective_review_observations(
                 latitude: lat,
                 raw_present: raw.is_some(),
                 raw_value: raw.copied().flatten(),
-                effective_value: raw.copied().flatten(),
+                effective_value: if inputs
+                    .excluded_rain
+                    .contains(&(s.series_id.clone(), interval.end))
+                {
+                    None
+                } else {
+                    raw.copied().flatten()
+                },
                 replacement: AppliedReplacement::None,
                 applied_instruction_ids: Vec::new(),
             };

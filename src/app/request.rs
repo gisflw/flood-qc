@@ -105,11 +105,19 @@ pub struct GridDocument {
     pub bbox: [f64; 4],
     pub resolution_degrees: f64,
 }
-#[derive(Clone, Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct InterpolationDocument {
     pub nearest_stations: usize,
     pub power: f64,
+}
+impl Default for InterpolationDocument {
+    fn default() -> Self {
+        Self {
+            nearest_stations: 5,
+            power: 2.0,
+        }
+    }
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

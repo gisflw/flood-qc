@@ -38,7 +38,6 @@ pub enum Task {
     Acquire(AcquisitionRequest, AcquisitionKind),
     ImportAnaCsv(AcquisitionRequest, PathBuf),
     Init(PathBuf, String),
-    Upgrade(PathBuf),
     ObservationBatch(PathBuf, PathBuf),
     Inventory(PathBuf, PathBuf),
     Forecast(PathBuf),
@@ -117,14 +116,13 @@ impl Task {
                     .map(|report| Output::Acquisition(Box::new(report)));
             }
             Self::Init(path, zone) => {
-                ObservationStore::create(&resolve(&path), &zone).map_err(|e| e.to_string())?;
-                resolve(&path).display().to_string()
-            }
-            Self::Upgrade(path) => {
-                ObservationStore::open_writable(&resolve(&path))
-                    .and_then(|mut db| db.upgrade_replacements())
-                    .map_err(|e| e.to_string())?;
-                resolve(&path).display().to_string()
+                let path = resolve(&path);
+                if path == mgb_ops::app::operation_database(workspace) {
+                    mgb_ops::app::initialize_workspace(workspace)?;
+                } else {
+                    ObservationStore::create(&path, &zone).map_err(|e| e.to_string())?;
+                }
+                path.display().to_string()
             }
             Self::ObservationBatch(database, source) => {
                 let batch: mgb_ops::store::ObservationBatch = json(&resolve(&source))?;
@@ -359,7 +357,7 @@ impl Forms {
     pub fn acquisition(&mut self, ui: &mut egui::Ui, pt: bool, workspace: &Path) -> Option<Task> {
         ui.heading(Form::Acquisition.label(pt));
         if self.acquisition_request.as_os_str().is_empty() {
-            self.acquisition_request = "config/acquisition.toml".into();
+            self.acquisition_request = "config.toml".into();
         }
         path_field(
             ui,
@@ -478,7 +476,7 @@ impl Forms {
             .as_ref()
             .and_then(|s| s.path.as_ref())
             .cloned()
-            .unwrap_or_else(|| "data/history.sqlite".into());
+            .unwrap_or_else(|| "operation.sqlite".into());
         if self.database.as_os_str().is_empty() {
             self.database = default_db;
         }
@@ -874,16 +872,6 @@ impl Forms {
                 .clicked()
             {
                 return Some(Task::Init(self.database.clone(), zone.into()));
-            }
-            if ui
-                .button(text(
-                    pt,
-                    "Enable flow replacements",
-                    "Habilitar correções de vazão",
-                ))
-                .clicked()
-            {
-                return Some(Task::Upgrade(self.database.clone()));
             }
         }
         if matches!(self.intake, Intake::Reservoirs | Intake::Wind) {
