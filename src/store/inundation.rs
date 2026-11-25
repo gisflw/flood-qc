@@ -7,15 +7,10 @@ use terrio::{
     multidim::{Array, Dataset},
 };
 
-#[cfg(feature = "inundation-write")]
 mod raster;
-#[cfg(feature = "inundation-write")]
 mod write;
-#[cfg(feature = "inundation-write")]
 pub(crate) use self::raster::{InundationRasters, cache_catchments};
-#[cfg(feature = "inundation-write")]
 pub(crate) use self::write::{InundationStage, InundationWriter};
-#[cfg(feature = "inundation-write")]
 pub(crate) const INUNDATION_TILE: usize = 1024;
 
 pub const FLOOD_MASK_FILE: &str = "flood_mask.nc";
@@ -89,6 +84,10 @@ pub struct InundationProvenance {
     pub catchments_sidecars: Vec<(String, String)>,
     pub vertical_datum: String,
     pub hand_vertical_shift_m: i32,
+    #[serde(default)]
+    pub include_nonpositive_hand: bool,
+    #[serde(default)]
+    pub hand_in_decimetres: bool,
 }
 
 pub fn verify_inundation_run(

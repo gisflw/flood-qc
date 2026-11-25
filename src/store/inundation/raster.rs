@@ -185,10 +185,9 @@ impl InundationRasters {
             let hand = hands.get_f64(i);
             cells.push(
                 (hand.is_finite()
-                    && hand > 0.
                     && hand_nodata != Some(hand)
                     && hand_mask.as_ref().is_none_or(|mask| mask[i] != 0))
-                .then_some((hand, *mini)),
+                .then_some((hand / 10., *mini)),
             );
             Ok(())
         };

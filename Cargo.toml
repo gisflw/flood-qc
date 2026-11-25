@@ -11,7 +11,7 @@ clap = { version = "4", features = ["derive"] }
 csv = "1"
 ctrlc = "3"
 getrandom = "0.4.3"
-netcdf = { version = "=0.12.1", optional = true, default-features = false }
+netcdf = { version = "=0.12.1", default-features = false }
 lettre = { version = "0.11.24", default-features = false, features = ["builder", "smtp-transport", "rustls", "ring", "webpki-roots"] }
 krilla = "=0.8.2"
 resvg = { version = "=0.45.1", default-features = false, features = ["text"] }
@@ -53,7 +53,6 @@ version = "=0.1.6"
 
 [features]
 default = []
-inundation-write = ["dep:netcdf"]
 desktop = [
     "dep:eframe",
     "dep:rsplot",

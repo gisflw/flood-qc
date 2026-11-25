@@ -328,6 +328,7 @@ pub struct Rain {
     pub window: canonical::TimeInterval,
 }
 pub struct View {
+    pub location: Option<Location>,
     pub rainfall: Option<Arc<Rain>>,
     pub summary: Option<RainSummary>,
     pub rainfall_finding: Option<String>,
@@ -352,6 +353,7 @@ fn view(request: ViewRequest, rainfall_reader: &mut RainfallCacheReader) -> View
         .as_ref()
         .and_then(|location| location_mini(location, &request.project.stations));
     let mut result = View {
+        location: request.location.clone(),
         rainfall: None,
         summary: None,
         rainfall_finding: None,
@@ -628,14 +630,11 @@ impl Worker {
                         .map(|_| Loaded::Export(destination)),
                     Job::Upstream(project, mini) => upstream_minis(&project.topology, mini)
                         .and_then(|ids| {
-                            let paths = super::map::upstream_boundary(&project, &ids);
+                            let paths = super::map::prepare_upstream(&project, &ids)?;
                             if paths.is_empty() {
                                 return Err("No catchment geometry for upstream basin".into());
                             }
-                            Ok(Loaded::Upstream {
-                                mini,
-                                paths: super::map::prepare_basin(paths),
-                            })
+                            Ok(Loaded::Upstream { mini, paths })
                         }),
                     Job::Chart(request) => request.load(),
                     Job::Export(report, station, destination) => {

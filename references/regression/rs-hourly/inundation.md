@@ -26,7 +26,7 @@ equals the raw stage minus the channel-bed elevation, clipped at zero. The
 engine's float32 bed reference is `Z0 − channel_depth`, with `Z0` supplied by
 `COTA_AREA.FLP` and channel depth supplied by the run's `Cell.hig`.
 
-The mask uses `HANDTUDO − channel_depth` on positive-HAND cells, assuming the
+The original qualification used `HANDTUDO − channel_depth` on positive-HAND cells without the required decimetre-to-metre conversion, assuming the
 HAND heights share the `Z0` reference. With the rasterized catchments, the
 per-MINI area gained from 1 to 10 m above `Z0` correlated at 0.93 with the
 model's elevation–area curves. A one-metre shift improved the fit slightly.
@@ -34,6 +34,11 @@ The threshold uses no empirical shift. The original preprocessing catchment
 raster and a trusted dated footprint are unavailable. These checks support
 internal consistency of the modeled estimate. The geographic footprint and
 vertical cutoff remain unverified against an independent flood map.
+
+The regional HAND raster stores decimetres. Current processing divides valid
+HAND values by ten before comparing with model stages in metres and includes
+valid zero and negative HAND cells. The counts and timings below describe the
+earlier processing rule and do not qualify the corrected footprint.
 
 ## Linux qualification
 

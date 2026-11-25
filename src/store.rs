@@ -94,7 +94,6 @@ pub use self::inundation::{
     FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
     verify_inundation_run,
 };
-#[cfg(feature = "inundation-write")]
 pub(crate) use self::inundation::{
     INUNDATION_TILE, InundationRasters, InundationStage, InundationWriter, cache_catchments,
 };
@@ -102,4 +101,9 @@ pub(crate) use self::inundation::{
 mod flood_source;
 pub(crate) use self::flood_source::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource, read_flood_source, write_flood_source,
+};
+
+mod assistant_history;
+pub use self::assistant_history::{
+    ChatHistory, ChatHistoryStore, SavedActivity, SavedChat, SavedTurn,
 };

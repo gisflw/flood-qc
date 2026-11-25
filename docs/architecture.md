@@ -77,6 +77,11 @@ parameters. Reads that follow the active generation hold the cache's shared
 guard through artifact access. Run parameter proposals apply to the same
 session and revision, with updates serialized against job admission.
 
+Saved assistant conversations are local application state, separate from regional
+operational records, so browsing an inspect-only workspace does not require an
+initialized operation database. Store owns their persistence. Agent working
+directories remain isolated per conversation; connection credentials are ephemeral.
+
 The assistant uses ACP for agent interaction and an MCP connection scoped to
 the conversation. App owns dispatch and uses the same run parameters as
 operators. Operator approval applies proposed parameter changes to the open

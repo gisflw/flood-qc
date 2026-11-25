@@ -94,8 +94,17 @@ pub(super) fn supervise(
     input: Receiver<Input>,
     events: Events,
     connect: impl FnOnce(Arc<Tools>, Events) -> std::result::Result<Bridge, String>,
+    saved: Option<(PathBuf, Option<String>)>,
 ) {
-    let result = run(&launch, &helper, tools.clone(), input, &events, connect);
+    let result = run(
+        &launch,
+        &helper,
+        tools.clone(),
+        input,
+        &events,
+        connect,
+        saved,
+    );
     tools.close();
     if let Err(failure) = result {
         let _ = events.try_send(AssistantEvent::Failed {
@@ -113,6 +122,7 @@ fn run(
     input: Receiver<Input>,
     events: &Events,
     connect: impl FnOnce(Arc<Tools>, Events) -> std::result::Result<Bridge, String>,
+    saved: Option<(PathBuf, Option<String>)>,
 ) -> Result<()> {
     let executable = discover(&launch.executable).ok_or_else(|| {
         Failure::new(
@@ -130,14 +140,15 @@ fn run(
     #[cfg(not(test))]
     let cwd = directory.tempdir();
     let cwd = cwd.map_err(|error| Failure::new(AssistantStage::Process, error.to_string()))?;
-    let cwd_path = cwd
-        .path()
+    let cwd_path = saved
+        .as_ref()
+        .map_or(cwd.path(), |(path, _)| path.as_path())
         .canonicalize()
         .map_err(|error| Failure::new(AssistantStage::Process, error.to_string()))?;
     let bridge = connect(tools.clone(), events.clone())
         .map_err(|message| Failure::new(AssistantStage::ToolConnection, message))?;
     let bridge_environment = bridge
-        .environment(&cwd_path)
+        .environment(cwd.path())
         .map_err(|message| Failure::new(AssistantStage::ToolConnection, message))?;
     let helper = helper
         .to_str()
@@ -201,6 +212,8 @@ fn run(
         bridge_environment,
         tools: &tools,
         session: None,
+        resume: saved.and_then(|(_, resume)| resume),
+        loading: false,
         configuration: Configuration::default(),
         setting_change: None,
         next_id: 3,
@@ -233,7 +246,7 @@ fn run(
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
         }
-        if client.session.is_none() && Instant::now() >= client.startup.1 {
+        if (client.session.is_none() || client.loading) && Instant::now() >= client.startup.1 {
             return Err(Failure::new(
                 AssistantStage::Protocol,
                 "Agent timed out during ACP startup",
@@ -271,6 +284,8 @@ struct Client<'a> {
     bridge_environment: Value,
     tools: &'a Tools,
     session: Option<Value>,
+    resume: Option<String>,
+    loading: bool,
     configuration: Configuration,
     setting_change: Option<SettingChange>,
     next_id: u64,
@@ -486,16 +501,40 @@ impl Client<'_> {
                 }
                 self.emit(AssistantEvent::Handshake)?;
                 self.startup = (2, Instant::now() + STARTUP_TIMEOUT);
-                self.write(serde_json::json!({
-                    "jsonrpc":"2.0","id":2,"method":"session/new","params":{
-                        "cwd":cwd,"mcpServers":[{"name":"mgb-ops","command":helper,
-                        "args":["--assistant-mcp-stdio"],"env":self.bridge_environment}]
+                let servers = serde_json::json!([{"name":"mgb-ops","command":helper,
+                    "args":["--assistant-mcp-stdio"],"env":self.bridge_environment}]);
+                if let Some(session) = self.resume.take() {
+                    if message["result"]["agentCapabilities"]["loadSession"] != true {
+                        return self.emit(AssistantEvent::ResumeUnavailable(
+                            "The agent cannot load this session".into(),
+                        ));
                     }
-                }))
+                    self.loading = true;
+                    self.session = Some(Value::String(session.clone()));
+                    self.write(
+                        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/load",
+                        "params":{"sessionId":session,"cwd":cwd,"mcpServers":servers}}),
+                    )
+                } else {
+                    self.write(
+                        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/new",
+                        "params":{"cwd":cwd,"mcpServers":servers}}),
+                    )
+                }
             }
-            2 if self.startup.0 == 2 && self.session.is_none() => {
+            2 if self.startup.0 == 2 && (self.session.is_none() || self.loading) => {
                 if let Some(error) = message.get("error") {
+                    if self.loading {
+                        self.loading = false;
+                        return self.emit(AssistantEvent::ResumeUnavailable(self.detail(error)));
+                    }
                     return Err(self.start_error(error));
+                }
+                if self.loading {
+                    self.loading = false;
+                    self.configuration = Configuration::load(&message["result"]);
+                    self.emit(AssistantEvent::Settings(self.configuration.snapshot()))?;
+                    return self.emit(AssistantEvent::Ready);
                 }
                 let session = &message["result"]["sessionId"];
                 if session.as_str().is_none_or(str::is_empty) {
@@ -505,6 +544,9 @@ impl Client<'_> {
                     ));
                 }
                 self.session = Some(session.clone());
+                self.emit(AssistantEvent::SessionStarted(
+                    session.as_str().unwrap().to_owned(),
+                ))?;
                 self.configuration = Configuration::load(&message["result"]);
                 self.emit(AssistantEvent::Settings(self.configuration.snapshot()))?;
                 self.emit(AssistantEvent::Ready)
@@ -615,14 +657,13 @@ impl Client<'_> {
                         }
                     }
                     Some("tool_call" | "tool_call_update") => {
-                        let parts = [update["title"].as_str(), update["status"].as_str()]
-                            .into_iter()
-                            .flatten()
-                            .collect::<Vec<_>>();
-                        if !parts.is_empty() {
-                            self.emit(AssistantEvent::ToolStatus(
-                                self.bridge.redact(&parts.join(" · ")),
-                            ))?;
+                        let field =
+                            |name: &str| update[name].as_str().map(|text| self.bridge.redact(text));
+                        let id = field("toolCallId");
+                        let title = field("title");
+                        let status = field("status");
+                        if id.is_some() || title.is_some() || status.is_some() {
+                            self.emit(AssistantEvent::ToolStatus { id, title, status })?;
                         }
                     }
                     _ => {}
@@ -668,9 +709,13 @@ impl Client<'_> {
                 id,
                 serde_json::json!({"outcome":{"outcome":"cancelled"}}),
             ))?;
-            self.emit(AssistantEvent::ToolStatus(
-                "The agent requested overlapping permissions. Cancelling the turn.".into(),
-            ))?;
+            self.emit(AssistantEvent::ToolStatus {
+                id: None,
+                title: Some(
+                    "The agent requested overlapping permissions. Cancelling the turn.".into(),
+                ),
+                status: Some("failed".into()),
+            })?;
             return self.cancel();
         }
         turn.permission = Some(Permission {
@@ -682,9 +727,13 @@ impl Client<'_> {
                 .collect(),
         });
         if !options.iter().any(|(kind, _)| *kind == "reject_once") {
-            self.emit(AssistantEvent::ToolStatus(
-                "The agent offered no one-time deny choice. Cancelling the turn.".into(),
-            ))?;
+            self.emit(AssistantEvent::ToolStatus {
+                id: None,
+                title: Some(
+                    "The agent offered no one-time deny choice. Cancelling the turn.".into(),
+                ),
+                status: Some("failed".into()),
+            })?;
             return self.cancel();
         }
         let mut operation = params["toolCall"].clone();
