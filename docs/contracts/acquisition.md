@@ -133,3 +133,65 @@ covering local forecast for each enabled forecast provider. Missing coverage is
 reported before execution. Use the [operation selection options](operations.md)
 to select a zero or pinned forecast scenario. A failed or cancelled run leaves
 the previous active generation available.
+
+## Standalone source acquisition
+
+Use `acquisition` to acquire and normalize files for later ingestion. Select a
+new output directory under an existing parent. These commands do not open a
+workspace, register an asset, update SQLite, or change Run All.
+
+```sh
+mgb-ops acquisition bndmet --product rain --station A801 \
+  --start 2026-11-21 --end 2026-11-22 --output /regional/workspace/downloads/inmet-rain
+mgb-ops acquisition bndmet --product wind --station A801 \
+  --start 2026-11-21 --end 2026-11-22 --output /regional/workspace/downloads/inmet-wind
+mgb-ops acquisition ons --reservoir RIGAR --reservoir JIPREA \
+  --start 2026-11-21 --end 2026-11-22 --output /regional/workspace/downloads/ons-flow
+mgb-ops acquisition imerg --bbox=-59,-35,-48,-26 \
+  --start 2026-11-22T00:00:00Z --end 2026-11-22T01:00:00Z \
+  --output /regional/workspace/downloads/imerg
+```
+
+The output retains original responses under `raw/`. The JSON report lists
+retained files and issues, and `acquisition.json` records the request, output
+timezone, and paths relative to the output directory. The default output
+timezone is `America/Sao_Paulo`. An acquisition with reported issues exits
+unsuccessfully and can still contain normalized files from successful
+requests. If interrupted or unable to finish, the attempt keeps original
+files already written. Choose a new directory when retrying.
+
+- **BNDMET** requires `INMET_API_KEY` in the environment. Dates are inclusive
+  São Paulo calendar dates. Repeat `--station` to request multiple stations.
+  Rain (`I175`) produces `rain-<station>.csv` with millimetres summed into
+  hour-ending buckets. Identical readings at the same instant count once.
+  Conflicting readings at that instant fail the request window. Wind
+  (`I111` speed in m/s and `I113` direction in degrees) produces
+  [canonical wind JSON](saved-data.md#forcing-state-and-calibration) named
+  `wind-<station>.json`, with series ID `inmet:<station>`. Samples need two
+  valid measurements at the same hourly instant to form a wind vector.
+  [DECEA BNDMET API access](https://ajuda.decea.mil.br/base-de-conhecimento/como-solicitar-e-preencher-o-formulario-da-api-bndmet/)
+- **ONS** downloads monthly public hourly CSVs for the inclusive São Paulo
+  calendar dates requested. Repeat `--reservoir` with ONS `id_reservatorio`
+  values. `flow-<reservoir>.csv` contains inflow and defluence in m³/s with
+  separate station codes `<reservoir>:inflow` and `<reservoir>:outflow`.
+  Source labels at 23:59 map to the following midnight. Other unexpected
+  non-hourly labels and conflicting duplicate hours are reported and omitted.
+  ONS may revise previously published observations.
+  [ONS hourly reservoir data](https://dados.ons.org.br/dataset/dados_hidrologicos_ho)
+- **IMERG** uses an Earthdata Login user token in `EARTHDATA_TOKEN` with
+  GES DISC access. It discovers half-hourly Early Run V07 granules through
+  NASA CMR, retains the native HDF5 and crops them locally. The time window
+  uses inclusive start and exclusive end UTC hour boundaries, up to 31 days.
+  The output size is bounded by the selected area and duration. The bbox is
+  west, south, east, north and includes native cells with positive overlap.
+  `imerg.nc` uses the canonical [grid series](series.md), with hourly
+  precipitation depths in mm, time bounds, and a validity mask. The depth is
+  half the sum of the two rates in mm/h, and a missing cell in either half
+  makes that cell missing for the hour. A missing granule blocks NetCDF output.
+  [NASA IMERG documentation](https://gpm.nasa.gov/resources/documents/imerg-v07-technical-documentation),
+  [Earthdata user tokens](https://urs.earthdata.nasa.gov/documentation/for_users/user_token)
+
+Rain and flow CSV files use `provider_code,station_code,observed_at,variable_code,value`.
+Local hour labels are `YYYY-MM-DDTHH:00:00`. A blank value is missing and a
+numeric zero is valid. The provider codes are `inmet` and `ons`. Provider
+credentials are read from the environment and omitted from retained files.

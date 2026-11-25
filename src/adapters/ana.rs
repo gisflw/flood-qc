@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 
+use super::OBSERVATION_CSV_HEADER;
+
 use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Timelike};
 use chrono_tz::{America::Sao_Paulo, Tz};
 use serde::{Deserialize, Serialize};
@@ -222,17 +224,11 @@ pub(crate) fn parse_ana_xml(
     Ok(rows)
 }
 
-const CSV_HEADER: [&str; 5] = [
-    "provider_code",
-    "station_code",
-    "observed_at",
-    "variable_code",
-    "value",
-];
-
 pub(crate) fn ana_csv(code: &str, rows: &[AnaReading]) -> Result<Vec<u8>, String> {
     let mut writer = csv::Writer::from_writer(Vec::new());
-    writer.write_record(CSV_HEADER).map_err(|e| e.to_string())?;
+    writer
+        .write_record(OBSERVATION_CSV_HEADER)
+        .map_err(|e| e.to_string())?;
     for row in rows {
         writer
             .write_record([
@@ -262,7 +258,7 @@ pub(crate) fn read_ana_csv(input: impl Read) -> Result<BTreeMap<String, Vec<AnaR
     let mut reader = csv::Reader::from_reader(input);
     let headers = reader.headers().map_err(|e| e.to_string())?;
     let actual: BTreeSet<_> = headers.iter().collect();
-    let current: BTreeSet<_> = CSV_HEADER.into_iter().collect();
+    let current: BTreeSet<_> = OBSERVATION_CSV_HEADER.into_iter().collect();
     let transition: BTreeSet<_> = current
         .iter()
         .copied()

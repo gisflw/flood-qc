@@ -122,3 +122,8 @@ pub use self::assistant::{
     FieldChange, PermissionOption, ProposalReview, SETUP_NOTICE, SettingChoice, SettingKind,
     assistant_mcp_stdio,
 };
+
+mod source_acquisition;
+pub use self::source_acquisition::{
+    AcquisitionSource, SourceAcquisitionReport, SourceAcquisitionRequest, acquire_source,
+};

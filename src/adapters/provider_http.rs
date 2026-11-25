@@ -260,6 +260,88 @@ fn read_response(response: Response, limit: u64) -> Result<Vec<u8>, ProviderErro
     Ok(bytes)
 }
 
+/// Standalone sources use a direct HTTPS client. In particular, an API key must
+/// never be forwarded to a redirect target.
+pub(crate) struct SourceClient(Client);
+
+impl SourceClient {
+    pub(crate) fn new() -> Result<Self, ProviderError> {
+        Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(60))
+            .user_agent("mgb-ops")
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map(Self)
+            .map_err(|e| ProviderError::Invalid(e.to_string()))
+    }
+
+    pub(crate) fn bndmet(
+        &self,
+        key: &reqwest::header::HeaderValue,
+        station: &str,
+        product: &str,
+        start: NaiveDate,
+        end: NaiveDate,
+    ) -> Result<Vec<u8>, ProviderError> {
+        let url =
+            format!("https://api-bndmet.decea.mil.br/v1/estacoes/{station}/fenomenos/{product}");
+        let query = [
+            ("dataInicio", start.to_string()),
+            ("dataFinal", end.to_string()),
+        ];
+        read_response(
+            send(
+                self.0
+                    .get(url)
+                    .query(&query)
+                    .header("x-api-key", key.clone())
+                    .header("accept", "application/json"),
+            )?,
+            8 * 1024 * 1024,
+        )
+    }
+
+    pub(crate) fn ons(&self, month: NaiveDate) -> Result<Vec<u8>, ProviderError> {
+        let url = format!(
+            "https://ons-aws-prod-opendata.s3.amazonaws.com/dataset/dados_hidrologicos_ho/DADOS_HIDROLOGICOS_HO_{}.csv",
+            month.format("%Y_%m")
+        );
+        read_response(send(self.0.get(url))?, 64 * 1024 * 1024)
+    }
+
+    pub(crate) fn imerg_catalog(&self, temporal: &str) -> Result<Vec<u8>, ProviderError> {
+        let query = [
+            ("collection_concept_id", "C2723758340-GES_DISC"),
+            ("page_size", "2000"),
+            ("temporal", temporal),
+        ];
+        read_response(
+            send(
+                self.0
+                    .get("https://cmr.earthdata.nasa.gov/search/granules.json")
+                    .query(&query),
+            )?,
+            16 * 1024 * 1024,
+        )
+    }
+
+    pub(crate) fn imerg_granule(
+        &self,
+        url: &reqwest::Url,
+        token: &reqwest::header::HeaderValue,
+    ) -> Result<Vec<u8>, ProviderError> {
+        read_response(
+            send(
+                self.0
+                    .get(url.clone())
+                    .header(reqwest::header::AUTHORIZATION, token.clone()),
+            )?,
+            64 * 1024 * 1024,
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
