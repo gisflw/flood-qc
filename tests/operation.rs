@@ -180,6 +180,150 @@ fn prepared_snapshot_is_reusable_and_scenarios_are_isolated() {
     assert_eq!(stations.level_valid, [true, true, true]);
 }
 
+#[cfg(unix)]
+#[test]
+fn cli_streams_live_engine_output_without_holding_up_publication() {
+    use std::{
+        io::{BufRead, BufReader, Read},
+        process::Stdio,
+        time::{Duration, Instant},
+    };
+    let _guard = TEST_LOCK.lock().unwrap();
+    fs::create_dir_all("runs").unwrap();
+    let directory = tempfile::tempdir_in("runs").unwrap();
+    let root = directory.path().canonicalize().unwrap();
+    fixture(&root);
+    fs::write(
+        root.join("Input/control.txt"),
+        "log:.history\nwait:.history\nlog:zero\nwait:zero\nlarge:zero\nlog:other\n",
+    )
+    .unwrap();
+
+    let prepare = |destination: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+            .args(["operation", "prepare", "--workspace"])
+            .arg(&root)
+            .arg("--request")
+            .arg(root.join("request.toml"))
+            .arg("--output")
+            .arg(destination)
+            .arg("--json")
+            .output()
+            .unwrap()
+    };
+    let prepared = root.join("prepared");
+    let preparation = prepare(&prepared);
+    assert!(preparation.status.success());
+    let report: serde_json::Value = serde_json::from_slice(&preparation.stdout).unwrap();
+    assert_eq!(report["prepared"].as_str(), prepared.to_str());
+    let progress = String::from_utf8(preparation.stderr).unwrap();
+    assert!(progress.contains("Preparing operation\n"));
+    assert!(progress.contains("Reference time: 2026-01-01T02:00:00 (UTC)\n"));
+    assert!(progress.contains("Scenarios: zero, other, third, fourth\n"));
+    assert!(progress.contains("Prepared: "));
+
+    let execute = |path: &Path| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mgb-ops"));
+        command
+            .args(["operation", "execute", "--workspace"])
+            .arg(&root)
+            .arg("--prepared")
+            .arg(path);
+        command
+    };
+    let mut child = execute(&prepared).stdout(Stdio::piped()).spawn().unwrap();
+    let mut output = BufReader::new(child.stdout.take().unwrap());
+    let cache = root.join("cache/run");
+    let published = || mgb_ops::app::rainfall_cache_info(&root).unwrap().is_some();
+    let release = |scenario: &str| {
+        let worker = fs::read_dir(&cache)
+            .unwrap()
+            .map(|entry| entry.unwrap().path().join("scenarios").join(scenario))
+            .find(|path| path.is_dir())
+            .unwrap();
+        assert!(!published());
+        fs::write(worker.join("continue"), b"").unwrap();
+    };
+    assert!(
+        output
+            .by_ref()
+            .lines()
+            .any(|line| { line.unwrap() == "[MGB history stderr] diagnostic for .history" })
+    );
+    release(".history");
+    assert!(
+        output
+            .by_ref()
+            .lines()
+            .any(|line| { line.unwrap() == "[MGB scenario zero stderr] diagnostic for zero" })
+    );
+    release("zero");
+
+    // Hold the pipe full until the operation commits, then drain the console.
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !published() {
+        assert!(
+            Instant::now() < deadline,
+            "console output blocked publication"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut rest = String::new();
+    output.read_to_string(&mut rest).unwrap();
+    assert!(child.wait().unwrap().success());
+    assert!(rest.contains("bytes of console output"));
+    assert!(rest.contains("Scenario zero: completed"));
+    assert!(rest.contains("Finalizing run"));
+    assert!(rest.contains("Attempt manifest: "));
+    assert!(rest.lines().all(|line| line.len() < 17 * 1024));
+
+    let published = mgb_ops::discover_trials(&root).unwrap().pop().unwrap();
+    let mut expected = b"output for zero\r\n".to_vec();
+    expected.extend(std::iter::repeat_n(b'x', 2_000_000));
+    assert_eq!(
+        fs::read(published.join("scenarios/zero/logs/stdout.log")).unwrap(),
+        expected
+    );
+    let mut expected = b"diagnostic for zero\n".to_vec();
+    expected.extend(std::iter::repeat_n(b'y', 2_000_000));
+    assert_eq!(
+        fs::read(published.join("scenarios/zero/logs/stderr.log")).unwrap(),
+        expected
+    );
+    assert_eq!(
+        fs::read(published.join("scenarios/other/logs/stdout.log")).unwrap(),
+        b"output for other\r\n",
+    );
+
+    fs::write(root.join("Input/control.txt"), "log:.history\nlog:zero\n").unwrap();
+    let second_preparation = root.join("prepared-fast");
+    assert!(prepare(&second_preparation).status.success());
+    let fast = execute(&second_preparation).arg("--json").output().unwrap();
+    assert!(fast.status.success());
+    let fast_report: serde_json::Value = serde_json::from_slice(&fast.stdout).unwrap();
+    assert_eq!(fast_report["status"], "completed");
+    let diagnostics = String::from_utf8(fast.stderr).unwrap();
+    assert!(diagnostics.contains("[MGB history stdout] output for .history\n"));
+    assert!(diagnostics.contains("[MGB scenario zero stdout] output for zero\n"));
+    assert!(diagnostics.contains("[MGB scenario zero stderr] diagnostic for zero\n"));
+
+    // Close the progress pipe while the CLI continues writing its JSON report.
+    let mut child = execute(&second_preparation)
+        .arg("--json")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    drop(child.stderr.take());
+    let closed = child.wait_with_output().unwrap();
+    assert!(closed.status.success());
+    let closed_report: serde_json::Value = serde_json::from_slice(&closed.stdout).unwrap();
+    let published = mgb_ops::discover_trials(&root).unwrap();
+    assert_eq!(published.len(), 1);
+    assert_eq!(closed_report["run_root"].as_str(), published[0].to_str());
+    assert_ne!(closed_report["run_root"], fast_report["run_root"]);
+}
+
 #[test]
 fn optional_flood_source_retains_exact_depth_and_reports_invalid_scenarios() {
     let _guard = TEST_LOCK.lock().unwrap();
@@ -343,17 +487,24 @@ fn run_bundle_round_trips_and_regenerates_without_original_sources() {
         )
         .is_err()
     );
-    let repeated = mgb_ops::regenerate_run(
-        &target,
-        &imported.root,
-        &source.join("engine"),
-        &Default::default(),
-    )
-    .unwrap();
-    assert_ne!(repeated.run_root, imported.root);
+    let repeated = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+        .args(["run", "regenerate", "--workspace"])
+        .arg(&target)
+        .arg("--bundle")
+        .arg(&imported.root)
+        .arg("--engine")
+        .arg(source.join("engine"))
+        .output()
+        .unwrap();
+    let progress = String::from_utf8(repeated.stderr).unwrap();
+    assert!(repeated.status.success(), "{progress}");
+    assert!(progress.contains("Running shared MGB history"));
+    let report: serde_json::Value = serde_json::from_slice(&repeated.stdout).unwrap();
+    let repeated_root = Path::new(report["run_root"].as_str().unwrap());
+    assert_ne!(repeated_root, imported.root);
     let raw = "scenarios/zero/Output/YTUDO.MGB";
     assert_eq!(
-        fs::read(repeated.run_root.join(raw)).unwrap(),
+        fs::read(repeated_root.join(raw)).unwrap(),
         fs::read(imported.root.join(raw)).unwrap()
     );
     fs::write(bundle.join(raw), b"corrupt").unwrap();
@@ -511,7 +662,7 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
     let dir = tempfile::tempdir_in("runs").unwrap();
     let path = dir.path().canonicalize().unwrap();
     fixture(&path);
-    fs::write(path.join("Input/control.txt"), "fail:other\n").unwrap();
+    fs::write(path.join("Input/control.txt"), "log:other\nfail:other\n").unwrap();
     mgb_ops::app::prepare(mgb_ops::app::PreparationRequest {
         workspace: path.clone(),
         invocation_dir: path.clone(),
@@ -576,6 +727,10 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
     assert_eq!(cli_run.status.code(), Some(1));
     let cli_result: serde_json::Value = serde_json::from_slice(&cli_run.stdout).unwrap();
     assert_eq!(cli_result["report"]["status"], "failed");
+    let progress = String::from_utf8(cli_run.stderr).unwrap();
+    assert!(progress.contains("[MGB scenario other stdout] output for other"));
+    assert!(progress.contains("Scenario other: failed"));
+    assert!(progress.contains(cli_result["report"]["attempt_manifest"].as_str().unwrap()));
     let missing = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
         .current_dir("/")
         .args(["operation", "execute", "--workspace"])
@@ -1982,7 +2137,11 @@ fn cli_sigint_cancels_history_and_reaps_child() {
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.path().canonicalize().unwrap();
     fixture(&root);
-    fs::write(root.join("Input/control.txt"), "sleep:.history\n").unwrap();
+    fs::write(
+        root.join("Input/control.txt"),
+        "log:.history\nsleep:.history\n",
+    )
+    .unwrap();
     mgb_ops::prepare(mgb_ops::PreparationRequest {
         workspace: root.clone(),
         invocation_dir: root.clone(),
@@ -1997,6 +2156,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
         .arg(root.join("prepared"))
         .arg("--json")
         .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
     let deadline = Instant::now() + Duration::from_secs(15);
@@ -2023,6 +2183,9 @@ fn cli_sigint_cancels_history_and_reaps_child() {
     assert!(!output.status.success());
     let result: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(result["kind"], "batch_failed");
+    let progress = String::from_utf8(output.stderr).unwrap();
+    assert!(progress.contains("[MGB history stdout] output for .history"));
+    assert!(progress.contains("Run failed: operation cancelled"));
     assert!(!attempt.exists());
     let archive = Path::new(result["report"]["run_artifact"].as_str().unwrap());
     let manifest: serde_json::Value = serde_json::from_slice(&fs::read(archive).unwrap()).unwrap();
@@ -2122,9 +2285,32 @@ fn run_uses_current_draft_and_cleans_temporary_preparation() {
             .starts_with(".preparation-")
     }));
     assert!(cache.preparation_sha256.is_some());
-    let prepared = draft
-        .prepare(root.clone(), "separate-prepared".into())
+    draft.save(&root.join("draft.json"), true).unwrap();
+    let draft_command = |subcommand: &str| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_mgb-ops"));
+        command
+            .args(["draft", subcommand, "--workspace"])
+            .arg(&root)
+            .arg("--draft")
+            .arg(root.join("draft.json"));
+        command
+    };
+    let output = draft_command("prepare")
+        .arg("--output")
+        .arg(root.join("separate-prepared"))
+        .output()
         .unwrap();
+    let progress = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{progress}");
+    assert!(progress.contains("Prepared: "));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let prepared = report["result"]["prepared"].as_str().unwrap();
+    let output = draft_command("run").output().unwrap();
+    let progress = String::from_utf8(output.stderr).unwrap();
+    assert!(output.status.success(), "{progress}");
+    assert!(progress.contains("Running shared MGB history"));
+    let report: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["result"]["status"], "completed");
     fs::remove_dir_all(root.join("Input")).unwrap();
     fs::remove_file(root.join("engine")).unwrap();
     fs::remove_file(root.join("observations.sqlite")).unwrap();
@@ -2132,7 +2318,7 @@ fn run_uses_current_draft_and_cleans_temporary_preparation() {
     let second = mgb_ops::execute_prepared(mgb_ops::ExecutionRequest {
         workspace: root.clone(),
         invocation_dir: root.clone(),
-        prepared: prepared.prepared,
+        prepared: prepared.into(),
     })
     .unwrap();
     assert_ne!(first.run_root, second.run_root);
@@ -2665,8 +2851,23 @@ fn replay_from_standalone_recipe_requires_identical_sources() {
         .unwrap();
     let archived = workspace.join("runs/history").join(format!("{id}.json"));
     assert!(mgb_ops::Draft::import_manifest(workspace.clone(), &workspace, &archived).is_ok());
-    let replayed = mgb_ops::replay_run(&workspace, &archived, &control).unwrap();
-    assert_ne!(first.run_root, replayed.run_root);
+    let replayed = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+        .args(["run", "replay", "--workspace"])
+        .arg(&workspace)
+        .arg("--manifest")
+        .arg(&archived)
+        .output()
+        .unwrap();
+    assert!(
+        replayed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&replayed.stderr)
+    );
+    let progress = String::from_utf8(replayed.stdout).unwrap();
+    assert!(progress.contains("Running shared MGB history"));
+    let replayed_root = mgb_ops::discover_trials(&workspace).unwrap().pop().unwrap();
+    assert!(progress.contains(replayed_root.to_str().unwrap()));
+    assert_ne!(first.run_root, replayed_root);
     assert!(!first.run_root.exists());
 
     let legacy = workspace.join("legacy-recipe.json");
@@ -2833,6 +3034,39 @@ artifact_root = "forecasts"
     );
     assert!(manifest.recipe["document"].get("acquisition").is_none());
     assert_eq!(fs::read_to_string(&request).unwrap(), recipe);
+
+    let forecast = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+        .args(["forecast", "acquire", "--workspace"])
+        .arg(&workspace)
+        .args([
+            "--request",
+            "acquisition.toml",
+            "--reference-time",
+            "2026-07-20T02:00:00",
+        ])
+        .output()
+        .unwrap();
+    assert!(forecast.status.success(), "{forecast:?}");
+    let progress = String::from_utf8(forecast.stdout).unwrap();
+    assert!(progress.contains("NOAA | checking 2026-07-20 00:00:00 UTC"));
+    assert!(progress.contains(&format!("NOAA | reused {}", asset.asset_id)));
+
+    let run = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
+        .args(["operation", "run-all", "--workspace"])
+        .arg(&workspace)
+        .arg("--request")
+        .arg(&request)
+        .args(["--reference-time", "2026-07-20T02:00:00"])
+        .arg("--json")
+        .output()
+        .unwrap();
+    assert!(run.status.success(), "{run:?}");
+    let report: serde_json::Value = serde_json::from_slice(&run.stdout).unwrap();
+    assert_eq!(report["acquisition"]["forecasts"][0]["reused"], true);
+    assert_eq!(report["execution"]["status"], "completed");
+    let progress = String::from_utf8(run.stderr).unwrap();
+    let reused = progress.find("NOAA | reused").unwrap();
+    assert!(reused < progress.find("Running shared MGB history").unwrap());
 
     let active = mgb_ops::app::rainfall_cache_info(&workspace).unwrap();
     let ecmwf_source = workspace.join("ifs.grib2");

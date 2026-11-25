@@ -285,6 +285,7 @@ fn prepare_accepted(
 ) -> Result<PreparationReport, OperationError> {
     control.set_progress(super::OperationStage::Preparation, None, None);
     control.check()?;
+    control.selection(&accepted.document);
     if output.exists() {
         return Err(OperationError::InvalidRequest {
             field: "output".into(),
