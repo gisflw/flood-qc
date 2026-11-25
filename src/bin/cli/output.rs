@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 
-pub(super) fn acquisition_text(
+fn acquisition_text(
     report: &mgb_ops::app::AcquisitionReport,
     out: &mut impl Write,
 ) -> io::Result<()> {
@@ -63,6 +63,7 @@ pub(super) fn acquisition_text(
 pub(super) fn acquisition_result(
     result: Result<mgb_ops::app::AcquisitionReport, String>,
     json: bool,
+    live: bool,
     out: &mut impl Write,
 ) -> Result<bool, Box<dyn std::error::Error>> {
     match result {
@@ -70,7 +71,7 @@ pub(super) fn acquisition_result(
             if json {
                 serde_json::to_writer(&mut *out, &report)?;
                 writeln!(out)?;
-            } else {
+            } else if !live {
                 acquisition_text(&report, out)?;
             }
             Ok(report.is_complete())

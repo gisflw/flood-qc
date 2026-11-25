@@ -12,7 +12,9 @@ use crate::adapters::{
 };
 use crate::store::{ObservationStore, create_workspace_dir, write_new_atomic};
 
-use super::{AnaAcquisitionReport, AnaDocument, AnaStationOutcome, OperationControl};
+use super::{
+    AnaAcquisitionReport, AnaDocument, AnaStationOutcome, DownloadEvent, OperationControl,
+};
 
 fn prepare(
     workspace: &Path,
@@ -205,15 +207,23 @@ struct Fetch<'a> {
     control: &'a OperationControl,
 }
 
+#[derive(Default)]
+struct StationProgress {
+    dates: Option<(NaiveDate, NaiveDate)>,
+    rows: usize,
+}
+
 impl Fetch<'_> {
     fn station(
         &self,
         store: &mut ObservationStore,
         station: &AnaStation,
         outcome: &mut AnaStationOutcome,
+        progress: &mut StationProgress,
     ) -> Result<(), String> {
         let (first, last) = self.dates;
         let dates = request_dates(store, station, self.reference.timezone(), first, last)?;
+        progress.dates = dates.first().copied().zip(dates.last().copied());
         outcome.requested_days = dates.len();
         outcome.skipped_days = self.config.request_days as usize - dates.len();
         let code = &outcome.station_code;
@@ -222,6 +232,16 @@ impl Fetch<'_> {
         let mut rows = Vec::new();
         for (start, end) in windows(dates, self.config.fetch_window_days) {
             self.control.check().map_err(|e| e.to_string())?;
+            let update = |rows, loading| {
+                self.control.download(|| DownloadEvent::AnaWindow {
+                    station: code.to_owned(),
+                    start,
+                    end,
+                    rows,
+                    loading,
+                });
+            };
+            update(rows.len(), false);
             let body = self
                 .client
                 .ana(
@@ -231,6 +251,7 @@ impl Fetch<'_> {
                     Duration::from_secs(self.config.timeout_seconds),
                 )
                 .map_err(|e| format!("{start} to {end}: {e}"))?;
+            update(rows.len(), true);
             let path = station_dir.join(format!(
                 "{}__{}.xml",
                 start.format("%Y%m%d"),
@@ -243,6 +264,8 @@ impl Fetch<'_> {
                     .into_iter()
                     .filter(|row| (start..=end).contains(&row.time.date())),
             );
+            progress.rows = rows.len();
+            update(progress.rows, true);
         }
         self.control.check().map_err(|e| e.to_string())?;
         rows.sort_by_key(|row| row.time);
@@ -298,13 +321,27 @@ pub(super) fn acquire(
                 station_code: code,
                 ..AnaStationOutcome::default()
             };
-            outcome.error = fetch.station(&mut store, station, &mut outcome).err();
+            let mut progress = StationProgress::default();
+            outcome.error = fetch
+                .station(&mut store, station, &mut outcome, &mut progress)
+                .err();
+            control.download(|| DownloadEvent::AnaFinished {
+                station: outcome.station_code.clone(),
+                dates: progress.dates,
+                rows: progress.rows,
+                changed_samples: outcome.changed_samples,
+                error: outcome.error.clone(),
+                cancelled: control.is_cancelled() && outcome.error.is_some(),
+            });
             report.stations.push(outcome);
         }
         control.acquisition_progress("ANA".into(), report.stations.len(), stations.len());
         Ok(())
     })();
     report.error = result.err();
+    if let Some(error) = &report.error {
+        control.download(|| DownloadEvent::AnaFailed(error.clone()));
+    }
     report
 }
 

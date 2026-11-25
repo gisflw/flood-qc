@@ -45,7 +45,8 @@ Validate returns action findings, defaulting to preparation. Use
 `--action observations` or `--action forecast --scenario 0` for a local preview.
 Nonempty findings make `ok` false. Exit codes are 0 for success,
 1 for failed actions/readiness/output and 2
-for invalid command arguments. Progress text is not written to JSON stdout.
+for invalid command arguments. Prepare and Run use the
+[operation progress stream](operations.md#controlled-actions-and-cancellation).
 
 Resolve CLI workspace, draft, request, manifest and output paths from the
 invocation directory. Resolve relative paths inside the recipe against the

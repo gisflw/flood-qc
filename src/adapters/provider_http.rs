@@ -2,9 +2,9 @@ use std::time::Duration;
 use std::{error::Error, io::Read};
 
 use chrono::{DateTime, NaiveDate, Utc};
-use reqwest::StatusCode;
 use reqwest::blocking::{Client, RequestBuilder, Response};
-use reqwest::header::{ACCEPT_ENCODING, CONTENT_RANGE, RANGE};
+use reqwest::header::{ACCEPT_ENCODING, AUTHORIZATION, CONTENT_RANGE, LOCATION, RANGE};
+use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 
 use crate::store::ForecastProvider;
@@ -222,6 +222,10 @@ fn send(request: RequestBuilder) -> Result<Response, ProviderError> {
         }
         ProviderError::Unavailable(detail)
     })?;
+    check_status(response)
+}
+
+fn check_status(response: Response) -> Result<Response, ProviderError> {
     let status = response.status();
     if status.is_success() {
         return Ok(response);
@@ -260,8 +264,8 @@ fn read_response(response: Response, limit: u64) -> Result<Vec<u8>, ProviderErro
     Ok(bytes)
 }
 
-/// Standalone sources use a direct HTTPS client. In particular, an API key must
-/// never be forwarded to a redirect target.
+/// Standalone requests do not follow redirects automatically. IMERG handles
+/// archive redirects separately from requests carrying a BNDMET API key.
 pub(crate) struct SourceClient(Client);
 
 impl SourceClient {
@@ -328,18 +332,78 @@ impl SourceClient {
 
     pub(crate) fn imerg_granule(
         &self,
-        url: &reqwest::Url,
+        url: &Url,
         token: &reqwest::header::HeaderValue,
     ) -> Result<Vec<u8>, ProviderError> {
-        read_response(
-            send(
-                self.0
-                    .get(url.clone())
-                    .header(reqwest::header::AUTHORIZATION, token.clone()),
-            )?,
-            64 * 1024 * 1024,
-        )
+        download_imerg(url, |target, send_token| {
+            let mut request = self.0.get(target.clone());
+            if send_token {
+                request = request.header(AUTHORIZATION, token.clone());
+            }
+            request
+                .send()
+                .map_err(|error| ProviderError::Unavailable(error.without_url().to_string()))
+        })
     }
+}
+
+const IMERG_ARCHIVE: &str = "data.gesdisc.earthdata.nasa.gov";
+const IMERG_CDN: &str = "d2b3c3wh8s6en5.cloudfront.net";
+
+fn imerg_host(url: &Url) -> Option<&str> {
+    if url.scheme() != "https"
+        || url.port().is_some()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return None;
+    }
+    url.host_str()
+}
+
+fn download_imerg(
+    source: &Url,
+    mut get: impl FnMut(&Url, bool) -> Result<Response, ProviderError>,
+) -> Result<Vec<u8>, ProviderError> {
+    if imerg_host(source) != Some(IMERG_ARCHIVE) {
+        return Err(ProviderError::Invalid(
+            "unexpected IMERG archive URL".into(),
+        ));
+    }
+    let mut target = source.clone();
+    for _ in 0..=5 {
+        let response = get(&target, target.origin() == source.origin())?;
+        if !matches!(
+            response.status(),
+            StatusCode::MOVED_PERMANENTLY
+                | StatusCode::FOUND
+                | StatusCode::SEE_OTHER
+                | StatusCode::TEMPORARY_REDIRECT
+                | StatusCode::PERMANENT_REDIRECT
+        ) {
+            return read_response(check_status(response)?, 64 * 1024 * 1024);
+        }
+        target = response
+            .headers()
+            .get(LOCATION)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|location| target.join(location).ok())
+            .ok_or_else(|| ProviderError::Invalid("invalid IMERG redirect location".into()))?;
+        match imerg_host(&target) {
+            Some(IMERG_ARCHIVE | IMERG_CDN) => (),
+            Some("urs.earthdata.nasa.gov") => return Err(ProviderError::Invalid(
+                "GES DISC redirected to Earthdata Login; check the user token and GES DISC access"
+                    .into(),
+            )),
+            _ => {
+                return Err(ProviderError::Invalid(
+                    "unexpected IMERG redirect destination".into(),
+                ));
+            }
+        }
+    }
+    Err(ProviderError::Invalid("too many IMERG redirects".into()))
 }
 
 #[cfg(test)]
@@ -347,6 +411,49 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
+
+    #[test]
+    fn imerg_follows_archive_redirect_without_forwarding_credentials() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let worker = std::thread::spawn(move || {
+            for (path, authorized, response) in [
+                ("/granule", true, format!("303 See Other\r\nLocation: https://{IMERG_CDN}/granule?signature=test\r\nContent-Length: 0\r\n\r\n")),
+                ("/granule?signature=test", false, "200 OK\r\nContent-Length: 4\r\n\r\nHDF5".into()),
+                ("/unknown", true, "302 Found\r\nLocation: https://unrelated.example/granule\r\nContent-Length: 0\r\n\r\n".into()),
+            ] {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                let lines: Vec<_> = BufReader::new(&socket).lines().map(Result::unwrap)
+                    .take_while(|line| !line.is_empty()).collect();
+                let expected = format!("GET {path} HTTP/1.1");
+                assert_eq!(lines[0], expected);
+                assert_eq!(lines.iter().any(|line| line.eq_ignore_ascii_case("authorization: Bearer sample")), authorized);
+                write!(socket, "HTTP/1.1 {response}").unwrap();
+            }
+        });
+        let client = SourceClient::new().unwrap();
+        let get = |target: &Url, send_token| {
+            let mut local = Url::parse(&endpoint).unwrap();
+            local.set_path(target.path());
+            local.set_query(target.query());
+            let mut request = client.0.get(local);
+            if send_token {
+                request = request.header(AUTHORIZATION, "Bearer sample");
+            }
+            request
+                .send()
+                .map_err(|e| ProviderError::Unavailable(e.to_string()))
+        };
+        let source = Url::parse(&format!("https://{IMERG_ARCHIVE}/granule")).unwrap();
+        assert_eq!(download_imerg(&source, get).unwrap(), b"HDF5");
+        let untrusted = source.join("/unknown").unwrap();
+        assert_eq!(
+            download_imerg(&untrusted, get).unwrap_err().to_string(),
+            "unexpected IMERG redirect destination"
+        );
+        worker.join().unwrap();
+    }
 
     #[test]
     fn provider_protocols_and_unavailable_responses() {

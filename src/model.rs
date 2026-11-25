@@ -8,7 +8,7 @@ pub(crate) use self::input::{read_basin_geometry, write_metadata, write_rainfall
 pub(crate) use self::output::{
     HistoryResults, decode_outputs, quantize_levels, read_history, reference_levels,
 };
-pub(crate) use self::process::{EnginePlan, run_engine};
+pub(crate) use self::process::{EnginePlan, EngineStream, ProcessOutcome, run_engine};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PrerequisiteCode {

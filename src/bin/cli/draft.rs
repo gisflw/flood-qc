@@ -4,7 +4,6 @@ use std::path::PathBuf;
 pub(super) fn draft_action(
     command: DraftCommand,
     invocation: &std::path::Path,
-    control: &mgb_ops::OperationControl,
 ) -> Result<serde_json::Value, String> {
     fn value<T: serde::Serialize>(data: T) -> Result<serde_json::Value, String> {
         serde_json::to_value(data).map_err(|e| e.to_string())
@@ -180,18 +179,8 @@ pub(super) fn draft_action(
             .map_err(|e| e.to_string())?;
             value(current.register_selected(&selection))
         }
-        DraftCommand::Run { workspace, draft } => {
-            let draft = mgb_ops::Draft::open(workspace, invocation, &draft)?;
-            value(mgb_ops::run_draft(&draft, control).map_err(|e| e.to_string())?)
+        DraftCommand::Run { .. } | DraftCommand::Prepare { .. } => {
+            unreachable!("handled as controlled operations")
         }
-        DraftCommand::Prepare {
-            workspace,
-            draft,
-            output,
-        } => value(
-            mgb_ops::Draft::open(workspace, invocation, &draft)?
-                .prepare_controlled(invocation.into(), output, control)
-                .map_err(|e| e.to_string())?,
-        ),
     }
 }

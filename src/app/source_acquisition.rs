@@ -293,6 +293,12 @@ impl<'a> Attempt<'a> {
                             data.non_hourly
                         ));
                     }
+                    for (id, count) in data.invalid_flows {
+                        self.report.issues.push(format!(
+                            "ONS {id} {}: marked {count} invalid flow measurements missing",
+                            month.format("%Y-%m")
+                        ));
+                    }
                     for (id, hours) in data.reservoirs {
                         for hour in hours {
                             let key = (id.clone(), hour.local_hour);

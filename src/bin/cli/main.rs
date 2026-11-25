@@ -2,9 +2,10 @@ mod acquisition;
 mod assistant;
 mod draft;
 mod output;
+mod progress;
 
 use self::draft::draft_action;
-use self::output::{acquisition_result, acquisition_text, operation_result};
+use self::output::{acquisition_result, operation_result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -743,22 +744,10 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
     let control = mgb_ops::OperationControl::default();
     if matches!(
         &cli.command,
-        Command::Operation {
-            command: OperationCommand::Prepare { .. }
-                | OperationCommand::Execute { .. }
-                | OperationCommand::RunAll { .. }
-        } | Command::Draft {
-            command: DraftCommand::Prepare { .. } | DraftCommand::Run { .. },
-            ..
-        } | Command::Run {
-            command: RunCommand::Regenerate { .. } | RunCommand::Replay { .. },
-        } | Command::Inundation { .. }
+        Command::Inundation { .. }
             | Command::Acquisition { .. }
             | Command::Observation {
-                command: ObservationCommand::Acquire(_) | ObservationCommand::ImportAnaCsv { .. }
-            }
-            | Command::Forecast {
-                command: ForecastCommand::Acquire(_)
+                command: ObservationCommand::ImportAnaCsv { .. }
             }
     ) {
         let signal_control = control.clone();
@@ -807,21 +796,21 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             let result = match command {
                 ObservationCommand::Acquire(options) => {
                     let json = options.json;
-                    return acquisition_result(
+                    let result = progress::acquire(&mut out, json, |control| {
                         mgb_ops::app::acquire_inputs(
                             &options.request(),
                             mgb_ops::app::AcquisitionKind::Observations,
-                            &control,
-                        ),
-                        json,
-                        &mut out,
-                    );
+                            control,
+                        )
+                    })?;
+                    return acquisition_result(result, json, true, &mut out);
                 }
                 ObservationCommand::ImportAnaCsv { options, input } => {
                     let json = options.json;
                     return acquisition_result(
                         mgb_ops::app::import_ana_csv(&options.request(), &input, &control),
                         json,
+                        false,
                         &mut out,
                     );
                 }
@@ -971,25 +960,17 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     manifest,
                     json,
                 } => {
-                    let result = mgb_ops::app::replay_run(&workspace, &manifest, &control);
+                    let result = progress::run(&mut out, json, |control| {
+                        mgb_ops::app::replay_run(&workspace, &manifest, control)
+                    })?;
                     let Some(report) = operation_result(result, json, &mut out)? else {
                         return Ok(false);
                     };
-                    let completed = matches!(report.status, mgb_ops::BatchStatus::Completed);
                     if json {
                         serde_json::to_writer(&mut out, &report)?;
-                    } else {
-                        write!(
-                            out,
-                            "Run {} ({:?})",
-                            report.run_root.display(),
-                            report.status
-                        )?;
-                    }
-                    if !completed {
                         writeln!(out)?;
-                        return Ok(false);
                     }
+                    return Ok(matches!(report.status, mgb_ops::BatchStatus::Completed));
                 }
                 RunCommand::Regenerate {
                     workspace,
@@ -997,8 +978,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     engine,
                     json,
                 } => {
-                    let result =
-                        mgb_ops::app::regenerate_run(&workspace, &bundle, &engine, &control);
+                    let result = progress::run(&mut out, true, |control| {
+                        mgb_ops::app::regenerate_run(&workspace, &bundle, &engine, control)
+                    })?;
                     let Some(report) = operation_result(result, json, &mut out)? else {
                         return Ok(false);
                     };
@@ -1096,7 +1078,24 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         Command::Draft { command, json: _ } => {
             let is_validation = matches!(&command, DraftCommand::Validate { .. });
             let is_registration = matches!(&command, DraftCommand::Register { .. });
-            let result = draft_action(command, &std::env::current_dir()?, &control);
+            let invocation = std::env::current_dir()?;
+            let result = match command {
+                DraftCommand::Run { workspace, draft } => progress::run_draft(
+                    &mut out,
+                    || mgb_ops::Draft::open(workspace, &invocation, &draft),
+                    |draft, control| mgb_ops::run_draft(&draft, control),
+                )?,
+                DraftCommand::Prepare {
+                    workspace,
+                    draft,
+                    output,
+                } => progress::run_draft(
+                    &mut out,
+                    || mgb_ops::Draft::open(workspace, &invocation, &draft),
+                    |draft, control| draft.prepare_controlled(invocation.clone(), output, control),
+                )?,
+                command => draft_action(command, &invocation),
+            };
             let ok = result.as_ref().is_ok_and(|v| {
                 (!is_validation || v.as_array().is_some_and(Vec::is_empty))
                     && (!is_registration
@@ -1128,7 +1127,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     json,
                 },
         } => {
-            let report = (|| {
+            let report = progress::run_all(&mut out, json, |control| {
                 let now = chrono::Utc::now();
                 let mut operation = match request {
                     Some(path) => mgb_ops::app::OperationalRun::open(workspace, &path, now)?,
@@ -1143,8 +1142,8 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 if !operation.acquires_inputs() {
                     operation.accept_inputs()?;
                 }
-                Ok::<_, String>(operation.run_all_report(&control))
-            })();
+                Ok(operation.run_all_report(control))
+            })?;
             let report = match report {
                 Ok(report) => report,
                 Err(error) if json => {
@@ -1157,21 +1156,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             if json {
                 serde_json::to_writer(&mut out, &report)?;
                 writeln!(out)?;
-            } else {
-                if let Some(acquisition) = &report.acquisition {
-                    acquisition_text(acquisition, &mut out)?;
-                }
-                if let Some(execution) = &report.execution {
-                    writeln!(
-                        out,
-                        "Run: {} ({:?})",
-                        execution.run_root.display(),
-                        execution.status
-                    )?;
-                }
-                if let Some(error) = &report.error {
-                    writeln!(out, "{error}")?;
-                }
             }
             Ok(report.error.is_none())
         }
@@ -1187,19 +1171,21 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 },
         } => {
             let invocation_dir = std::env::current_dir()?;
+            if request.is_some() && (reference_time.is_some() || !scenarios.is_empty()) {
+                return Err("--reference-time and --scenario use workspace settings".into());
+            }
             let result = if let Some(request_file) = request {
-                if reference_time.is_some() || !scenarios.is_empty() {
-                    return Err("--reference-time and --scenario use workspace settings".into());
-                }
-                mgb_ops::prepare_controlled(
-                    mgb_ops::PreparationRequest {
-                        workspace,
-                        invocation_dir,
-                        request_file,
-                        output,
-                    },
-                    &control,
-                )
+                progress::run(&mut out, json, |control| {
+                    mgb_ops::prepare_controlled(
+                        mgb_ops::PreparationRequest {
+                            workspace,
+                            invocation_dir,
+                            request_file,
+                            output,
+                        },
+                        control,
+                    )
+                })?
             } else {
                 let mut operation =
                     mgb_ops::app::OperationalRun::open_workspace(workspace, chrono::Utc::now())
@@ -1218,7 +1204,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                         }
                     })?;
                 }
-                operation.prepare_saved(invocation_dir, output, &control)
+                progress::run(&mut out, json, |control| {
+                    operation.prepare_saved(invocation_dir, output, control)
+                })?
             };
             let Some(report) = operation_result(result, json, &mut out)? else {
                 return Ok(false);
@@ -1226,8 +1214,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             if json {
                 serde_json::to_writer(&mut out, &report)?;
                 writeln!(out)?;
-            } else {
-                writeln!(out, "Prepared: {}", report.prepared.display())?;
             }
             out.flush()?;
             Ok(true)
@@ -1240,27 +1226,23 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     json,
                 },
         } => {
-            let result = mgb_ops::execute_prepared_controlled(
-                mgb_ops::ExecutionRequest {
-                    workspace,
-                    invocation_dir: std::env::current_dir()?,
-                    prepared,
-                },
-                &control,
-            );
+            let invocation_dir = std::env::current_dir()?;
+            let result = progress::run(&mut out, json, |control| {
+                mgb_ops::execute_prepared_controlled(
+                    mgb_ops::ExecutionRequest {
+                        workspace,
+                        invocation_dir,
+                        prepared,
+                    },
+                    control,
+                )
+            })?;
             let Some(report) = operation_result(result, json, &mut out)? else {
                 return Ok(false);
             };
             if json {
                 serde_json::to_writer(&mut out, &report)?;
                 writeln!(out)?;
-            } else {
-                writeln!(
-                    out,
-                    "Run: {} ({:?})",
-                    report.run_root.display(),
-                    report.status
-                )?;
             }
             out.flush()?;
             Ok(matches!(report.status, mgb_ops::BatchStatus::Completed))
@@ -1293,15 +1275,14 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             command: ForecastCommand::Acquire(options),
         } => {
             let json = options.json;
-            acquisition_result(
+            let result = progress::acquire(&mut out, json, |control| {
                 mgb_ops::app::acquire_inputs(
                     &options.request(),
                     mgb_ops::app::AcquisitionKind::Forecasts,
-                    &control,
-                ),
-                json,
-                &mut out,
-            )
+                    control,
+                )
+            })?;
+            acquisition_result(result, json, true, &mut out)
         }
         Command::Forecast {
             command: ForecastCommand::ImportCanonical { workspace, request },

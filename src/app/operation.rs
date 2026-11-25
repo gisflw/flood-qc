@@ -1,14 +1,14 @@
 use crate::model::{
-    EnginePlan, FloodHistory, HistoryResults, capture_flood_history, capture_flood_source,
-    decode_outputs, quantize_levels, read_history, reference_levels, run_engine, write_metadata,
-    write_rainfall,
+    EnginePlan, EngineStream, FloodHistory, HistoryResults, ProcessOutcome, capture_flood_history,
+    capture_flood_source, decode_outputs, quantize_levels, read_history, reference_levels,
+    run_engine, write_metadata, write_rainfall,
 };
 use crate::store::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
-    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_tree,
-    copy_working_inputs, digest_file, new_run_stage, publish_run_checked, read_basin_forcing,
-    read_operation_manifest, recover_run_cache, retire_legacy_rainfall, run_cache_root,
-    run_stage_id, sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
+    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_staged_tree,
+    digest_file, new_run_stage, publish_run_checked, read_basin_forcing, read_operation_manifest,
+    recover_run_cache, retire_legacy_rainfall, run_cache_root, run_stage_id, stage_working_inputs,
+    sync_directory, sync_tree, verify_inputs, write_run_attempt, write_run_journal,
     write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ use std::{
     },
 };
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperationStage {
     Acquisition,
@@ -48,14 +48,63 @@ pub struct ScenarioProgress {
     pub state: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OperationLogStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug)]
+pub enum OperationEvent {
+    Stage(OperationStage),
+    Download(super::acquisition::DownloadEvent),
+    Selection {
+        reference_time: String,
+        time_zone: String,
+        scenario_ids: Vec<String>,
+    },
+    Scenario(ScenarioProgress),
+    EngineOutput {
+        /// The scenario ID, or `None` for the shared history run.
+        scenario: Option<String>,
+        stream: OperationLogStream,
+        /// Unmodified bytes. A chunk can end in the middle of a line or character.
+        bytes: Vec<u8>,
+    },
+    EngineFinished {
+        scenario: Option<String>,
+    },
+}
+
+#[derive(Clone)]
+struct Observer(Arc<dyn Fn(OperationEvent) + Send + Sync>);
+
+impl std::fmt::Debug for Observer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Observer")
+    }
+}
+
 #[derive(Clone, Default, Debug)]
 pub struct OperationControl {
     cancelled: Arc<AtomicBool>,
     progress: Arc<Mutex<Option<OperationProgress>>>,
     committed: Arc<Mutex<bool>>,
+    observer: Option<Observer>,
 }
 
 impl OperationControl {
+    /// Observe milestones and engine log chunks for a fresh action.
+    ///
+    /// Calls can originate on concurrent scenario workers. The observer should
+    /// return promptly and handle its own output errors without panicking.
+    pub fn with_observer(observer: impl Fn(OperationEvent) + Send + Sync + 'static) -> Self {
+        Self {
+            observer: Some(Observer(Arc::new(observer))),
+            ..Self::default()
+        }
+    }
+
     pub fn cancel(&self) {
         let committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
         if !*committed {
@@ -86,15 +135,26 @@ impl OperationControl {
         scenario: Option<String>,
         attempt: Option<PathBuf>,
     ) {
-        let scenarios = self.progress().map(|p| p.scenarios).unwrap_or_default();
-        *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(OperationProgress {
-            stage,
-            scenario,
-            fraction: None,
-            detail: None,
-            attempt,
-            scenarios,
-        });
+        let changed = {
+            let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            let changed = progress.as_ref().is_none_or(|value| value.stage != stage);
+            let scenarios = progress
+                .take()
+                .map(|value| value.scenarios)
+                .unwrap_or_default();
+            *progress = Some(OperationProgress {
+                stage,
+                scenario,
+                fraction: None,
+                detail: None,
+                attempt,
+                scenarios,
+            });
+            changed
+        };
+        if changed {
+            self.emit(|| OperationEvent::Stage(stage));
+        }
     }
     pub(super) fn acquisition_progress(&self, detail: String, completed: usize, total: usize) {
         *self.progress.lock().unwrap_or_else(|e| e.into_inner()) = Some(OperationProgress {
@@ -107,8 +167,11 @@ impl OperationControl {
         });
     }
     fn scenario_state(&self, id: &str, state: &str) {
-        let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(progress) = progress.as_mut() {
+        {
+            let mut progress = self.progress.lock().unwrap_or_else(|e| e.into_inner());
+            let Some(progress) = progress.as_mut() else {
+                return;
+            };
             if let Some(scenario) = progress.scenarios.iter_mut().find(|s| s.id == id) {
                 scenario.state = state.into();
             } else {
@@ -118,6 +181,59 @@ impl OperationControl {
                 });
             }
         }
+        self.emit(|| {
+            OperationEvent::Scenario(ScenarioProgress {
+                id: id.into(),
+                state: state.into(),
+            })
+        });
+    }
+
+    fn emit(&self, event: impl FnOnce() -> OperationEvent) {
+        if let Some(observer) = &self.observer {
+            (observer.0)(event());
+        }
+    }
+
+    pub(super) fn download(&self, event: impl FnOnce() -> super::acquisition::DownloadEvent) {
+        self.emit(|| OperationEvent::Download(event()));
+    }
+
+    pub(super) fn selection(&self, document: &super::request::PreparationDocument) {
+        self.emit(|| OperationEvent::Selection {
+            reference_time: document.reference_time.clone(),
+            time_zone: document.time_zone.clone(),
+            scenario_ids: document
+                .scenarios
+                .iter()
+                .map(|item| item.id.clone())
+                .collect(),
+        });
+    }
+
+    fn run_engine(
+        &self,
+        plan: &EnginePlan,
+        scenario: Option<&str>,
+    ) -> Result<ProcessOutcome, crate::model::ModelError> {
+        let Some(observer) = &self.observer else {
+            return run_engine(plan, &self.cancelled, None);
+        };
+        let mut log = |stream, bytes: &[u8]| {
+            (observer.0)(OperationEvent::EngineOutput {
+                scenario: scenario.map(str::to_owned),
+                stream: match stream {
+                    EngineStream::Stdout => OperationLogStream::Stdout,
+                    EngineStream::Stderr => OperationLogStream::Stderr,
+                },
+                bytes: bytes.to_vec(),
+            });
+        };
+        let result = run_engine(plan, &self.cancelled, Some(&mut log));
+        (observer.0)(OperationEvent::EngineFinished {
+            scenario: scenario.map(str::to_owned),
+        });
+        result
     }
 }
 
@@ -252,11 +368,11 @@ fn store_error(root: &Path, message: impl ToString) -> OperationError {
         message: message.to_string(),
     }
 }
-pub(super) fn validate_recipe(
+fn validate_recipe(
     root: &Path,
     recipe: &ExecutionRecipe,
     scenarios: &[ScenarioRecord],
-) -> Result<(), String> {
+) -> Result<super::request::PreparationDocument, String> {
     use crate::store::{ObservationSelection, ObservationStore};
     if recipe.historical_count == 0 || recipe.forecast_count == 0 || recipe.omp_threads == 0 {
         return Err("invalid prepared timing or thread count".into());
@@ -463,7 +579,7 @@ pub(super) fn validate_recipe(
     {
         return Err("station offset records disagree with snapshot".into());
     }
-    Ok(())
+    Ok(document)
 }
 
 fn prepare_worker(
@@ -478,7 +594,7 @@ fn prepare_worker(
         .join(if history { ".history" } else { scenario });
     fs::create_dir(&worker).map_err(|e| e.to_string())?;
     let input = worker.join("Input");
-    copy_working_inputs(&snapshot.join("baseline/Input"), &input)?;
+    stage_working_inputs(&snapshot.join("baseline/Input"), &input)?;
     let mut forcing = read_basin_forcing(&snapshot.join("forcing").join(format!("{scenario}.nc")))
         .map_err(|e| e.to_string())?;
     let total = recipe
@@ -813,12 +929,13 @@ fn execute_in_stage(
             message: e.to_string(),
         }
     })?;
-    validate_recipe(prepared, &recipe, &manifest.scenarios).map_err(|message| {
+    let document = validate_recipe(prepared, &recipe, &manifest.scenarios).map_err(|message| {
         OperationError::InvalidPrepared {
             path: prepared.to_path_buf(),
             message,
         }
     })?;
+    control.selection(&document);
     manifest.preparation_sha256 = Some(manifest_identity.0.clone());
     manifest.state = "running".into();
     manifest.created_at = now(&recipe);
@@ -827,8 +944,13 @@ fn execute_in_stage(
     attempt.operation = Some(manifest.clone());
     write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
 
-    let snapshot = run_root.join("snapshot");
-    copy_tree(prepared, &snapshot).map_err(|error| store_error(run_root, error))?;
+    let snapshot = if temporary_preparation {
+        prepared.to_path_buf()
+    } else {
+        let snapshot = run_root.join("snapshot");
+        copy_staged_tree(prepared, &snapshot).map_err(|error| store_error(run_root, error))?;
+        snapshot
+    };
     control.check()?;
     verify_inputs(&snapshot, &manifest.inputs).map_err(|error| store_error(run_root, error))?;
     if digest_file(&snapshot.join("manifest.json")).map_err(|error| store_error(run_root, error))?
@@ -838,9 +960,6 @@ fn execute_in_stage(
             run_root,
             "prepared manifest changed while freezing",
         ));
-    }
-    if temporary_preparation {
-        fs::remove_dir_all(prepared).map_err(|error| store_error(prepared, error))?;
     }
     fs::create_dir(run_root.join("scenarios"))
         .and_then(|()| fs::create_dir(run_root.join("results")))
@@ -1015,7 +1134,7 @@ fn execute_scenarios(
         .map_err(|e| e.to_string())
         .and_then(|()| prepare_worker(snapshot, root, first, true, recipe))
         .and_then(|plan| {
-            let outcome = run_engine(&plan, &control.cancelled)?;
+            let outcome = control.run_engine(&plan, None)?;
             if let Some(error) = outcome.error {
                 return Err(format!("history run: {error}"));
             }
@@ -1062,19 +1181,13 @@ fn execute_scenarios(
     for item in requested {
         control.scenario_state(&item.id, "pending");
     }
-    let plans: Vec<_> = requested
-        .iter()
-        .map(|item| prepare_worker(snapshot, root, &item.id, false, recipe))
-        .collect();
     std::thread::scope(|scope| {
         let handles: Vec<_> = requested
             .iter()
-            .zip(plans)
-            .map(|(item, plan)| {
+            .map(|item| {
                 let history = &history;
-                scope.spawn(move || {
-                    run_scenario(root, snapshot, recipe, &item.id, plan, history, control)
-                })
+                scope
+                    .spawn(move || run_scenario(root, snapshot, recipe, &item.id, history, control))
             })
             .collect();
         handles
@@ -1104,7 +1217,6 @@ fn run_scenario(
     snapshot: &Path,
     recipe: &ExecutionRecipe,
     id: &str,
-    plan: Result<EnginePlan, String>,
     history: &SharedHistory,
     control: &OperationControl,
 ) -> ScenarioRecord {
@@ -1114,10 +1226,11 @@ fn run_scenario(
     record.started_at = Some(now(recipe));
     let result = (|| -> Result<(), String> {
         control.check().map_err(|e| e.to_string())?;
-        let plan = plan?;
+        let plan = prepare_worker(snapshot, root, id, false, recipe)?;
+        control.check().map_err(|e| e.to_string())?;
         record.stdout = Some(Path::new("scenarios").join(id).join("logs/stdout.log"));
         record.stderr = Some(Path::new("scenarios").join(id).join("logs/stderr.log"));
-        let outcome = run_engine(&plan, &control.cancelled)?;
+        let outcome = control.run_engine(&plan, Some(id))?;
         record.exit_code = outcome.exit_code;
         record.signal = outcome.signal;
         if let Some(error) = outcome.error {

@@ -23,6 +23,7 @@ pub(crate) struct OnsHour {
 pub(crate) struct OnsMonth {
     pub(crate) reservoirs: BTreeMap<String, Vec<OnsHour>>,
     pub(crate) non_hourly: usize,
+    pub(crate) invalid_flows: BTreeMap<String, usize>,
 }
 
 fn flow(raw: &str, signed: bool) -> Result<Option<f64>, String> {
@@ -65,6 +66,7 @@ pub(crate) fn parse_ons(
     let mut result = OnsMonth {
         reservoirs: BTreeMap::new(),
         non_hourly: 0,
+        invalid_flows: BTreeMap::new(),
     };
     let mut record = csv::StringRecord::new();
     let headers = csv.headers().map_err(|e| e.to_string())?.clone();
@@ -102,14 +104,25 @@ pub(crate) fn parse_ons(
             .single()
             .ok_or_else(|| format!("ambiguous or nonexistent ONS hour {hour}"))?
             .to_utc();
+        let mut measurement = |raw, signed| {
+            flow(raw, signed).unwrap_or_else(|_| {
+                *result
+                    .invalid_flows
+                    .entry(row.id_reservatorio.into())
+                    .or_default() += 1;
+                None
+            })
+        };
+        let inflow = measurement(row.val_vazaoafluente, true);
+        let outflow = measurement(row.val_vazaodefluente, false);
         result
             .reservoirs
             .entry(row.id_reservatorio.into())
             .or_default()
             .push(OnsHour {
                 local_hour: local_hour(at, zone)?,
-                inflow: flow(row.val_vazaoafluente, true)?,
-                outflow: flow(row.val_vazaodefluente, false)?,
+                inflow,
+                outflow,
             });
     }
     Ok(result)
@@ -125,11 +138,13 @@ mod tests {
             GAR ;2026-10-31 23:59:00;-5;0\n\
             GAR;2026-10-31 22:57:00;20;25\n\
             GAR;2026-11-01 01:00:00;2;3\n\
-            GAR;2026-10-31 04:00:00;2;\n";
+            GAR;2026-10-31 04:00:00;2;\n\
+            GRFURN;2026-10-31 05:00:00;19;-625\n\
+            GRFURN;2026-10-31 06:00:00;15;3\n";
         let date = "2026-10-31".parse().unwrap();
         let month = parse_ons(
             input,
-            &BTreeSet::from(["GAR".into()]),
+            &BTreeSet::from(["GAR".into(), "GRFURN".into()]),
             date,
             date,
             Sao_Paulo,
@@ -141,5 +156,10 @@ mod tests {
         assert_eq!(rows[0].inflow, Some(-5.0));
         assert_eq!(rows[0].outflow, Some(0.0));
         assert_eq!(rows[1].outflow, None);
+        assert_eq!(month.invalid_flows, BTreeMap::from([("GRFURN".into(), 1)]));
+        let rows = &month.reservoirs["GRFURN"];
+        assert_eq!(rows[0].inflow, Some(19.0));
+        assert_eq!(rows[0].outflow, None);
+        assert_eq!(rows[1].outflow, Some(3.0));
     }
 }

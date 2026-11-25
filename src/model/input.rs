@@ -1,6 +1,10 @@
 use crate::store::{BasinForcing, BasinGeometry};
 use chrono::{Datelike, NaiveDateTime, Timelike};
-use std::{fs, io::Write, path::Path};
+use std::{
+    fs,
+    io::{BufWriter, Write},
+    path::Path,
+};
 
 enum InputFailure {
     Invalid(String),
@@ -45,12 +49,16 @@ fn write_rainfall_inner(path: &Path, forcing: &BasinForcing) -> Result<(), Input
         .len()
         .checked_mul(4)
         .ok_or("rainfall length overflow")?;
-    let mut file = fs::File::create(path).map_err(|error| InputFailure::Io(error.to_string()))?;
+    let file = fs::File::create(path).map_err(|error| InputFailure::Io(error.to_string()))?;
+    let mut writer = BufWriter::with_capacity(64 * 1024, file);
     for value in &forcing.values {
-        file.write_all(&(*value as f32).to_le_bytes())
+        writer
+            .write_all(&(*value as f32).to_le_bytes())
             .map_err(|error| InputFailure::Io(error.to_string()))?;
     }
-    file.sync_all()
+    writer
+        .flush()
+        .and_then(|()| writer.get_ref().sync_all())
         .map_err(|error| InputFailure::Io(error.to_string()))
 }
 
