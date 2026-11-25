@@ -73,6 +73,13 @@ path rules, findings, and inspection limits. Library callers use the same
 
 ### Run an operation and retain its inputs
 
+For a visual tour, start with the [workspace tree and data roles](docs/contracts/workspace.md#operating-layout),
+then follow [station acquisition](docs/contracts/acquisition.md#ana-observations),
+[input capture and replay](docs/contracts/inputs.md#capture-save-and-replay),
+and [execution](docs/contracts/operations.md#run-from-a-workspace).
+The [architecture flow](docs/architecture.md#operational-data-flow) explains
+which module owns each stage.
+
 Set the routine run window and providers in the workspace’s `config.toml`.
 Import station metadata as described in the [acquisition
 contract](docs/contracts/acquisition.md). Run All acquires configured inputs,

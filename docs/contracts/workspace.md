@@ -75,16 +75,62 @@ flags, implicit variable/tilde expansion, YAML fallback, or migration commands.
 
 Select the same workspace directory in the CLI and desktop.
 
-| Location | Contents |
-| --- | --- |
-| `config.toml` | Routine workspace defaults, including provider, run, grid and interpolation settings |
-| `source/`, `model/` | Regional geometry, rasters and source inventory, and the installed MGB executable and model input directory |
-| `assets/observations/` | Canonical observations, station metadata, offsets, instructions and ANA coverage |
-| `assets/forecasts/` | Normalized forecast NetCDF grids and metadata by product and cycle |
-| `downloads/` | Original provider responses where retained |
-| `cache/inputs/` | The current frozen [run input set](inputs.md) |
-| `cache/run/` | The active results and rainfall generation selected by `active.json` |
-| `runs/history/` | Archived attempt manifests and bounded diagnostics |
+```text
+workspace/
+├── config.toml                 Routine provider, run, grid and interpolation defaults
+├── source/                     Regional geometry, rasters and source inventory
+├── model/
+│   ├── engine                  Installed MGB executable (engine.exe on Windows)
+│   └── Input/                  Baseline model inputs, calibration and initial state
+├── downloads/                  Original provider responses where retained
+├── assets/
+│   ├── observations/           Canonical stations, samples, edits, offsets and coverage
+│   └── forecasts/              Normalized forecast bases and discovery metadata
+├── cache/
+│   ├── inputs/                 Current frozen input set; see the input-set contract
+│   │   └── current.json        Selects the current input set
+│   └── run/                    Results and rainfall from one successful execution
+│       └── active.json         Selects the active successful generation
+└── runs/
+    └── history/                Past attempt manifests and bounded diagnostics
+```
+
+This is the operating layout, not an exhaustive list of generated files.
+Regional source and engine paths can be configured elsewhere. Generation members
+are application-managed; use the selected manifests rather than guessing filenames.
+
+### Data roles and retention
+
+| Area | Question it answers | Lifetime |
+| --- | --- | --- |
+| `assets/` | What data have we acquired and reviewed? | Updated by acquisition and review |
+| `cache/inputs/` | Which exact values and settings did this attempt select? | Replaced through the explicit input save/discard workflow |
+| `cache/run/` | What did the last successful execution produce? | Replaced only by a successfully published generation |
+| `runs/history/` | What happened in past attempts? | Manifests and bounded diagnostics, not full result archives |
+| Independently saved inputs or exported runs | What has the operator chosen to preserve? | Retained at an explicit destination under operator control |
+
+Inputs and results have separate lifecycles: a failed attempt can leave new
+current inputs while the previous successful results remain active. See
+[input retention](inputs.md#retention-and-failure-behavior) and
+[result publication](operations.md#active-run-and-rainfall-cache).
+
+### Data formats
+
+| Data | Format | Contract |
+| --- | --- | --- |
+| Stations, observations, review instructions, offsets and coverage | Typed Parquet 2 with Zstandard compression | [Observations](observations.md#data-model) |
+| Wind observations and reservoir schedules | Typed Parquet 2 with Zstandard compression | [Forcing](saved-data.md#forcing-state-and-calibration) |
+| Normalized forecast bases | NetCDF | [Forecasts](forecasts.md#native-values-and-persistence) |
+| Working rainfall grids and basin forcing | NetCDF | [Scenarios](operations.md#scenarios) |
+| Basin and station results | NetCDF | [Results](operations.md#engine-and-canonical-results) |
+| Input/run manifests and generation pointers | JSON | [Input sets](inputs.md#manifest-and-payload), [operations](operations.md) |
+| Routine defaults | TOML | [Configuration](#configuration) |
+| Regional geometry | Spatial files, including GeoPackage | [Spatial data](spatial.md) |
+
+Atomic manifests select complete generations; readers never depend on
+half-written tables. There is no operational SQLite dependency, migration path
+or fallback. Existing spatial GeoPackage files remain readable through the pure
+Rust spatial reader.
 
 Run `mgb-ops workspace init --workspace /region` to initialize canonical assets.
 Inventory import and workspace acquisition can also initialize them. Start a

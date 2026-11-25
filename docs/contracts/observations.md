@@ -11,8 +11,7 @@ existing destination. `open_read_only(path)` validates its tables and IANA
 timezone without creating data. `write_batch` commits all
 supplied rows together and rolls back invalid batches. Publication validates referential integrity and atomically selects a complete generation.
 
-Typed Parquet tables define stations,
-observation series, samples, rainfall replacements and station offsets. IDs are
+Typed Parquet tables implement the [data model](#data-model). IDs are
 nonempty strings. Station coordinates are both present or both absent. Missing
 station coordinates are permitted for search and data-only review; forcing
 interpolation requires coordinates for selected rain stations.
@@ -22,6 +21,36 @@ Replacement reason text may be empty or omitted; supplied text is preserved.
 Workspace edits are an ordered table. Review or change them in
 **Observation review** or [import/export them as CSV](saved-data.md#canonical-data-and-review).
 Saving replaces the list in an atomic publication.
+
+## Data model
+
+```mermaid
+erDiagram
+    STATION ||--o{ SERIES : has
+    SERIES ||--o{ SAMPLE : contains
+    SERIES ||--o{ PRECIPITATION_FLAG : flags
+    STATION ||--o{ REPLACEMENT : receives
+    STATION ||--o| OFFSET : references_model_mini
+    STATION ||--o{ LEVEL_REFERENCE : has
+    STATION ||--o{ INVENTORY_VARIABLE : enables
+    STATION ||--o{ COVERAGE : tracks_requests
+```
+
+The following are logical records; application-managed generations can store
+their rows across multiple files. IDs and timestamp labels are text unless
+otherwise specified.
+
+| Record | Fields |
+| --- | --- |
+| Station | `station_id`, `provider_code`, `station_code`, `name`, `latitude` and `longitude` (f64, both present or both absent) |
+| Series | `series_id`, `station_id`, `variable`, `state`, `unit`, `interval_seconds` (optional i64), `created_at` |
+| Sample | `series_id`, `observed_at`, nullable `rain` (f64), `flow` (f64), `level` (i32); the series identifies the applicable variable |
+| Replacement | `replacement_id`, `station_id`, `variable`, `kind`, `start_at`, optional `end_at`, nullable `value` (f64), optional `reason` |
+| Station offset | `station_id`, `mini_id` (positive i64), `offset_m` (finite f64) |
+| Level reference | `station_id`, `kind`, optional `date`, `level_cm` (finite f64 retaining source precision) |
+| Inventory variable | `station_id`, `variable` |
+| ANA coverage | `station_id`, `variables_key`, `day`; see [request selection](acquisition.md#inventory-and-request-selection) |
+| Precipitation flag | `series_id`, `observed_at`, `reason` |
 
 | Variable | Canonical value | Interval |
 | --- | --- | --- |
@@ -64,6 +93,18 @@ absent. Selected instructions apply in request order, with the last match winnin
 A NULL instruction removes availability; a numeric instruction can insert a
 missing sample. Instructions do not rewrite raw observations. Applicable edits
 for an unselected station fail; inactive edits remain recorded.
+
+```mermaid
+flowchart LR
+    accTitle: Effective rainfall and observed forcing
+    accDescr: Select one series per station, retain raw values, mask automatic flags, apply manual replacements in order, then interpolate through the working grid to model basins.
+    series[Select series per station] --> raw[Raw observations]
+    raw --> mask[Mask automatic precipitation flags]
+    mask --> edits[Apply manual replacements in order]
+    edits --> effective[Effective station rainfall]
+    effective --> grid[Station-to-grid IDW]
+    grid --> basin[Grid-to-basin IDW]
+```
 
 `detect_suspect_precipitation` reports values strictly above the supplied threshold
 and consecutive hourly sequences strictly between supplied lower/upper limits.

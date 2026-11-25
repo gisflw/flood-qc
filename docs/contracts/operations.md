@@ -17,6 +17,25 @@ The CLI `operation prepare` materializes saved inputs and stops before execution
 after its original sources change. Relative command paths resolve from the
 invocation directory. Paths in workspace settings resolve from the workspace.
 
+```mermaid
+flowchart TD
+    accTitle: Run All from acquisition to active results
+    accDescr: Acquire and freeze inputs, prepare forcing, run isolated history and forecast workers, then validate and publish the complete generation. Failure preserves previous results.
+    acquire[Acquire configured observations and forecasts] --> freeze[Freeze selected inputs and effective settings]
+    freeze --> forcing[Prepare canonical forcing and engine inputs]
+    forcing --> history[Execute history-only worker]
+    history --> scenarios[Execute isolated forecast scenario workers]
+    scenarios --> validate{All required outputs valid?}
+    validate -->|Yes| stage[Stage decoded results and rainfall together]
+    stage --> commit[Commit new active generation]
+    validate -->|No| retain[Retain diagnostics and previous active results]
+```
+
+The [input-set contract](inputs.md) defines capture, save/discard decisions and
+input retention. The [architecture](../architecture.md#operational-data-flow)
+maps these stages to their owners. Execution and publication failure handling
+is specified [below](#execution-lifecycle).
+
 Override the hour with `--reference-time` and the windows with
 `--lookback-days` and `--forecast-days`. Local labels use the workspace time
 zone and whole hours. History starts at midnight on the reference date minus
@@ -49,17 +68,37 @@ mgb-ops operation run-all --workspace /region \
   --scenario '{"id":"wet","base":{"kind":"scenario","id":"ifs"},"edits":[{"start":"2026-07-20T06:00:00","end":"2026-07-20T18:00:00","multiplication_factor":1.1,"rotation_deg":0,"shift_lat_pixels":0,"shift_lon_pixels":0}]}'
 ```
 
-For each native accumulation, divide its rainfall uniformly among its hours,
-then resample bilinearly onto the workspace grid. Each edit reads the previous
-edit’s working grid and affects local hourly intervals within `[start,end)`.
-The optional `bbox` is `[west,south,east,north]`. Only output cells with centres
-inside that box change. Positive rotation is counterclockwise around the box
-centre (the full working-grid centre when omitted). Translation precedes rotation
-and uses working-grid pixels, positive east and north. The transform samples
-the nearest source cell, preserves missingness and applies a finite nonnegative
-factor. A source outside the grid yields a missing output cell. Basin
-interpolation follows the ordered edits. Preview and execution use the same
-grid transformations. All scenarios share the effective [observation
+```mermaid
+flowchart LR
+    accTitle: Forecast scenario processing order
+    accDescr: Split native accumulations into hours and resample to the fixed workspace grid before applying edits and interpolating to model basins. A later scenario may use an earlier scenario's edited grid as its base.
+    native[Native forecast accumulations] --> hourly[Uniform hourly splitting]
+    hourly --> grid[Bilinear resampling to workspace grid]
+    grid --> first[Edit 1]
+    zero[Zero-rain base] --> first
+    earlier[Earlier scenario working grid] --> first
+    first --> next[Edit 2 through N]
+    next --> basin[Basin interpolation]
+```
+
+The edit sequence can be empty. Each edit reads the previous edit's grid;
+preview and execution use the same transformations. Processing order is part
+of the numerical contract: editing native accumulations before resampling is
+not equivalent to editing the hourly workspace grid.
+
+| Parameter or rule | Behavior |
+| --- | --- |
+| `id` | Unique user scenario ID; later scenarios may name it as their base |
+| `base` | Zero rainfall, a selected forecast, or an earlier scenario; forward references and cycles fail |
+| `start`, `end` | Hour-aligned local boundaries selecting hourly intervals within `[start,end)` |
+| `bbox` | Optional `[west,south,east,north]`; only output cells with centres inside the box change |
+| `multiplication_factor` | Finite nonnegative factor applied to sampled rainfall; defaults to one |
+| `shift_lon_pixels`, `shift_lat_pixels` | Translation in workspace-grid pixels, positive east and north; defaults to zero |
+| `rotation_deg` | Counterclockwise rotation after translation, around the box centre or full working-grid centre; defaults to zero |
+| Spatial sampling | Nearest source cell; missingness is preserved and an out-of-grid source produces missing output |
+| Grid footprint | Fixed across edits; transforms do not expand it |
+
+All scenarios share the effective [observation
 history](observations.md#selection-reviews-and-preparation).
 
 Library callers can edit typed `RunParameters` and `RunScenario` values in the
@@ -121,6 +160,22 @@ The prepared tree contains `sources/`, `baseline/Input/`, `baseline/engine`,
 historical/forecast `forcing/<id>.nc`. The baseline remains separate from
 writable engine inputs. Preparation stages a new destination and removes its
 staging files on failure or cancellation.
+
+```text
+<prepared>/
+├── manifest.json               Resolved recipe, input integrity and scenario records
+├── sources/                    Frozen canonical dependencies and recipe
+├── baseline/
+│   ├── Input/                  Retained baseline; separate from writable worker inputs
+│   └── engine                  Selected executable (engine.exe on Windows)
+├── forcing/
+│   └── <scenario>.nc           Combined historical and forecast basin forcing
+└── checkpoints/                Retained rainfall preparation checkpoints
+```
+
+Unlike this materialized preparation, an independently saved
+[input set](inputs.md#manifest-and-payload) excludes generated forcing and the
+executable bytes.
 
 Execution takes a nonblocking OS lock on `<workspace>/.operation.lock`, held until
 children and workers stop and file work finishes. Concurrent execution in that

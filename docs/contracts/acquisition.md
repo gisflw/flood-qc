@@ -55,34 +55,114 @@ selection and enabled variables from the canonical inventory.
 
 ## ANA observations
 
-The regional inventory supplies `provider_code`, `station_code`,
-`station_name`, `latitude`, `longitude`, and `observed_variables`. Names and
-coordinates update in place for known stations. Station codes match after
-trimming whitespace and leading zeros. Variables are `rain`, `level`, and
-`flow`, or `none` for a station that receives no requests. The acquisition
-workflow reads ANA rows from mixed-provider inventories and retains existing
-station identities.
+ANA is the integrated workspace station-acquisition path. BNDMET/INMET and ONS
+produce files through [standalone acquisition](#standalone-source-acquisition)
+for later ingestion.
 
-Acquisition requests uncovered São Paulo calendar dates for the enabled variables
-at each selected station. A successful request records coverage even for a day
-without readings. For the current provider day, coverage extends only through
-the last completed hour; a later requested hour fetches that day again. Future
-and incomplete-hour readings are excluded. `--force` requests all dates again.
-Each completed station retains `observed.csv` with columns `provider_code`, `station_code`,
-`observed_at`, `variable_code`, and `value`. Source response XML uses
-`YYYYMMDD__YYYYMMDD.xml` beside the CSV under
-`downloads/ana/<attempt>/<station>/`. An unsuccessful station still reports
-any XML already captured. [ANA ServiceANA operation](https://telemetriaws1.ana.gov.br/serviceana.asmx?op=DadosHidrometeorologicos)
+```mermaid
+flowchart TD
+    accTitle: ANA station acquisition and downstream preparation
+    accDescr: Inventory and settings select stations and uncovered dates. ANA responses are retained and normalized into hourly raw series, then coverage is recorded. Review and forcing preparation follow acquisition.
+    inventory[Import inventory CSV] --> stations[Canonical stations and enabled variables]
+    stations --> plan[Select stations and uncovered dates]
+    settings[Settings and reference hour] --> plan
+    coverage[Saved full-day and partial-day coverage] --> plan
+    plan --> fetch[Request ANA XML in bounded date windows]
+    fetch --> raw[Retain XML and normalized CSV]
+    raw --> hourly[Convert to canonical hourly samples]
+    hourly --> commit[Publish raw-series updates]
+    commit --> record[Record successful request coverage]
+    record --> coverage
+    commit --> review[Later: review and QC]
+    review --> freeze[Freeze run inputs and prepare forcing]
+```
 
-Source timestamps are reduced to minutes and normalized to São Paulo local
-time for CSV. Import converts to the observation store’s declared timezone and uses
-hour-ending buckets. Rain is in millimetres, level in centimetres, and flow in
-cubic metres per second. Level averages are rounded to an integer with ties to
-even. Empty source values yield no sample. Incoming values revise the station's
-unambiguous raw series in one transaction. Higher-ranked series, manual
-replacements, and already prepared run inputs retain their values. The regular
+### Inventory and request selection
+
+| Inventory column | Role |
+| --- | --- |
+| `provider_code`, `station_code` | Provider identity; acquisition selects ANA rows from a mixed-provider inventory |
+| `station_name` | Display name, updated for known stations |
+| `latitude`, `longitude` | Station coordinates, updated for known stations |
+| `observed_variables` | Enabled `rain`, `level`, and/or `flow`; `none` disables requests for that station |
+
+Station codes match after trimming whitespace and leading zeros. Import retains
+existing station identities. Acquisition reads the saved canonical inventory;
+editing the original CSV takes effect after another inventory import.
+
+For each selected station, acquisition considers São Paulo calendar dates in
+the configured lookback window. Coverage is keyed by station and the selected
+variable set. Stations are processed sequentially; consecutive uncovered dates
+are grouped into requests bounded by the configured window size.
+
+| Coverage or request condition | Action |
+| --- | --- |
+| Historical date has no successful coverage record | Fetch the date |
+| Historical date was successfully requested, including an empty response | Reuse coverage and skip the date |
+| Current provider day is covered through the requested reference hour | Reuse partial-day coverage |
+| A later current-day hour is requested | Fetch that day again |
+| `--force` is supplied | Request all dates in the configured window again |
+
+Missing measurements alone do not invalidate successful historical coverage.
+Use `--force` to retrieve revisions or retry a previously empty historical day.
+Full-day coverage is stored with canonical observations; current-day progress
+is retained in `assets/ana-partial-coverage.json`. Future and incomplete-hour
+readings are excluded using the current completed-hour cutoff.
+
+### Retained responses and normalization
+
+Requests use the [ANA ServiceANA operation](https://telemetriaws1.ana.gov.br/serviceana.asmx?op=DadosHidrometeorologicos).
+XML is retained before parsing. A completed station also retains the normalized CSV:
+
+```text
+downloads/ana/<attempt>/<station>/
+├── YYYYMMDD__YYYYMMDD.xml       Original response for each requested date window
+└── observed.csv                Normalized source readings before hourly import
+```
+
+The CSV columns are `provider_code`, `station_code`, `observed_at`,
+`variable_code`, and `value`. Source timestamps are reduced to minutes and
+normalized to São Paulo local time for CSV. Import converts them to the
+observation store's declared timezone and groups readings into hour-ending
+buckets: readings at 10:15 and 10:45 contribute to the sample labelled 11:00;
+a reading exactly at 11:00 also belongs to that bucket.
+
+| Variable | Hourly aggregation | Canonical value |
+| --- | --- | --- |
+| Rain | Sum | Finite f64 millimetres |
+| Level | Mean, then nearest integer with ties to even | Signed i32 centimetres |
+| Flow | Mean | Finite f64 cubic metres per second |
+
+Empty source values yield no sample. Numeric zero is valid. The
+[observation contract](observations.md#data-model) defines canonical schemas
+and missing-value semantics.
+
+### Publication, failures and downstream use
+
+Incoming values revise the station's unambiguous raw series in one transaction;
+a raw series is created when needed. Coverage is recorded after successful
+station processing. Higher-ranked series, manual replacements, and already
+frozen run inputs retain their values. The regular
 [canonical JSON intake](saved-data.md#canonical-data-and-review) still rejects
 conflicting raw samples.
+
+| Outcome | Retained data |
+| --- | --- |
+| Station succeeds | Published raw observations, normalized CSV, XML and coverage |
+| Station fails | Already captured XML and previously committed data; the failure is reported and other stations can continue |
+| Acquisition is cancelled | Committed station data and responses already captured |
+
+Acquisition stores raw canonical measurements. Automatic precipitation flags,
+ordered manual replacements and interpolation belong to later
+[review and preparation](observations.md#selection-reviews-and-preparation).
+Run All completes acquisition before [freezing its input set](inputs.md).
+
+| Owner | Responsibility in this flow |
+| --- | --- |
+| `app` | Select stations and dates, coordinate requests, imports and coverage updates |
+| `adapters` | Provider requests, XML/CSV parsing, timezone conversion and hourly aggregation |
+| `store` | Validate and publish raw series, inventory and coverage |
+| `analysis` | Downstream QC, effective observations and forcing preparation |
 
 ## Forecast acquisition
 

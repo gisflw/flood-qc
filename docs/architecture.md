@@ -69,6 +69,47 @@ composition lives in app. Prefer deep modules with narrow APIs and private inter
 Define concrete schemas, units, interval bounds, and missing-value semantics when
 first used. Do not equate missing values with zero or silently discard timezones.
 
+## Operational data flow
+
+```mermaid
+flowchart TD
+    accTitle: Operational data flow and responsibility boundaries
+    accDescr: App coordinates adapters, store, analysis and model. Sources become canonical assets and frozen inputs, analysis prepares forcing, model runs MGB and decodes results, and app requests publication through store.
+    sources[Providers and regional source files] --> intake[adapters: parse and normalize]
+    intake --> assets[store: reusable canonical assets]
+    defaults[TOML defaults and session experiments] --> select[app: resolve selection and effective settings]
+    assets --> select
+    select --> frozen[store: freeze and index selected input values]
+    baseline[Model configuration, calibration and initial state] --> frozen
+    frozen --> forcing[analysis: QC, edits and canonical forcing]
+    forcing --> model[model: serialize inputs and execute]
+    model --> engine[External MGB numerical engine]
+    engine --> decode[model: validate streams and decode outputs]
+    decode --> outcome{app: all required outputs valid?}
+    outcome -->|Yes| publish[store: publish results and rainfall generation]
+    outcome -->|No| failed[store: retain attempt manifest and diagnostics]
+    publish --> reports[analysis: diagnostics and report rendering]
+    publish --> interfaces[CLI and desktop: display selected results]
+```
+
+Arrows describe data movement, not additional module dependencies. App
+coordinates cross-owner stages through the ownership boundaries above.
+Model configuration and initial state travel with frozen inputs; numerical
+simulation remains in the external executable.
+
+| Decision | Owner | Reason |
+| --- | --- | --- |
+| Which data, edits, settings and scenarios enter a run? | `app` | Selection policy belongs to the workflow, independent of provider parsing and storage |
+| How are canonical files validated, indexed and published? | `store` | One owner controls integrity and file lifecycle |
+| How do observations and forecast grids become forcing? | `analysis` | Scientific transformations can run on explicit values without provider or storage access |
+| How are inputs serialized and engine outputs interpreted? | `model` | Engine format and execution mechanics stay together |
+| Is a complete attempt ready to become active? | `app` | Success and failure policy spans all requested scenarios and outputs |
+| How is the new generation made visible? | `store` | Atomic publication and retirement are persistence responsibilities |
+
+Supported layouts and formats live in the [workspace contract](contracts/workspace.md#operating-layout),
+input retention in [input sets](contracts/inputs.md), and the operator execution
+sequence in [operations](contracts/operations.md#run-from-a-workspace).
+
 ## Application sessions and the assistant
 
 App owns the process-local session for an explicitly selected workspace. It

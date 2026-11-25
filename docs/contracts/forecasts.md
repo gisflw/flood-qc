@@ -46,6 +46,28 @@ Working grids and basin forcing belong to their preparation or run.
 Ordered edits are [scenario parameters](operations.md#scenarios);
 the operation manifest retains their values and base identities.
 
+| Asset metadata | Purpose |
+| --- | --- |
+| Provider, model, product, UTC cycle | Operator selection and source-cycle provenance |
+| Physical grid and operation timezone | Logical asset identity alongside provider labels and cycle |
+| Valid interval coverage | Decide whether a base covers the requested forecast window |
+| Normalized artifact path, byte length and SHA-256 | Verify the canonical NetCDF used by preparation |
+| Source format, identity, retained path and digest | Retain source provenance independently of normalized-grid reuse |
+| Normalization settings and crop metadata | Explain how the native canonical values were produced |
+
+```text
+assets/forecasts/<asset-id>/
+├── metadata.json               Discovery, identity, coverage and integrity
+├── native.nc                   Normalized native intervals and grid
+└── ...                         Retained source payload where present
+```
+
+The tree illustrates the payload roles; a forced refresh can publish different
+retained filenames through the metadata. Readers follow the recorded paths.
+Reuse validates the normalized artifact and works after the original download
+is removed. Derived scenario grids belong to preparations and results, outside
+the acquired asset catalog.
+
 ## Pure preparation
 
 Preview and execution apply the [scenario transformation](operations.md#scenarios)
