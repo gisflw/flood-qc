@@ -7,7 +7,7 @@ use crate::store::{
 };
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 #[derive(Clone, Copy)]
 pub enum CanonicalForcingKind {
@@ -21,13 +21,25 @@ pub fn save_canonical_forcing(
     kind: CanonicalForcingKind,
 ) -> Result<(), String> {
     let bytes = fs::read(source).map_err(|error| error.to_string())?;
+    let parent = destination.parent().unwrap_or(Path::new("."));
+    let temporary = tempfile::NamedTempFile::new_in(parent).map_err(|e| e.to_string())?;
     match kind {
-        CanonicalForcingKind::Reservoirs => parse_reservoirs(&bytes).map(|_| ())?,
-        CanonicalForcingKind::Wind => parse_wind(&bytes).map(|_| ())?,
+        CanonicalForcingKind::Reservoirs => {
+            crate::store::write_reservoir_schedules(temporary.path(), &parse_reservoirs(&bytes)?)
+                .map_err(|e| e.to_string())?
+        }
+        CanonicalForcingKind::Wind => {
+            crate::store::write_wind_observations(temporary.path(), &parse_wind(&bytes)?)
+                .map_err(|e| e.to_string())?
+        }
     }
+    let canonical = fs::read(temporary.path()).map_err(|e| e.to_string())?;
     if destination.try_exists().map_err(|e| e.to_string())? {
         if digest_file(destination)?
-            == (format!("{:x}", Sha256::digest(&bytes)), bytes.len() as u64)
+            == (
+                format!("{:x}", Sha256::digest(&canonical)),
+                canonical.len() as u64,
+            )
         {
             return Ok(());
         }
@@ -36,7 +48,7 @@ pub fn save_canonical_forcing(
             destination.display()
         ));
     }
-    crate::store::write_new_atomic(destination, &bytes)
+    crate::store::write_new_atomic(destination, &canonical)
 }
 
 fn parse_reservoirs(bytes: &[u8]) -> Result<ReservoirSchedules, String> {
@@ -133,10 +145,10 @@ pub(super) fn soil_identity(
 
 pub(super) struct AdditionalInputs {
     pub prepared: PreparedAdditionalForcing,
-    pub raw_files: Vec<(&'static str, Vec<u8>)>,
 }
 
 pub(super) fn capture(
+    staging: &Path,
     request: &ValidatedRequest,
     observations: &ObservationInputs,
     registered: &[ObservationReplacement],
@@ -149,15 +161,24 @@ pub(super) fn capture(
     else {
         return Ok(None);
     };
-    let read_bytes = |path: &Option<PathBuf>| -> Result<Option<Vec<u8>>, String> {
-        path.as_deref()
-            .map(|path| fs::read(path).map_err(|error| format!("{}: {error}", path.display())))
-            .transpose()
-    };
-    let schedules = read_bytes(&doc.reservoir_schedules)?;
-    let wind = read_bytes(&doc.wind_observations)?;
-    let reservoirs = schedules.as_deref().map(parse_reservoirs).transpose()?;
-    let wind_values = wind.as_deref().map(parse_wind).transpose()?;
+    let reservoirs = doc
+        .reservoir_schedules
+        .as_ref()
+        .map(|_| {
+            crate::store::read_reservoir_schedules(
+                &staging.join("sources/reservoir-schedules.parquet"),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .transpose()?;
+    let wind_values = doc
+        .wind_observations
+        .as_ref()
+        .map(|_| {
+            crate::store::read_wind_observations(&staging.join("sources/wind-observations.parquet"))
+                .map_err(|e| e.to_string())
+        })
+        .transpose()?;
     let selected_ids = flow_ids(Some(doc));
     let mut raw = observations.clone();
     raw.series
@@ -223,15 +244,5 @@ pub(super) fn capture(
         wind_values.as_ref(),
     )
     .map_err(|e| e.to_string())?;
-    let raw_files = [
-        ("reservoir-schedules.json", schedules),
-        ("wind-observations.json", wind),
-    ]
-    .into_iter()
-    .filter_map(|(name, value)| value.map(|bytes| (name, bytes)))
-    .collect();
-    Ok(Some(AdditionalInputs {
-        prepared,
-        raw_files,
-    }))
+    Ok(Some(AdditionalInputs { prepared }))
 }

@@ -68,6 +68,10 @@ enum Command {
         #[arg(long, global = true)]
         json: bool,
     },
+    Inputs {
+        #[command(subcommand)]
+        command: InputCommand,
+    },
     Operation {
         #[command(subcommand)]
         command: OperationCommand,
@@ -264,13 +268,13 @@ enum ObservationCommand {
     },
     Init {
         #[arg(long)]
-        database: PathBuf,
+        assets: PathBuf,
         #[arg(long)]
         time_zone: String,
     },
     Import {
         #[arg(long)]
-        database: PathBuf,
+        assets: PathBuf,
         #[arg(long)]
         input: PathBuf,
     },
@@ -288,7 +292,7 @@ enum ObservationCommand {
     },
     Inventory {
         #[arg(long)]
-        database: PathBuf,
+        assets: PathBuf,
         #[arg(long)]
         input: PathBuf,
     },
@@ -308,6 +312,8 @@ enum ObservationCommand {
 
 #[derive(Args)]
 struct AcquisitionOptions {
+    #[arg(long)]
+    force: bool,
     #[arg(long)]
     workspace: PathBuf,
     #[arg(long)]
@@ -433,7 +439,7 @@ enum RunCommand {
         #[arg(long)]
         run: PathBuf,
         #[arg(long)]
-        prepared: Option<PathBuf>,
+        inputs: Option<PathBuf>,
         #[arg(long)]
         output: PathBuf,
     },
@@ -452,6 +458,8 @@ enum RunCommand {
         bundle: PathBuf,
         #[arg(long)]
         engine: PathBuf,
+        #[command(flatten)]
+        policy: InputPolicy,
         #[arg(long)]
         json: bool,
     },
@@ -460,7 +468,7 @@ enum RunCommand {
 enum ReferenceCommand {
     Import {
         #[arg(long)]
-        database: PathBuf,
+        assets: PathBuf,
         #[arg(long)]
         provider: String,
         #[arg(long)]
@@ -493,6 +501,12 @@ enum InundationCommand {
 struct RunOptions {
     #[arg(long)]
     workspace: PathBuf,
+    #[arg(long)]
+    config: Option<PathBuf>,
+    #[command(flatten)]
+    input_policy: InputPolicy,
+    #[arg(long)]
+    force: bool,
     #[arg(long)]
     reference_time: Option<String>,
     #[arg(long)]
@@ -529,26 +543,106 @@ fn parse_routing(value: &str) -> Result<mgb_ops::app::RoutingMode, String> {
 }
 
 impl RunOptions {
-    fn operation(self) -> Result<mgb_ops::app::OperationalRun, String> {
-        let mut operation =
-            mgb_ops::app::OperationalRun::open_workspace(self.workspace, chrono::Utc::now())?;
-        operation.set_parameters(mgb_ops::app::RunParameters {
-            reference_time: self.reference_time,
-            lookback_days: self.lookback_days,
-            forecast_days: self.forecast_days,
-            scenarios: (!self.scenarios.is_empty()).then_some(self.scenarios),
-            forcing: self.forcing.as_deref().map(parse_parameter).transpose()?,
-            calibration: self
-                .calibration
-                .as_deref()
-                .map(parse_parameter)
-                .transpose()?,
-            geometry: self.geometry,
-            hot_start: self.hot_start.as_deref().map(parse_parameter).transpose()?,
-            routing: self.routing.as_deref().map(parse_routing).transpose()?,
+    fn session(self) -> Result<mgb_ops::app::Session, String> {
+        let session = mgb_ops::app::Session::new(mgb_ops::InspectionRequest {
+            workspace: self.workspace,
+            invocation_dir: std::env::current_dir().map_err(|e| e.to_string())?,
+            config: self.config,
+            gpkg_path: None,
+            engine_executable: None,
+            engine_input_dir: None,
         });
-        Ok(operation)
+        let setup = session
+            .run_setup()
+            .ok_or("Set valid workspace run defaults")?;
+        session.update_run_setup(
+            &setup.revision,
+            mgb_ops::app::RunParameters {
+                reference_time: self.reference_time,
+                lookback_days: self.lookback_days,
+                forecast_days: self.forecast_days,
+                scenarios: (!self.scenarios.is_empty()).then_some(self.scenarios),
+                forcing: self.forcing.as_deref().map(parse_parameter).transpose()?,
+                calibration: self
+                    .calibration
+                    .as_deref()
+                    .map(parse_parameter)
+                    .transpose()?,
+                geometry: self.geometry,
+                hot_start: self.hot_start.as_deref().map(parse_parameter).transpose()?,
+                routing: self.routing.as_deref().map(parse_routing).transpose()?,
+            },
+        )?;
+        Ok(session)
     }
+    fn operation(self) -> Result<mgb_ops::app::OperationalRun, String> {
+        self.session()?
+            .run_setup()
+            .map(|s| s.operation)
+            .ok_or_else(|| "Set valid run defaults".into())
+    }
+}
+
+#[derive(Args, Clone, Default)]
+struct InputPolicy {
+    /// Save the previous unsaved inputs before replacing them.
+    #[arg(long, conflicts_with = "discard_inputs")]
+    save_inputs_to: Option<PathBuf>,
+    /// Explicitly discard the previous inputs when replacing them.
+    #[arg(long)]
+    discard_inputs: bool,
+}
+impl InputPolicy {
+    fn control(&self, control: &mgb_ops::OperationControl) -> mgb_ops::OperationControl {
+        if let Some(destination) = &self.save_inputs_to {
+            control
+                .clone()
+                .with_input_disposition(mgb_ops::app::InputDisposition::Save {
+                    destination: destination.clone(),
+                })
+        } else if self.discard_inputs {
+            control
+                .clone()
+                .with_input_disposition(mgb_ops::app::InputDisposition::Discard)
+        } else {
+            control.clone()
+        }
+    }
+}
+#[derive(Subcommand)]
+enum InputCommand {
+    /// Capture a self-contained input set from the current session selections.
+    Capture(RunOptions),
+    /// Validate and inspect an independently saved input set.
+    Open {
+        #[arg(long)]
+        inputs: PathBuf,
+    },
+    /// Save the current input set independently of acquisition assets and outputs.
+    Save {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Discard current inputs, preserving run manifests.
+    Discard {
+        #[arg(long)]
+        workspace: PathBuf,
+    },
+    /// Regenerate and run using a matching installed executable.
+    Execute {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        inputs: PathBuf,
+        #[arg(long)]
+        engine: PathBuf,
+        #[command(flatten)]
+        policy: InputPolicy,
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -567,6 +661,8 @@ enum OperationCommand {
         workspace: PathBuf,
         #[arg(long)]
         prepared: PathBuf,
+        #[command(flatten)]
+        policy: InputPolicy,
         #[arg(long)]
         json: bool,
     },
@@ -621,7 +717,7 @@ enum ConfigCommand {
 }
 #[derive(Subcommand)]
 enum WorkspaceCommand {
-    /// Initialize the workspace database using config.toml.
+    /// Initialize the workspace assets using config.toml.
     Init {
         #[arg(long)]
         workspace: PathBuf,
@@ -713,16 +809,13 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                         &mut out,
                     );
                 }
-                ObservationCommand::Init {
-                    database,
-                    time_zone,
-                } => {
-                    ObservationStore::create(&database, &time_zone)?;
-                    serde_json::to_value(BTreeMap::from([("database", database)]))?
+                ObservationCommand::Init { assets, time_zone } => {
+                    ObservationStore::create(&assets, &time_zone)?;
+                    serde_json::to_value(BTreeMap::from([("assets", assets)]))?
                 }
-                ObservationCommand::Import { database, input } => {
+                ObservationCommand::Import { assets, input } => {
                     let batch: mgb_ops::store::ObservationBatch = read_json(&input)?;
-                    ObservationStore::open_writable(&database)?.ingest_batch(&batch)?;
+                    ObservationStore::open_writable(&assets)?.ingest_batch(&batch)?;
                     serde_json::to_value(BTreeMap::from([
                         ("stations", batch.stations.len()),
                         ("samples", batch.samples.len()),
@@ -736,9 +829,9 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     let count = mgb_ops::app::export_workspace_inventory(&workspace, &output)?;
                     serde_json::to_value(BTreeMap::from([("stations", count)]))?
                 }
-                ObservationCommand::Inventory { database, input } => {
+                ObservationCommand::Inventory { assets, input } => {
                     let stations: Vec<mgb_ops::store::Station> = read_json(&input)?;
-                    ObservationStore::open_writable(&database)?
+                    ObservationStore::open_writable(&assets)?
                         .update_station_inventory(&stations)?;
                     serde_json::to_value(BTreeMap::from([("stations", stations.len())]))?
                 }
@@ -840,10 +933,10 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             match command {
                 RunCommand::Export {
                     run,
-                    prepared,
+                    inputs,
                     output,
                 } => {
-                    let report = mgb_ops::app::export_run(&run, prepared.as_deref(), &output)?;
+                    let report = mgb_ops::app::export_run(&run, inputs.as_deref(), &output)?;
                     serde_json::to_writer(&mut out, &report)?;
                 }
                 RunCommand::Import {
@@ -858,10 +951,16 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     workspace,
                     bundle,
                     engine,
+                    policy,
                     json,
                 } => {
                     let result = progress::run(&mut out, true, |control| {
-                        mgb_ops::app::regenerate_run(&workspace, &bundle, &engine, control)
+                        mgb_ops::app::regenerate_run(
+                            &workspace,
+                            &bundle,
+                            &engine,
+                            &policy.control(control),
+                        )
                     })?;
                     let Some(report) = operation_result(result, json, &mut out)? else {
                         return Ok(false);
@@ -927,11 +1026,11 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         Command::References { command, json } => {
             let result = match command {
                 ReferenceCommand::Import {
-                    database,
+                    assets,
                     provider,
                     thresholds,
                     history,
-                } => mgb_ops::import_level_references(&database, &provider, &thresholds, &history)
+                } => mgb_ops::import_level_references(&assets, &provider, &thresholds, &history)
                     .and_then(|report| serde_json::to_value(report).map_err(|e| e.to_string())),
             };
             if json {
@@ -957,14 +1056,73 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 Ok(true)
             }
         }
+        Command::Inputs { command } => {
+            match command {
+                InputCommand::Capture(options) => {
+                    let json = options.json;
+                    let policy = options.input_policy.clone();
+                    let force = options.force;
+                    let session = options.session()?;
+                    let result = progress::run(&mut out, json, |control| {
+                        mgb_ops::app::capture_workspace_inputs(
+                            &session,
+                            &policy.control(control).with_force_acquisition(force),
+                        )
+                    })?;
+                    let manifest = result?;
+                    serde_json::to_writer_pretty(&mut out, &manifest)?;
+                }
+                InputCommand::Open { inputs } => {
+                    serde_json::to_writer_pretty(
+                        &mut out,
+                        &mgb_ops::store::read_input_set(&inputs)?,
+                    )?;
+                }
+                InputCommand::Save { workspace, output } => {
+                    serde_json::to_writer_pretty(
+                        &mut out,
+                        &mgb_ops::app::save_workspace_inputs(&workspace.canonicalize()?, &output)?,
+                    )?;
+                }
+                InputCommand::Discard { workspace } => {
+                    mgb_ops::app::discard_workspace_inputs(&workspace.canonicalize()?)?;
+                }
+                InputCommand::Execute {
+                    workspace,
+                    inputs,
+                    engine,
+                    policy,
+                    json,
+                } => {
+                    let result = progress::run(&mut out, json, |control| {
+                        mgb_ops::app::execute_input_set(
+                            &workspace,
+                            &inputs,
+                            &engine,
+                            &policy.control(control),
+                        )
+                    })?;
+                    let Some(report) = operation_result(result, json, &mut out)? else {
+                        return Ok(false);
+                    };
+                    serde_json::to_writer_pretty(&mut out, &report)?;
+                }
+            }
+            writeln!(out)?;
+            Ok(true)
+        }
         Command::Operation {
             command: OperationCommand::RunAll(options),
         } => {
             let json = options.json;
             let report = progress::run_all(&mut out, json, |control| {
+                let configured = options
+                    .input_policy
+                    .control(control)
+                    .with_force_acquisition(options.force);
                 options
                     .operation()
-                    .map(|operation| operation.run_all_report(control))
+                    .map(|operation| operation.run_all_report(&configured))
             })?;
             let report = match report {
                 Ok(report) => report,
@@ -1010,6 +1168,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 OperationCommand::Execute {
                     workspace,
                     prepared,
+                    policy,
                     json,
                 },
         } => {
@@ -1021,7 +1180,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                         invocation_dir,
                         prepared,
                     },
-                    control,
+                    &policy.control(control),
                 )
             })?;
             let Some(report) = operation_result(result, json, &mut out)? else {
@@ -1039,10 +1198,11 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         } => {
             let json = options.json;
             let result = progress::acquire(&mut out, json, |control| {
+                let configured = control.clone().with_force_acquisition(options.force);
                 mgb_ops::app::acquire_inputs(
                     &options.request(),
                     mgb_ops::app::AcquisitionKind::Forecasts,
-                    control,
+                    &configured,
                 )
             })?;
             acquisition_result(result, json, true, &mut out)
@@ -1117,8 +1277,8 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         Command::Workspace {
             command: WorkspaceCommand::Init { workspace },
         } => {
-            let database = mgb_ops::app::initialize_workspace(&workspace)?;
-            writeln!(out, "{}", database.display())?;
+            let assets = mgb_ops::app::initialize_workspace(&workspace)?;
+            writeln!(out, "{}", assets.display())?;
             Ok(true)
         }
         Command::Workspace {

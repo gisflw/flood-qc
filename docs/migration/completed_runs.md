@@ -15,29 +15,17 @@ provide additional operational examples.
 
 ## Implementation direction
 
-The first operational increment generates a per-run JSON manifest and numerical
-outputs for CLI/desktop consumption. It records selected
-settings, ordered replacement/correction values, input identities/references,
-scenario outcomes and output locations. Actual working inputs are frozen before
-execution so later acquisitions/edits cannot change that execution.
-
-Operators may copy the artifact, input dependencies, results and cache outputs
-elsewhere for long-term storage. Add no retention flags, cleanup policy or archive
-manager to the saved-run increment. Copying only the recipe does not preserve the
-referenced bytes; regeneration requires those inputs and a compatible executable
-to remain available. Caches may avoid recomputation but do not recover missing
-source dependencies by implication.
-
-Later completed-run sharing can build on these generated files. Imported runs
-must not silently overwrite local data. Each execution has independent outcomes;
-failed runs preserve diagnostics and successful siblings' outputs without an
-official-set pointer. Any future automated export/import capability must state
-which dependencies it packages rather than promise unconditional regeneration.
+The [input-set contract](../contracts/inputs.md) specifies saved inputs and the
+required installed engine identity. The [operation
+contract](../contracts/operations.md#active-run-and-rainfall-cache) specifies
+active results and archived attempt manifests. The [sharing
+contract](../contracts/saved-data.md#sharing-and-automation) covers bundle
+export, import and regeneration.
 
 ## Evidence of completion
 
-Verify the GUI can consume the generated run JSON manifest and outputs. For a copied
-case with all referenced dependencies and a compatible engine available,
-regenerate inputs/results and compare against the saved evidence. Missing
-references fail explicitly; a recipe alone does not guarantee regeneration.
-Sharing/import acceptance belongs to that later capability.
+Compare executed outputs with a repeat from independently saved inputs after
+removing acquisition assets from the disposable workspace. Check export and
+import both with and without inputs, engine mismatch, incomplete or modified
+payloads, and preservation of the previous active results on failure. Track
+platform qualification and open checks in the [migration checklist](summary.md).

@@ -78,8 +78,8 @@ guard through artifact access. Run parameter proposals apply to the same
 session and revision, with updates serialized against job admission.
 
 Saved assistant conversations are local application state, separate from regional
-operational records, so browsing an inspect-only workspace does not require an
-initialized operation database. Store owns their persistence. Agent working
+operational records, so browsing an inspect-only workspace does not require
+initialized acquisition assets. Store owns their persistence. Agent working
 directories remain isolated per conversation; connection credentials are ephemeral.
 
 The assistant uses ACP for agent interaction and an MCP connection scoped to
@@ -89,12 +89,20 @@ form. See the [assistant contract](contracts/assistant.md).
 
 ## Operational data decisions
 
-Saved operations use Rust-owned canonical formats. The workspace's
-`operation.sqlite` holds observations, station metadata, review instructions,
-forecast records, the run index, and the active generation. Initialize the
-complete schema without database schema versioning. NetCDF holds large
-scientific arrays. Store owns the schemas and the lifecycle of those files.
-A run manifest carries the resolved inputs and outcomes.
+Canonical observations and other tabular inputs use typed Parquet 2. Normalized
+forecast bases use NetCDF. Acquisition assets are discovered from their folders
+and coverage metadata; SQL databases and a shared object registry are unnecessary.
+Store owns canonical formats, atomic publication, integrity, and file lifecycle.
+The pure Rust GeoPackage reader remains a spatial capability; operational code
+has no SQLite dependency or legacy data fallback.
+
+Each run has a self-contained input set, independent of subsequent acquisition
+or edits. The [input-set contract](contracts/inputs.md) defines saving and discard.
+TOML owns routine defaults; app's shared session owns experiments and revisioned
+job admission; manifests own resolved values and changing model configuration.
+Historical runs retain manifests. Current inputs and the active successful result
+generation have independent lifecycles. Derived scenarios are recipes and
+disposable materializations, rather than acquired assets.
 
 Geometry and CRS readers are store capabilities using the pinned Terrio vector
 integration. Analysis derives upstream membership from validated model topology and local areas, not map-coordinate
@@ -106,9 +114,8 @@ Observation replacements preserve raw measurements and support a point or a
 [start,end) period, with an absent end meaning indefinitely. NA replacements
 express exclusions. Automatic precipitation flags mask raw rainfall in the
 final observation view before replacements; ordered selected instructions apply with last match winning.
-App selects forecast scenarios for each run. Each corrected scenario binds
-ordered transformation values to a concrete asset. The run manifest owns
-those values. See [scenario selection](contracts/operations.md#scenarios).
+App selects a base and ordered working-grid edits for each scenario. The run
+manifest owns the resolved base identity and edit values. See [scenario selection](contracts/operations.md#scenarios).
 
 
 Canonical timestamps use the operation's timezone, recorded in artifact metadata.
@@ -176,8 +183,11 @@ Saved preparation and execution follow these rules:
   Store retains values or immutable versions, not merely selectors, mutable paths,
   or hashes without retained data.
 - Later acquisition/editing cannot alter an execution. Refreshing inputs creates a
-  new snapshot. An explicitly saved preparation retains the data for exact
-  execution later.
+  new input set. Users explicitly save or discard current inputs before replacing
+  them. Current input sets use atomic cache publication without a power-loss
+  durability guarantee. An explicitly saved set is independently verified and
+  synced before it is marked saved; it regenerates forcing with a matching
+  installed engine.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
 - Each workspace publishes a single active generation containing results and
@@ -185,12 +195,12 @@ Saved preparation and execution follow these rules:
   generation. Store owns atomic publication and file retirement. App decides
   when to commit based on all requested scenarios and required outputs.
 - Superseded and failed attempts retain their manifests. Operators explicitly
-  export full results or save reusable preparations for long-term retention.
+  export full results or save input sets for long-term retention.
   See the [operation contract](contracts/operations.md#active-run-and-rainfall-cache).
 
 The [operation contract](contracts/operations.md) defines prepared snapshots,
 isolated execution and the active cache. App owns cancellation
 and progress. Model stops and reaps its owned child processes using an explicit
 cancellation signal. CLI uses `ctrlc` for portable SIGINT delivery to that shared
-control, rather than asynchronous signal handling inside the engine layer. The saved state is carried
-unchanged; hot-start generation and chaining follow later.
+control, rather than asynchronous signal handling inside the engine layer. Baseline state travels with the selected engine inputs. State capture and the
+limits of restart support are described in [forcing and state](contracts/saved-data.md#forcing-state-and-calibration).

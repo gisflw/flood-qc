@@ -185,7 +185,7 @@ pub fn open(
             );
         }
     }
-    let history = mgb_ops::app::operation_database(&project.workspace);
+    let history = mgb_ops::app::observation_assets(&project.workspace);
     match canonical::ObservationStore::open_read_only(&history) {
         Ok(observations) => {
             match observations.time_zone() {
@@ -244,7 +244,7 @@ pub fn open(
             }
         }
     }
-    let catalog = mgb_ops::app::operation_database(&project.workspace);
+    let catalog = mgb_ops::app::forecast_assets(&project.workspace);
     if catalog.exists() {
         match canonical::ForecastCatalog::open_read_only(&project.workspace, &catalog)
             .and_then(|c| c.asset_choices())
@@ -463,7 +463,7 @@ pub fn chart_selections(
                 _ => continue,
             };
             selections.push(SeriesSelection::Observation {
-                database: mgb_ops::app::operation_database(&project.workspace),
+                database: mgb_ops::app::observation_assets(&project.workspace),
                 series_id: series.clone(),
                 variable,
                 effective: false,
@@ -978,7 +978,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             std::fs::remove_dir_all(&synthetic).unwrap();
         }
         saved_trial(&synthetic, geometry.longitudes[0], geometry.latitudes[0]);
-        let history = root.join("operation.sqlite");
+        let history = root.join("assets/observations");
         if !history.exists() {
             let mut database = canonical::ObservationStore::create(&history, "UTC").unwrap();
             let station_id = "002".to_owned();
@@ -1097,7 +1097,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         }]));
         std::fs::create_dir_all(root.join("data")).unwrap();
         let mut database =
-            canonical::ObservationStore::create(&root.join("operation.sqlite"), "UTC").unwrap();
+            canonical::ObservationStore::create(&root.join("assets/observations"), "UTC").unwrap();
         database
             .write_batch(&canonical::ObservationBatch {
                 stations: vec![canonical::Station {
@@ -1134,7 +1134,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
         let original = std::fs::read(&config).unwrap();
         let mut database =
-            canonical::ObservationStore::create(&root.join("operation.sqlite"), "UTC").unwrap();
+            canonical::ObservationStore::create(&root.join("assets/observations"), "UTC").unwrap();
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         database
             .write_batch(&canonical::ObservationBatch {

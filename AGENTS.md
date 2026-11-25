@@ -80,9 +80,11 @@ cannot establish engine execution, numerical equivalence, or hydrological validi
 
 Legacy worktrees are `../legacy_python/` (`legacy/python`) and `../legacy_vbnet/`
 (`legacy/vbnet`); use the maps in `references/`. The regional runtime is
-`../rs_hydro_forecast/`; frozen regression artifacts are outside Git at
-`/workspace/regression-rs-hourly` (see [the case record](references/regression/rs-hourly/README.md)).
+`/workspace/mgb-ops/target/rs_hydro_forecast/`; frozen regression artifacts are outside Git at
+`/workspace/mgb-ops/target/regression-rs-hourly/` (see [the case record](references/regression/rs-hourly/README.md)).
 Preserve legacy sources, operational data, historical provenance, and frozen evidence.
+The regional workspace is `/workspace/mgb-ops/target/workspace/`. Do not run `cargo clean` while these
+external data directories live under the main checkout’s `target/`.
 Run disposable captures, repeats, probes and validation experiments under this
 repository's gitignored `runs/` directory, including their scripts, logs and
 review outputs. Do not scatter them in `/tmp` or sibling workspace directories;

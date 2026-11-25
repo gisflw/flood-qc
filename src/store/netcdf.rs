@@ -16,7 +16,6 @@ use super::{
 #[derive(Debug)]
 pub enum StoreError {
     Io(std::io::Error),
-    Sqlite(rusqlite::Error),
     Format(String),
     Schema(String),
     Integrity(String),
@@ -32,11 +31,6 @@ impl std::error::Error for StoreError {}
 impl From<std::io::Error> for StoreError {
     fn from(e: std::io::Error) -> Self {
         Self::Io(e)
-    }
-}
-impl From<rusqlite::Error> for StoreError {
-    fn from(e: rusqlite::Error) -> Self {
-        Self::Sqlite(e)
     }
 }
 pub(super) fn attributes(values: Vec<(&str, Value)>) -> Value {

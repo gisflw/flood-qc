@@ -3,7 +3,7 @@ use chrono::{TimeZone, Timelike};
 use eframe::egui;
 use mgb_ops::app::{
     AcquisitionReport, ForecastAdjustment, ForecastPreview, OperationalRun, OperationalRunReport,
-    RunScenario, RunSetupRevision, Session, WorkspaceConfig, WorkspaceJob,
+    RunScenario, RunSetupRevision, ScenarioBase, Session, WorkspaceConfig, WorkspaceJob,
 };
 use std::{
     path::{Path, PathBuf},
@@ -34,18 +34,19 @@ fn reference_at(zone: &str, now: chrono::DateTime<chrono::Utc>) -> Result<String
 pub enum Action {
     Initialize { config: PathBuf },
     SaveConfig,
+    SaveInputs(PathBuf),
+    DiscardInputs,
     Run,
-    Prepare(PathBuf),
+    CaptureInputs,
     ForecastChoices,
     PreviewForecast(RunScenario),
     Workflow(super::workflows::Task),
 }
 
 pub enum Outcome {
-    Configuration(WorkspaceConfig, Option<Box<OperationalRun>>),
+    Configuration(Box<WorkspaceConfig>, Option<Box<OperationalRun>>),
     Completed,
     Run(Box<OperationalRunReport>),
-    Preparation(PathBuf),
     Choices {
         window: [String; 4],
         assets: Vec<String>,
@@ -103,6 +104,8 @@ pub struct Runners {
     scenario_choice: String,
     preview: Option<(RunSetupRevision, ForecastPreview)>,
     preview_step: usize,
+    pending_input_action: Option<Action>,
+    next_input_disposition: Option<mgb_ops::app::InputDisposition>,
 }
 
 impl Runners {
@@ -110,6 +113,60 @@ impl Runners {
         Self {
             session: Some(session),
             ..Self::default()
+        }
+    }
+
+    pub fn unsaved_inputs(&self) -> bool {
+        self.session.as_ref().is_some_and(|session| {
+            mgb_ops::app::workspace_inputs_need_decision(session.workspace()).unwrap_or(true)
+        })
+    }
+    pub fn save_inputs_dialog(&mut self, ctx: &egui::Context) {
+        if let Some(destination) = rfd::FileDialog::new()
+            .set_title("Save run inputs")
+            .set_file_name("run-inputs")
+            .save_file()
+        {
+            self.start(Action::SaveInputs(destination), ctx);
+        }
+    }
+    pub fn discard_inputs(&mut self, ctx: &egui::Context) {
+        self.start(Action::DiscardInputs, ctx);
+    }
+    pub fn input_retention_dialog(&mut self, ctx: &egui::Context, pt: bool) {
+        if self.pending_input_action.is_none() || self.busy() {
+            return;
+        }
+        let mut run = false;
+        egui::Modal::new(egui::Id::new("replace-unsaved-inputs")).show(ctx, |ui| {
+            ui.heading(text(pt, "Keep current inputs?", "Manter entradas atuais?"));
+            ui.label(text(
+                pt,
+                "Save current inputs before starting a new run.",
+                "Salve as entradas atuais antes de iniciar uma nova execução.",
+            ));
+            ui.horizontal(|ui| {
+                if ui.button(text(pt, "Save", "Salvar")).clicked()
+                    && let Some(destination) = rfd::FileDialog::new()
+                        .set_title("Save run inputs")
+                        .set_file_name("run-inputs")
+                        .save_file()
+                {
+                    self.next_input_disposition =
+                        Some(mgb_ops::app::InputDisposition::Save { destination });
+                    run = true;
+                }
+                if ui.button(text(pt, "Discard", "Descartar")).clicked() {
+                    self.next_input_disposition = Some(mgb_ops::app::InputDisposition::Discard);
+                    run = true;
+                }
+                if ui.button(text(pt, "Cancel", "Cancelar")).clicked() {
+                    self.pending_input_action = None;
+                }
+            });
+        });
+        if run && let Some(action) = self.pending_input_action.take() {
+            self.start(action, ctx);
         }
     }
 
@@ -145,8 +202,19 @@ impl Runners {
             self.status = "Open a workspace first".into();
             return;
         };
-        let guard = match session.start_workspace_job() {
-            Ok(guard) => guard,
+        if matches!(
+            action,
+            Action::Run
+                | Action::CaptureInputs
+                | Action::Workflow(super::workflows::Task::Regenerate(..))
+        ) && self.next_input_disposition.is_none()
+            && self.unsaved_inputs()
+        {
+            self.pending_input_action = Some(action);
+            return;
+        }
+        let (guard, setup) = match session.start_job_with_setup() {
+            Ok(snapshot) => snapshot,
             Err(error) => {
                 self.status = error;
                 return;
@@ -157,8 +225,11 @@ impl Runners {
         }
         let config_path = self.config_path.clone();
         let config = self.config.clone();
-        let setup = session.run_setup();
-        let control = mgb_ops::app::OperationControl::default();
+        let baseline = self.baseline.clone();
+        let mut control = mgb_ops::app::OperationControl::default();
+        if let Some(disposition) = self.next_input_disposition.take() {
+            control = control.with_input_disposition(disposition);
+        }
         let operation_control = control.clone();
         let automation = match &action {
             Action::Workflow(task) if task.needs_automation_control() => {
@@ -191,25 +262,46 @@ impl Runners {
                 match action {
                     Action::Initialize { config } => {
                         let config = mgb_ops::app::read_workspace_config(&config)?;
-                        let run =
-                            OperationalRun::open_workspace(workspace.into(), chrono::Utc::now())
-                                .ok()
-                                .map(Box::new);
-                        Ok(Outcome::Configuration(config, run))
+                        let run = OperationalRun::from_config(
+                            workspace.into(),
+                            config.clone(),
+                            session.config().into(),
+                            chrono::Utc::now(),
+                        )
+                        .ok()
+                        .map(Box::new);
+                        Ok(Outcome::Configuration(Box::new(config), run))
+                    }
+                    Action::SaveInputs(destination) => {
+                        mgb_ops::app::save_workspace_inputs(workspace, &destination)?;
+                        Ok(Outcome::Completed)
+                    }
+                    Action::DiscardInputs => {
+                        mgb_ops::app::discard_workspace_inputs(workspace)?;
+                        Ok(Outcome::Completed)
                     }
                     Action::SaveConfig => {
                         let config = config.ok_or("Open a workspace first")?;
+                        if mgb_ops::app::read_workspace_config(&config_path).ok() != baseline {
+                            return Err(
+                                "Workspace settings changed on disk. Reload before saving.".into(),
+                            );
+                        }
                         mgb_ops::app::write_workspace_config(&config_path, &config)?;
-                        let run =
-                            OperationalRun::open_workspace(workspace.into(), chrono::Utc::now())
-                                .ok()
-                                .map(|mut run| {
-                                    if let Some(setup) = setup {
-                                        run.set_parameters(setup.operation.parameters().clone());
-                                    }
-                                    Box::new(run)
-                                });
-                        Ok(Outcome::Configuration(config, run))
+                        let run = OperationalRun::from_config(
+                            workspace.into(),
+                            config.clone(),
+                            session.config().into(),
+                            chrono::Utc::now(),
+                        )
+                        .ok()
+                        .map(|mut run| {
+                            if let Some(setup) = setup {
+                                run.set_parameters(setup.operation.parameters().clone());
+                            }
+                            Box::new(run)
+                        });
+                        Ok(Outcome::Configuration(Box::new(config), run))
                     }
                     Action::Workflow(task) => task
                         .run(workspace, &operation_control, automation_control.as_ref())
@@ -227,12 +319,11 @@ impl Runners {
                         let preview = setup.operation.preview_forecast(&scenario)?;
                         Ok(Outcome::Preview(setup.revision, preview))
                     }
-                    Action::Prepare(output) => {
+                    Action::CaptureInputs => {
                         let operation = setup.ok_or("Open the run form first")?.operation;
-                        operation
-                            .prepare_saved(workspace.into(), output, &operation_control)
-                            .map(|report| Outcome::Preparation(report.prepared))
-                            .map_err(|error| error.to_string())
+                        mgb_ops::app::capture_run_inputs(&operation, &operation_control)
+                            .map_err(|e| e.to_string())?;
+                        Ok(Outcome::Completed)
                     }
                     Action::Run => {
                         let operation = setup.ok_or("Open the run form first")?.operation;
@@ -308,12 +399,16 @@ impl Runners {
                 None
             }
             Ok(Outcome::Configuration(config, operation)) => {
+                let config = *config;
                 self.baseline = Some(config.clone());
                 self.config = Some(config);
                 if let Some(operation) = operation
                     && let Some(session) = &self.session
                 {
-                    session.open_run_setup(*operation);
+                    if let Err(error) = session.set_configuration(self.config.clone().unwrap()) {
+                        self.status = error;
+                    }
+                    let _ = operation;
                 }
                 self.window = None;
                 self.saved = true;
@@ -332,10 +427,6 @@ impl Runners {
             Ok(Outcome::Preview(revision, preview)) => {
                 self.preview = Some((revision, preview));
                 self.preview_step = 0;
-                None
-            }
-            Ok(Outcome::Preparation(path)) => {
-                self.status = format!("Prepared {}", path.display());
                 None
             }
             Ok(Outcome::Workflow(super::workflows::Output::Acquisition(report))) => {
@@ -432,7 +523,7 @@ impl Runners {
         ui.label(self.localized_status(pt));
     }
 
-    fn show_operation(&mut self, ui: &mut egui::Ui, pt: bool, workspace: Option<&Path>) {
+    fn show_operation(&mut self, ui: &mut egui::Ui, pt: bool, _workspace: Option<&Path>) {
         let Some(session) = self.session.clone() else {
             ui.label(text(pt, "Open a workspace", "Abra uma área de trabalho"));
             return;
@@ -506,23 +597,55 @@ impl Runners {
         let mut choices_changed = false;
         let mut preview_action = None;
         let mut movement = None;
+        let scenario_ids: Vec<String> = selections
+            .iter()
+            .map(|scenario| scenario.id.clone())
+            .collect();
         for (index, scenario) in selections.iter_mut().enumerate() {
             ui.push_id(index, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    let label = match scenario {
-                        RunScenario::Zero => text(pt, "Zero future rain", "Sem chuva futura"),
-                        RunScenario::Raw { forecast } => format!(
-                            "{} · {}",
-                            text(pt, "Raw", "Bruta"),
+                    ui.label(text(pt, "Scenario ID", "ID do cenário"));
+                    choices_changed |= ui.text_edit_singleline(&mut scenario.id).changed();
+                    let label = match &scenario.base {
+                        ScenarioBase::Zero => text(pt, "Zero future rain", "Sem chuva futura"),
+                        ScenarioBase::Forecast { forecast } => {
                             display_forecast(forecast, operation.time_zone())
-                        ),
-                        RunScenario::Corrected { forecast, .. } => format!(
-                            "{} · {}",
-                            text(pt, "Corrected", "Corrigida"),
-                            display_forecast(forecast, operation.time_zone())
-                        ),
+                        }
+                        ScenarioBase::Scenario { id } => {
+                            format!("{} {id}", text(pt, "Based on", "Baseado em"))
+                        }
                     };
-                    ui.label(label);
+                    egui::ComboBox::from_id_salt("scenario-base")
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            choices_changed |= ui
+                                .selectable_value(
+                                    &mut scenario.base,
+                                    ScenarioBase::Zero,
+                                    text(pt, "Zero future rain", "Sem chuva futura"),
+                                )
+                                .changed();
+                            for forecast in &self.assets {
+                                choices_changed |= ui
+                                    .selectable_value(
+                                        &mut scenario.base,
+                                        ScenarioBase::Forecast {
+                                            forecast: forecast.clone(),
+                                        },
+                                        display_forecast(forecast, operation.time_zone()),
+                                    )
+                                    .changed();
+                            }
+                            for id in &scenario_ids[..index] {
+                                choices_changed |= ui
+                                    .selectable_value(
+                                        &mut scenario.base,
+                                        ScenarioBase::Scenario { id: id.clone() },
+                                        format!("{} {id}", text(pt, "Based on", "Baseado em")),
+                                    )
+                                    .changed();
+                            }
+                        });
                     if ui.small_button("↑").clicked() && index > 0 {
                         movement = Some((index, Some(index - 1)));
                     }
@@ -533,14 +656,13 @@ impl Runners {
                         movement = Some((index, None));
                     }
                 });
-                if let RunScenario::Corrected { corrections, .. } = scenario {
-                    choices_changed |= correction_editor(ui, pt, corrections);
-                    if ui
-                        .button(text(pt, "Preview correction", "Prévia da correção"))
-                        .clicked()
-                    {
-                        preview_action = Some(Action::PreviewForecast(scenario.clone()));
-                    }
+                choices_changed |=
+                    correction_editor(ui, pt, &mut scenario.edits, coverage.as_ref().ok());
+                if ui
+                    .button(text(pt, "Preview scenario", "Prévia do cenário"))
+                    .clicked()
+                {
+                    preview_action = Some(Action::PreviewForecast(scenario.clone()));
                 }
             });
         }
@@ -555,15 +677,41 @@ impl Runners {
                 choices_changed = true;
             }
         }
+        let next_id = |items: &[RunScenario]| {
+            (1..)
+                .map(|n| format!("scenario-{n}"))
+                .find(|id| !items.iter().any(|s| &s.id == id))
+                .unwrap()
+        };
         ui.horizontal_wrapped(|ui| {
             if ui
+                .button(text(pt, "Add zero", "Adicionar sem chuva"))
+                .clicked()
+            {
+                selections.push(RunScenario {
+                    id: next_id(&selections),
+                    base: ScenarioBase::Zero,
+                    edits: vec![],
+                });
+                choices_changed = true;
+            }
+            if ui
                 .add_enabled(
-                    !selections.contains(&RunScenario::Zero),
-                    egui::Button::new(text(pt, "Add zero", "Adicionar sem chuva")),
+                    !selections.is_empty(),
+                    egui::Button::new(text(
+                        pt,
+                        "Add variant of last",
+                        "Adicionar variante do último",
+                    )),
                 )
                 .clicked()
             {
-                selections.push(RunScenario::Zero);
+                let id = selections.last().unwrap().id.clone();
+                selections.push(RunScenario {
+                    id: next_id(&selections),
+                    base: ScenarioBase::Scenario { id },
+                    edits: vec![],
+                });
                 choices_changed = true;
             }
             if ui
@@ -589,19 +737,22 @@ impl Runners {
                     );
                 }
             });
-        ui.horizontal_wrapped(|ui| {
-            let selected = !self.scenario_choice.is_empty();
-            let raw = RunScenario::Raw { forecast: self.scenario_choice.clone() };
-            if ui.add_enabled(selected && !selections.contains(&raw), egui::Button::new(text(pt, "Add raw", "Adicionar bruta"))).clicked() {
-                selections.push(raw);
-                choices_changed = true;
-            }
-            let corrected = selections.iter().any(|scenario| matches!(scenario, RunScenario::Corrected { forecast, .. } if forecast == &self.scenario_choice));
-            if ui.add_enabled(selected && !corrected, egui::Button::new(text(pt, "Add corrected", "Adicionar corrigida"))).clicked() {
-                selections.push(RunScenario::Corrected { forecast: self.scenario_choice.clone(), corrections: vec![ForecastAdjustment::default()] });
-                choices_changed = true;
-            }
-        });
+        if ui
+            .add_enabled(
+                !self.scenario_choice.is_empty(),
+                egui::Button::new(text(pt, "Add forecast", "Adicionar previsão")),
+            )
+            .clicked()
+        {
+            selections.push(RunScenario {
+                id: next_id(&selections),
+                base: ScenarioBase::Forecast {
+                    forecast: self.scenario_choice.clone(),
+                },
+                edits: vec![],
+            });
+            choices_changed = true;
+        }
         if choices_changed {
             parameters.scenarios = Some(selections);
         }
@@ -644,15 +795,20 @@ impl Runners {
             if ui
                 .add_enabled(
                     valid,
-                    egui::Button::new(text(pt, "Save preparation", "Salvar preparação")),
+                    egui::Button::new(text(pt, "Capture inputs", "Capturar entradas")),
                 )
                 .clicked()
-                && let Some(workspace) = workspace
-                && let Some(path) = rfd::FileDialog::new()
-                    .set_directory(workspace.join("runs"))
-                    .save_file()
             {
-                self.start(Action::Prepare(path), ui.ctx());
+                self.start(Action::CaptureInputs, ui.ctx());
+            }
+            if ui
+                .add_enabled(
+                    self.unsaved_inputs(),
+                    egui::Button::new(text(pt, "Save current inputs", "Salvar entradas atuais")),
+                )
+                .clicked()
+            {
+                self.save_inputs_dialog(ui.ctx());
             }
         });
     }
@@ -827,63 +983,58 @@ fn display_forecast(choice: &str, zone: &str) -> String {
 fn correction_editor(
     ui: &mut egui::Ui,
     pt: bool,
-    corrections: &mut Vec<ForecastAdjustment>,
+    edits: &mut Vec<ForecastAdjustment>,
+    coverage: Option<&[String; 4]>,
 ) -> bool {
     let mut changed = false;
     let mut movement = None;
-    for (index, correction) in corrections.iter_mut().enumerate() {
+    for (index, edit) in edits.iter_mut().enumerate() {
         ui.push_id(index, |ui| {
             ui.horizontal_wrapped(|ui| {
+                for (label, value) in [
+                    (text(pt, "From", "De"), &mut edit.start),
+                    (text(pt, "Until", "Até"), &mut edit.end),
+                ] {
+                    ui.label(&label);
+                    let id = ui.make_persistent_id(label);
+                    let mut input = ui
+                        .data_mut(|data| data.get_temp::<String>(id))
+                        .unwrap_or_else(|| value.format("%Y-%m-%dT%H:%M:%S").to_string());
+                    if ui.text_edit_singleline(&mut input).changed() {
+                        if let Ok(parsed) =
+                            chrono::NaiveDateTime::parse_from_str(&input, "%Y-%m-%dT%H:%M:%S")
+                        {
+                            *value = parsed;
+                            changed = true;
+                        }
+                        ui.data_mut(|data| data.insert_temp(id, input));
+                    }
+                }
                 changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut correction.t0_hour)
-                            .range(0..=i64::MAX)
-                            .prefix(text(pt, "From hour ", "Da hora ")),
-                    )
+                    .add(egui::DragValue::new(&mut edit.shift_lat_pixels).prefix("Δ lat pixels "))
                     .changed();
                 changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut correction.t1_hour)
-                            .range(0..=i64::MAX)
-                            .prefix(text(pt, "To hour ", "Até a hora ")),
-                    )
+                    .add(egui::DragValue::new(&mut edit.shift_lon_pixels).prefix("Δ lon pixels "))
                     .changed();
                 changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut correction.shift_lat_pixels).prefix(text(
-                            pt,
-                            "Latitude pixels ",
-                            "Pixels latitude ",
-                        )),
-                    )
+                    .add(egui::DragValue::new(&mut edit.rotation_deg).prefix("° "))
                     .changed();
                 changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut correction.shift_lon_pixels).prefix(text(
-                            pt,
-                            "Longitude pixels ",
-                            "Pixels longitude ",
-                        )),
-                    )
+                    .add(egui::DragValue::new(&mut edit.multiplication_factor).prefix("× "))
                     .changed();
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut correction.rotation_deg).prefix(text(
-                            pt,
-                            "Rotation ° ",
-                            "Rotação ° ",
-                        )),
-                    )
-                    .changed();
-                changed |= ui
-                    .add(
-                        egui::DragValue::new(&mut correction.multiplication_factor).prefix(text(
-                            pt,
-                            "Multiplier ",
-                            "Multiplicador ",
-                        )),
-                    )
-                    .changed();
+                let mut boxed = edit.bbox.is_some();
+                if ui
+                    .checkbox(&mut boxed, text(pt, "Output box", "Área de saída"))
+                    .changed()
+                {
+                    edit.bbox = boxed.then_some([-180., -90., 180., 90.]);
+                    changed = true;
+                }
+                if let Some(bbox) = &mut edit.bbox {
+                    for value in bbox {
+                        changed |= ui.add(egui::DragValue::new(value)).changed();
+                    }
+                }
                 if ui.small_button("↑").clicked() && index > 0 {
                     movement = Some((index, Some(index - 1)));
                 }
@@ -898,21 +1049,38 @@ fn correction_editor(
     }
     if let Some((index, destination)) = movement {
         if let Some(destination) = destination {
-            if destination < corrections.len() {
-                corrections.swap(index, destination);
+            if destination < edits.len() {
+                edits.swap(index, destination);
                 changed = true;
             }
         } else {
-            corrections.remove(index);
+            edits.remove(index);
             changed = true;
         }
     }
     if ui
-        .button(text(pt, "Add correction", "Adicionar correção"))
+        .add_enabled(
+            coverage.is_some(),
+            egui::Button::new(text(pt, "Add edit", "Adicionar ajuste")),
+        )
         .clicked()
     {
-        corrections.push(ForecastAdjustment::default());
-        changed = true;
+        let bounds = coverage.unwrap();
+        if let (Ok(start), Ok(end)) = (
+            chrono::NaiveDateTime::parse_from_str(&bounds[2], "%Y-%m-%dT%H:%M:%S"),
+            chrono::NaiveDateTime::parse_from_str(&bounds[3], "%Y-%m-%dT%H:%M:%S"),
+        ) {
+            edits.push(ForecastAdjustment {
+                start: start - chrono::Duration::hours(1),
+                end,
+                bbox: None,
+                shift_lat_pixels: 0.,
+                shift_lon_pixels: 0.,
+                rotation_deg: 0.,
+                multiplication_factor: 1.,
+            });
+            changed = true;
+        }
     }
     changed
 }

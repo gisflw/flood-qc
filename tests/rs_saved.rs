@@ -1,4 +1,4 @@
-use mgb_ops::store::{ForecastCatalog, ForecastCorrection, copy_tree};
+use mgb_ops::store::{ObservationStore, copy_tree};
 use mgb_ops::{
     BatchStatus, ExecutionRequest, NormalizeForecastRequest, PreparationRequest, execute_prepared,
     normalize_forecast, prepare,
@@ -17,7 +17,6 @@ fn saved_rs_full_workflow() {
     );
     for path in [
         "case.json",
-        "capture/fixtures/observations.sqlite",
         "frozen/runner/Input/MINI.gtp",
         "frozen/runner/MGB_Inercial_Prev_RSH",
         "frozen/downloads/ecmwf/ifs_fc_20260720T000000Z.grib2",
@@ -33,28 +32,31 @@ fn saved_rs_full_workflow() {
     let dir = tempfile::tempdir_in("runs").unwrap();
     let root = dir.keep().canonicalize().unwrap();
     eprintln!("RS qualification artifacts: {}", root.display());
-    fs::copy(
-        reference.join("capture/fixtures/observations.sqlite"),
-        root.join("observations.sqlite"),
-    )
-    .unwrap();
-    let db = rusqlite::Connection::open(root.join("observations.sqlite")).unwrap();
-    db.execute(
-        "UPDATE observation_series SET created_at=replace(created_at,' ','T')",
-        [],
-    )
-    .unwrap();
-    let mut query = db
-        .prepare("SELECT station_id FROM station_offset ORDER BY station_id")
-        .unwrap();
-    let station_ids: Vec<String> = query
-        .query_map([], |row| row.get(0))
+    let observations = PathBuf::from(
+        std::env::var_os("MGB_RS_OBSERVATIONS")
+            .expect("MGB_RS_OBSERVATIONS must name an exported canonical observation set"),
+    );
+    assert!(
+        observations.is_dir(),
+        "MGB_RS_OBSERVATIONS must be a directory"
+    );
+    copy_tree(&observations, &root.join("observations")).unwrap();
+    let store = ObservationStore::open_read_only(&root.join("observations")).unwrap();
+    let station_ids: Vec<_> = store
+        .station_locations()
         .unwrap()
-        .map(Result::unwrap)
+        .into_iter()
+        .map(|station| station.station.station_id)
         .collect();
+    let mut station_ids: Vec<_> = store
+        .read_station_offsets(&station_ids)
+        .unwrap()
+        .into_iter()
+        .map(|offset| offset.station_id)
+        .collect();
+    station_ids.sort();
     assert!(!station_ids.is_empty());
-    drop(query);
-    drop(db);
+    drop(store);
     copy_tree(&reference.join("frozen/runner/Input"), &root.join("Input")).unwrap();
     copy_tree(
         &reference.join("frozen/runner/MGB_Inercial_Prev_RSH"),
@@ -77,7 +79,7 @@ fn saved_rs_full_workflow() {
         let source_path = root.join(format!("{provider}.grib2"));
         fs::copy(reference.join(source), &source_path).unwrap();
         let text = format!(
-            "schema_version = 1\nprovider = \"{provider}\"\nmodel = \"{model}\"\nproduct = \"fc\"\ncycle_utc = \"2026-07-20T00:00:00Z\"\noperation_timezone = \"America/Sao_Paulo\"\nsource = \"{}\"\ncrop_bbox = [-79.13530,-50.61209,-28.67245,-10.08729]\ncatalog = \"forecast.sqlite\"\nartifact_root = \"forecast-assets\"\n",
+            "schema_version = 1\nprovider = \"{provider}\"\nmodel = \"{model}\"\nproduct = \"fc\"\ncycle_utc = \"2026-07-20T00:00:00Z\"\noperation_timezone = \"America/Sao_Paulo\"\nsource = \"{}\"\ncrop_bbox = [-79.13530,-50.61209,-28.67245,-10.08729]\ncatalog = \"forecast-assets\"\nartifact_root = \"forecast-assets\"\n",
             source_path.display()
         );
         let path = root.join(format!("normalize-{provider}.toml"));
@@ -92,28 +94,6 @@ fn saved_rs_full_workflow() {
             .asset_id,
         );
     }
-    let catalog = ForecastCatalog::open(
-        &root,
-        Path::new("forecast.sqlite"),
-        Path::new("forecast-assets"),
-    )
-    .unwrap();
-    catalog
-        .save_correction(&ForecastCorrection {
-            correction_id: "rs-ecmwf-correction".into(),
-            asset_id: assets[0].clone(),
-            t0_hour: 0,
-            t1_hour: 126,
-            shift_lat_pixels: 8.0,
-            shift_lon_pixels: -12.0,
-            rotation_deg: 45.0,
-            multiplication_factor: 1.5,
-            editor: None,
-            reason: "fixed regression correction".into(),
-            created_at: "2026-07-20T00:00:00Z".into(),
-        })
-        .unwrap();
-    drop(catalog);
     let stations = station_ids
         .iter()
         .map(|id| format!("\"{id}\""))
@@ -129,7 +109,7 @@ historical_last_end = "2026-07-20T00:00:00"
 forecast_first_end = "2026-07-20T01:00:00"
 forecast_last_end = "2026-07-25T01:00:00"
 [observed]
-path = "observations.sqlite"
+path = "observations"
 provider_codes = ["ana"]
 station_ids = []
 series_ids = []
@@ -154,25 +134,17 @@ executable = "engine"
 input_dir = "Input"
 omp_threads = 1
 [forecasts]
-catalog = "forecast.sqlite"
+catalog = "forecast-assets"
 [[scenarios]]
 id = "zero"
-kind = "zero"
 [[scenarios]]
 id = "ecmwf-raw"
-kind = "raw"
 asset_id = "{}"
 [[scenarios]]
 id = "noaa-raw"
-kind = "raw"
 asset_id = "{}"
-[[scenarios]]
-id = "ecmwf-corrected"
-kind = "corrected"
-asset_id = "{}"
-correction_ids = ["rs-ecmwf-correction"]
 "#,
-        assets[0], assets[1], assets[0]
+        assets[0], assets[1]
     );
     fs::write(root.join("request.toml"), request).unwrap();
     prepare(PreparationRequest {
@@ -185,7 +157,7 @@ correction_ids = ["rs-ecmwf-correction"]
     let manifest_path = root.join("prepared/manifest.json");
     let original_manifest = fs::read(&manifest_path).unwrap();
     let mut altered: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
-    altered["recipe"]["document"]["correction_values"][0]["multiplication_factor"] = 2.0.into();
+    altered["recipe"]["document"]["reference_time"] = "2026-07-21T00:00:00".into();
     fs::write(&manifest_path, serde_json::to_vec(&altered).unwrap()).unwrap();
     assert!(matches!(
         execute_prepared(ExecutionRequest {
@@ -198,9 +170,10 @@ correction_ids = ["rs-ecmwf-correction"]
     fs::write(&manifest_path, original_manifest).unwrap();
     fs::remove_dir_all(root.join("Input")).unwrap();
     fs::remove_file(root.join("engine")).unwrap();
-    fs::remove_file(root.join("observations.sqlite")).unwrap();
-    fs::remove_file(root.join("forecast.sqlite")).unwrap();
+    fs::remove_dir_all(root.join("observations")).unwrap();
     fs::remove_dir_all(root.join("forecast-assets")).unwrap();
+    fs::remove_file(root.join("ecmwf.grib2")).unwrap();
+    fs::remove_file(root.join("noaa.grib2")).unwrap();
     let run = |workspace| {
         execute_prepared(ExecutionRequest {
             workspace,
@@ -226,7 +199,7 @@ correction_ids = ["rs-ecmwf-correction"]
     let history_hand = fs::read(reference.join("capture/runs/history/Output/HANDTUDO.MGB"))
         .expect("the frozen history flood stream");
     assert_eq!(history_hand.len(), 241 * 8649 * size_of::<f32>());
-    for scenario in ["zero", "ecmwf-raw", "noaa-raw", "ecmwf-corrected"] {
+    for scenario in ["zero", "ecmwf-raw", "noaa-raw"] {
         for (file, headers) in [
             (
                 "PARHIG.hig",

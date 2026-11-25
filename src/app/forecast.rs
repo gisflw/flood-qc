@@ -60,12 +60,12 @@ pub fn import_workspace_forecast(
     }
     let _lock =
         super::operation::lock_workspace_job(&workspace).map_err(|error| error.to_string())?;
-    super::workspace::initialize_database(&workspace, time_zone)?;
+    super::workspace::initialize_assets(&workspace, time_zone)?;
     import_canonical_forecast(
         &workspace,
         CanonicalForecastDocument {
-            catalog: super::operation_database(&workspace),
-            artifact_root: "assets".into(),
+            catalog: super::forecast_assets(&workspace),
+            artifact_root: "assets/forecasts".into(),
             source,
             metadata,
         },
@@ -144,7 +144,7 @@ pub fn normalize_workspace_forecast(
     let crop_bbox = super::acquisition::buffered_bbox(bounds, fraction).map_err(invalid)?;
     let _lock = super::operation::lock_workspace_job(workspace)
         .map_err(|error| invalid(error.to_string()))?;
-    super::workspace::initialize_database(workspace, time_zone).map_err(invalid)?;
+    super::workspace::initialize_assets(workspace, time_zone).map_err(invalid)?;
     normalize_forecast_document(
         workspace,
         workspace,
@@ -157,8 +157,8 @@ pub fn normalize_workspace_forecast(
             operation_timezone: time_zone.name().into(),
             source,
             crop_bbox,
-            catalog: super::workspace::DATABASE_PATH.into(),
-            artifact_root: "assets".into(),
+            catalog: super::workspace::FORECASTS_PATH.into(),
+            artifact_root: "assets/forecasts".into(),
         },
     )
 }

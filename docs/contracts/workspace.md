@@ -73,25 +73,24 @@ flags, implicit variable/tilde expansion, YAML fallback, or migration commands.
 
 ## Operating layout
 
-Select the same workspace directory in the CLI and desktop. Its root contains
-`config.toml` and `operation.sqlite`. Use `source/` for regional geometry,
-rasters and inventory CSVs, `model/` for MGB prerequisites, `downloads/` for
-original provider files, `assets/` for normalized forecast grids, `runs/` for
-saved preparations and archived run manifests, and `cache/` for active results and
-derived rasters. The database records the active generation under `cache/run/`. Run
-`mgb-ops workspace init --workspace /region` to create the database explicitly.
-Inventory import and acquisition can also initialize it. To use inputs from a
-prototype layout, initialize a fresh workspace and import the retained inputs.
+Select the same workspace directory in the CLI and desktop.
 
-The [acquisition](acquisition.md) and [operation](operations.md) commands use this
-same TOML. Run settings, provider choices, precipitation interpolation and
-exclusion rules apply defaults when omitted. Station inventory and edits are
-database records. There is no version setting for the workspace configuration
-or the SQLite database.
+| Location | Contents |
+| --- | --- |
+| `config.toml` | Routine workspace defaults, including provider, run, grid and interpolation settings |
+| `source/`, `model/` | Regional geometry, rasters and source inventory, and the installed MGB executable and model input directory |
+| `assets/observations/` | Canonical observations, station metadata, offsets, instructions and ANA coverage |
+| `assets/forecasts/` | Normalized forecast NetCDF grids and metadata by product and cycle |
+| `downloads/` | Original provider responses where retained |
+| `cache/inputs/` | The current frozen [run input set](inputs.md) |
+| `cache/run/` | The active results and rainfall generation selected by `active.json` |
+| `runs/history/` | Archived attempt manifests and bounded diagnostics |
 
-Scenario choices and forecast corrections are [run parameters](operations.md#scenarios).
-Original provider payloads and normalized artifacts have separate locations.
-The workspace example prints supported settings and default values.
+Run `mgb-ops workspace init --workspace /region` to initialize canonical assets.
+Inventory import and workspace acquisition can also initialize them. Start a
+fresh workspace from regional source files for this layout. See
+[acquisition](acquisition.md) for provider updates, [operations](operations.md)
+for scenario selection and [run input sets](inputs.md) for independent saves.
 
 ## Path resolution
 
@@ -110,12 +109,12 @@ promises no lossless round trip.
 ## Source ownership
 
 Inspection reads only. It never rewrites configuration, creates outputs/caches/
-logs/databases, connects to SQLite, acquires providers, applies corrections, or
+logs, acquires providers, applies corrections, or
 launches MGB. Geometry and required inputs receive bounded read-only byte checks,
 not format parsing. Optional stores receive metadata checks only.
 
 Preserve directory entries, symlink targets, file bytes, and modification times
-on success and failure, including SQLite sidecars and external symlink targets.
+on success and failure, including external symlink targets.
 Access times from ordinary reads are outside the guarantee. Operational data,
 legacy worktrees, and frozen regression evidence remain sources, not test fixtures.
 Use disposable copies with no hard links for failure experiments.
@@ -142,9 +141,9 @@ rainfall preparation establish the list. Do not require every discovered input,
 `HAND_Flood.asc`, backups, forcing binaries, observed flows/levels, wind, saved
 state, or run-specific dates/horizons.
 
-Report metadata presence of `operation.sqlite`, `cache/`, and
+Report metadata presence of `assets/observations/`, `cache/`, and
 `cache/run/`. Absence or inaccessible metadata is informational. Inspection
-does not open SQLite or determine which generation is active.
+does not load those stores or determine which generation is active.
 
 Always report unchecked geometry/input contents, forcing, saved state, runtime
 compatibility, and actual execution. Linux executable-bit checks do not establish

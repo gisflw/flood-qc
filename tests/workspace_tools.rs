@@ -95,19 +95,25 @@ forecast_providers = ["ecmwf","noaa"]
         ]
     );
     use mgb_ops::app::RunScenario;
-    assert_eq!(operation.scenarios().unwrap(), [RunScenario::Zero]);
+    assert_eq!(
+        operation.scenarios().unwrap(),
+        [RunScenario::parse("zero").unwrap()]
+    );
     assert!(
         operation
             .set_scenarios(&["corrected:ecmwf".into()])
             .is_err()
     );
-    let corrected = r#"{"kind":"corrected","forecast":"ecmwf@2026-07-20T00:00:00Z","corrections":[{"t0_hour":3,"t1_hour":9,"multiplication_factor":1.25}]}"#;
+    let corrected = r#"{"id":"edited","base":{"kind":"forecast","forecast":"ecmwf@2026-07-20T00:00:00Z"},"edits":[{"start":"2026-07-20T03:00:00","end":"2026-07-20T09:00:00","bbox":null,"multiplication_factor":1.25,"rotation_deg":0.0,"shift_lon_pixels":0.0,"shift_lat_pixels":0.0}]}"#;
     operation
         .set_scenarios(&["zero".into(), corrected.into()])
         .unwrap();
     assert_eq!(
         operation.scenarios().unwrap(),
-        [RunScenario::Zero, RunScenario::parse(corrected).unwrap()]
+        [
+            RunScenario::parse("zero").unwrap(),
+            RunScenario::parse(corrected).unwrap()
+        ]
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     assert_eq!(std::fs::read_to_string(config).unwrap(), contents);

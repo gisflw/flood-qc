@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use chrono::{DateTime, Days, NaiveDate, TimeZone};
+use chrono::{DateTime, Days, NaiveDate, TimeZone, Timelike, Utc};
 use chrono_tz::{America::Sao_Paulo, Tz};
 
 use crate::adapters::{
@@ -17,19 +17,16 @@ use super::{
 };
 
 fn prepare(workspace: &Path, zone: Tz) -> Result<(ObservationStore, Vec<AnaStation>), String> {
-    let database = super::super::operation_database(workspace);
+    let database = super::super::observation_assets(workspace);
     let store = ObservationStore::open_writable(&database).map_err(|error| error.to_string())?;
     let db_zone = store.time_zone().map_err(|e| e.to_string())?;
     if db_zone != zone.name() {
         return Err("ANA observation database timezone differs from acquisition settings".into());
     }
     let mut stations = Vec::new();
-    for location in store.station_locations().map_err(|e| e.to_string())? {
-        let station = location.station;
+    for (station, observed_variables) in store.station_inventory().map_err(|e| e.to_string())? {
         if station.provider_code == "ana" {
-            let variables = store
-                .observed_variables(&station.station_id)
-                .map_err(|e| e.to_string())?
+            let variables = observed_variables
                 .iter()
                 .map(|value| crate::adapters::AnaVariable::parse(value))
                 .collect::<Result<BTreeSet<_>, _>>()?;
@@ -65,36 +62,19 @@ fn request_dates(
     if station.variables.is_empty() {
         return Ok(Vec::new());
     }
-    // Include adjacent local dates so the query also covers workspaces in other zones.
-    let first = start
-        .checked_sub_days(Days::new(2))
-        .ok_or("ANA coverage start overflow")?;
-    let last = end
-        .checked_add_days(Days::new(2))
-        .ok_or("ANA coverage end overflow")?;
-    let first = first.and_hms_opt(0, 0, 0).unwrap();
-    let last = last.and_hms_opt(0, 0, 0).unwrap();
-    let mut counts = BTreeMap::<NaiveDate, usize>::new();
-    for variable in &station.variables {
-        let mut days = BTreeSet::new();
-        for at in store
-            .ana_raw_times(&station.station.station_id, variable.code(), first, last)
-            .map_err(|e| e.to_string())?
-        {
-            let at = zone
-                .from_local_datetime(&at)
-                .single()
-                .ok_or_else(|| format!("invalid local raw time {at}"))?;
-            days.insert(at.with_timezone(&Sao_Paulo).date_naive());
-        }
-        for day in days {
-            *counts.entry(day).or_default() += 1;
-        }
-    }
+    let _ = zone;
+    let variables = station
+        .variables
+        .iter()
+        .map(|v| v.code().to_owned())
+        .collect::<Vec<_>>();
+    let completed = store
+        .ana_coverage(&station.station.station_id, &variables)
+        .map_err(|e| e.to_string())?;
     Ok(start
         .iter_days()
         .take_while(|day| *day <= end)
-        .filter(|day| *day == end || counts.get(day).copied() != Some(station.variables.len()))
+        .filter(|day| !completed.contains(day))
         .collect())
 }
 
@@ -139,6 +119,8 @@ fn import_readings(
 }
 
 struct Fetch<'a> {
+    cutoff: DateTime<Utc>,
+    partial: std::cell::RefCell<crate::store::AnaPartialCoverage>,
     config: &'a AnaDocument,
     reference: DateTime<Tz>,
     dates: (NaiveDate, NaiveDate),
@@ -162,10 +144,41 @@ impl Fetch<'_> {
         progress: &mut StationProgress,
     ) -> Result<(), String> {
         let (first, last) = self.dates;
-        let dates = request_dates(store, station, self.reference.timezone(), first, last)?;
+        let dates = if self.control.force_acquisition() {
+            first.iter_days().take_while(|day| *day <= last).collect()
+        } else {
+            request_dates(store, station, self.reference.timezone(), first, last)?
+        };
         progress.dates = dates.first().copied().zip(dates.last().copied());
         outcome.requested_days = dates.len();
         outcome.skipped_days = self.config.request_days as usize - dates.len();
+        let variables = station
+            .variables
+            .iter()
+            .map(|v| v.code().to_owned())
+            .collect::<Vec<_>>();
+        let dates = if self.control.force_acquisition() {
+            dates
+        } else {
+            dates
+                .into_iter()
+                .filter_map(|day| {
+                    match self.partial.borrow().covers(
+                        &station.station.station_id,
+                        &variables,
+                        day,
+                        self.reference.timestamp(),
+                    ) {
+                        Ok(true) => None,
+                        Ok(false) => Some(Ok(day)),
+                        Err(e) => Some(Err(e)),
+                    }
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        };
+        outcome.requested_days = dates.len();
+        outcome.skipped_days = self.config.request_days as usize - dates.len();
+        let completed_dates = dates.clone();
         let code = &outcome.station_code;
         let station_dir = self.directory.join(code);
         fs::create_dir(&station_dir).map_err(|e| e.to_string())?;
@@ -202,7 +215,13 @@ impl Fetch<'_> {
             rows.extend(
                 parse_ana_xml(&body, code, &station.variables)?
                     .into_iter()
-                    .filter(|row| (start..=end).contains(&row.time.date())),
+                    .filter(|row| (start..=end).contains(&row.time.date()))
+                    .filter(|row| {
+                        Sao_Paulo
+                            .from_local_datetime(&row.time)
+                            .single()
+                            .is_some_and(|time| time.to_utc() <= self.cutoff)
+                    }),
             );
             progress.rows = rows.len();
             update(progress.rows, true);
@@ -219,6 +238,30 @@ impl Fetch<'_> {
             .remove(code)
             .unwrap_or_default();
         outcome.changed_samples = import_readings(store, self.reference, station, replay_rows)?;
+        let variables = station
+            .variables
+            .iter()
+            .map(|v| v.code().to_owned())
+            .collect::<Vec<_>>();
+        let today = self.cutoff.with_timezone(&Sao_Paulo).date_naive();
+        let full_days = completed_dates
+            .iter()
+            .copied()
+            .filter(|day| *day < today)
+            .collect::<Vec<_>>();
+        if !full_days.is_empty() {
+            store
+                .mark_ana_coverage(&station.station.station_id, &variables, &full_days)
+                .map_err(|e| e.to_string())?;
+        }
+        if completed_dates.contains(&today) {
+            self.partial.borrow_mut().record(
+                &station.station.station_id,
+                &variables,
+                today,
+                self.cutoff.timestamp(),
+            )?;
+        }
         Ok(())
     }
 }
@@ -242,7 +285,16 @@ pub(super) fn acquire(
             .tempdir_in(workspace.join(root))
             .map_err(|e| e.to_string())?
             .keep();
+        let local_now = Utc::now().with_timezone(&Sao_Paulo);
+        let cutoff = local_now
+            .with_minute(0)
+            .and_then(|v| v.with_second(0))
+            .and_then(|v| v.with_nanosecond(0))
+            .ok_or("invalid acquisition hour")?
+            .to_utc();
         let fetch = Fetch {
+            cutoff,
+            partial: std::cell::RefCell::new(crate::store::AnaPartialCoverage::read(workspace)?),
             config,
             reference,
             dates,
@@ -274,6 +326,7 @@ pub(super) fn acquire(
             });
             report.stations.push(outcome);
         }
+        fetch.partial.borrow().write(workspace)?;
         control.acquisition_progress("ANA".into(), report.stations.len(), stations.len());
         Ok(())
     })();
@@ -348,7 +401,109 @@ mod tests {
     use super::*;
 
     #[test]
-    fn historical_coverage_requires_each_variable_and_refreshes_reference_day() {
+    fn current_day_cache_reuses_completed_hours_and_fetches_the_next_hour() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::net::TcpListener;
+        fs::create_dir_all("runs").unwrap();
+        let dir = tempfile::tempdir_in("runs").unwrap();
+        let workspace = dir.path().canonicalize().unwrap();
+        let mut store = ObservationStore::create(
+            &super::super::super::observation_assets(&workspace),
+            Sao_Paulo.name(),
+        )
+        .unwrap();
+        let station = AnaStation {
+            station: crate::store::Station {
+                station_id: "ana:123".into(),
+                provider_code: "ana".into(),
+                station_code: "123".into(),
+                name: "Test".into(),
+                latitude: None,
+                longitude: None,
+            },
+            variables: [crate::adapters::AnaVariable::Rain].into(),
+        };
+        store
+            .import_ana_inventory(
+                std::slice::from_ref(&station.station),
+                &[(station.station.station_id.clone(), vec!["rain".into()])],
+            )
+            .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let body = r#"<NewDataSet><DadosHidrometereologicos><CodEstacao>123</CodEstacao><DataHora>2026-07-20T12:00:00</DataHora><Chuva>1</Chuva></DadosHidrometereologicos><DadosHidrometereologicos><CodEstacao>123</CodEstacao><DataHora>2026-07-20T13:00:00</DataHora><Chuva>2</Chuva></DadosHidrometereologicos></NewDataSet>"#;
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(&socket);
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(
+                    socket,
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+                .unwrap();
+            }
+        });
+        let client = ProviderClient::new().unwrap().test_ana(endpoint);
+        let day = NaiveDate::from_ymd_opt(2026, 7, 20).unwrap();
+        let options = AnaDocument {
+            request_days: 1,
+            fetch_window_days: 1,
+            timeout_seconds: 5,
+        };
+        let control = OperationControl::default();
+        for (hour, requested) in [(12, 1), (12, 0), (13, 1)] {
+            let reference = Sao_Paulo.with_ymd_and_hms(2026, 7, 20, hour, 0, 0).unwrap();
+            let output = tempfile::tempdir_in(&workspace).unwrap();
+            let fetch = Fetch {
+                cutoff: reference.to_utc(),
+                partial: std::cell::RefCell::new(
+                    crate::store::AnaPartialCoverage::read(&workspace).unwrap(),
+                ),
+                config: &options,
+                reference,
+                dates: (day, day),
+                directory: output.path().into(),
+                client: &client,
+                control: &control,
+            };
+            let mut outcome = AnaStationOutcome {
+                station_code: "123".into(),
+                ..Default::default()
+            };
+            fetch
+                .station(
+                    &mut store,
+                    &station,
+                    &mut outcome,
+                    &mut StationProgress::default(),
+                )
+                .unwrap();
+            assert_eq!(outcome.requested_days, requested);
+            fetch.partial.borrow().write(&workspace).unwrap();
+            let times = store
+                .ana_raw_times(
+                    "ana:123",
+                    "rain",
+                    day.and_hms_opt(0, 0, 0).unwrap(),
+                    day.and_hms_opt(23, 0, 0).unwrap(),
+                )
+                .unwrap();
+            assert_eq!(times.last().unwrap().hour(), hour);
+        }
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn coverage_records_completed_requests_including_empty_days() {
         fs::create_dir_all("runs").unwrap();
         let workspace = tempfile::tempdir_in("runs").unwrap();
         let inventory = workspace.path().join("inventory.csv");
@@ -385,10 +540,21 @@ mod tests {
             .upsert_ana_raw(&station.station.station_id, at(0), &variables)
             .unwrap();
         let planned = request_dates(&store, station, Sao_Paulo, dates[0], dates[4]).unwrap();
-        assert_eq!(planned, dates[1..]);
-        assert_eq!(
-            windows(planned, 2),
-            [(dates[1], dates[2]), (dates[3], dates[4])]
-        );
+        assert_eq!(planned, dates);
+        let variables = station
+            .variables
+            .iter()
+            .map(|v| v.code().to_owned())
+            .collect::<Vec<_>>();
+        store
+            .mark_ana_coverage(
+                &station.station.station_id,
+                &variables,
+                &[dates[0], dates[1], dates[4]],
+            )
+            .unwrap();
+        let planned = request_dates(&store, station, Sao_Paulo, dates[0], dates[4]).unwrap();
+        assert_eq!(planned, dates[2..4]);
+        assert_eq!(windows(planned, 2), [(dates[2], dates[3])]);
     }
 }

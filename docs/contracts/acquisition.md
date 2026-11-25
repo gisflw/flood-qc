@@ -33,8 +33,8 @@ mgb-ops observation import-inventory --workspace /regional/workspace --input /re
 Import the ANA station inventory before acquisition. Use `observation
 export-inventory --workspace /regional/workspace --output inventory.csv` to
 export the saved inventory for editing. Per-station variables are
-stored in `operation.sqlite`. Acquire commands write to that database and retain
-originals under `downloads/`. CLI JSON reports station or provider outcomes.
+stored with the station inventory under `assets/observations/`. Acquisition
+updates the canonical assets. Raw captures can be removed after normalization. CLI JSON reports station or provider outcomes.
 Standalone acquisition keeps successful sibling results on failure or cancellation.
 
 ## CLI download progress
@@ -51,7 +51,7 @@ each forecast asset was registered or reused.
 The forecast buffer expands each edge by its axis span times the configured
 fraction. The expanded bounds must fit within geographic limits. Forecast
 providers are unique and processed in configured order. ANA reads station
-selection and enabled variables from the database.
+selection and enabled variables from the canonical inventory.
 
 ## ANA observations
 
@@ -63,16 +63,19 @@ trimming whitespace and leading zeros. Variables are `rain`, `level`, and
 workflow reads ANA rows from mixed-provider inventories and retains existing
 station identities.
 
-For each selected station, request inclusive calendar dates where an enabled
-variable has no saved raw value that day, plus the reference date. Each completed
-station retains `observed.csv` with columns `provider_code`, `station_code`,
+Acquisition requests uncovered São Paulo calendar dates for the enabled variables
+at each selected station. A successful request records coverage even for a day
+without readings. For the current provider day, coverage extends only through
+the last completed hour; a later requested hour fetches that day again. Future
+and incomplete-hour readings are excluded. `--force` requests all dates again.
+Each completed station retains `observed.csv` with columns `provider_code`, `station_code`,
 `observed_at`, `variable_code`, and `value`. Source response XML uses
 `YYYYMMDD__YYYYMMDD.xml` beside the CSV under
 `downloads/ana/<attempt>/<station>/`. An unsuccessful station still reports
 any XML already captured. [ANA ServiceANA operation](https://telemetriaws1.ana.gov.br/serviceana.asmx?op=DadosHidrometeorologicos)
 
 Source timestamps are reduced to minutes and normalized to São Paulo local
-time for CSV. Import converts to the database's declared timezone and uses
+time for CSV. Import converts to the observation store’s declared timezone and uses
 hour-ending buckets. Rain is in millimetres, level in centimetres, and flow in
 cubic metres per second. Level averages are rounded to an integer with ties to
 even. Empty source values yield no sample. Incoming values revise the station's
@@ -97,9 +100,9 @@ conflicting raw samples.
 Start with the latest scheduled cycle at or before the reference. An unavailable
 cycle falls back within the configured lookback. Invalid GRIB2, conflicting
 assets, and local persistence errors are reported for that provider. Reuse
-verifies the retained files, complete native schedule, requested crop, and
-timezone. Otherwise the completed source and normalized native grid register
-under immutable IDs in the [forecast catalog](forecasts.md#native-values-and-persistence).
+verifies the normalized grid, complete native schedule, requested crop, and
+timezone. It works after removal of the original download. Use `--force` to fetch
+again and publish a verified replacement for the same logical asset in the [forecast catalog](forecasts.md#native-values-and-persistence).
 A failed provider leaves successfully registered sibling forecasts available.
 
 ## Run All
@@ -115,7 +118,7 @@ available.
 
 Use `acquisition` to acquire and normalize files for later ingestion. Select a
 new output directory under an existing parent. These commands do not open a
-workspace, register an asset, update SQLite, or change Run All.
+workspace or register an asset for Run All.
 
 ```sh
 mgb-ops acquisition bndmet --product rain --station A801 \

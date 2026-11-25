@@ -37,7 +37,7 @@ remain distinct from supplied zero. These APIs perform no new interpolation.
 `query_series(&SeriesQuery)` takes one `Location::Station(id)` or `Mini(id)`, an
 explicit timezone/window, and ordered `SeriesSelection` values. Model selections
 identify a trial directory, scenario and rain/level/flow variable. Observation
-selections identify a canonical database, explicit series and variable, whether
+selections identify a canonical observation asset directory, explicit series and variable, whether
 to use effective values, and ordered replacement IDs. Optional supplied
 `replacements` replace those IDs with explicit replacement values without catalog writes.
 Rain and flow support effective values. Level uses recorded observations.

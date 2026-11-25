@@ -147,7 +147,7 @@ const COMMANDS: &[Command] = &[
                     "reference_time": {"type":"string"},
                     "lookback_days": {"type":"integer","minimum":0},
                     "forecast_days": {"type":"integer","minimum":1},
-                    "scenarios": {"type":"array","items":{"type":"object","description":"kind zero, raw with forecast, or corrected with pinned forecast and ordered corrections"}}
+                    "scenarios": {"type":"array","items":{"type":"object","description":"Scenario with unique id, base (kind zero, forecast with forecast selector, or scenario with prior id), and ordered edits with local start/end, optional bbox, multiplication_factor, rotation_deg, shift_lon_pixels and shift_lat_pixels"}}
                 }),
                 &["revision"],
             )
@@ -242,7 +242,7 @@ fn location_search(session: &Session, arguments: Value) -> Result {
         .map_or(needle.as_str(), str::trim);
     let mut findings = Vec::new();
     let mut matches = Vec::new();
-    let history = super::super::operation_database(session.workspace());
+    let history = super::super::observation_assets(session.workspace());
     match ObservationStore::open_read_only(&history).and_then(|store| store.station_locations()) {
         Ok(mut stations) => {
             stations.sort_by(|a, b| a.station.station_id.cmp(&b.station.station_id));

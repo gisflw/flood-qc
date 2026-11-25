@@ -1061,6 +1061,12 @@ impl Monitoring {
                     };
                     if same {
                         self.inundation.refresh();
+                        self.runners.start(
+                            runners::Action::Initialize {
+                                config: project.config.clone(),
+                            },
+                            context,
+                        );
                     }
                     if !same {
                         self.inundation.select(None);
@@ -3205,6 +3211,32 @@ impl Monitoring {
             self.pending = None;
             return;
         }
+        if self.runners.unsaved_inputs() {
+            egui::Modal::new(egui::Id::new("leave-unsaved-inputs")).show(ctx, |ui| {
+                ui.heading(text(pt, "Keep run inputs?", "Manter entradas da execução?"));
+                ui.label(text(
+                    pt,
+                    "Save the inputs to regenerate this run later.",
+                    "Salve as entradas para regenerar esta execução mais tarde.",
+                ));
+                ui.label(self.runners.localized_status(pt));
+                ui.horizontal(|ui| {
+                    if ui.button(text(pt, "Save", "Salvar")).clicked() {
+                        self.saving_departure = true;
+                        self.runners.save_inputs_dialog(ctx);
+                    }
+                    if ui.button(text(pt, "Discard", "Descartar")).clicked() {
+                        self.saving_departure = true;
+                        self.runners.discard_inputs(ctx);
+                    }
+                    if ui.button(text(pt, "Cancel", "Cancelar")).clicked() {
+                        self.pending = None;
+                        self.saving_departure = false;
+                    }
+                });
+            });
+            return;
+        }
         if !self.runners.dirty() {
             self.finish_departure(ctx);
             return;
@@ -3287,6 +3319,8 @@ impl eframe::App for Monitoring {
             self.depart(Departure::Quit);
         }
         self.runners.shortcuts(&ctx, self.switching_project);
+        self.runners
+            .input_retention_dialog(&ctx, self.preferences.portuguese);
         for (key, tab) in [
             (egui::Key::Num2, SideTab::Charts),
             (egui::Key::Num3, SideTab::Data),

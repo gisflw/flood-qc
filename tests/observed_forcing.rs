@@ -357,7 +357,7 @@ fn app_selects_one_series_without_orphaning_its_discarded_samples() {
         Provenance, RegularGridSpec,
     };
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("observations.sqlite");
+    let path = dir.path().join("observations");
     let mut store = ObservationStore::create(&path, "UTC").unwrap();
     let start = time("2026-01-01T00:00:00");
     let axis = IntervalAxis {

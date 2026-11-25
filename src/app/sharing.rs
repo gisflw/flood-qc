@@ -1,7 +1,6 @@
-use super::{ExecutionReport, ExecutionRequest, OperationControl, OperationError};
+use super::{ExecutionReport, OperationControl, OperationError};
 use crate::store::{
-    BundleManifest, InputReference, OperationManifest, PREPARED_ENGINE, copy_member, copy_tree,
-    digest_file, payload_index, publish_directory, read_draft, read_operation_manifest,
+    BundleManifest, copy_member, payload_index, publish_directory, read_input_set,
     read_retained_manifest, validate_bundle, write_draft,
 };
 use serde::Serialize;
@@ -12,7 +11,7 @@ use std::path::{Path, PathBuf};
 pub struct RunBundleReport {
     pub root: PathBuf,
     pub run_id: String,
-    pub has_preparation: bool,
+    pub has_inputs: bool,
 }
 
 fn absolute_parent(path: &Path) -> Result<PathBuf, String> {
@@ -47,70 +46,76 @@ fn check_detached_destination(workspace: &Path, destination: &Path) -> Result<()
     Ok(())
 }
 
-fn engine_reference(manifest: &OperationManifest) -> Result<&InputReference, String> {
-    let mut candidates = manifest.inputs.iter().filter(|file| {
-        matches!(
-            file.path.to_string_lossy().replace('\\', "/").as_str(),
-            "baseline/engine" | "baseline/engine.exe"
-        )
-    });
-    let engine = candidates
-        .next()
-        .ok_or("preparation has no recorded engine")?;
-    if candidates.next().is_some() {
-        return Err("preparation has multiple engine references".into());
+fn bind_inputs(
+    manifest: &crate::store::OperationManifest,
+    inputs: &crate::store::InputSetManifest,
+) -> Result<(), String> {
+    let mut recipe = manifest.recipe.clone();
+    recipe
+        .as_object_mut()
+        .ok_or("invalid run recipe")?
+        .remove("input_set_id");
+    if inputs.files != manifest.inputs || inputs.recipe != recipe {
+        return Err("input values or recipe do not match the completed run".into());
     }
-    Ok(engine)
+    Ok(())
 }
 
 fn checked_bundle(root: &Path) -> Result<BundleManifest, String> {
     let bundle = validate_bundle(root)?;
-    let trial = super::read_trial(root).map_err(|error| error.to_string())?;
-    if let Some(engine) = &bundle.preparation_engine {
-        let root = root.join("preparation");
-        let manifest_file = root.join("manifest.json");
-        let identity = digest_file(&manifest_file)?.0;
-        if trial.preparation_sha256.as_deref() != Some(&identity) {
-            return Err("bundled preparation does not match the trial".into());
+    super::read_trial(root).map_err(|error| error.to_string())?;
+    let manifest = read_retained_manifest(root)?;
+    let run_input_id = manifest
+        .recipe
+        .get("input_set_id")
+        .and_then(serde_json::Value::as_str);
+    if let Some(id) = &bundle.input_set_id {
+        let inputs = read_input_set(&root.join("inputs"))?;
+        if &inputs.id != id || run_input_id != Some(id.as_str()) {
+            return Err("bundled input set does not match the run".into());
         }
-        let manifest: OperationManifest = read_draft(&manifest_file)?;
-        if manifest.state != "prepared" || engine_reference(&manifest)? != engine {
-            return Err("bundled preparation has an invalid engine reference".into());
-        }
-        let mut remaining = bundle
+        bind_inputs(&manifest, &inputs)?;
+        let mut expected = inputs.files;
+        expected.push(crate::store::InputReference {
+            path: "input-set.json".into(),
+            kind: "input-set.json".into(),
+            sha256: crate::store::digest_file(&root.join("inputs/input-set.json"))?.0,
+            size: std::fs::metadata(root.join("inputs/input-set.json"))
+                .map_err(|e| e.to_string())?
+                .len(),
+        });
+        let mut actual: Vec<_> = bundle
             .files
             .iter()
             .filter_map(|entry| {
-                let relative = entry.path.to_str()?.strip_prefix("preparation/")?;
-                (relative != "manifest.json").then_some((relative, entry))
+                entry.path.strip_prefix("inputs").ok().and_then(|path| {
+                    let mut value = entry.clone();
+                    value.path = path.into();
+                    value.kind = path
+                        .components()
+                        .next()?
+                        .as_os_str()
+                        .to_string_lossy()
+                        .into_owned();
+                    Some(value)
+                })
             })
-            .collect::<std::collections::HashMap<_, _>>();
-        for input in manifest.inputs.iter().filter(|input| *input != engine) {
-            let path = input
-                .path
-                .to_str()
-                .ok_or("non-UTF8 preparation path")?
-                .replace('\\', "/");
-            let file = remaining
-                .remove(path.as_str())
-                .ok_or_else(|| format!("missing preparation member {path}"))?;
-            if file.size != input.size || file.sha256 != input.sha256 {
-                return Err(format!("preparation integrity mismatch: {path}"));
-            }
-        }
-        if !remaining.is_empty() {
-            return Err("unreferenced preparation files in bundle".into());
+            .collect();
+        expected.sort_by(|a, b| a.path.cmp(&b.path));
+        actual.sort_by(|a, b| a.path.cmp(&b.path));
+        if actual != expected {
+            return Err("input set has unexpected or missing bundle members".into());
         }
     } else if bundle
         .files
         .iter()
-        .any(|file| file.path.starts_with("preparation"))
+        .any(|file| file.path.starts_with("inputs"))
     {
-        return Err("unregistered preparation in bundle".into());
+        return Err("unregistered input set in bundle".into());
     }
     if bundle.files.iter().any(|file| {
         file.path != Path::new("manifest.json")
-            && ["results", "scenarios", "preparation"]
+            && ["results", "scenarios", "inputs"]
                 .iter()
                 .all(|entry| !file.path.starts_with(entry))
     }) {
@@ -129,7 +134,7 @@ fn copy_optional(root: &Path, relative: &Path, stage: &Path) -> Result<(), Strin
 
 pub fn export_run(
     run: &Path,
-    preparation: Option<&Path>,
+    inputs: Option<&Path>,
     destination: &Path,
 ) -> Result<RunBundleReport, String> {
     let run_path = run.canonicalize().map_err(|e| e.to_string())?;
@@ -146,17 +151,17 @@ pub fn export_run(
                 return Err("selected run is no longer active".into());
             }
             check_detached_destination(workspace, destination)?;
-            export_run_directory(run, run_id, preparation, destination)
+            export_run_directory(run, run_id, inputs, destination)
         })?
         .ok_or_else(|| "workspace has no active run".into());
     }
-    export_run_directory(run, name, preparation, destination)
+    export_run_directory(run, name, inputs, destination)
 }
 
 fn export_run_directory(
     run: &Path,
     run_id: &str,
-    preparation: Option<&Path>,
+    inputs: Option<&Path>,
     destination: &Path,
 ) -> Result<RunBundleReport, String> {
     let parent = absolute_parent(destination)?;
@@ -166,20 +171,23 @@ fn export_run_directory(
     if !fs::symlink_metadata(run).is_ok_and(|metadata| metadata.is_dir()) {
         return Err("expected a real run directory".into());
     }
-    let trial = super::read_trial(run).map_err(|error| error.to_string())?;
     let manifest = read_retained_manifest(run)?;
-    let prepared = preparation
+    let selected_inputs = inputs
         .map(|root| -> Result<_, String> {
             if parent.starts_with(root.canonicalize().map_err(|error| error.to_string())?) {
-                return Err("bundle destination is inside its source preparation".into());
+                return Err("bundle destination is inside its source input set".into());
             }
-            let manifest = read_operation_manifest(root)?;
-            let digest = digest_file(&root.join("manifest.json"))?.0;
-            if trial.preparation_sha256.as_deref() != Some(&digest) {
-                return Err("preparation does not match the trial".into());
+            let inputs = read_input_set(root)?;
+            bind_inputs(&manifest, &inputs)?;
+            if manifest
+                .recipe
+                .get("input_set_id")
+                .and_then(serde_json::Value::as_str)
+                != Some(inputs.id.as_str())
+            {
+                return Err("input set does not match the run".into());
             }
-            let engine = engine_reference(&manifest)?.clone();
-            Ok((root, manifest, engine))
+            Ok((root, inputs))
         })
         .transpose()?;
     publish_directory(destination, |stage| {
@@ -205,17 +213,19 @@ fn export_run_directory(
                 copy_optional(run, &worker.join("state"), stage)?;
             }
         }
-        if let Some((source, manifest, engine)) = &prepared {
-            let root = stage.join("preparation");
-            copy_member(source, Path::new("manifest.json"), &root)?;
-            for file in manifest.inputs.iter().filter(|file| *file != engine) {
+        if let Some((source, inputs)) = &selected_inputs {
+            let root = stage.join("inputs");
+            copy_member(source, Path::new("input-set.json"), &root)?;
+            for file in &inputs.files {
                 copy_member(source, &file.path, &root)?;
             }
         }
         let bundle = BundleManifest {
-            version: 1,
+            version: 2,
             run_id: run_id.into(),
-            preparation_engine: prepared.map(|(_, _, engine)| engine),
+            input_set_id: selected_inputs
+                .as_ref()
+                .map(|(_, inputs)| inputs.id.clone()),
             files: payload_index(stage)?,
         };
         write_draft(&stage.join("bundle.json"), &bundle)?;
@@ -223,7 +233,7 @@ fn export_run_directory(
         Ok(RunBundleReport {
             root: destination.into(),
             run_id: bundle.run_id,
-            has_preparation: bundle.preparation_engine.is_some(),
+            has_inputs: bundle.input_set_id.is_some(),
         })
     })
 }
@@ -271,14 +281,14 @@ fn import_checked_run(
         let staged = checked_bundle(stage)?;
         if staged.files != bundle.files
             || staged.run_id != bundle.run_id
-            || staged.preparation_engine != bundle.preparation_engine
+            || staged.input_set_id != bundle.input_set_id
         {
             return Err("bundle changed while copying".into());
         }
         Ok(RunBundleReport {
             root: destination.into(),
             run_id: bundle.run_id,
-            has_preparation: bundle.preparation_engine.is_some(),
+            has_inputs: bundle.input_set_id.is_some(),
         })
     })
 }
@@ -295,56 +305,8 @@ pub fn regenerate_run(
     };
     control.check()?;
     let metadata = checked_bundle(bundle).map_err(fail)?;
-    let required = metadata.preparation_engine.ok_or_else(|| {
-        fail("bundle contains results only; a matching retained preparation is required".into())
-    })?;
-    let engine = engine
-        .canonicalize()
-        .map_err(|error| fail(error.to_string()))?;
-    if digest_file(&engine).map_err(fail)? != (required.sha256, required.size) {
-        return Err(fail(
-            "local executable does not match the required engine digest".into(),
-        ));
-    }
-    let workspace = workspace
-        .canonicalize()
-        .map_err(|error| fail(error.to_string()))?;
-    let base = workspace.join("cache");
-    fs::create_dir_all(&base).map_err(|error| fail(error.to_string()))?;
-    let snapshot = base.join(format!(
-        ".regenerate-{}-{}",
-        std::process::id(),
-        chrono::Utc::now().format("%Y%m%d%H%M%S%.9f")
-    ));
-    publish_directory(&snapshot, |stage| {
-        let source = bundle.join("preparation");
-        for entry in &metadata.files {
-            if let Ok(path) = entry.path.strip_prefix("preparation") {
-                copy_member(&source, path, stage)?;
-            }
-        }
-        let expected_engine = Path::new(PREPARED_ENGINE);
-        if required.path != expected_engine {
-            return Err("retained preparation requires an engine for a different platform".into());
-        }
-        copy_tree(&engine, &stage.join(required.path))?;
-        read_operation_manifest(stage)?;
-        Ok(())
-    })
-    .map_err(fail)?;
-    let result = super::execute_prepared_controlled(
-        ExecutionRequest {
-            invocation_dir: workspace.clone(),
-            workspace,
-            prepared: snapshot.clone(),
-        },
-        control,
-    );
-    if let Err(error) = fs::remove_dir_all(&snapshot) {
-        return Err(fail(format!(
-            "regeneration cleanup for {} failed: {error}",
-            snapshot.display()
-        )));
-    }
-    result
+    metadata
+        .input_set_id
+        .ok_or_else(|| fail("bundle contains results only; an input set is required".into()))?;
+    super::execute_input_set(workspace, &bundle.join("inputs"), engine, control)
 }

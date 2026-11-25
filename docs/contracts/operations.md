@@ -11,8 +11,9 @@ mgb-ops operation execute --workspace /region --prepared /region/runs/prepared -
 ```
 
 **Run All** acquires configured inputs, freezes the run inputs, executes MGB, and
-publishes the completed generation. **Save preparation** uses saved inputs and
-stops before execution. A saved preparation retains everything needed to execute
+publishes the completed generation. Desktop **Capture inputs** stops before
+materialization and execution; **Save current inputs** makes an independent copy.
+The CLI `operation prepare` materializes saved inputs and stops before execution. A saved preparation retains everything needed to execute
 after its original sources change. Relative command paths resolve from the
 invocation directory. Paths in workspace settings resolve from the workspace.
 
@@ -26,44 +27,48 @@ and time windows crossing a timezone offset change fail validation.
 
 ## Scenarios
 
-With no overrides, the run selects zero future rain and the latest usable raw
-cycle for each provider, model and product in `operation.sqlite`. Zero comes
-first. Eligible cycles begin at or before the run reference and cover its
-forecast window. The catalog can supply cycles from disabled acquisition
-providers. Automatic raw scenario IDs use the provider, model and product
-without the cycle for stable scheduled reporting. Run All resolves the
-automatic set after acquisition and reports
-unavailable providers in the acquisition outcome.
+Workspace TOML may supply an ordered scenario list. With no explicit list in
+the session or configuration, the run selects zero future rain followed by the
+latest usable cycle for each provider, model and product. Eligible cycles start
+at or before the reference and cover the forecast window. The catalog may contain
+cycles from disabled acquisition providers. Automatic forecast IDs use the
+provider, model and product. Run All resolves this selection after acquisition.
 
-Repeat `--scenario` to supply an explicit, ordered selection. Use `zero`,
-a provider such as `ecmwf` when it identifies one product, or a full
-`provider/model/product` label. Append `@UTC-cycle` to pin a cycle. For a
-corrected scenario, pass the cycle and ordered edits as one argument.
+Repeat `--scenario` to supply an ordered list. Each entry has a unique ID of
+one to 64 ASCII letters, digits, underscores or hyphens, beginning with a
+letter or digit. Its base is zero, a forecast selector, or an earlier scenario's
+ID. A selector names a provider or a specific `provider/model/product` and can
+pin a cycle with `@UTC-cycle`. The CLI also accepts `zero` and a plain forecast
+selector as shorthand.
 
 ```sh
 mgb-ops operation run-all --workspace /region \
   --reference-time 2026-07-20T00:00:00 \
   --scenario zero \
-  --scenario ecmwf/ifs/fc@2026-07-20T00:00:00Z \
-  --scenario '{"kind":"corrected","forecast":"ecmwf/ifs/fc@2026-07-20T00:00:00Z","corrections":[{"t0_hour":6,"t1_hour":18,"multiplication_factor":1.1}]}'
+  --scenario '{"id":"ifs","base":{"kind":"forecast","forecast":"ecmwf/ifs/fc@2026-07-20T00:00:00Z"}}' \
+  --scenario '{"id":"wet","base":{"kind":"scenario","id":"ifs"},"edits":[{"start":"2026-07-20T06:00:00","end":"2026-07-20T18:00:00","multiplication_factor":1.1,"rotation_deg":0,"shift_lat_pixels":0,"shift_lon_pixels":0}]}'
 ```
 
-Each correction supplies `t0_hour` and `t1_hour`, measured from its forecast
-cycle. Pixel shifts (`shift_lat_pixels`, `shift_lon_pixels`) and
-`rotation_deg` default to zero. The positive `multiplication_factor` defaults
-to one. New run can preview and reorder corrections for a pinned forecast.
-The manifest retains the values in their applied order. Missing explicit
-selections stop the run before execution. All scenarios use the same effective
-[observation history](observations.md#selection-reviews-and-preparation).
+For each native accumulation, divide its rainfall uniformly among its hours,
+then resample bilinearly onto the workspace grid. Each edit reads the previous
+edit’s working grid and affects local hourly intervals within `[start,end)`.
+The optional `bbox` is `[west,south,east,north]`. Only output cells with centres
+inside that box change. Positive rotation is counterclockwise around the box
+centre (the full working-grid centre when omitted). Translation precedes rotation
+and uses working-grid pixels, positive east and north. The transform samples
+the nearest source cell, preserves missingness and applies a finite nonnegative
+factor. A source outside the grid yields a missing output cell. Basin
+interpolation follows the ordered edits. Preview and execution use the same
+grid transformations. All scenarios share the effective [observation
+history](observations.md#selection-reviews-and-preparation).
 
-Library callers open an `OperationalRun` for a workspace, set typed
-`RunParameters`, and use `prepare_saved` or `run_all_report`. The same
-`RunScenario` values are used for selection and preview.
+Library callers can edit typed `RunParameters` and `RunScenario` values in the
+workspace session. The frozen recipe records the resolved base and edit order.
 
 ## Active run and rainfall cache
 
 Each workspace has one active run after its first successful execution. The
-active generation recorded in `operation.sqlite` selects the generation that supplies
+active generation recorded in `cache/run/active.json` selects the generation that supplies
 model results, rainfall, and any processed inundation masks. Successful
 execution publishes the whole generation together and reclaims the previous
 generation. An unsuccessful or cancelled execution preserves the active run.
@@ -78,12 +83,11 @@ geometry and verified zero forecast intervals. Rainfall and basin summaries read
 the selected generation. A missing cache returns no rainfall. Missing or corrupt
 members produce findings.
 
-The database records each attempt and its status.
+A JSON manifest records each attempt and its status.
 The active generation keeps its manifest under `cache/run/`. Retiring it
 archives the manifest under `runs/history/` and reclaims its results. Failed
 attempts retain their manifest and bounded diagnostics. Export a bundle before
-replacement to keep full results. Keep a [saved preparation](#prepared-dependencies-and-run-files)
-for exact reruns.
+replacement to keep full results. Save the [input set](inputs.md) independently to regenerate forcing and rerun.
 
 ## Execution lifecycle
 
@@ -102,15 +106,15 @@ generation available. See [control and cancellation](#controlled-actions-and-can
 
 ## Prepared dependencies and run files
 
-Preparation freezes selected canonical observation rows, ordered replacement and
-correction values, station metadata and offsets, selected normalized forecast
-grids, numerical settings, baseline Input
-and executable. Source SQLite subsets are read consistently rather than copied
-from an open WAL file. Canonical forcing and checkpoints retain f64 precision.
-The generated `manifest.json` records resolved settings, scenario inputs and
-outcomes, and the files needed to validate the snapshot. Forecast correction
-values are recorded in this manifest. Derived grids carry their resulting
-rainfall values.
+Preparation freezes selected canonical observation rows, ordered observation replacements and
+scenario edits, station metadata and offsets, selected normalized forecast
+grids, numerical settings, and baseline Input. A prepared execution directory
+also carries a copy of the selected executable and generated forcing. For an
+independent archive, the [input-set format](inputs.md) retains the executable
+identity and recipes alongside the input files. Canonical forcing and
+checkpoints retain f64 precision.
+The generated `manifest.json` records resolved settings, scenario recipes and
+outcomes, and the files needed to validate the snapshot.
 
 The prepared tree contains `sources/`, `baseline/Input/`, `baseline/engine`,
 `forcing/` and `checkpoints/`. Each selected scenario has a combined
@@ -132,8 +136,8 @@ for each successful scenario. See [inundation processing](inundation.md).
 
 `discover_trials(workspace)` returns the active root when present.
 `read_trial(root)` validates canonical results and required engine streams
-at an active or explicitly saved root. A saved preparation or a bundle with a
-preparation supports execution after the original sources are removed.
+at an active or explicitly saved root. A bundle containing the matching input set supports regeneration using a matching
+installed executable after the original sources are removed.
 
 Scenarios run concurrently in isolated directories with direct executable
 invocation, an explicit working directory, and only `MGB_INPUT_DIR`,

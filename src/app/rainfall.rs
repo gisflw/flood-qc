@@ -294,7 +294,9 @@ pub(super) fn stage(
         .collect();
     let zero = scenarios
         .iter()
-        .filter(|scenario| scenario.kind == "zero")
+        .filter(|scenario| {
+            scenario.asset_id.is_none() && scenario.base.is_none() && scenario.edits.is_empty()
+        })
         .map(|scenario| scenario.id.clone())
         .collect();
     stage_rainfall(
@@ -356,7 +358,10 @@ pub(super) fn stage(
                 {
                     return Err("Prepared basin rainfall does not match recipe".into());
                 }
-                if scenario.kind == "zero" {
+                if scenario.asset_id.is_none()
+                    && scenario.base.is_none()
+                    && scenario.edits.is_empty()
+                {
                     let offset = historical.values.len();
                     if combined.values[offset..].iter().any(|value| *value != 0.0)
                         || combined.valid[offset..].iter().any(|valid| !*valid)

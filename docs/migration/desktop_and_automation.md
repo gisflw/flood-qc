@@ -20,21 +20,18 @@ scheduler use shared app workflows in the library for configuration/path
 resolution, selection, execution snapshots, scenario coordination, failure
 handling, export, and run outcomes. Interface controls may call intended
 public core APIs but do not duplicate operational lifecycle rules. Hydrological
-algorithms stay in analysis/model; database and file-lifecycle implementations
+algorithms stay in analysis/model; persistence and file-lifecycle implementations
 stay in store. Monitoring keeps the map visible between the run and Layers column
 and the tabbed right pane. The [desktop contract](../contracts/desktop.md)
-records the interface and open hardware qualification. Shared
-core now produces disposable trial caches without run registration, retaining
-successful scenarios and debugging logs on failure/cancellation.
+records the interface and open hardware qualification.
 
-At execution startup, freeze input values or immutable versions. Model stages
-canonical outputs; app records independent run/scenario outcomes and output paths
-in the generated per-run JSON manifest for GUI consumption. A failed scenario retains
-diagnostics and successful siblings' outputs; other runs are unchanged. Operators
-may copy files elsewhere for long-term storage; add no save flags or retention
-manager. These rules apply equally to interactive and scheduled
-operations. Reusable report/chart rendering belongs in analysis's private
-submodules; interactive widgets and GUI state belong in the interface.
+The [input-set contract](../contracts/inputs.md) defines capture, explicit save,
+and replacement decisions. The [operation contract](../contracts/operations.md)
+defines failure handling and publication. All interfaces use these shared API
+policies. A failed engine retains newly captured inputs and leaves previous
+successful results active; operators can save inputs independently of execution.
+Reusable report/chart rendering belongs in analysis's private submodules;
+interactive widgets and GUI state belong in the interface.
 
 Introduce a working desktop interface after the first shared preparation,
 execution, and decoded-results path is available, before implementing all core

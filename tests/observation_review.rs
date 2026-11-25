@@ -64,7 +64,7 @@ fn point(station: &str, variable: &str, at: &str, value: Option<f64>) -> Observa
 #[test]
 fn flow_availability_keeps_data_states_and_exact_calendar_hours() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("observations.sqlite");
+    let db = dir.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
 
     let flow_edit = point("s", "flow", "2026-02-28T21:00:00", None);
@@ -152,7 +152,7 @@ fn flow_availability_keeps_data_states_and_exact_calendar_hours() {
 #[test]
 fn spatial_qc_uses_matched_raw_target_and_effective_neighbors() {
     let dir = tempfile::tempdir().unwrap();
-    let db = dir.path().join("observations.sqlite");
+    let db = dir.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     let start = time("2026-02-01T00:00:00");
     store

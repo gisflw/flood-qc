@@ -1,27 +1,27 @@
 # Canonical observations and observed forcing
 
-Workspaces store observations and station metadata in `operation.sqlite`.
-Standalone observation APIs also accept an explicit canonical SQLite path.
+Workspaces store observations and station metadata under `assets/observations/`.
+Standalone observation APIs accept an explicit canonical asset directory. See
+[input sets](inputs.md) for run capture and retention.
 
 ## Persistence
 
-`ObservationStore::create(path, time_zone)` creates a new database and rejects an
+`ObservationStore::create(path, time_zone)` creates a new asset directory and rejects an
 existing destination. `open_read_only(path)` validates its tables and IANA
-timezone without creating a database. `write_batch` commits all
-supplied rows together and rolls back invalid batches. Connections enable
-foreign keys. Initialization creates the complete current schema.
+timezone without creating data. `write_batch` commits all
+supplied rows together and rolls back invalid batches. Publication validates referential integrity and atomically selects a complete generation.
 
-The [owned SQL schema](../../src/store/sql/observations.sql) defines stations,
+Typed Parquet tables define stations,
 observation series, samples, rainfall replacements and station offsets. IDs are
 nonempty strings. Station coordinates are both present or both absent. Missing
 station coordinates are permitted for search and data-only review; forcing
 interpolation requires coordinates for selected rain stations.
 Duplicate keys, orphan rows, invalid units and nonfinite values fail.
 Replacement reason text may be empty or omitted; supplied text is preserved.
-`open_writable` opens an existing database without creating one.
+`open_writable` opens an existing asset directory without creating one.
 Workspace edits are an ordered table. Review or change them in
 **Observation review** or [import/export them as CSV](saved-data.md#canonical-data-and-review).
-Saving replaces the list in a single transaction.
+Saving replaces the list in an atomic publication.
 
 | Variable | Canonical value | Interval |
 | --- | --- | --- |
@@ -30,18 +30,18 @@ Saving replaces the list in a single transaction.
 | Flow | Finite `FlowM3s(f64)`, m3/s | Instantaneous |
 
 Missing samples use `None`; a recorded missing row remains distinct from an
-absent row and from a valid zero. Levels bind as SQLite INTEGER, including zero,
+absent row and from a valid zero. Levels use Parquet INT32, including zero,
 negative values and both i32 limits. Reads reject fractional or out-of-range
 canonical levels. They never round or convert units. Finite suspicious raw rain,
 including negative measurements, is retained for review.
 
 Local timestamps use `YYYY-MM-DDTHH:MM:SS` without UTC conversion. Writes reject
 fractional seconds and ambiguous/nonexistent local observation/replacement labels.
-A requested interval axis must use the database timezone; axes crossing timezone
+A requested interval axis must use the artifact timezone; axes crossing timezone
 offset changes are not supported in this increment.
 
 `read_selection(selection, interval, replacement_ids)` reads eligible stations,
-series, samples, ordered replacement values and offsets in one transaction,
+series, samples, ordered replacement values and offsets from one pinned generation,
 returning detached owned values. Rain samples use `(start,end]`; instantaneous
 level/flow samples include both endpoints. Select providers and/or station IDs explicitly;
 unknown selectors and unknown/duplicate replacement IDs fail. An empty replacement
@@ -51,7 +51,7 @@ are valid. Each offset identifies a positive mini-basin ID.
 
 ## Selection, reviews and preparation
 
-The pure analysis APIs accept canonical values without database connections.
+The pure analysis APIs accept canonical values without storage state.
 `select_observation_series` picks one rainfall series per station, preferring
 approved, curated, then raw, and newer creation labels within a state. Equal
 winning ranks/timestamps require explicit selection. An explicit series ID
@@ -71,7 +71,7 @@ Missing values, missing hours and nonqualifying values break a sequence. Detecti
 does not create review instructions. All policy values are explicit and validated.
 
 Workspace preparation refreshes automatic precipitation exclusion flags in
-SQLite using the configured thresholds. The final observation view masks
+the observation store using the configured thresholds. The final observation view masks
 flagged values while retaining the raw measurement and flag reason. Ordered
 manual replacements apply to the masked values. Prepared data freezes the
 selected raw values, flags and edits together.
@@ -104,17 +104,17 @@ validity remain unverified.
 
 ## Station reference levels
 
-Import station reference levels into an initialized database.
+Import station reference levels into an initialized observation asset directory.
 
 ```sh
-mgb-ops references import --database /regional/workspace/operation.sqlite --provider ana --thresholds station_level_reference.csv --history registered_floods.csv --json
+mgb-ops references import --assets /regional/workspace/assets/observations --provider ana --thresholds station_level_reference.csv --history registered_floods.csv --json
 ```
 
-The shared action is `import_level_references(database, provider, thresholds, history)`. Paths resolve
+The shared action is `import_level_references(assets, provider, thresholds, history)`. Paths resolve
 from the invocation directory. JSON mode returns `{ok:true,result:...}` or
 `{ok:false,error:...}` on stdout, with exit 0 for success, 1 for operational
 failure and 2 for invalid arguments. Import results contain the imported record
-count and sorted unmatched station codes; upgrade returns a null result. Without
+count and sorted unmatched station codes. Without
 `--json`, import prints the report. It replaces all threshold/historical reference
 records together, without changing stations, observation samples, replacements or
 model offsets. Both files must validate before replacement. Validation or persistence

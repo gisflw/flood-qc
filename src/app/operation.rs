@@ -5,10 +5,10 @@ use crate::model::{
 };
 use crate::store::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
-    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, copy_staged_tree,
-    digest_file, new_run_stage, publish_run_checked, read_basin_forcing, read_operation_manifest,
-    recover_run_cache, run_cache_root, run_stage_id, stage_working_inputs, sync_tree,
-    verify_inputs, write_run_attempt, write_run_journal, write_run_manifest,
+    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, digest_file, new_run_stage,
+    publish_run_checked, read_basin_forcing, read_operation_manifest, recover_run_cache,
+    run_cache_root, run_stage_id, stage_working_inputs, sync_tree, write_run_attempt,
+    write_run_journal, write_run_manifest,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -90,6 +90,8 @@ pub struct OperationControl {
     progress: Arc<Mutex<Option<OperationProgress>>>,
     committed: Arc<Mutex<bool>>,
     observer: Option<Observer>,
+    input_disposition: Option<super::InputDisposition>,
+    force_acquisition: bool,
 }
 
 impl OperationControl {
@@ -104,6 +106,20 @@ impl OperationControl {
         }
     }
 
+    pub fn with_force_acquisition(mut self, force: bool) -> Self {
+        self.force_acquisition = force;
+        self
+    }
+    pub(super) fn force_acquisition(&self) -> bool {
+        self.force_acquisition
+    }
+    pub fn with_input_disposition(mut self, disposition: super::InputDisposition) -> Self {
+        self.input_disposition = Some(disposition);
+        self
+    }
+    pub(super) fn input_disposition(&self) -> Option<&super::InputDisposition> {
+        self.input_disposition.as_ref()
+    }
     pub fn cancel(&self) {
         let committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
         if !*committed {
@@ -298,6 +314,9 @@ pub enum OperationError {
         path: PathBuf,
         message: String,
     },
+    InputDecisionRequired {
+        input_set: String,
+    },
     Busy {
         workspace: PathBuf,
     },
@@ -326,6 +345,9 @@ impl std::error::Error for OperationError {}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ExecutionRecipe {
+    pub engine_identity: crate::store::InputReference,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_set_id: Option<String>,
     pub document: serde_json::Value,
     pub historical_count: usize,
     pub forecast_count: usize,
@@ -374,6 +396,10 @@ fn validate_recipe(
         .historical_count
         .checked_add(recipe.forecast_count)
         .ok_or("timeline overflow")?;
+    let binding: serde_json::Value = crate::store::read_draft(&root.join("sources/recipe.json"))?;
+    if binding != serde_json::to_value(recipe).map_err(|e| e.to_string())? {
+        return Err("recipe differs from frozen input values".into());
+    }
     let mut document = recipe.document.clone();
     let object = document.as_object_mut().ok_or("invalid recipe document")?;
     let selected_series = object
@@ -385,7 +411,7 @@ fn validate_recipe(
     let replacement_values = object
         .remove("replacement_values")
         .ok_or("missing replacement values")?;
-    let correction_values = object.remove("correction_values");
+
     let document: super::request::PreparationDocument =
         serde_json::from_value(document).map_err(|error| error.to_string())?;
     if recipe.workspace_scenarios.is_none() {
@@ -432,76 +458,44 @@ fn validate_recipe(
         return Err("recipe and scenario membership disagree".into());
     }
     if let Some(inputs) = &recipe.workspace_scenarios {
-        if inputs.len() != document.scenarios.len() || correction_values.is_some() {
+        if inputs.len() != document.scenarios.len() {
             return Err("invalid prepared scenario values".into());
         }
+        let mut earlier = std::collections::HashSet::new();
         for (scenario, input) in document.scenarios.iter().zip(inputs) {
-            match (
-                scenario.kind.as_str(),
-                &scenario.asset_id,
-                &input.forecast,
-                input.corrections.is_empty(),
-            ) {
-                ("zero", None, None, true) => (),
-                ("raw", Some(asset), Some(_), true)
-                | ("corrected", Some(asset), Some(_), false)
-                    if asset
+            if !super::series::valid_id(&scenario.id) || !earlier.insert(scenario.id.clone()) {
+                return Err("invalid or duplicate scenario ID".into());
+            }
+            if let Some(base) = &input.base
+                && (base == &scenario.id || !earlier.contains(base))
+            {
+                return Err("scenario base must name an earlier scenario".into());
+            }
+            if let Some(asset) = &scenario.asset_id {
+                if asset.is_empty()
+                    || !asset
                         .bytes()
-                        .all(|value| value.is_ascii_alphanumeric() || value == b'-')
-                        && !asset.is_empty()
-                        && root
-                            .join("sources/native")
-                            .join(format!("{asset}.nc"))
-                            .is_file() => {}
-                _ => return Err("invalid frozen forecast selection".into()),
+                        .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+                    || !root
+                        .join("sources/forecasts")
+                        .join(asset)
+                        .join("native.nc")
+                        .is_file()
+                {
+                    return Err("invalid frozen forecast selection".into());
+                }
+            } else if input.forecast.is_some() && input.base.is_none() {
+                return Err("missing frozen base forecast".into());
+            }
+            if scenario.base != input.base || scenario.edits != input.edits {
+                return Err("scenario recipe values disagree".into());
+            }
+            for edit in &input.edits {
+                edit.validate().map_err(|e| e.to_string())?;
             }
         }
     } else {
-        let expected_corrections: Vec<crate::store::ForecastCorrection> =
-            serde_json::from_value(correction_values.ok_or("missing correction values")?)
-                .map_err(|error| error.to_string())?;
-        let mut actual_corrections = Vec::new();
-        let mut catalog = None;
-        for scenario in &document.scenarios {
-            let corrections = scenario.correction_ids.as_deref().unwrap_or_default();
-            match (
-                scenario.kind.as_str(),
-                scenario.asset_id.as_deref(),
-                corrections.is_empty(),
-            ) {
-                ("zero", None, true) => continue,
-                ("raw", Some(asset), true) | ("corrected", Some(asset), false)
-                    if !asset.is_empty() =>
-                {
-                    if catalog.is_none() {
-                        catalog = Some(
-                            crate::store::ForecastCatalog::open_read_only(
-                                root,
-                                Path::new("sources/forecast.sqlite"),
-                            )
-                            .map_err(|error| error.to_string())?,
-                        );
-                    }
-                    let catalog = catalog.as_ref().unwrap();
-                    let (selected, _) = catalog.load_native(asset).map_err(|e| e.to_string())?;
-                    if selected.retained_source != selected.snapshot_source_path()
-                        || selected.native_artifact
-                            != Path::new("sources/native").join(format!("{asset}.nc"))
-                    {
-                        return Err("invalid retained forecast paths".into());
-                    }
-                    actual_corrections.extend(
-                        catalog
-                            .load_corrections(asset, corrections)
-                            .map_err(|error| error.to_string())?,
-                    );
-                }
-                _ => return Err("invalid scenario forecast selection".into()),
-            }
-        }
-        if actual_corrections != expected_corrections {
-            return Err("forecast corrections differ from retained catalog".into());
-        }
+        return Err("missing scenario recipe".into());
     }
     let mut seen = std::collections::HashSet::new();
     if recipe
@@ -579,7 +573,7 @@ fn validate_recipe(
         provider_codes: document.observed.provider_codes.clone(),
         station_ids: document.observed.station_ids.clone(),
     };
-    let observations = ObservationStore::open_read_only(&root.join("sources/observations.sqlite"))
+    let observations = ObservationStore::open_read_only(&root.join("sources/observations"))
         .map_err(|e| e.to_string())?;
     let extra_stations = super::additional::extra_stations(&observations, &document)?;
     let (inputs, offsets) = observations
@@ -765,11 +759,78 @@ pub(super) fn run_preparation_locked(
     _lock: &std::fs::File,
     prepare: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
+    super::input_sets::resolve_input_replacement(workspace, control)?;
     run_attempt(workspace, control, |run_root, attempt| {
         let prepared = run_root.join("preparation");
         let report = prepare(workspace, prepared, control)?;
-        execute_in_stage(&report.prepared, run_root, attempt, control, true)
+        let admitted = admit_preparation(&report.prepared)?;
+        let staged = crate::store::stage_preparation(
+            workspace,
+            &report.prepared,
+            &attempt.attempt_id,
+            false,
+            &admitted.manifest,
+            &admitted.identity,
+        )
+        .map_err(|error| store_error(workspace, error))?;
+        let admitted = validate_staged_preparation(staged.path(), admitted)?;
+        control.check()?;
+        let frozen = staged
+            .publish()
+            .map_err(|error| store_error(workspace, error))?;
+        execute_in_stage(&frozen, run_root, attempt, control, admitted)
     })
+}
+
+pub(super) fn run_captured_locked(
+    control: &OperationControl,
+    workspace: &Path,
+    engine: &Path,
+    capture: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
+) -> Result<ExecutionReport, OperationError> {
+    run_attempt(workspace, control, |run_root, attempt| {
+        let base = workspace.join("cache/inputs");
+        fs::create_dir_all(&base).map_err(|e| store_error(&base, e))?;
+        let staged = base.join(format!(".{}", attempt.attempt_id));
+        let report = capture(workspace, staged, control)?;
+        let frozen = crate::store::publish_captured_input_set(
+            workspace,
+            &report.prepared,
+            &attempt.attempt_id,
+        )
+        .map_err(|e| store_error(workspace, e))?;
+        let metadata: crate::store::InputSetManifest =
+            crate::store::read_draft(&frozen.join("input-set.json"))
+                .map_err(|e| store_error(&frozen, e))?;
+        attempt.operation = Some(operation_from_inputs(&metadata));
+        write_run_journal(run_root, attempt).map_err(|e| store_error(run_root, e))?;
+        let materialized =
+            super::input_sets::materialize_current_input_set(workspace, &frozen, engine, control)?;
+        let admitted = admit_preparation(&materialized.prepared)?;
+        execute_in_stage(&materialized.prepared, run_root, attempt, control, admitted)
+    })
+}
+fn operation_from_inputs(
+    inputs: &crate::store::InputSetManifest,
+) -> crate::store::OperationManifest {
+    let ids = inputs.recipe["document"]["scenarios"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|s| s["id"].as_str())
+        .map(|id| scenario_record(id.to_owned()))
+        .collect();
+    crate::store::OperationManifest {
+        schema_version: 1,
+        preparation_sha256: None,
+        state: "captured".into(),
+        recipe: inputs.recipe.clone(),
+        inputs: inputs.files.clone(),
+        scenarios: ids,
+        created_at: inputs.created_at.clone(),
+        finished_at: None,
+        error: None,
+    }
 }
 
 pub(super) fn execute_locked(
@@ -779,7 +840,7 @@ pub(super) fn execute_locked(
     _lock: &std::fs::File,
     _temporary_preparation: bool,
 ) -> Result<ExecutionReport, OperationError> {
-    if !super::operation_database(workspace).exists() {
+    if !super::observation_assets(workspace).exists() {
         let manifest = read_operation_manifest(prepared).map_err(|message| {
             OperationError::InvalidPrepared {
                 path: prepared.to_path_buf(),
@@ -793,11 +854,27 @@ pub(super) fn execute_locked(
             .ok_or_else(|| store_error(prepared, "Missing operation timezone"))?
             .parse()
             .map_err(|error| store_error(prepared, error))?;
-        super::workspace::initialize_database(workspace, zone)
+        super::workspace::initialize_assets(workspace, zone)
             .map_err(|error| store_error(workspace, error))?;
     }
+    let admitted = admit_preparation(prepared)?;
+    super::input_sets::resolve_input_replacement(workspace, control)?;
     run_attempt(workspace, control, |run_root, attempt| {
-        execute_in_stage(prepared, run_root, attempt, control, false)
+        let staged = crate::store::stage_preparation(
+            workspace,
+            prepared,
+            &attempt.attempt_id,
+            true,
+            &admitted.manifest,
+            &admitted.identity,
+        )
+        .map_err(|error| store_error(workspace, error))?;
+        let admitted = validate_staged_preparation(staged.path(), admitted)?;
+        control.check()?;
+        let frozen = staged
+            .publish()
+            .map_err(|error| store_error(workspace, error))?;
+        execute_in_stage(&frozen, run_root, attempt, control, admitted)
     })
 }
 
@@ -816,6 +893,29 @@ fn run_attempt(
     write_run_journal(&run_root, &attempt).map_err(|error| store_error(&run_root, error))?;
     control.set_progress(OperationStage::Preparation, None, Some(run_root.clone()));
     let result = execute(&run_root, &mut attempt);
+    let frozen = workspace.join("cache/inputs").join(&attempt.attempt_id);
+    let cleanup = if frozen.join("input-set.json").is_file() {
+        (|| -> Result<(), OperationError> {
+            let input_set: crate::store::InputSetManifest =
+                crate::store::read_draft(&frozen.join("input-set.json"))
+                    .map_err(|e| store_error(&frozen, e))?;
+            if attempt.operation.is_none() {
+                attempt.operation = Some(operation_from_inputs(&input_set));
+            }
+            if let Some(operation) = &mut attempt.operation {
+                operation.inputs = input_set.files;
+                operation
+                    .recipe
+                    .as_object_mut()
+                    .ok_or_else(|| store_error(&frozen, "invalid recipe"))?
+                    .insert("input_set_id".into(), input_set.id.into());
+            }
+            crate::store::clean_materialized_inputs(&frozen).map_err(|e| store_error(&frozen, e))
+        })()
+    } else {
+        Ok(())
+    };
+    let result = result.and_then(|report| cleanup.map(|()| report));
 
     let result = result.and_then(|report| {
         control.check()?;
@@ -886,37 +986,70 @@ fn run_attempt(
     }
 }
 
+struct PreparedAdmission {
+    manifest: crate::store::OperationManifest,
+    identity: (String, u64),
+    recipe: ExecutionRecipe,
+    document: super::request::PreparationDocument,
+}
+
+fn admit_preparation(prepared: &Path) -> Result<PreparedAdmission, OperationError> {
+    let invalid = |message| OperationError::InvalidPrepared {
+        path: prepared.to_path_buf(),
+        message,
+    };
+    let identity = digest_file(&prepared.join("manifest.json")).map_err(invalid)?;
+    let manifest = read_operation_manifest(prepared).map_err(invalid)?;
+    let recipe: ExecutionRecipe =
+        serde_json::from_value(manifest.recipe.clone()).map_err(|e| invalid(e.to_string()))?;
+    let document = validate_recipe(prepared, &recipe, &manifest.scenarios).map_err(invalid)?;
+    if digest_file(&prepared.join("manifest.json")).map_err(invalid)? != identity {
+        return Err(invalid(
+            "prepared manifest changed during validation".into(),
+        ));
+    }
+    Ok(PreparedAdmission {
+        manifest,
+        identity,
+        recipe,
+        document,
+    })
+}
+
+fn validate_staged_preparation(
+    root: &Path,
+    mut admitted: PreparedAdmission,
+) -> Result<PreparedAdmission, OperationError> {
+    admitted.document = validate_recipe(root, &admitted.recipe, &admitted.manifest.scenarios)
+        .map_err(|message| OperationError::InvalidPrepared {
+            path: root.into(),
+            message,
+        })?;
+    if digest_file(&root.join("manifest.json")).map_err(|error| store_error(root, error))?
+        != admitted.identity
+    {
+        return Err(store_error(
+            root,
+            "prepared manifest changed during staged validation",
+        ));
+    }
+    Ok(admitted)
+}
+
 fn execute_in_stage(
     prepared: &Path,
     run_root: &Path,
     attempt: &mut RunAttemptManifest,
     control: &OperationControl,
-    temporary_preparation: bool,
+    admitted: PreparedAdmission,
 ) -> Result<ExecutionReport, OperationError> {
     control.check()?;
-    let manifest_identity = digest_file(&prepared.join("manifest.json")).map_err(|message| {
-        OperationError::InvalidPrepared {
-            path: prepared.to_path_buf(),
-            message,
-        }
-    })?;
-    let mut manifest =
-        read_operation_manifest(prepared).map_err(|e| OperationError::InvalidPrepared {
-            path: prepared.to_path_buf(),
-            message: e,
-        })?;
-    let recipe: ExecutionRecipe = serde_json::from_value(manifest.recipe.clone()).map_err(|e| {
-        OperationError::InvalidPrepared {
-            path: prepared.to_path_buf(),
-            message: e.to_string(),
-        }
-    })?;
-    let document = validate_recipe(prepared, &recipe, &manifest.scenarios).map_err(|message| {
-        OperationError::InvalidPrepared {
-            path: prepared.to_path_buf(),
-            message,
-        }
-    })?;
+    let PreparedAdmission {
+        mut manifest,
+        identity: manifest_identity,
+        recipe,
+        document,
+    } = admitted;
     control.selection(&document);
     manifest.preparation_sha256 = Some(manifest_identity.0.clone());
     manifest.state = "running".into();
@@ -926,15 +1059,8 @@ fn execute_in_stage(
     attempt.operation = Some(manifest.clone());
     write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
 
-    let snapshot = if temporary_preparation {
-        prepared.to_path_buf()
-    } else {
-        let snapshot = run_root.join("snapshot");
-        copy_staged_tree(prepared, &snapshot).map_err(|error| store_error(run_root, error))?;
-        snapshot
-    };
+    let snapshot = prepared.to_path_buf();
     control.check()?;
-    verify_inputs(&snapshot, &manifest.inputs).map_err(|error| store_error(run_root, error))?;
     if digest_file(&snapshot.join("manifest.json")).map_err(|error| store_error(run_root, error))?
         != manifest_identity
     {
@@ -980,14 +1106,28 @@ fn execute_in_stage(
     if complete && !cancelled {
         super::rainfall::stage(run_root, &snapshot, &recipe, &manifest.inputs, control)
             .map_err(|error| store_error(run_root, error))?;
-        fs::remove_dir_all(&snapshot).map_err(|error| store_error(run_root, error))?;
+        crate::store::clean_materialized_inputs(&snapshot)
+            .map_err(|error| store_error(run_root, error))?;
         for record in &manifest.scenarios {
             let worker = run_root.join("scenarios").join(&record.id);
             clean_worker(&worker, true).map_err(|error| store_error(&worker, error))?;
         }
         let history = run_root.join("scenarios/.history");
         clean_worker(&history, false).map_err(|error| store_error(&history, error))?;
-        manifest.inputs.clear();
+        let input_set: crate::store::InputSetManifest =
+            crate::store::read_draft(&snapshot.join("input-set.json"))
+                .map_err(|error| store_error(&snapshot, error))?;
+        manifest.inputs = input_set.files;
+        manifest
+            .recipe
+            .as_object_mut()
+            .ok_or_else(|| store_error(&snapshot, "invalid recipe"))?
+            .insert(
+                "input_set_id".into(),
+                serde_json::Value::String(input_set.id),
+            );
+        attempt.operation = Some(manifest.clone());
+        write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
         write_run_manifest(run_root, &manifest).map_err(|error| store_error(run_root, error))?;
     }
 

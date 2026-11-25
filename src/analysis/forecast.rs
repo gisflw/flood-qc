@@ -1,4 +1,5 @@
 use crate::store::{BasinForcing, BasinGeometry, IntervalAxis, Provenance};
+use serde::{Deserialize, Serialize};
 use std::{error::Error, fmt};
 
 #[derive(Debug)]
@@ -499,6 +500,202 @@ pub fn prepare_forecast(
     })
 }
 
+/// Resample native accumulations into hourly values on the workspace grid.
+pub fn forecast_working_grid(
+    native: &crate::store::GridSeries,
+    timeline: &IntervalAxis,
+    grid: &crate::store::RegularGridSpec,
+) -> Result<crate::store::GridSeries, ForecastPreparationError> {
+    let selected = forecast_interval_selection(&native.timeline, timeline)?;
+    let mut used = Vec::new();
+    for &index in &selected {
+        if !used.contains(&index) {
+            used.push(index);
+        }
+    }
+    let (frames, _) = corrected_forecast_frames(native, &[], &used)?;
+    let mut values = Vec::new();
+    let mut valid = Vec::new();
+    let mut prepared_frames = std::collections::HashMap::new();
+    for index in used.iter().copied() {
+        let frame = &frames[used.iter().position(|v| *v == index).unwrap()];
+        let hours = (frame.interval.end - frame.interval.start).num_seconds() as f64 / 3600.;
+        let scaled: Vec<_> = frame.values.iter().map(|v| v / hours).collect();
+        let (v, m) = super::spatial::bilinear_resample(
+            &scaled,
+            &frame.valid,
+            &frame.grid.latitudes,
+            &frame.grid.longitudes,
+            &grid.latitudes,
+            &grid.longitudes,
+        )
+        .map_err(|e| ForecastPreparationError::MissingSpatialCoverage(e.to_string()))?;
+        if m.iter().any(|v| !*v) {
+            return Err(ForecastPreparationError::MissingSpatialCoverage(
+                "working grid".into(),
+            ));
+        }
+        prepared_frames.insert(index, (v, m));
+    }
+    for index in selected {
+        let (v, m) = prepared_frames.get(&index).expect("selected native frame");
+        values.extend_from_slice(v);
+        valid.extend_from_slice(m);
+    }
+    let result = crate::store::GridSeries {
+        timeline: timeline.clone(),
+        grid: grid.clone(),
+        values,
+        valid,
+        provenance: native.provenance.clone(),
+    };
+    result
+        .validate()
+        .map_err(|e| ForecastPreparationError::InvalidInput(e.to_string()))?;
+    Ok(result)
+}
+
+/// An ordered edit to hourly rainfall on the workspace grid.
+/// The bounding box selects output cell centres; the transform samples the
+/// previous grid, so successive edits compose in their given order.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScenarioGridEdit {
+    pub start: chrono::NaiveDateTime,
+    pub end: chrono::NaiveDateTime,
+    pub bbox: Option<[f64; 4]>,
+    #[serde(default = "default_scenario_multiplier")]
+    pub multiplication_factor: f64,
+    #[serde(default)]
+    pub rotation_deg: f64,
+    #[serde(default)]
+    pub shift_lon_pixels: f64,
+    #[serde(default)]
+    pub shift_lat_pixels: f64,
+}
+fn default_scenario_multiplier() -> f64 {
+    1.0
+}
+
+impl ScenarioGridEdit {
+    pub fn validate(&self) -> Result<(), String> {
+        use chrono::Timelike;
+        if self.start >= self.end
+            || [self.start, self.end]
+                .iter()
+                .any(|time| time.minute() != 0 || time.second() != 0 || time.nanosecond() != 0)
+            || ![
+                self.multiplication_factor,
+                self.rotation_deg,
+                self.shift_lon_pixels,
+                self.shift_lat_pixels,
+            ]
+            .iter()
+            .all(|v| v.is_finite())
+            || self.multiplication_factor < 0.0
+            || self.bbox.is_some_and(|b| {
+                !b.iter().all(|v| v.is_finite())
+                    || b[0] >= b[2]
+                    || b[1] >= b[3]
+                    || b[0] < -180.
+                    || b[2] > 180.
+                    || b[1] < -90.
+                    || b[3] > 90.
+            })
+        {
+            return Err("invalid scenario edit bounds or values".into());
+        }
+        Ok(())
+    }
+}
+
+/// Apply half-open, ordered scenario edits to an already-hourly working grid.
+pub fn apply_scenario_grid_edits(
+    source: &crate::store::GridSeries,
+    edits: &[ScenarioGridEdit],
+) -> Result<crate::store::GridSeries, ForecastPreparationError> {
+    let invalid = |message: &str| ForecastPreparationError::InvalidCorrection(message.into());
+    source.validate().map_err(|e| invalid(&e.to_string()))?;
+    if source
+        .timeline
+        .bounds
+        .iter()
+        .any(|b| b.end - b.start != chrono::Duration::hours(1))
+    {
+        return Err(invalid("scenario grid must be hourly"));
+    }
+    let grid = &source.grid;
+    let width = grid.longitudes.len();
+    let height = grid.latitudes.len();
+    let cells = width
+        .checked_mul(height)
+        .ok_or_else(|| invalid("grid shape overflow"))?;
+    let mut result = source.clone();
+    for edit in edits {
+        let bbox = edit.bbox.unwrap_or(grid.effective_bbox);
+        edit.validate().map_err(|e| invalid(&e))?;
+        if source.timeline.bounds.iter().any(|b| {
+            (b.start < edit.start && edit.start < b.end) || (b.start < edit.end && edit.end < b.end)
+        }) {
+            return Err(invalid("edit boundaries must align with hourly intervals"));
+        }
+        let (sin, cos) = edit.rotation_deg.to_radians().sin_cos();
+        let cx = (bbox[0] + bbox[2]) / 2.0;
+        let cy = (bbox[1] + bbox[3]) / 2.0;
+        let resolution = grid.resolution_degrees;
+        let dx = edit.shift_lon_pixels * resolution;
+        let dy = edit.shift_lat_pixels * resolution;
+        if !dx.is_finite() || !dy.is_finite() {
+            return Err(invalid("scenario translation overflow"));
+        }
+        for (time, interval) in source.timeline.bounds.iter().enumerate() {
+            if interval.start < edit.start || interval.end > edit.end {
+                continue;
+            }
+            let offset = time * cells;
+            let previous_values = result.values[offset..offset + cells].to_vec();
+            let previous_valid = result.valid[offset..offset + cells].to_vec();
+            for (row, y) in grid.latitudes.iter().enumerate() {
+                for (column, x) in grid.longitudes.iter().enumerate() {
+                    if *x < bbox[0] || *x > bbox[2] || *y < bbox[1] || *y > bbox[3] {
+                        continue;
+                    }
+                    // Inverse of translation followed by rotation about the fixed box centre.
+                    let x = x - cx;
+                    let y = y - cy;
+                    let sx = cx + x * cos + y * sin - dx;
+                    let sy = cy - x * sin + y * cos - dy;
+                    let source_col = ((sx - grid.longitudes[0]) / resolution).round_ties_even();
+                    let source_row = ((sy - grid.latitudes[0]) / resolution).round_ties_even();
+                    let target = offset + row * width + column;
+                    if source_col >= 0.0
+                        && source_col < width as f64
+                        && source_row >= 0.0
+                        && source_row < height as f64
+                    {
+                        let index = source_row as usize * width + source_col as usize;
+                        result.valid[target] = previous_valid[index];
+                        if previous_valid[index] {
+                            let value = previous_values[index] * edit.multiplication_factor;
+                            if !value.is_finite() {
+                                return Err(invalid("scenario multiplication overflow"));
+                            }
+                            result.values[target] = value;
+                        } else {
+                            result.values[target] = f64::NAN;
+                        }
+                    } else {
+                        result.values[target] = f64::NAN;
+                        result.valid[target] = false;
+                    }
+                }
+            }
+        }
+    }
+    result.validate().map_err(|e| invalid(&e.to_string()))?;
+    Ok(result)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -544,6 +741,68 @@ mod tests {
             created_at: "2026-07-20T00:00:00Z".into(),
         }
     }
+    #[test]
+    fn scenario_edits_are_hourly_ordered_and_box_selects_output() {
+        let frame = sample();
+        let start = frame.interval.start;
+        let source = crate::store::GridSeries {
+            timeline: crate::store::IntervalAxis {
+                time_zone: frame.time_zone,
+                bounds: (0..2)
+                    .map(|i| crate::store::TimeInterval {
+                        start: start + chrono::Duration::hours(i),
+                        end: start + chrono::Duration::hours(i + 1),
+                    })
+                    .collect(),
+            },
+            grid: frame.grid,
+            values: vec![1., 2., 3., 4., 1., 2., 3., 4.],
+            valid: vec![true; 8],
+            provenance: frame.provenance,
+        };
+        let edit = ScenarioGridEdit {
+            start,
+            end: start + chrono::Duration::hours(1),
+            bbox: Some([0., 0., 0.25, 0.5]),
+            multiplication_factor: 2.,
+            rotation_deg: 0.,
+            shift_lon_pixels: 0.,
+            shift_lat_pixels: 0.,
+        };
+        let mut second = edit.clone();
+        second.multiplication_factor = 3.;
+        let result = apply_scenario_grid_edits(&source, &[edit, second]).unwrap();
+        assert_eq!(result.values, [6., 2., 18., 4., 1., 2., 3., 4.]);
+        assert_eq!(source.values[0], 1.);
+        let rotation = ScenarioGridEdit {
+            start,
+            end: start + chrono::Duration::hours(1),
+            bbox: None,
+            multiplication_factor: 1.,
+            rotation_deg: 90.,
+            shift_lon_pixels: 0.,
+            shift_lat_pixels: 0.,
+        };
+        let rotated = apply_scenario_grid_edits(&source, std::slice::from_ref(&rotation)).unwrap();
+        let mut combined = rotation;
+        combined.shift_lon_pixels = 1.0;
+        let moved = apply_scenario_grid_edits(&source, &[combined]).unwrap();
+        assert_eq!(&moved.valid[..4], &[false, false, true, true]);
+        assert_eq!(&moved.values[2..4], &[3.0, 1.0]);
+        assert_eq!(&rotated.values[..4], &[3., 1., 4., 2.]);
+        assert_eq!(&rotated.values[4..], &[1., 2., 3., 4.]);
+        let invalid = ScenarioGridEdit {
+            start,
+            end: start + chrono::Duration::minutes(30),
+            bbox: None,
+            multiplication_factor: 1.,
+            rotation_deg: 0.,
+            shift_lon_pixels: 0.,
+            shift_lat_pixels: 0.,
+        };
+        assert!(apply_scenario_grid_edits(&source, &[invalid]).is_err());
+    }
+
     #[test]
     fn preview_rejects_invalid_native_values_and_intervals() {
         let frame = sample();

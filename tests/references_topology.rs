@@ -37,7 +37,7 @@ fn topology_validates_and_multipart_geometry_matches_ids() {
 #[test]
 fn reference_import_preserves_station_and_offset_on_failure() {
     let d = tempfile::tempdir().unwrap();
-    let db = d.path().join("obs.sqlite");
+    let db = d.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     store
         .write_batch(&ObservationBatch {
@@ -78,15 +78,29 @@ fn reference_import_preserves_station_and_offset_on_failure() {
         })
         .unwrap();
     drop(store);
-    let sample = || -> (String, String, i64, String, String) {
-        rusqlite::Connection::open(&db)
+    let sample = || {
+        let at = chrono::NaiveDate::from_ymd_opt(2020, 1, 2)
             .unwrap()
-            .query_row(
-                "SELECT o.series_id,o.observed_at,o.value,s.station_id,s.unit FROM observation o JOIN observation_series s ON s.series_id=o.series_id",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        ObservationStore::open_read_only(&db)
+            .unwrap()
+            .read_selection(
+                &mgb_ops::ObservationSelection {
+                    provider_codes: vec![],
+                    station_ids: vec!["a".into()],
+                },
+                &mgb_ops::IntervalAxis {
+                    time_zone: "UTC".into(),
+                    bounds: vec![mgb_ops::TimeInterval {
+                        start: at - chrono::Duration::hours(1),
+                        end: at,
+                    }],
+                },
+                &[],
             )
             .unwrap()
+            .0
     };
     let original_sample = sample();
     assert!(
@@ -161,7 +175,7 @@ fn rs_geometry_and_reference_coverage() {
         .map(|t| t.area_km2)
         .sum();
     assert!((sum - 643.33966).abs() < 1e-6);
-    let db = d.path().join("obs.sqlite");
+    let db = d.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     let mut reader =
         csv::Reader::from_path(root.join("source/history_station_inventory.csv")).unwrap();
@@ -210,7 +224,7 @@ fn rs_geometry_and_reference_coverage() {
 fn duplicate_keys_and_cli_share_the_import() {
     use std::process::Command;
     let d = tempfile::tempdir().unwrap();
-    let db = d.path().join("obs.sqlite");
+    let db = d.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     store
         .write_batch(&ObservationBatch {
@@ -234,7 +248,7 @@ fn duplicate_keys_and_cli_share_the_import() {
     assert!(import_level_references(&db, "ana", &thresholds, &history).is_err());
     fs::write(&thresholds,"station_code,station_name,level_atention,level_alert,level_flood,level_severe\n1,A,1,,,\n001,A,,2,,\n").unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .args(["references", "import", "--database"])
+        .args(["references", "import", "--assets"])
         .arg(&db)
         .args(["--provider", "ana", "--thresholds"])
         .arg(&thresholds)
@@ -255,7 +269,7 @@ fn duplicate_keys_and_cli_share_the_import() {
         .unwrap();
     assert!(import_level_references(&db, "anaa", &thresholds, &history).is_err());
     let failed = Command::new(env!("CARGO_BIN_EXE_mgb-ops"))
-        .args(["references", "import", "--database"])
+        .args(["references", "import", "--assets"])
         .arg(&db)
         .args(["--provider", "anaa", "--thresholds"])
         .arg(&thresholds)
@@ -367,7 +381,7 @@ fn csv_rejects_duplicate_headers_and_invalid_unmatched_rows() {
 #[test]
 fn detached_reference_reader_rejects_duplicate_and_invalid_records() {
     let d = tempfile::tempdir().unwrap();
-    let db = d.path().join("obs.sqlite");
+    let db = d.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     store
         .write_batch(&ObservationBatch {
@@ -384,18 +398,14 @@ fn detached_reference_reader_rejects_duplicate_and_invalid_records() {
         .unwrap();
 
     drop(store);
-    let conn = rusqlite::Connection::open(&db).unwrap();
-    conn.execute_batch("DROP INDEX level_threshold_key; INSERT INTO level_reference VALUES ('a','alert','',1),('a','alert','',2);").unwrap();
+    corrupt_references(&db, false);
     assert!(
         ObservationStore::open_read_only(&db)
             .unwrap()
             .read_level_references()
             .is_err()
     );
-    conn.execute_batch(
-        "DELETE FROM level_reference; INSERT INTO level_reference VALUES ('a','historical','',1);",
-    )
-    .unwrap();
+    corrupt_references(&db, true);
     assert!(
         ObservationStore::open_read_only(&db)
             .unwrap()
@@ -408,7 +418,7 @@ fn detached_reference_reader_rejects_duplicate_and_invalid_records() {
 fn reference_json_cli_reports_success_and_operational_failures() {
     use std::process::Command;
     let d = tempfile::tempdir().unwrap();
-    let db = d.path().join("obs.sqlite");
+    let db = d.path().join("observations");
     let mut store = ObservationStore::create(&db, "UTC").unwrap();
     store
         .write_batch(&ObservationBatch {
@@ -444,7 +454,7 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     let imported = run(&[
         "references",
         "import",
-        "--database",
+        "--assets",
         dbs,
         "--provider",
         "ana",
@@ -465,7 +475,7 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     let unknown = run(&[
         "references",
         "import",
-        "--database",
+        "--assets",
         dbs,
         "--provider",
         "anaa",
@@ -478,7 +488,7 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     let missing = run(&[
         "references",
         "import",
-        "--database",
+        "--assets",
         d.path().join("missing").to_str().unwrap(),
         "--provider",
         "ana",
@@ -492,7 +502,7 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     let malformed = run(&[
         "references",
         "import",
-        "--database",
+        "--assets",
         dbs,
         "--provider",
         "ana",
@@ -522,4 +532,40 @@ fn reference_json_cli_reports_success_and_operational_failures() {
     );
     let invalid_args = run(&["references", "import", "--json"]);
     assert_eq!(invalid_args.status.code(), Some(2));
+}
+
+fn corrupt_references(root: &std::path::Path, invalid_kind: bool) {
+    use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
+    use arrow_schema::{DataType, Field, Schema};
+    use parquet::arrow::ArrowWriter;
+    use std::sync::Arc;
+    let manifest: serde_json::Value =
+        serde_json::from_slice(&fs::read(root.join("current.json")).unwrap()).unwrap();
+    let path = root.join(manifest["tables"]["references"].as_str().unwrap());
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("station_id", DataType::Utf8, true),
+        Field::new("kind", DataType::Utf8, true),
+        Field::new("date", DataType::Utf8, true),
+        Field::new("level_cm", DataType::Float64, true),
+    ]));
+    let (stations, kinds, dates, levels) = if invalid_kind {
+        (vec!["a"], vec!["historical"], vec![None::<&str>], vec![1.0])
+    } else {
+        (
+            vec!["a", "a"],
+            vec!["alert", "alert"],
+            vec![None, None],
+            vec![1.0, 2.0],
+        )
+    };
+    let arrays: Vec<ArrayRef> = vec![
+        Arc::new(StringArray::from(stations)),
+        Arc::new(StringArray::from(kinds)),
+        Arc::new(StringArray::from(dates)),
+        Arc::new(Float64Array::from(levels)),
+    ];
+    let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
 }

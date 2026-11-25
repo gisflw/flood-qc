@@ -43,6 +43,8 @@ pub struct AutomationJob {
 #[serde(deny_unknown_fields)]
 pub struct AutomationStep {
     pub kind: AutomationStepKind,
+    #[serde(default)]
+    pub inputs: Option<super::InputDisposition>,
     pub prepared: Option<PathBuf>,
     pub report: Option<AutomationReportConfiguration>,
     #[serde(default)]
@@ -471,6 +473,18 @@ fn execute_step(
     lock: &File,
     acquisition: &mut Option<super::AcquisitionReport>,
 ) -> Result<StepOutput, OperationError> {
+    let configured = if let Some(disposition) = &step.inputs {
+        let disposition = match disposition {
+            super::InputDisposition::Save { destination } => super::InputDisposition::Save {
+                destination: super::absolute(workspace, destination),
+            },
+            super::InputDisposition::Discard => super::InputDisposition::Discard,
+        };
+        control.clone().with_input_disposition(disposition)
+    } else {
+        control.clone()
+    };
+    let control = &configured;
     let run = || {
         let mut operation = OperationalRun::open_workspace(workspace.to_path_buf(), reference)
             .map_err(|message| OperationError::InvalidRequest {
