@@ -212,11 +212,14 @@ forcing, calibration selection and state capture.
 
 ## Execution lifecycle
 
-Under the workspace lock, execution verifies a snapshot of the preparation and
-runs a history-only worker before launching isolated scenario workers. It then
-joins workers, validates all requested scenarios, stages rainfall from the same
-prepared inputs, and cleans up temporary inputs. The final commit publishes the
-results and rainfall together.
+Under the workspace lock, execution verifies a private preparation and runs a
+history-only worker. A run that prepares its own inputs uses that preparation
+directly. Execution of a saved preparation takes a verified private copy.
+After history completes, each isolated forecast worker stages its own inputs
+and starts MGB as soon as those inputs are ready. Execution joins the workers,
+validates all requested scenarios, stages rainfall from the same prepared
+inputs, and removes temporary inputs. It syncs the generation before committing
+the results and rainfall together.
 
 A cancellation before the commit stops and reaps owned engines. Failed
 execution, rainfall preparation, or publication leaves the previous active

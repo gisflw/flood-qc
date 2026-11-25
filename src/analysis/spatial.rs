@@ -97,22 +97,30 @@ pub fn build_grid_idw_neighbors(
     settings.validate()?;
     let mut indices = Vec::with_capacity(basins.mini_ids.len());
     let mut weights = Vec::with_capacity(basins.mini_ids.len());
+    let mut neighbors = Vec::with_capacity(grid.latitudes.len() * grid.longitudes.len());
+    let compare = |a: &(f64, usize), b: &(f64, usize)| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1));
     for (&x, &y) in basins.longitudes.iter().zip(&basins.latitudes) {
-        let mut neighbors: Vec<_> = grid
-            .latitudes
-            .iter()
-            .flat_map(|&lat| {
-                grid.longitudes
-                    .iter()
-                    .map(move |&lon| (x - lon).hypot(y - lat))
-            })
-            .enumerate()
-            .map(|(i, d)| (d, i))
-            .collect();
-        neighbors.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        neighbors.truncate(settings.nearest_stations);
-        indices.push(neighbors.iter().map(|(_, i)| *i).collect());
-        let row: Vec<_> = neighbors
+        neighbors.clear();
+        neighbors.extend(
+            grid.latitudes
+                .iter()
+                .flat_map(|&lat| {
+                    grid.longitudes
+                        .iter()
+                        .map(move |&lon| (x - lon).hypot(y - lat))
+                })
+                .enumerate()
+                .map(|(i, d)| (d, i)),
+        );
+        let count = settings.nearest_stations.min(neighbors.len());
+        if count < neighbors.len() {
+            neighbors.select_nth_unstable_by(count, compare);
+        }
+        let nearest = &mut neighbors[..count];
+        // Keep the original tie break and summation order.
+        nearest.sort_unstable_by(compare);
+        indices.push(nearest.iter().map(|(_, i)| *i).collect());
+        let row: Vec<_> = nearest
             .iter()
             .map(|(d, _)| inverse_weight(if *d == 0.0 { 1e-12_f64 } else { *d }, settings.power))
             .collect();
@@ -256,4 +264,42 @@ pub fn bilinear_resample(
         }
     }
     Ok((result, masks))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::Provenance;
+
+    #[test]
+    fn grid_neighbors_keep_row_major_ties_at_the_selection_boundary() {
+        let grid = RegularGridSpec::new([0., 0., 0.75, 0.75], 1.).unwrap();
+        let basins = BasinGeometry {
+            mini_ids: vec![1, 2],
+            longitudes: vec![0., 0.5],
+            latitudes: vec![0., 0.5],
+            source: Provenance {
+                source_ids: vec![],
+                processing: serde_json::Value::Null,
+            },
+        };
+        let build = |nearest_stations| {
+            build_grid_idw_neighbors(
+                &grid,
+                &basins,
+                &IdwSettings {
+                    nearest_stations,
+                    power: 2.,
+                },
+            )
+            .unwrap()
+        };
+        let selected = build(2);
+        let full = build(10);
+        assert_eq!(full.indices, [[0, 1, 2, 3], [3, 1, 2, 0]]);
+        for (basin, indices) in full.indices.iter().enumerate() {
+            assert_eq!(selected.indices[basin], indices[..2]);
+            assert_eq!(selected.weights[basin], full.weights[basin][..2]);
+        }
+    }
 }
