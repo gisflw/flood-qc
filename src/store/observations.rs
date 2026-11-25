@@ -251,6 +251,7 @@ impl ObservationStore {
             tx.execute_batch(SCHEMA)?;
             if operation {
                 tx.execute_batch(super::forecast::SCHEMA)?;
+                tx.execute_batch(super::forecast::CORRECTION_SCHEMA)?;
                 tx.execute_batch(super::run_cache::RUN_SCHEMA)?;
             }
             tx.execute(
@@ -308,18 +309,6 @@ impl ObservationStore {
     /// Insert canonical records or accept complete equality with existing records.
     pub fn ingest_batch(&mut self, batch: &ObservationBatch) -> Result<(), ObservationError> {
         self.write_batch_inner(batch, true, false)
-    }
-
-    pub(crate) fn seed_ana_stations(
-        &mut self,
-        stations: &[Station],
-    ) -> Result<(), ObservationError> {
-        let tx = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        Self::upsert_ana_stations(&tx, stations)?;
-        tx.commit()?;
-        Ok(())
     }
 
     fn upsert_ana_stations(tx: &Connection, stations: &[Station]) -> Result<(), ObservationError> {

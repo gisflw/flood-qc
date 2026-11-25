@@ -269,7 +269,7 @@ impl Request {
                 if !args["arguments"].is_object() {
                     return Err(invalid("Expected a command arguments object"));
                 }
-                if id == "draft.propose_edit" && self.tools.state().proposal.is_some() {
+                if id == "run.propose_parameters" && self.tools.state().proposal.is_some() {
                     return Err(commands::Finding::new(
                         "review_pending",
                         "Ask the operator to apply or reject the pending review first",
@@ -291,10 +291,17 @@ impl Request {
                                 "Ask the operator to apply or reject the pending review first",
                             ));
                         }
-                        if self.tools.session.draft_version().as_ref() != Some(&proposal.version) {
+                        if self
+                            .tools
+                            .session
+                            .run_setup()
+                            .map(|snapshot| snapshot.revision)
+                            .as_ref()
+                            != Some(&proposal.revision)
+                        {
                             return Err(commands::Finding::new(
-                                "stale_draft",
-                                "Read the current draft and submit a new proposal",
+                                "stale_run_parameters",
+                                "Read the current run parameters and submit a new proposal",
                             ));
                         }
                         self.events

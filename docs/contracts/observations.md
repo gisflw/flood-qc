@@ -6,8 +6,8 @@ Standalone observation APIs also accept an explicit canonical SQLite path.
 ## Persistence
 
 `ObservationStore::create(path, time_zone)` creates a new database and rejects an
-existing destination. `open_read_only(path)` validates its format, schema version
-and IANA timezone without creating a database. `write_batch` commits all
+existing destination. `open_read_only(path)` validates its tables and IANA
+timezone without creating a database. `write_batch` commits all
 supplied rows together and rolls back invalid batches. Connections enable
 foreign keys. Initialization creates the complete current schema.
 
@@ -19,10 +19,9 @@ interpolation requires coordinates for selected rain stations.
 Duplicate keys, orphan rows, invalid units and nonfinite values fail.
 Replacement reason text may be empty or omitted; supplied text is preserved.
 `open_writable` opens an existing database without creating one.
-`register_replacements` commits an idempotent selected batch: identical existing
-values succeed and conflicting values under the same ID roll back the batch.
-The shared [draft registration workflow](drafts.md#explicit-registration) returns
-catalog mappings and independent cross-catalog outcomes.
+Workspace edits are an ordered table. Review or change them in
+**Observation review** or [import/export them as CSV](saved-data.md#canonical-data-and-review).
+Saving replaces the list in a single transaction.
 
 | Variable | Canonical value | Interval |
 | --- | --- | --- |

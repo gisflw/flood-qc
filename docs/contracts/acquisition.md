@@ -12,10 +12,11 @@ mgb-ops operation run-all --workspace /regional/workspace --json
 ```
 
 In desktop Processing, **Acquire inputs** exposes the first three actions and
-**New run → Run All** executes an acquisition-enabled recipe. Jobs shows provider
-progress, committed results, and failures. Leave the reference blank for the
-current hour in the acquisition timezone, or supply a local, hour-aligned
-`YYYY-MM-DDTHH:00:00` value with `--reference-time`. Cancellation stops after
+**New run → Run All** acquires the configured inputs and executes the run. Jobs shows provider
+progress, committed results, and failures. Leave the reference blank to use
+`run.reference_time`. When that setting is `now`, acquisition uses the current
+local hour. Supply a local, hour-aligned `YYYY-MM-DDTHH:00:00` value with
+`--reference-time` to override it. Cancellation stops after
 the current bounded request or write and preserves committed data. NOAA spacing
 is interruptible.
 
@@ -23,7 +24,7 @@ Workspace commands read `config.toml`. Set the enabled providers under
 `[acquisition]` and the forecast bounds under `[spatial]`. Defaults are 90
 observation days, 30 days per request window, a 15-second timeout, four forecast
 cycles, and a 2.0 buffer fraction. The adapters aggregate rain by sum and level
-and flow by mean. Use `--reference-time` to override `run.reference_time`.
+and flow by mean.
 
 ```sh
 mgb-ops observation import-inventory --workspace /regional/workspace --input /regional/workspace/source/history_station_inventory.csv
@@ -47,44 +48,10 @@ attempted cycle and the provider's outcome. A terminal also shows the current
 forecast lead. Completion lines report whether the station had data and whether
 each forecast asset was registered or reused.
 
-## Explicit acquisition requests
-
-Each optional provider section enables its corresponding update. The example
-shows the defaults plus a required model bounding box for forecasts.
-
-```toml
-schema_version = 1
-time_zone = "America/Sao_Paulo"
-
-[ana]
-inventory = "data/source/history_station_inventory.csv"
-database = "data/observations.sqlite"
-request_days = 90
-fetch_window_days = 30
-timeout_seconds = 15
-station_codes = []
-
-[ana.aggregation]
-rain = "sum"
-level = "mean"
-flow = "mean"
-
-[forecasts]
-providers = ["ecmwf", "noaa"]
-model_bbox = [-58.95016, -34.40217, -48.85759, -26.29721]
-catalog = "data/forecasts.sqlite"
-artifact_root = "data/forecasts"
-lookback_cycles = 12
-buffer_fraction = 2.0
-```
-
-Choose one or both sections. Forecast bounds use west, south, east, north in
-degrees and must match the operation's working bounds when used by Run All.
-The forecast buffer expands each edge by its axis span times the fraction.
-Buffered bounds must fit within the geographic limits. Forecast providers are
-unique and processed in the specified order. ANA uses a maximum request window
-of 30 days. An empty station list selects the entire ANA inventory. The listed
-aggregation methods may be set to `sum`, `mean`, or `last`.
+The forecast buffer expands each edge by its axis span times the configured
+fraction. The expanded bounds must fit within geographic limits. Forecast
+providers are unique and processed in configured order. ANA reads station
+selection and enabled variables from the database.
 
 ## ANA observations
 
@@ -137,12 +104,12 @@ A failed provider leaves successfully registered sibling forecasts available.
 
 ## Run All
 
-Run All resolves the selected reference once, acquires the enabled inputs, then
-freezes the input selection and executes. Default scenarios use the latest
-covering local forecast for each enabled forecast provider. Missing coverage is
-reported before execution. Use the [operation selection options](operations.md)
-to select a zero or pinned forecast scenario. A failed or cancelled run leaves
-the previous active generation available.
+Run All resolves the reference once, then acquires and registers inputs before
+[selecting scenarios](operations.md#scenarios) and freezing the run. Forecasts
+that remain unavailable appear in the acquisition report. Automatic selection
+uses the usable catalog cycles. Explicit selections require their chosen cycle
+and coverage. A failed or cancelled run leaves the previous active generation
+available.
 
 ## Standalone source acquisition
 

@@ -117,10 +117,9 @@ mod enabled {
         store::{
             FLOOD_MASK_FILE, FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource,
             INUNDATION_TILE, InundationLevel, InundationMask, InundationMetadata,
-            InundationProvenance, InundationRasters, InundationRecipe, InundationStage,
-            InundationWriter, StoreError, active_run, digest_file, read_flood_source,
-            read_retained_manifest, read_run_attempt, run_cache_root, verify_inundation_run,
-            write_run_attempt,
+            InundationProvenance, InundationRasters, InundationStage, InundationWriter, StoreError,
+            active_run, digest_file, read_flood_source, read_retained_manifest, run_cache_root,
+            verify_inundation_run,
         },
     };
     use std::{collections::HashMap, fs, path::Path};
@@ -231,28 +230,6 @@ mod enabled {
                 hand_vertical_shift_m: 0,
             },
         };
-        let record_recipe = |provenance: &InundationProvenance| -> Result<(), StoreError> {
-            let Some(workspace) = workspace else {
-                return Ok(());
-            };
-            let id = run
-                .file_name()
-                .and_then(|name| name.to_str())
-                .and_then(|name| name.strip_prefix("generation-"))
-                .ok_or_else(|| StoreError::Integrity("invalid managed run ID".into()))?;
-            let archive = workspace.join("runs/history").join(format!("{id}.json"));
-            let mut attempt = read_run_attempt(&archive).map_err(StoreError::Integrity)?;
-            let recipe = InundationRecipe {
-                hand: request.hand.canonicalize()?,
-                catchments: request.catchments.canonicalize()?,
-                provenance: provenance.clone(),
-            };
-            if attempt.inundation.get(&request.scenario) != Some(&recipe) {
-                attempt.inundation.insert(request.scenario.clone(), recipe);
-                write_run_attempt(workspace, &attempt).map_err(StoreError::Integrity)?;
-            }
-            Ok(())
-        };
         let verify_inputs = |rasters: &InundationRasters| -> Result<(), StoreError> {
             rasters.verify()?;
             if digest(&source_path)? != metadata.provenance.flood_source_sha256
@@ -290,9 +267,8 @@ mod enabled {
                     mask.validate_payload(&report.path, || cancelled(control))?;
                     Ok(Some(old.provenance.clone()))
                 });
-                if let Ok(Some(provenance)) = same {
+                if let Ok(Some(_)) = same {
                     verify_inputs(&rasters)?;
-                    record_recipe(&provenance)?;
                     report.status = InundationProcessStatus::Reused;
                     return Ok(report);
                 }
@@ -328,12 +304,6 @@ mod enabled {
         drop(mask);
         verify_inputs(&rasters)?;
         stage.publish(&staged, &report.path, replace, || cancelled(control))?;
-        record_recipe(&metadata.provenance).map_err(|error| {
-            StoreError::Integrity(format!(
-                "mask published at {} but its replay metadata could not be saved: {error}",
-                report.path.display()
-            ))
-        })?;
         if replace {
             report.status = InundationProcessStatus::Replaced;
         }

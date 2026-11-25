@@ -1,7 +1,7 @@
 use super::operation::{input_file, verify_input_contents};
 use super::{
     InputReference, TimeInterval, collect_inputs, read_draft, run_stage_id, sync_tree,
-    verify_inputs, with_active_run, write_draft,
+    with_active_run, write_draft,
 };
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -234,68 +234,6 @@ pub(crate) fn stage_rainfall(
     Ok(manifest.info)
 }
 
-pub(crate) fn adopt_legacy_rainfall(workspace: &Path, generation: &Path) -> Result<bool, String> {
-    let legacy = workspace.join("cache/rainfall");
-    let pointer = legacy.join("active.json");
-    if !pointer.try_exists().map_err(|error| error.to_string())? {
-        return Ok(false);
-    }
-    let legacy_lock =
-        fs::File::open(legacy.join("access.lock")).map_err(|error| error.to_string())?;
-    legacy_lock
-        .lock_shared()
-        .map_err(|error| error.to_string())?;
-    let mut manifest: RainfallManifest = read_draft(&pointer)?;
-    validate(&manifest)?;
-    if !safe_name(&manifest.info.generation) {
-        return Err("Invalid legacy rainfall generation".into());
-    }
-    let source = legacy.join(&manifest.info.generation);
-    if !fs::symlink_metadata(&source).is_ok_and(|metadata| metadata.is_dir()) {
-        return Err("Invalid legacy rainfall directory".into());
-    }
-    verify_inputs(&source, &manifest.inputs)?;
-    let destination = generation.join("rainfall");
-    fs::create_dir(&destination).map_err(|error| error.to_string())?;
-    for member in &manifest.inputs {
-        let target = destination.join(&member.path);
-        fs::create_dir_all(target.parent().ok_or("Missing rainfall member directory")?)
-            .map_err(|error| error.to_string())?;
-        fs::hard_link(source.join(&member.path), &target).map_err(|error| error.to_string())?;
-    }
-    verify_inputs(&destination, &manifest.inputs)?;
-    manifest.info.generation = generation
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Missing generation name")?
-        .into();
-    validate(&manifest)?;
-    write_draft(&destination.join(RAINFALL_MANIFEST), &manifest)?;
-    sync_tree(&destination)?;
-    Ok(true)
-}
-
-pub(crate) fn retire_legacy_rainfall(workspace: &Path) -> Result<(), String> {
-    let legacy = workspace.join("cache/rainfall");
-    match fs::symlink_metadata(&legacy) {
-        Ok(metadata) if metadata.is_dir() => (),
-        Ok(_) => return Err("Invalid legacy rainfall directory".into()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.to_string()),
-    }
-    // Let readers that started before migration finish before retiring their generation.
-    let _lock = match fs::File::open(legacy.join("access.lock")) {
-        Ok(lock) => {
-            lock.lock().map_err(|error| error.to_string())?;
-            Some(lock)
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error.to_string()),
-    };
-    fs::remove_dir_all(&legacy).map_err(|error| error.to_string())?;
-    super::sync_directory(&workspace.join("cache"))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,7 +292,30 @@ mod tests {
         let hour = chrono::Duration::hours(1);
         let build = |text: &str| {
             let run = new_run_stage(workspace.path()).unwrap();
-            fs::write(run.join("manifest.json"), "{}").unwrap();
+            let manifest = super::super::OperationManifest {
+                schema_version: 1,
+                preparation_sha256: None,
+                state: "completed".into(),
+                recipe: serde_json::Value::Null,
+                inputs: Vec::new(),
+                created_at: reference.to_string(),
+                finished_at: Some(reference.to_string()),
+                error: None,
+                scenarios: vec![super::super::ScenarioRecord {
+                    id: "zero".into(),
+                    state: "completed".into(),
+                    started_at: None,
+                    finished_at: None,
+                    exit_code: Some(0),
+                    signal: None,
+                    error: None,
+                    stdout: None,
+                    stderr: None,
+                    basin_result: None,
+                    station_result: None,
+                }],
+            };
+            write_draft(&run.join("manifest.json"), &manifest).unwrap();
             let info = stage_rainfall(
                 &run,
                 reference,

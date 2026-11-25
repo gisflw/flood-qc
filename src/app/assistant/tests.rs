@@ -3,7 +3,7 @@ use super::{
     commands::{self, Output},
     *,
 };
-use crate::app::{Draft, InspectionRequest, RunSelection};
+use crate::app::{InspectionRequest, OperationalRun, RunSelection};
 use std::{
     fs,
     io::BufReader,
@@ -29,10 +29,15 @@ fn session(workspace: &Path) -> Session {
     })
 }
 
-fn draft(session: &Session) {
-    session
-        .replace_draft(Draft::new(session.workspace().into(), session.workspace()))
-        .unwrap();
+fn open_setup(session: &Session) {
+    fs::write(
+        session.config(),
+        "[run]\ntime_zone='UTC'\n[spatial]\nbounds=[-1.0,-1.0,1.0,1.0]\n",
+    )
+    .unwrap();
+    session.open_run_setup(
+        OperationalRun::open_workspace(session.workspace().into(), chrono::Utc::now()).unwrap(),
+    );
 }
 
 fn result(output: commands::Result) -> Value {
@@ -46,71 +51,62 @@ fn result(output: commands::Result) -> Value {
 fn catalog_discovery_and_incomplete_edit_guards() {
     let dir = temp();
     let session = session(dir.path());
-    let results = commands::search("draft horizon");
-    assert_eq!(results["commands"][0]["id"], "draft.propose_edit");
-    assert_eq!(
-        commands::search("")["commands"].as_array().unwrap().len(),
-        6
+    let results = commands::search("run parameters");
+    assert!(
+        results["commands"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["id"] == "run.propose_parameters")
     );
     let empty = serde_json::json!({});
-    let unsupported = serde_json::json!({"path":"invalid"});
-    let no_draft = serde_json::json!({"draft":null});
-    assert!(commands::run(&session, "run.missing", empty.clone()).is_err());
-    assert!(commands::run(&session, "draft.read", unsupported).is_err());
+    let no_setup = serde_json::json!({"parameters":null});
     assert_eq!(
-        result(commands::run(&session, "draft.read", empty.clone())),
-        no_draft
+        result(commands::run(&session, "run.parameters", empty.clone())),
+        no_setup
     );
-    assert!(commands::run(&session, "run.summary", empty).is_err());
-
-    draft(&session);
-    let read = result(commands::run(&session, "draft.read", serde_json::json!({})));
-    let version = &read["version"];
+    assert!(commands::run(&session, "run.summary", empty.clone()).is_err());
+    open_setup(&session);
+    let read = result(commands::run(&session, "run.parameters", empty));
+    let revision = &read["revision"];
     for invalid in [
-        serde_json::json!({"version":version,"forecast_horizon_days":0}),
-        serde_json::json!({"version":version,"observed_horizon_days":null}),
-        serde_json::json!({"version":version,"workspace":"elsewhere"}),
-        serde_json::json!({"version":version,"forecast_assets":[{"scenario_index":0,"asset_id":"x"}]}),
+        serde_json::json!({"revision":revision, "forecast_days":0}),
+        serde_json::json!({"revision":revision, "workspace":"elsewhere"}),
+        serde_json::json!({"revision":revision, "scenarios":[]}),
     ] {
-        assert!(commands::run(&session, "draft.propose_edit", invalid).is_err());
+        assert!(commands::run(&session, "run.propose_parameters", invalid).is_err());
     }
-    let args =
-        serde_json::json!({"version":version,"observed_horizon_days":0,"forecast_horizon_days":3});
-    let Output::Proposal(proposal) = commands::run(&session, "draft.propose_edit", args).unwrap()
+    let args = serde_json::json!({"revision":revision,"lookback_days":0,"forecast_days":3});
+    let Output::Proposal(proposal) =
+        commands::run(&session, "run.propose_parameters", args).unwrap()
     else {
-        panic!("Expected proposal")
+        panic!("Expected proposal");
     };
     assert_eq!(proposal.review.changes.len(), 2);
-    let has_readiness = !proposal.review.readiness.is_empty();
-    assert!(has_readiness);
-    let job = session.start_draft_job().unwrap();
-    assert_eq!(
-        session.apply_draft(&proposal.version, proposal.document.clone()),
-        Err(DraftConflict::Busy)
+    let job = session.start_workspace_job().unwrap();
+    assert!(
+        session
+            .update_run_setup(&proposal.revision, proposal.parameters.clone())
+            .is_err()
     );
     drop(job);
     session
-        .apply_draft(&proposal.version, proposal.document)
+        .update_run_setup(&proposal.revision, proposal.parameters.clone())
         .unwrap();
-    let snapshot = session.draft().unwrap();
-    assert!(snapshot.draft.is_dirty());
     assert_eq!(
-        snapshot.draft.document.operation.forecast_horizon_days,
+        session
+            .run_setup()
+            .unwrap()
+            .operation
+            .parameters()
+            .forecast_days,
         Some(3)
     );
-    let unchanged = commands::run(
-        &session,
-        "draft.propose_edit",
-        serde_json::json!({"version":snapshot.version,"forecast_horizon_days":3}),
+    assert!(
+        session
+            .update_run_setup(&proposal.revision, proposal.parameters)
+            .is_err()
     );
-    assert_eq!(result(unchanged)["status"], "unchanged");
-
-    session
-        .edit_draft(|draft| draft.document.schema_version = 1)
-        .unwrap();
-    let snapshot = session.draft().unwrap();
-    let legacy = serde_json::json!({"version":snapshot.version,"forecast_horizon_days":4});
-    assert!(commands::run(&session, "draft.propose_edit", legacy).is_err());
 }
 
 #[test]
@@ -191,42 +187,6 @@ fn active_selection_rejects_aliases_and_keeps_saved_reads_fixed() {
     assert!(reader.read(Some(&first), |_, _| Ok(())).is_err());
 }
 
-#[test]
-fn draft_revision_tracks_save_discard_and_reversal_without_accepting_late_work() {
-    let dir = temp();
-    let session = session(dir.path());
-    let mut draft = Draft::new(session.workspace().into(), session.workspace());
-    draft.document.operation.reference_time = Some("2026-01-01T00:00:00".into());
-    draft.document.operation.time_zone = Some("UTC".into());
-    session.replace_draft(draft.clone()).unwrap();
-    let version = session.draft_version().unwrap();
-    session.replace_draft(draft).unwrap();
-    assert_ne!(version, session.draft_version().unwrap());
-    let original = session.draft().unwrap();
-    let path = session.workspace().join("draft.json");
-    let job = session.start_draft_job().unwrap();
-    let mut saving = job.snapshot.as_ref().unwrap().draft.clone();
-    saving.save(&path, false).unwrap();
-    job.commit(saving, false).unwrap();
-    drop(job);
-    assert_ne!(original.version, session.draft_version().unwrap());
-    let saved = session.draft().unwrap();
-    assert_eq!(saved.draft.path.as_ref(), Some(&path));
-    let saved_bytes = fs::read(&path).unwrap();
-    session
-        .edit_draft(|draft| draft.document.operation.forecast_horizon_days = Some(5))
-        .unwrap();
-    session.edit_draft(Draft::discard).unwrap();
-    let reversed = session.draft().unwrap();
-    assert_ne!(saved.version, reversed.version);
-    assert_eq!(saved.draft.document, reversed.draft.document);
-    assert_eq!(
-        session.apply_draft(&saved.version, saved.draft.document),
-        Err(DraftConflict::Stale)
-    );
-    assert_eq!(fs::read(&path).unwrap(), saved_bytes);
-}
-
 fn call(endpoint: &str, credential: &str, message: Value) -> Option<Value> {
     let mut stream = TcpStream::connect(endpoint).ok()?;
     stream
@@ -256,7 +216,7 @@ fn content(response: &Value) -> Value {
 fn endpoint_revokes_old_credentials_and_cancels_waiting_requests() {
     let dir = temp();
     let session = session(dir.path());
-    draft(&session);
+    open_setup(&session);
     let (events, received) = sync_channel(8);
     let tools = Arc::new(Tools::new(session.clone()));
     let bridge = Bridge::start(tools.clone(), events.clone().into()).unwrap();
@@ -272,19 +232,29 @@ fn endpoint_revokes_old_credentials_and_cancels_waiting_requests() {
     assert!(connected);
 
     let args =
-        serde_json::json!({"version":session.draft_version().unwrap(),"forecast_horizon_days":5});
+        serde_json::json!({"revision":session.run_setup().unwrap().revision,"forecast_days":5});
     tools.begin(5);
-    let proposed = call(endpoint, token, tool("draft.propose_edit", args.clone())).unwrap();
+    let proposed = call(
+        endpoint,
+        token,
+        tool("run.propose_parameters", args.clone()),
+    )
+    .unwrap();
     assert_eq!(content(&proposed)["status"], "staged");
     tools.finish(5, false);
     tools.begin(6);
-    let second = call(endpoint, token, tool("draft.propose_edit", args.clone())).unwrap();
+    let second = call(
+        endpoint,
+        token,
+        tool("run.propose_parameters", args.clone()),
+    )
+    .unwrap();
     assert_eq!(content(&second)["findings"][0]["code"], "review_pending");
     tools.finish(6, true);
     assert!(tools.state().proposal.is_some());
     tools.state().proposal = None;
     tools.begin(7);
-    let proposed = call(endpoint, token, tool("draft.propose_edit", args)).unwrap();
+    let proposed = call(endpoint, token, tool("run.propose_parameters", args)).unwrap();
     assert_eq!(content(&proposed)["status"], "staged");
     tools.finish(7, true);
     assert!(tools.state().proposal.is_none());
@@ -306,7 +276,7 @@ fn endpoint_revokes_old_credentials_and_cancels_waiting_requests() {
     tools.begin(9);
     let _ = write_message(
         &mut held,
-        &serde_json::json!({"credential":token,"message":tool("draft.read",serde_json::json!({}))}),
+        &serde_json::json!({"credential":token,"message":tool("run.parameters",serde_json::json!({}))}),
     );
     assert!(
         bounded_line(&mut BufReader::new(held))
@@ -635,42 +605,6 @@ fn event(
 }
 
 #[test]
-fn explicit_config_and_embedded_draft_workspace_are_independent() {
-    let dir = temp();
-    let root = dir.path().canonicalize().unwrap();
-    fs::create_dir(root.join("project")).unwrap();
-    let options = InspectionRequest {
-        workspace: "project".into(),
-        invocation_dir: root.clone(),
-        config: Some("regional.toml".into()),
-        gpkg_path: Some("override.gpkg".into()),
-        engine_executable: None,
-        engine_input_dir: None,
-    };
-    let session = Session::new(options.clone());
-    assert_eq!(session.config(), root.join("regional.toml"));
-    let missing = session.inspect();
-    assert_eq!(missing.findings[1].code, crate::app::FindingCode::Missing);
-    fs::write(session.config(), "[spatial]\ngpkg_path='default.gpkg'\n").unwrap();
-    fs::write(session.workspace().join("override.gpkg"), b"geometry").unwrap();
-    let selected = serde_json::to_value(session.inspect()).unwrap();
-    let headless = serde_json::to_value(crate::app::inspect(options)).unwrap();
-    assert_eq!(selected, headless);
-    let path = root.join("draft.json");
-    let mut other = Draft::new(root.clone(), &root);
-    other.save(&path, false).unwrap();
-    let draft = session.open_draft(Path::new("draft.json")).unwrap();
-    assert_eq!(draft.workspace, session.workspace());
-    assert_eq!(draft.document.workspace, root);
-    let finding = draft
-        .findings
-        .iter()
-        .any(|message| message.contains("differs"));
-    assert!(finding);
-    session.replace_draft(draft).unwrap();
-}
-
-#[test]
 fn series_queries_keep_masks_units_and_detect_stale_sources() {
     use crate::store::{
         BasinGeometry, IntervalAxis, OperationManifest, Provenance, ResultSeries, ScenarioRecord,
@@ -849,150 +783,6 @@ fn series_queries_keep_masks_units_and_detect_stale_sources() {
 }
 
 #[test]
-fn asset_proposals_preserve_corrections_and_require_fresh_source_acceptance() {
-    use crate::app::{DraftForecasts, DraftScenario, DraftVisualization};
-    use crate::store::{
-        CanonicalForecastMetadata, ForecastCatalog, ForecastCorrection, GridSeries, IntervalAxis,
-        Provenance, RegularGridSpec, TimeInterval, write_grid_series,
-    };
-    use chrono::{Duration, NaiveDateTime};
-
-    let dir = temp();
-    let session = session(dir.path());
-    let source = session.workspace().join("native.nc");
-    let grid = RegularGridSpec::new([0., 0., 1., 1.], 1.).unwrap();
-    let count = grid.latitudes.len() * grid.longitudes.len();
-    let start: NaiveDateTime = "2026-02-01T00:00:00".parse().unwrap();
-    let native = GridSeries {
-        timeline: IntervalAxis {
-            time_zone: "UTC".into(),
-            bounds: vec![TimeInterval {
-                start,
-                end: start + Duration::hours(1),
-            }],
-        },
-        grid,
-        values: vec![0.; count],
-        valid: vec![true; count],
-        provenance: Provenance {
-            source_ids: vec!["fixture".into()],
-            processing: Value::Null,
-        },
-    };
-    write_grid_series(&source, &native).unwrap();
-    let catalog_path = Path::new("forecasts.sqlite");
-    let mut catalog =
-        ForecastCatalog::open(session.workspace(), catalog_path, Path::new("assets")).unwrap();
-    let mut metadata = CanonicalForecastMetadata {
-        provider: "fixture".into(),
-        model: "first".into(),
-        product: "rain".into(),
-        cycle_utc: start.and_utc(),
-    };
-    let first = catalog
-        .register_canonical(&source, &metadata)
-        .unwrap()
-        .asset_id;
-    metadata.model = "second".into();
-    let second = catalog
-        .register_canonical(&source, &metadata)
-        .unwrap()
-        .asset_id;
-    catalog
-        .save_correction(&ForecastCorrection {
-            correction_id: "retain".into(),
-            asset_id: first.clone(),
-            t0_hour: 0,
-            t1_hour: 0,
-            shift_lat_pixels: 0.,
-            shift_lon_pixels: 0.,
-            rotation_deg: 0.,
-            multiplication_factor: 1.,
-            editor: Some("fixture".into()),
-            reason: "fixture".into(),
-            created_at: start.and_utc().to_rfc3339(),
-        })
-        .unwrap();
-    let mut draft = Draft::new(session.workspace().into(), session.workspace());
-    draft.document.operation.forecasts = Some(DraftForecasts {
-        catalog: Some(catalog_path.into()),
-    });
-    draft.document.operation.scenarios.push(DraftScenario {
-        id: Some("main".into()),
-        asset_id: Some(first),
-        correction_ids: Some(vec!["retain".into()]),
-        ..DraftScenario::default()
-    });
-    draft.refresh_forecast(0).unwrap();
-    let path = session.workspace().join("draft.json");
-    draft.save(&path, false).unwrap();
-    let before = fs::read(&path).unwrap();
-    session.replace_draft(draft).unwrap();
-    let args = || {
-        serde_json::json!({
-            "version":session.draft_version().unwrap(),
-            "forecast_assets":[{"scenario_index":0,"asset_id":second}]
-        })
-    };
-    let invalid = commands::run(&session, "draft.propose_edit", args());
-    let Err(finding) = invalid else {
-        panic!("Expected incompatible correction")
-    };
-    let finding = serde_json::to_value(finding).unwrap();
-    let incompatible = finding["message"]
-        .as_str()
-        .unwrap()
-        .contains("another asset");
-    assert!(incompatible);
-    let corrections = session
-        .draft()
-        .unwrap()
-        .draft
-        .document
-        .operation
-        .scenarios
-        .remove(0)
-        .correction_ids
-        .unwrap();
-    assert_eq!(corrections, ["retain"]);
-    session
-        .edit_draft(|draft| {
-            draft.document.operation.scenarios[0].correction_ids = Some(Vec::new());
-            draft.refresh_forecast(0).unwrap();
-        })
-        .unwrap();
-
-    let Output::Proposal(proposal) = commands::run(&session, "draft.propose_edit", args()).unwrap()
-    else {
-        panic!("Expected asset proposal");
-    };
-    assert_eq!(
-        proposal.review.changes[0].scenario_id.as_deref(),
-        Some("main")
-    );
-    let view = DraftVisualization {
-        selected_location: Some("mini:7".into()),
-        ..DraftVisualization::default()
-    };
-    session
-        .edit_draft(|draft| draft.document.visualization = Some(view.clone()))
-        .unwrap();
-    assert_eq!(session.draft_version().as_ref(), Some(&proposal.version));
-    session
-        .apply_draft(&proposal.version, proposal.document)
-        .unwrap();
-    let applied = session.draft().unwrap().draft;
-    assert_eq!(applied.document.visualization, Some(view));
-    assert_eq!(
-        applied.document.operation.scenarios[0].asset_id.as_deref(),
-        Some(second.as_str())
-    );
-    assert!(applied.document.sources.accepted.is_empty());
-    assert!(applied.preview_forecast(0).is_err());
-    assert_eq!(fs::read(&path).unwrap(), before);
-}
-
-#[test]
 fn location_search_returns_sorted_ambiguous_station_matches() {
     use crate::store::{ObservationBatch, ObservationStore, Station};
     let dir = temp();
@@ -1028,7 +818,7 @@ fn location_search_returns_sorted_ambiguous_station_matches() {
 fn pending_review_tracks_its_origin_without_a_socket() {
     let dir = temp();
     let session = session(dir.path());
-    draft(&session);
+    open_setup(&session);
     let (events, observed) = sync_channel(8);
     let tools = Arc::new(Tools::new(session.clone()));
     let bridge = Bridge::disconnected(tools.clone(), events.clone().into()).unwrap();
@@ -1037,8 +827,8 @@ fn pending_review_tracks_its_origin_without_a_socket() {
     let hidden_credential = !environment.to_string().contains(credential);
     assert!(hidden_credential);
     let args =
-        serde_json::json!({"version":session.draft_version().unwrap(),"forecast_horizon_days":4});
-    let message = tool("draft.propose_edit", args);
+        serde_json::json!({"revision":session.run_setup().unwrap().revision,"forecast_days":4});
+    let message = tool("run.propose_parameters", args);
     let call =
         |credential| bridge.fixture_tool(credential, events.clone().into(), &message["params"]);
     tools.begin(3);

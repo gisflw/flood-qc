@@ -75,27 +75,28 @@ pub(crate) use self::automation::{automation_documents, write_automation_documen
 mod run_cache;
 pub(crate) use self::run_cache::{
     RunAttemptManifest, active_run, collect_run_diagnostics, is_managed_run_path, new_run_stage,
-    new_run_stage_for, publish_run, publish_run_checked, read_run_attempt, recover_run_cache,
-    run_cache_root, run_stage_id, with_active_run, write_run_attempt, write_run_journal,
+    publish_run_checked, recover_run_cache, run_cache_root, run_stage_id, with_active_run,
+    write_run_attempt, write_run_journal,
 };
+#[cfg(test)]
+pub(crate) use self::run_cache::{new_run_stage_for, publish_run};
 
 mod rainfall;
 pub use self::rainfall::RainfallCacheInfo;
 pub(crate) use self::rainfall::{
-    DecodedRainfallFile, RainfallCacheFiles, adopt_legacy_rainfall, rainfall_cache_info,
-    read_rainfall_cache, retire_legacy_rainfall, stage_rainfall,
+    DecodedRainfallFile, RainfallCacheFiles, rainfall_cache_info, read_rainfall_cache,
+    stage_rainfall,
 };
 
 mod inundation;
-pub(crate) use self::inundation::InundationRecipe;
+
 pub use self::inundation::{
     FLOOD_MASK_FILE, InundationLevel, InundationMask, InundationMetadata, InundationProvenance,
     verify_inundation_run,
 };
 #[cfg(feature = "inundation-write")]
 pub(crate) use self::inundation::{
-    INUNDATION_ADOPTION, INUNDATION_TILE, InundationAdoption, InundationRasters, InundationStage,
-    InundationWriter, cache_catchments,
+    INUNDATION_TILE, InundationRasters, InundationStage, InundationWriter, cache_catchments,
 };
 
 mod flood_source;

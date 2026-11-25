@@ -25,8 +25,6 @@ pub(crate) struct Options {
     config: Option<PathBuf>,
     #[arg(long)]
     saved_run: Option<PathBuf>,
-    #[arg(long)]
-    draft: Option<PathBuf>,
 }
 
 #[derive(Clone, ValueEnum)]
@@ -54,7 +52,6 @@ struct Terminal {
     ready: bool,
     active: bool,
     permission: Option<(String, Vec<PermissionOption>)>,
-    departure: bool,
 }
 
 impl Terminal {
@@ -98,7 +95,7 @@ impl Terminal {
                 AssistantEvent::PermissionCleared => self.permission = None,
                 AssistantEvent::ReviewStaged => {
                     if let Some(review) = self.conversation.review() {
-                        writeln!(out, "\nDraft proposal")?;
+                        writeln!(out, "\nRun proposal")?;
                         for field in review.changes {
                             let scenario = field.scenario_index.map_or(String::new(), |index| {
                                 format!(
@@ -142,61 +139,21 @@ impl Terminal {
         Ok(true)
     }
 
-    fn dirty(&self) -> bool {
-        self.session
-            .draft()
-            .is_some_and(|snapshot| snapshot.draft.is_dirty())
-    }
-
-    fn save(&self) -> Result<(), String> {
-        let job = self
-            .session
-            .start_draft_job()
-            .map_err(|error| error.to_string())?;
-        let mut draft = job.snapshot.as_ref().ok_or("No open draft")?.draft.clone();
-        let path = draft.path.clone().ok_or("No opened draft path")?;
-        draft.save(&path, true)?;
-        job.commit(draft, false).map_err(|error| error.to_string())
-    }
-
     fn line(&mut self, line: &str, out: &mut impl Write) -> io::Result<bool> {
         let input = line.trim();
-        if self.departure {
-            self.departure = false;
-            if matches!(input, "y" | "Y" | "yes" | "Yes") {
-                writeln!(out, "Discarded unsaved draft edits.")?;
-                return Ok(false);
-            }
-            writeln!(out, "Continuing the conversation.")?;
-            return Ok(true);
-        }
         let result = match input {
-            ":quit" => {
-                if !self.dirty() {
-                    return Ok(false);
-                }
-                self.departure = true;
-                writeln!(out, "Discard unsaved draft edits and quit? [y/N]")?;
-                Ok(())
-            }
+            ":quit" => return Ok(false),
             ":reset" => {
                 self.reset();
                 writeln!(out, "Conversation reset.")?;
                 Ok(())
             }
             ":stop" => self.conversation.stop(),
-            ":save" => match self.save() {
-                Ok(()) => {
-                    writeln!(out, "Saved working draft.")?;
-                    Ok(())
-                }
-                Err(error) => Err(error),
-            },
             ":apply" => match self.conversation.apply() {
                 Ok(()) => {
                     writeln!(
                         out,
-                        "Applied to the working draft. Use :save to write the file."
+                        "Applied to this session. Use the displayed parameters when running the CLI."
                     )?;
                     Ok(())
                 }
@@ -204,9 +161,9 @@ impl Terminal {
             },
             ":reject" => {
                 let message = if self.conversation.reject() {
-                    "Rejected draft proposal."
+                    "Rejected run proposal."
                 } else {
-                    "No pending draft proposal."
+                    "No pending run proposal."
                 };
                 writeln!(out, "{message}")?;
                 Ok(())
@@ -251,8 +208,10 @@ pub(crate) fn run(options: Options) -> Result<bool, Box<dyn std::error::Error>> 
     if let Some(path) = options.saved_run {
         session.select_run(RunSelection::Saved(path))?;
     }
-    if let Some(path) = options.draft {
-        session.replace_draft(session.open_draft(&path)?)?;
+    if let Ok(operation) =
+        mgb_ops::app::OperationalRun::open_workspace(session.workspace().into(), chrono::Utc::now())
+    {
+        session.open_run_setup(operation);
     }
     let executable = std::env::current_exe()?;
     let agent = options.agent.into();
@@ -260,7 +219,7 @@ pub(crate) fn run(options: Options) -> Result<bool, Box<dyn std::error::Error>> 
     writeln!(out, "{SETUP_NOTICE}")?;
     writeln!(
         out,
-        "Enter a prompt or use :stop, :reset, :apply, :reject, :save, :quit."
+        "Enter a prompt or use :stop, :reset, :apply, :reject, :quit."
     )?;
     out.flush()?;
 
@@ -284,7 +243,6 @@ pub(crate) fn run(options: Options) -> Result<bool, Box<dyn std::error::Error>> 
         ready: false,
         active: false,
         permission: None,
-        departure: false,
     };
     let mut failed = false;
     loop {
@@ -305,9 +263,6 @@ pub(crate) fn run(options: Options) -> Result<bool, Box<dyn std::error::Error>> 
                 }
             }
             Err(RecvTimeoutError::Disconnected) => {
-                if terminal.dirty() {
-                    writeln!(out, "End of input. Discarded unsaved draft edits.")?;
-                }
                 return Ok(!failed);
             }
             Err(RecvTimeoutError::Timeout) => {}

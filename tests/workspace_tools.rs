@@ -63,52 +63,6 @@ fn workspace_config_roundtrips_and_failed_save_preserves_bytes() {
 }
 
 #[test]
-fn draft_uses_selected_workspace_config() {
-    let dir = tempfile::tempdir().unwrap();
-    std::fs::create_dir_all(dir.path().join("config")).unwrap();
-    std::fs::write(
-        dir.path().join("config.toml"),
-        "[engine]\nexecutable = 'wrong'\n",
-    )
-    .unwrap();
-    let selected = WorkspaceConfig {
-        spatial: None,
-        engine: Some(WorkspaceEngine {
-            executable: Some("selected".into()),
-            input_dir: None,
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-    let draft = mgb_ops::Draft::new_with_workspace_config(
-        dir.path().to_path_buf(),
-        dir.path(),
-        Some(&selected),
-    );
-    let engine = draft.document.operation.engine.unwrap();
-    assert_eq!(engine.executable.unwrap(), std::path::Path::new("selected"));
-    assert_eq!(
-        engine.input_dir.unwrap(),
-        std::path::Path::new("model/Input")
-    );
-}
-
-#[test]
-fn operation_toml_save_keeps_existing_bytes_when_draft_instructions_cannot_be_represented() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("operation.toml");
-    std::fs::write(&path, "existing").unwrap();
-    let mut draft = mgb_ops::Draft::new(dir.path().to_path_buf(), dir.path());
-    draft
-        .document
-        .instructions
-        .corrections
-        .push(Some(Vec::new()));
-    assert!(draft.save_preparation_toml(&path).is_err());
-    assert_eq!(std::fs::read_to_string(path).unwrap(), "existing");
-}
-
-#[test]
 fn workspace_operation_resolves_config_and_runtime_scenario_choices_read_only() {
     std::fs::create_dir_all("runs").unwrap();
     let dir = tempfile::tempdir_in("runs").unwrap();
@@ -140,18 +94,20 @@ forecast_providers = ["ecmwf","noaa"]
             "2026-07-25T01:00:00",
         ]
     );
-    assert_eq!(operation.scenarios(), ["ecmwf-raw", "noaa-raw"]);
+    use mgb_ops::app::RunScenario;
+    assert_eq!(operation.scenarios().unwrap(), [RunScenario::Zero]);
     assert!(
         operation
             .set_scenarios(&["corrected:ecmwf".into()])
             .is_err()
     );
+    let corrected = r#"{"kind":"corrected","forecast":"ecmwf@2026-07-20T00:00:00Z","corrections":[{"t0_hour":3,"t1_hour":9,"multiplication_factor":1.25}]}"#;
     operation
-        .set_scenarios(&["zero".into(), "corrected:ecmwf@2026-07-20T00:00:00Z".into()])
+        .set_scenarios(&["zero".into(), corrected.into()])
         .unwrap();
     assert_eq!(
-        operation.scenarios(),
-        ["zero", "ecmwf-corrected-20260720T0000Z"]
+        operation.scenarios().unwrap(),
+        [RunScenario::Zero, RunScenario::parse(corrected).unwrap()]
     );
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     assert_eq!(std::fs::read_to_string(config).unwrap(), contents);
@@ -183,7 +139,7 @@ fn workspace_edit_csv_order_and_rollback_are_shared_with_the_database() {
     let rows = "ana:123,rain,point,2026-07-20T00:00:00,,0,first\nana:123,rain,point,2026-07-20T00:00:00,,,second\n";
     std::fs::write(&input, format!("{header}{rows}")).unwrap();
     assert_eq!(
-        mgb_ops::app::import_workspace_edits(root, &input, None).unwrap(),
+        mgb_ops::app::import_workspace_edits(root, &input).unwrap(),
         2
     );
     std::fs::write(
@@ -191,9 +147,9 @@ fn workspace_edit_csv_order_and_rollback_are_shared_with_the_database() {
         format!("{header}ana:missing,rain,point,2026-07-20T00:00:00,,0,invalid\n"),
     )
     .unwrap();
-    assert!(mgb_ops::app::import_workspace_edits(root, &input, None).is_err());
+    assert!(mgb_ops::app::import_workspace_edits(root, &input).is_err());
     assert_eq!(
-        mgb_ops::app::export_workspace_edits(root, &output, None).unwrap(),
+        mgb_ops::app::export_workspace_edits(root, &output).unwrap(),
         2
     );
     let records = csv::Reader::from_path(output)

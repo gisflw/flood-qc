@@ -39,7 +39,7 @@ explicit timezone/window, and ordered `SeriesSelection` values. Model selections
 identify a trial directory, scenario and rain/level/flow variable. Observation
 selections identify a canonical database, explicit series and variable, whether
 to use effective values, and ordered replacement IDs. Optional supplied
-`replacements` replace those IDs with actual draft values without catalog writes.
+`replacements` replace those IDs with explicit replacement values without catalog writes.
 Rain and flow support effective values. Level uses recorded observations.
 
 Rain selects complete canonical intervals within the window, excluding its start
@@ -82,7 +82,7 @@ A model rainfall request has this shape:
   },
   "selections": [{
     "kind": "model",
-    "root": "/regional/workspace/data/cache/run/<generation>",
+    "root": "/regional/workspace/cache/run/<generation>",
     "scenario_id": "zero",
     "variable": "rain"
   }]

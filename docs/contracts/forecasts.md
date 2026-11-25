@@ -1,47 +1,19 @@
 # Saved forecast normalization and forcing
 
-`forecast normalize` reads an explicitly selected saved GRIB2 file, returns
-canonical native rainfall intervals and retains the original source plus a native
-NetCDF artifact in a separate forecast catalog. Use [forecast acquisition](acquisition.md#forecast-acquisition)
-to fetch and register a provider cycle.
+Normalize a saved GRIB2 payload using the workspace time zone, spatial bounds
+and acquisition buffer.
 
 ```sh
-mgb-ops forecast normalize --workspace /regional/workspace --request normalize.toml --json
+mgb-ops forecast normalize --workspace /region --source /region/downloads/ifs.grib2 \
+  --provider ecmwf --model ifs --product fc --cycle 2026-07-20T00:00:00Z
 ```
 
-Workspace and request-file arguments resolve from the invocation directory.
-Paths inside the strict TOML request resolve from the workspace. Unknown keys,
-unsupported schema/product/provider combinations and invalid settings fail.
-
-```toml
-schema_version = 1
-provider = "ecmwf"
-model = "ifs"
-product = "fc"
-cycle_utc = "2026-07-20T00:00:00Z"
-operation_timezone = "America/Sao_Paulo"
-source = "sources/ifs.grib2"
-crop_bbox = [-79.13530, -50.61209, -28.67245, -10.08729]
-catalog = "data/forecasts.sqlite"
-artifact_root = "data/forecasts"
-```
-
-All keys are required. Supported pairs are `ecmwf`/`ifs` and `noaa`/`gfs`, product
-`fc`. The cycle is RFC3339 UTC with whole seconds; the operation timezone is an
-IANA name. Crops are finite geographic west/south/east/north bounds and cannot
-cross the antimeridian. Retained artifacts must remain inside the workspace;
-source files and the catalog may use explicit absolute paths.
-
-JSON output is one report containing source/asset IDs, retained source/native
-paths, native shape, effective bounds and canonical timeline. The CLI exits 0
-on success, 1 on operation/output failure and 2 for invalid CLI arguments.
-`app::normalize_forecast` exposes the same file-based workflow without printing.
-`app::normalize_forecast_document` accepts a typed `NormalizeForecastDocument`
-with the same fields and validation, resolving its paths from the supplied
-workspace. Both entry points produce the same canonical values and catalog
-identities; callers do not need to create a temporary request file.
-`adapters::normalize_saved_forecast` returns canonical values and normalization
-evidence independently of persistence.
+Use `ecmwf` with `ifs` or `noaa` with `gfs`, product `fc`. The cycle
+uses whole seconds in UTC. Workspace and source arguments resolve from the
+invocation directory. Registration stores the normalized NetCDF under
+`assets/` and references it through `operation.sqlite`. Use
+[forecast acquisition](acquisition.md#forecast-acquisition) to fetch provider
+cycles directly.
 
 ## Native values and persistence
 
@@ -63,22 +35,11 @@ features and no GDAL dependency. The adapter additionally checks raw GRIB2 grid
 sections because the driver otherwise pads/crops later fields to the first grid.
 Changed grids, malformed messages and unsupported multi-field messages fail.
 
-`store::ForecastCatalog` owns the `asset` and `correction` tables in the workspace database. It preserves immutable source/native files, hashes, sizes,
-normalization metadata and canonical coverage. Source IDs identify content and
-normalization settings; asset IDs identify catalog records. These are distinct
-from legacy asset labels. Loading verifies retained content and canonical schema.
-Generated working grids and basin forcing are not additional catalog assets.
-
-Corrections contain an asset ID, lead-hour bounds, latitude/longitude pixel
-shifts, rotation, positive multiplier and audit fields. Callers select explicit
-ordered correction IDs. Unknown/duplicate IDs and cross-asset selections fail.
-`load_selected` reads the asset and selected correction values in one transaction.
-Editor and reason are optional; supplied text is preserved. `open_writable`
-opens an existing catalog without creating it. `register_corrections` commits a
-selected batch atomically, reusing identical existing values and rejecting
-conflicting values under an existing ID. See the shared
-[draft registration workflow](drafts.md#explicit-registration) for selection and
-independent catalog outcomes.
+The workspace catalog indexes provider, model, product, cycle, coverage, and
+the retained file locations. Operators select forecasts by those labels.
+Working grids and basin forcing belong to their preparation or run.
+Forecast corrections are [scenario parameters](operations.md#scenarios)
+and their values are retained in the operation manifest.
 
 ## Pure preparation
 

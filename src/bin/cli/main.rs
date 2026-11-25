@@ -1,10 +1,8 @@
 mod acquisition;
 mod assistant;
-mod draft;
 mod output;
 mod progress;
 
-use self::draft::draft_action;
 use self::output::{acquisition_result, operation_result};
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use std::collections::BTreeMap;
@@ -67,12 +65,6 @@ enum Command {
     References {
         #[command(subcommand)]
         command: ReferenceCommand,
-        #[arg(long, global = true)]
-        json: bool,
-    },
-    Draft {
-        #[command(subcommand)]
-        command: DraftCommand,
         #[arg(long, global = true)]
         json: bool,
     },
@@ -244,22 +236,18 @@ fn automation_action(
 
 #[derive(Subcommand)]
 enum EditsCommand {
-    /// Replace the ordered edits for observations or a forecast cycle.
+    /// Replace the ordered edits for observations.
     Import {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
         input: PathBuf,
-        #[arg(long)]
-        forecast: Option<String>,
     },
     Export {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
         output: PathBuf,
-        #[arg(long)]
-        forecast: Option<String>,
     },
 }
 
@@ -323,8 +311,6 @@ struct AcquisitionOptions {
     #[arg(long)]
     workspace: PathBuf,
     #[arg(long)]
-    request: Option<PathBuf>,
-    #[arg(long)]
     reference_time: Option<String>,
     #[arg(long)]
     json: bool,
@@ -334,7 +320,6 @@ impl AcquisitionOptions {
     fn request(self) -> mgb_ops::app::AcquisitionRequest {
         mgb_ops::app::AcquisitionRequest {
             workspace: self.workspace,
-            request_file: self.request.unwrap_or_else(|| "config.toml".into()),
             reference_time: self.reference_time,
         }
     }
@@ -460,14 +445,6 @@ enum RunCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    Replay {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        manifest: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
     Regenerate {
         #[arg(long)]
         workspace: PathBuf,
@@ -493,134 +470,6 @@ enum ReferenceCommand {
     },
 }
 #[derive(Subcommand)]
-enum DraftCommand {
-    New {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-        #[arg(long, requires = "time_zone")]
-        reference: Option<String>,
-        #[arg(long, requires = "reference")]
-        time_zone: Option<String>,
-    },
-    Open {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-    },
-    Save {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-        #[arg(long)]
-        omit_visualization: bool,
-    },
-    ImportToml {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        request: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    ImportManifest {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        manifest: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-    Edit {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        document: PathBuf,
-    },
-    Validate {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long, default_value = "preparation")]
-        action: String,
-        #[arg(long)]
-        scenario: Option<usize>,
-    },
-    Refresh {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long, default_value = "all")]
-        source: String,
-        #[arg(long)]
-        scenario: Option<usize>,
-    },
-    PreviewObservations {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-    },
-    PreviewForecast {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        scenario: usize,
-    },
-    Materialize {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        source: String,
-        #[arg(long)]
-        scenario: Option<usize>,
-    },
-    CopyRegisteredForEdit {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        mapping: PathBuf,
-    },
-    Register {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        selection: PathBuf,
-    },
-    Run {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-    },
-    Prepare {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        draft: PathBuf,
-        #[arg(long)]
-        output: PathBuf,
-    },
-}
-
-#[derive(Subcommand)]
 enum InundationCommand {
     /// Process an aligned HAND and catchments GeoTIFF pair for a retained scenario.
     Process {
@@ -640,52 +489,84 @@ enum InundationCommand {
         json: bool,
     },
 }
+#[derive(Args)]
+struct RunOptions {
+    #[arg(long)]
+    workspace: PathBuf,
+    #[arg(long)]
+    reference_time: Option<String>,
+    #[arg(long)]
+    lookback_days: Option<u32>,
+    #[arg(long)]
+    forecast_days: Option<u32>,
+    /// Select zero, a forecast product/cycle, or a JSON scenario value. Repeat to select a set.
+    #[arg(long = "scenario")]
+    scenarios: Vec<mgb_ops::app::RunScenario>,
+    #[arg(long)]
+    forcing: Option<String>,
+    #[arg(long)]
+    calibration: Option<String>,
+    #[arg(long)]
+    geometry: Option<PathBuf>,
+    #[arg(long)]
+    hot_start: Option<String>,
+    #[arg(long)]
+    routing: Option<String>,
+    #[arg(long)]
+    json: bool,
+}
+
+fn parse_parameter<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, String> {
+    serde_json::from_str(value).map_err(|error| error.to_string())
+}
+
+fn parse_routing(value: &str) -> Result<mgb_ops::app::RoutingMode, String> {
+    match value {
+        "inertial" => Ok(mgb_ops::app::RoutingMode::Inertial),
+        "muskingum_cunge" => Ok(mgb_ops::app::RoutingMode::MuskingumCunge),
+        _ => Err("Use inertial or muskingum_cunge".into()),
+    }
+}
+
+impl RunOptions {
+    fn operation(self) -> Result<mgb_ops::app::OperationalRun, String> {
+        let mut operation =
+            mgb_ops::app::OperationalRun::open_workspace(self.workspace, chrono::Utc::now())?;
+        operation.set_parameters(mgb_ops::app::RunParameters {
+            reference_time: self.reference_time,
+            lookback_days: self.lookback_days,
+            forecast_days: self.forecast_days,
+            scenarios: (!self.scenarios.is_empty()).then_some(self.scenarios),
+            forcing: self.forcing.as_deref().map(parse_parameter).transpose()?,
+            calibration: self
+                .calibration
+                .as_deref()
+                .map(parse_parameter)
+                .transpose()?,
+            geometry: self.geometry,
+            hot_start: self.hot_start.as_deref().map(parse_parameter).transpose()?,
+            routing: self.routing.as_deref().map(parse_routing).transpose()?,
+        });
+        Ok(operation)
+    }
+}
+
 #[derive(Subcommand)]
 enum OperationCommand {
-    /// Acquire inputs when the recipe enables acquisition, then prepare and execute.
-    RunAll {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        request: Option<PathBuf>,
-        #[arg(long)]
-        reference_time: Option<String>,
-        #[arg(long = "scenario")]
-        scenarios: Vec<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    /// Acquire configured inputs, prepare, execute and publish.
+    RunAll(RunOptions),
+    /// Freeze selected saved inputs to a new directory for later execution.
     Prepare {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        request: Option<PathBuf>,
+        #[command(flatten)]
+        options: RunOptions,
         #[arg(long)]
         output: PathBuf,
-        #[arg(long)]
-        reference_time: Option<String>,
-        #[arg(long = "scenario")]
-        scenarios: Vec<String>,
-        #[arg(long)]
-        json: bool,
     },
     Execute {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
         prepared: PathBuf,
-        #[arg(long)]
-        json: bool,
-    },
-    MigrateCache {
-        #[arg(long)]
-        workspace: PathBuf,
-        #[arg(long)]
-        keep_run: String,
-        #[arg(long)]
-        inundation_donor: Option<String>,
-        #[arg(long)]
-        apply: bool,
         #[arg(long)]
         json: bool,
     },
@@ -698,16 +579,40 @@ enum ForecastCommand {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
-        request: PathBuf,
+        source: PathBuf,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        product: String,
+        #[arg(long)]
+        cycle: chrono::DateTime<chrono::Utc>,
     },
     Normalize {
         #[arg(long)]
         workspace: PathBuf,
         #[arg(long)]
-        request: PathBuf,
+        source: PathBuf,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        model: String,
+        #[arg(long)]
+        product: String,
+        #[arg(long)]
+        cycle: String,
         #[arg(long)]
         json: bool,
     },
+}
+
+fn parse_provider(value: &str) -> Result<mgb_ops::store::ForecastProvider, String> {
+    match value {
+        "ecmwf" => Ok(mgb_ops::store::ForecastProvider::Ecmwf),
+        "noaa" => Ok(mgb_ops::store::ForecastProvider::Noaa),
+        _ => Err("Use ecmwf or noaa".into()),
+    }
 }
 
 #[derive(Subcommand)]
@@ -775,17 +680,11 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         }
         Command::Edits { command } => {
             let count = match command {
-                EditsCommand::Import {
-                    workspace,
-                    input,
-                    forecast,
-                } => mgb_ops::app::import_workspace_edits(&workspace, &input, forecast.as_deref())?,
-                EditsCommand::Export {
-                    workspace,
-                    output,
-                    forecast,
-                } => {
-                    mgb_ops::app::export_workspace_edits(&workspace, &output, forecast.as_deref())?
+                EditsCommand::Import { workspace, input } => {
+                    mgb_ops::app::import_workspace_edits(&workspace, &input)?
+                }
+                EditsCommand::Export { workspace, output } => {
+                    mgb_ops::app::export_workspace_edits(&workspace, &output)?
                 }
             };
             writeln!(out, "{count} edits")?;
@@ -955,23 +854,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     let report = mgb_ops::app::import_run_to(&workspace, &bundle, &output)?;
                     serde_json::to_writer(&mut out, &report)?;
                 }
-                RunCommand::Replay {
-                    workspace,
-                    manifest,
-                    json,
-                } => {
-                    let result = progress::run(&mut out, json, |control| {
-                        mgb_ops::app::replay_run(&workspace, &manifest, control)
-                    })?;
-                    let Some(report) = operation_result(result, json, &mut out)? else {
-                        return Ok(false);
-                    };
-                    if json {
-                        serde_json::to_writer(&mut out, &report)?;
-                        writeln!(out)?;
-                    }
-                    return Ok(matches!(report.status, mgb_ops::BatchStatus::Completed));
-                }
                 RunCommand::Regenerate {
                     workspace,
                     bundle,
@@ -1075,74 +957,14 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 Ok(true)
             }
         }
-        Command::Draft { command, json: _ } => {
-            let is_validation = matches!(&command, DraftCommand::Validate { .. });
-            let is_registration = matches!(&command, DraftCommand::Register { .. });
-            let invocation = std::env::current_dir()?;
-            let result = match command {
-                DraftCommand::Run { workspace, draft } => progress::run_draft(
-                    &mut out,
-                    || mgb_ops::Draft::open(workspace, &invocation, &draft),
-                    |draft, control| mgb_ops::run_draft(&draft, control),
-                )?,
-                DraftCommand::Prepare {
-                    workspace,
-                    draft,
-                    output,
-                } => progress::run_draft(
-                    &mut out,
-                    || mgb_ops::Draft::open(workspace, &invocation, &draft),
-                    |draft, control| draft.prepare_controlled(invocation.clone(), output, control),
-                )?,
-                command => draft_action(command, &invocation),
-            };
-            let ok = result.as_ref().is_ok_and(|v| {
-                (!is_validation || v.as_array().is_some_and(Vec::is_empty))
-                    && (!is_registration
-                        || (v["observations"]["error"].is_null()
-                            && v["forecasts"]["error"].is_null()))
-            });
-            let mut output = serde_json::Map::new();
-            output.insert("ok".into(), ok.into());
-            match result {
-                Ok(value) => {
-                    output.insert("result".into(), value);
-                }
-                Err(error) => {
-                    output.insert("error".into(), error.into());
-                }
-            }
-            serde_json::to_writer(&mut out, &output)?;
-            writeln!(out)?;
-            out.flush()?;
-            Ok(ok)
-        }
         Command::Operation {
-            command:
-                OperationCommand::RunAll {
-                    workspace,
-                    request,
-                    reference_time,
-                    scenarios,
-                    json,
-                },
+            command: OperationCommand::RunAll(options),
         } => {
+            let json = options.json;
             let report = progress::run_all(&mut out, json, |control| {
-                let now = chrono::Utc::now();
-                let mut operation = match request {
-                    Some(path) => mgb_ops::app::OperationalRun::open(workspace, &path, now)?,
-                    None => mgb_ops::app::OperationalRun::open_workspace(workspace, now)?,
-                };
-                if let Some(reference) = reference_time {
-                    operation.set_reference(reference);
-                }
-                if !scenarios.is_empty() {
-                    operation.set_scenarios(&scenarios)?;
-                }
-                if !operation.acquires_inputs() {
-                    operation.accept_inputs()?;
-                }
-                Ok(operation.run_all_report(control))
+                options
+                    .operation()
+                    .map(|operation| operation.run_all_report(control))
             })?;
             let report = match report {
                 Ok(report) => report,
@@ -1160,54 +982,19 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             Ok(report.error.is_none())
         }
         Command::Operation {
-            command:
-                OperationCommand::Prepare {
-                    workspace,
-                    request,
-                    output,
-                    reference_time,
-                    scenarios,
-                    json,
-                },
+            command: OperationCommand::Prepare { options, output },
         } => {
             let invocation_dir = std::env::current_dir()?;
-            if request.is_some() && (reference_time.is_some() || !scenarios.is_empty()) {
-                return Err("--reference-time and --scenario use workspace settings".into());
-            }
-            let result = if let Some(request_file) = request {
-                progress::run(&mut out, json, |control| {
-                    mgb_ops::prepare_controlled(
-                        mgb_ops::PreparationRequest {
-                            workspace,
-                            invocation_dir,
-                            request_file,
-                            output,
-                        },
-                        control,
-                    )
-                })?
-            } else {
-                let mut operation =
-                    mgb_ops::app::OperationalRun::open_workspace(workspace, chrono::Utc::now())
-                        .map_err(|message| mgb_ops::app::OperationError::InvalidRequest {
-                            field: "workspace".into(),
-                            message,
-                        })?;
-                if let Some(reference) = reference_time {
-                    operation.set_reference(reference);
-                }
-                if !scenarios.is_empty() {
-                    operation.set_scenarios(&scenarios).map_err(|message| {
-                        mgb_ops::app::OperationError::InvalidRequest {
-                            field: "scenarios".into(),
-                            message,
-                        }
-                    })?;
-                }
-                progress::run(&mut out, json, |control| {
-                    operation.prepare_saved(invocation_dir, output, control)
-                })?
-            };
+            let json = options.json;
+            let result = progress::run(&mut out, json, |control| {
+                options
+                    .operation()
+                    .map_err(|message| mgb_ops::app::OperationError::InvalidRequest {
+                        field: "workspace".into(),
+                        message,
+                    })
+                    .and_then(|operation| operation.prepare_saved(invocation_dir, output, control))
+            })?;
             let Some(report) = operation_result(result, json, &mut out)? else {
                 return Ok(false);
             };
@@ -1247,30 +1034,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             out.flush()?;
             Ok(matches!(report.status, mgb_ops::BatchStatus::Completed))
         }
-        Command::Operation {
-            command:
-                OperationCommand::MigrateCache {
-                    workspace,
-                    keep_run,
-                    inundation_donor,
-                    apply,
-                    json,
-                },
-        } => {
-            let report = mgb_ops::app::migrate_cache(
-                &workspace,
-                &keep_run,
-                inundation_donor.as_deref(),
-                apply,
-            )?;
-            if json {
-                serde_json::to_writer(&mut out, &report)?;
-                writeln!(out)?;
-            } else {
-                writeln!(out, "{}", serde_json::to_string_pretty(&report)?)?;
-            }
-            Ok(true)
-        }
         Command::Forecast {
             command: ForecastCommand::Acquire(options),
         } => {
@@ -1285,9 +1048,26 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             acquisition_result(result, json, true, &mut out)
         }
         Command::Forecast {
-            command: ForecastCommand::ImportCanonical { workspace, request },
+            command:
+                ForecastCommand::ImportCanonical {
+                    workspace,
+                    source,
+                    provider,
+                    model,
+                    product,
+                    cycle,
+                },
         } => {
-            let report = mgb_ops::app::import_canonical_forecast(&workspace, read_json(&request)?)?;
+            let report = mgb_ops::app::import_workspace_forecast(
+                &workspace,
+                std::env::current_dir()?.join(source),
+                mgb_ops::store::CanonicalForecastMetadata {
+                    provider,
+                    model,
+                    product,
+                    cycle_utc: cycle,
+                },
+            )?;
             serde_json::to_writer(&mut out, &report)?;
             writeln!(out)?;
             Ok(true)
@@ -1296,20 +1076,32 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             command:
                 ForecastCommand::Normalize {
                     workspace,
-                    request,
+                    source,
+                    provider,
+                    model,
+                    product,
+                    cycle,
                     json,
                 },
         } => {
-            let report = mgb_ops::normalize_forecast(mgb_ops::NormalizeForecastRequest {
-                workspace,
-                invocation_dir: std::env::current_dir()?,
-                request_file: request,
-            })?;
+            let workspace = workspace.canonicalize()?;
+            let source = std::env::current_dir()?.join(source);
+            let provider = parse_provider(&provider)?;
+            let label = format!(
+                "{}/{model}/{product}@{cycle}",
+                match provider {
+                    mgb_ops::store::ForecastProvider::Ecmwf => "ecmwf",
+                    mgb_ops::store::ForecastProvider::Noaa => "noaa",
+                }
+            );
+            let report = mgb_ops::app::normalize_workspace_forecast(
+                &workspace, source, provider, model, product, cycle,
+            )?;
             if json {
                 serde_json::to_writer(&mut out, &report)?;
                 writeln!(out)?;
             } else {
-                writeln!(out, "Asset: {}", report.asset_id)?;
+                writeln!(out, "Forecast: {label}")?;
                 writeln!(out, "Native artifact: {}", report.native_artifact.display())?;
             }
             out.flush()?;

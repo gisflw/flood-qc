@@ -7,7 +7,7 @@ pub use self::bridge::assistant_mcp_stdio;
 pub use self::commands::{FieldChange, ProposalReview};
 pub use self::settings::{AgentSetting, AgentSettings, SettingChoice, SettingKind};
 
-use super::{DraftConflict, Session};
+use super::Session;
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
@@ -297,15 +297,13 @@ impl Conversation {
 
     pub fn apply(&self) -> Result<(), String> {
         let mut state = self.tools.state();
-        let (_, proposal) = state.proposal.as_ref().ok_or("No pending draft proposal")?;
+        let (_, proposal) = state.proposal.as_ref().ok_or("No pending run proposal")?;
         let result = self
             .tools
             .session
-            .apply_draft(&proposal.version, proposal.document.clone());
-        if result != Err(DraftConflict::Busy) {
-            state.proposal = None;
-        }
-        result.map_err(|error| error.to_string())
+            .update_run_setup(&proposal.revision, proposal.parameters.clone());
+        state.proposal = None;
+        result
     }
 
     pub fn reject(&self) -> bool {

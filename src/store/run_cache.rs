@@ -1,10 +1,9 @@
 use super::{
-    FLOOD_SOURCE_DIAGNOSTIC, InundationRecipe, OperationManifest, read_draft, sync_directory,
-    sync_tree, write_draft,
+    FLOOD_SOURCE_DIAGNOSTIC, OperationManifest, read_draft, sync_directory, sync_tree, write_draft,
 };
+use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom},
     path::{Path, PathBuf},
@@ -30,14 +29,10 @@ fn run_index(workspace: &Path, writable: bool) -> Result<Option<rusqlite::Connec
     };
     let connection =
         rusqlite::Connection::open_with_flags(path, flags).map_err(|error| error.to_string())?;
-    let available: bool = connection
-        .query_row(
-            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type='table' AND name='active_run')",
-            [],
-            |row| row.get(0),
-        )
+    connection
+        .prepare("SELECT generation FROM active_run LIMIT 0")
         .map_err(|error| error.to_string())?;
-    Ok(available.then_some(connection))
+    Ok(Some(connection))
 }
 
 fn active_generation(root: &Path, generation: String) -> Result<Option<PathBuf>, String> {
@@ -66,13 +61,6 @@ pub(crate) fn is_managed_run_path(workspace: &Path, resolved: &Path) -> bool {
         })
 }
 
-#[derive(Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-struct ActiveRun {
-    schema_version: u32,
-    generation: String,
-}
-
 fn valid_run_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 96
@@ -85,7 +73,6 @@ fn valid_run_id(id: &str) -> bool {
 pub(crate) fn active_run(workspace: &Path) -> Result<Option<PathBuf>, String> {
     let root = run_cache_root(workspace);
     if let Some(connection) = run_index(workspace, false)? {
-        use rusqlite::OptionalExtension;
         let generation: Option<String> = connection
             .query_row(
                 "SELECT generation FROM active_run WHERE singleton=1",
@@ -99,21 +86,7 @@ pub(crate) fn active_run(workspace: &Path) -> Result<Option<PathBuf>, String> {
             None => Ok(None),
         };
     }
-    let file = match File::open(root.join("active.json")) {
-        Ok(file) => file,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
-        Err(error) => return Err(error.to_string()),
-    };
-    let pointer: ActiveRun = serde_json::from_reader(file).map_err(|error| error.to_string())?;
-    if pointer.schema_version != 1
-        || !pointer
-            .generation
-            .strip_prefix(GENERATION_PREFIX)
-            .is_some_and(valid_run_id)
-    {
-        return Err("Invalid active run pointer".into());
-    }
-    Ok(Some(root.join(pointer.generation)))
+    Ok(None)
 }
 
 pub(crate) fn new_run_stage(workspace: &Path) -> Result<PathBuf, String> {
@@ -180,7 +153,18 @@ pub(crate) fn with_active_run<T>(
 }
 
 /// Workspace writers hold the operation lock while staging, publishing and recovering.
+#[cfg(test)]
 pub(crate) fn publish_run(workspace: &Path, generation: &Path) -> Result<(), String> {
+    let database = workspace.join("operation.sqlite");
+    if !database.exists() {
+        super::ObservationStore::create_operation(&database, "UTC")
+            .map_err(|error| error.to_string())?;
+    }
+    if !generation.join(JOURNAL).exists() {
+        let mut attempt = RunAttemptManifest::new(run_stage_id(generation)?.into());
+        attempt.finish("completed", None);
+        write_run_journal(generation, &attempt)?;
+    }
     publish_run_checked(workspace, generation, |commit| commit())
 }
 
@@ -200,31 +184,21 @@ pub(crate) fn publish_run_checked(
     lock.lock().map_err(|error| error.to_string())?;
     checked_commit(&|| {
         let name = format!("{GENERATION_PREFIX}{id}");
-        if let Some(mut index) = run_index(workspace, true)? {
-            let tx = index.transaction().map_err(|error| error.to_string())?;
-            if generation.join(JOURNAL).is_file() {
-                let attempt = read_run_attempt(&generation.join(JOURNAL))?;
-                if attempt.attempt_id != id || attempt.state != "completed" {
-                    return Err("Published run journal does not match its generation".into());
-                }
-                index_attempt(&tx, &attempt)?;
-            }
-            tx.execute(
-                "INSERT INTO active_run VALUES (1,?1)
-                ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation",
-                [name],
-            )
-            .map_err(|error| error.to_string())?;
-            tx.commit().map_err(|error| error.to_string())
-        } else {
-            write_draft(
-                &root.join("active.json"),
-                &ActiveRun {
-                    schema_version: 1,
-                    generation: name,
-                },
-            )
+        let mut index =
+            run_index(workspace, true)?.ok_or("Initialize operation.sqlite before publication")?;
+        let tx = index.transaction().map_err(|error| error.to_string())?;
+        let attempt = read_run_attempt(&generation.join(JOURNAL))?;
+        if attempt.attempt_id != id || attempt.state != "completed" {
+            return Err("Published run journal does not match its generation".into());
         }
+        index_attempt(&tx, &attempt)?;
+        tx.execute(
+            "INSERT INTO active_run VALUES (1,?1)
+            ON CONFLICT(singleton) DO UPDATE SET generation=excluded.generation",
+            [name],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
     })?;
     // Preserve the previous generation until the contents of the pointer are durable.
     if sync_directory(&root).is_ok() {
@@ -252,8 +226,6 @@ pub(crate) struct RunAttemptManifest {
     pub finished_at: Option<String>,
     pub error: Option<String>,
     pub diagnostics: Vec<RunDiagnostic>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub inundation: BTreeMap<String, InundationRecipe>,
 }
 
 impl RunAttemptManifest {
@@ -267,7 +239,6 @@ impl RunAttemptManifest {
             finished_at: None,
             error: None,
             diagnostics: Vec::new(),
-            inundation: BTreeMap::new(),
         }
     }
 
@@ -355,7 +326,7 @@ fn index_attempt(index: &rusqlite::Connection, attempt: &RunAttemptManifest) -> 
     index
         .execute(
             "INSERT INTO run_attempt VALUES (?1,?2)
-        ON CONFLICT(attempt_id) DO UPDATE SET manifest=excluded.manifest",
+             ON CONFLICT(attempt_id) DO UPDATE SET manifest=excluded.manifest",
             rusqlite::params![attempt.attempt_id, manifest],
         )
         .map_err(|error| error.to_string())?;
@@ -369,15 +340,15 @@ pub(crate) fn write_run_attempt(
     if !valid_run_id(&attempt.attempt_id) {
         return Err("Invalid run attempt ID".into());
     }
-    if let Some(index) = run_index(workspace, true)? {
-        index_attempt(&index, attempt)?;
-    }
     let directory = workspace.join("runs/history");
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     sync_directory(&workspace.join("runs"))?;
     let path = directory.join(format!("{}.json", attempt.attempt_id));
     write_draft(&path, attempt)?;
     sync_directory(&directory)?;
+    if let Some(index) = run_index(workspace, true)? {
+        index_attempt(&index, attempt)?;
+    }
     Ok(path)
 }
 
@@ -418,17 +389,12 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
         if journal.attempt_id != run_stage_id(path)? || journal.state != "completed" {
             return Err("Published run journal does not match its generation".into());
         }
-        write_run_attempt(workspace, &journal)?;
         fs::remove_file(path.join(JOURNAL)).map_err(|error| error.to_string())?;
         sync_directory(path)?;
     }
     for entry in fs::read_dir(root).map_err(|error| error.to_string())? {
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
-        if is_pointer_temporary(&path) && entry.file_type().map_err(|e| e.to_string())?.is_file() {
-            fs::remove_file(&path).map_err(|error| error.to_string())?;
-            continue;
-        }
         let Ok(id) = run_stage_id(&path) else {
             continue;
         };
@@ -437,7 +403,23 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
             continue;
         }
         let journal = path.join(JOURNAL);
-        if journal.try_exists().map_err(|error| error.to_string())? {
+        let published = if let Some(index) = run_index(workspace, false)? {
+            index.query_row(
+                "SELECT manifest FROM run_attempt WHERE attempt_id=?1 AND json_extract(manifest, '$.state')='completed'",
+                [id],
+                |row| row.get::<_, String>(0),
+            ).optional().map_err(|error| error.to_string())?
+        } else {
+            None
+        };
+        if let Some(manifest) = published {
+            let attempt: RunAttemptManifest =
+                serde_json::from_str(&manifest).map_err(|error| error.to_string())?;
+            if attempt.schema_version != 1 || attempt.attempt_id != id {
+                return Err("Indexed run attempt does not match its generation".into());
+            }
+            write_run_attempt(workspace, &attempt)?;
+        } else if journal.try_exists().map_err(|error| error.to_string())? {
             let mut attempt = read_run_attempt(&journal)?;
             if attempt.attempt_id != id {
                 return Err("Run journal ID does not match its directory".into());
@@ -464,15 +446,6 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
     sync_directory(root)
 }
 
-fn is_pointer_temporary(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix(".active.json."))
-        .and_then(|name| name.strip_suffix(".tmp"))
-        .and_then(|name| name.split_once('.'))
-        .is_some_and(|(pid, nonce)| pid.parse::<u32>().is_ok() && nonce.parse::<u64>().is_ok())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -490,22 +463,18 @@ mod tests {
             write_run_journal(stage, &attempt).unwrap();
             fs::write(stage.join("manifest.json"), "{}").unwrap();
         }
-        // Simulate interruption after the pointer replacement and before archiving.
-        write_draft(
-            &run_cache_root(workspace).join("active.json"),
-            &ActiveRun {
-                schema_version: 1,
-                generation: "generation-active".into(),
-            },
+        super::super::ObservationStore::create_operation(
+            &workspace.join("operation.sqlite"),
+            "UTC",
         )
         .unwrap();
-
-        let abandoned_pointer = run_cache_root(workspace).join(".active.json.1.1.tmp");
-        fs::write(&abandoned_pointer, "incomplete pointer").unwrap();
+        let index = run_index(workspace, true).unwrap().unwrap();
+        index
+            .execute("INSERT INTO active_run VALUES(1, 'generation-active')", [])
+            .unwrap();
+        index_attempt(&index, &read_run_attempt(&active.join(JOURNAL)).unwrap()).unwrap();
         recover_run_cache(workspace).unwrap();
         recover_run_cache(workspace).unwrap();
-        let pointer_clean = !abandoned_pointer.exists();
-        assert!(pointer_clean);
         assert_eq!(
             active_run(workspace).unwrap().as_deref(),
             Some(active.as_path())
@@ -515,17 +484,63 @@ mod tests {
         let interrupted_stage_clean = !interrupted.exists();
         assert!(active_journal_clean);
         assert!(interrupted_stage_clean);
-        for (id, state) in [("active", "completed"), ("interrupted", "interrupted")] {
-            let archive = workspace.join("runs/history").join(format!("{id}.json"));
-            let record = read_run_attempt(&archive).unwrap();
-            assert_eq!(record.state, state);
-        }
+        let archive = workspace.join("runs/history/interrupted.json");
+        assert_eq!(read_run_attempt(&archive).unwrap().state, "interrupted");
+        let active_manifest_stays_in_cache = !workspace.join("runs/history/active.json").exists();
+        assert!(active_manifest_stays_in_cache);
     }
 }
 
 #[cfg(test)]
 mod database_publication_tests {
     use super::*;
+
+    #[test]
+    fn existing_workspace_keeps_its_active_run_and_attempt_history() {
+        fs::create_dir_all("runs").unwrap();
+        let fixture = tempfile::tempdir_in("runs").unwrap();
+        let workspace = fixture.path();
+        let index = rusqlite::Connection::open(workspace.join("operation.sqlite")).unwrap();
+        index.execute_batch(
+            "CREATE TABLE active_run(singleton INTEGER PRIMARY KEY CHECK(singleton=1), generation TEXT NOT NULL);
+             CREATE TABLE run_attempt(attempt_id TEXT PRIMARY KEY, manifest TEXT NOT NULL);
+             INSERT INTO active_run VALUES(1, 'generation-previous');",
+        ).unwrap();
+        let mut previous = RunAttemptManifest::new("previous".into());
+        previous.finish("completed", None);
+        let manifest = serde_json::to_string(&previous).unwrap();
+        index
+            .execute("INSERT INTO run_attempt VALUES('previous',?1)", [&manifest])
+            .unwrap();
+        let old = new_run_stage_for(workspace, "previous").unwrap();
+        fs::write(old.join("manifest.json"), b"{}").unwrap();
+        assert_eq!(active_run(workspace).unwrap().as_ref(), Some(&old));
+
+        let mut failed = RunAttemptManifest::new("failed".into());
+        failed.finish("failed", Some("fixture failure".into()));
+        let archive = write_run_attempt(workspace, &failed).unwrap();
+        assert_eq!(read_run_attempt(&archive).unwrap().state, "failed");
+        let retained: String = index
+            .query_row(
+                "SELECT manifest FROM run_attempt WHERE attempt_id='previous'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(retained, manifest);
+
+        let new = new_run_stage_for(workspace, "new").unwrap();
+        let mut completed = RunAttemptManifest::new("new".into());
+        completed.finish("completed", None);
+        write_run_journal(&new, &completed).unwrap();
+        fs::write(new.join("manifest.json"), b"{}").unwrap();
+        publish_run(workspace, &new).unwrap();
+        assert_eq!(active_run(workspace).unwrap(), Some(new));
+        let old_generation_retired = !old.exists();
+        assert!(old_generation_retired);
+        let archived = read_run_attempt(&workspace.join("runs/history/previous.json")).unwrap();
+        assert_eq!(serde_json::to_string(&archived).unwrap(), manifest);
+    }
 
     #[test]
     fn operation_database_only_advances_after_a_durable_generation() {
@@ -555,18 +570,14 @@ mod database_publication_tests {
         let abandoned = !second.exists();
         assert!(abandoned);
         let index = run_index(root, false).unwrap().unwrap();
-        let manifest: String = index
+        let indexed: String = index
             .query_row(
                 "SELECT manifest FROM run_attempt WHERE attempt_id='first'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(
-            serde_json::from_str::<RunAttemptManifest>(&manifest)
-                .unwrap()
-                .state,
-            "completed"
-        );
+        let attempt: RunAttemptManifest = serde_json::from_str(&indexed).unwrap();
+        assert_eq!(attempt.state, "completed");
     }
 }

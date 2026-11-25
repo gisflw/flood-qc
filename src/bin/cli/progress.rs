@@ -1,5 +1,5 @@
 use mgb_ops::app::{
-    AcquisitionReport, DownloadEvent, Draft, ExecutionReport, OperationControl, OperationError,
+    AcquisitionReport, DownloadEvent, ExecutionReport, OperationControl, OperationError,
     OperationEvent, OperationLogStream, OperationStage, OperationalRunReport, PreparationReport,
 };
 use std::{
@@ -339,10 +339,6 @@ impl Summary for ExecutionReport {
             "Run artifact: {}",
             self.run_artifact.display()
         ));
-        line(format_args!(
-            "Attempt manifest: {}",
-            self.attempt_manifest.display()
-        ));
     }
 }
 
@@ -352,22 +348,6 @@ pub(super) fn run<T: Summary + Send>(
     action: impl FnOnce(&OperationControl) -> Result<T, OperationError> + Send,
 ) -> io::Result<Result<T, OperationError>> {
     Progress::new()?.run(stdout, json_stdout, action)
-}
-
-pub(super) fn run_draft<T: Summary + Send + serde::Serialize>(
-    stdout: &mut io::StdoutLock<'_>,
-    open: impl FnOnce() -> Result<Draft, String>,
-    action: impl FnOnce(Draft, &OperationControl) -> Result<T, OperationError> + Send,
-) -> io::Result<Result<serde_json::Value, String>> {
-    let progress = Progress::new()?;
-    let draft = match open() {
-        Ok(draft) => draft,
-        Err(error) => return Ok(Err(error)),
-    };
-    Ok(progress
-        .run(stdout, true, move |control| action(draft, control))?
-        .map_err(|error| error.to_string())
-        .and_then(|report| serde_json::to_value(report).map_err(|error| error.to_string())))
 }
 
 pub(super) fn acquire(
@@ -426,8 +406,8 @@ impl Console<'_> {
                 self.line(format_args!("Run failed: {error}"));
             }
             self.line(format_args!(
-                "Attempt manifest: {}",
-                report.attempt_manifest.display()
+                "Run artifact: {}",
+                report.run_artifact.display()
             ));
         }
     }

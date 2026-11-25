@@ -15,7 +15,8 @@ use std::{
 
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 
-pub(super) const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),source_format TEXT NOT NULL CHECK(source_format IN ('grib2','netcdf')),normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
+pub(super) const SCHEMA: &str = "CREATE TABLE asset (asset_id TEXT PRIMARY KEY NOT NULL,source_id TEXT NOT NULL,provider TEXT NOT NULL,model TEXT NOT NULL,product TEXT NOT NULL,cycle_utc TEXT NOT NULL,source_path TEXT NOT NULL,source_sha256 TEXT NOT NULL,source_byte_length INTEGER NOT NULL CHECK(source_byte_length>=0),native_path TEXT UNIQUE NOT NULL,native_sha256 TEXT NOT NULL,native_byte_length INTEGER NOT NULL CHECK(native_byte_length>=0),source_format TEXT NOT NULL CHECK(source_format IN ('grib2','netcdf')),normalization_json TEXT NOT NULL,operation_timezone TEXT NOT NULL,valid_from TEXT NOT NULL,valid_to TEXT NOT NULL,CHECK(valid_from<valid_to));";
+pub(super) const CORRECTION_SCHEMA: &str = "CREATE TABLE correction (correction_id TEXT PRIMARY KEY NOT NULL,asset_id TEXT NOT NULL REFERENCES asset(asset_id),t0_hour INTEGER NOT NULL CHECK(t0_hour>=0),t1_hour INTEGER NOT NULL CHECK(t1_hour>=t0_hour),shift_lat_pixels REAL NOT NULL,shift_lon_pixels REAL NOT NULL,rotation_deg REAL NOT NULL,multiplication_factor REAL NOT NULL CHECK(multiplication_factor>0),editor TEXT,reason TEXT NOT NULL,created_at TEXT NOT NULL);";
 #[derive(Debug, Clone)]
 pub struct ForecastAssetChoice {
     pub asset_id: String,
@@ -292,35 +293,36 @@ impl ForecastCatalog {
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
-    pub(crate) fn covering_asset(
+    pub(crate) fn covering_assets(
         &self,
-        provider: &str,
         cycle_at_or_before: DateTime<chrono::Utc>,
         start: chrono::NaiveDateTime,
         end: chrono::NaiveDateTime,
         zone: &str,
-    ) -> Result<Option<String>, StoreError> {
+    ) -> Result<Vec<ForecastAssetChoice>, StoreError> {
         let mut statement = self.connection.prepare(
-            "SELECT asset_id FROM asset WHERE provider=?1 AND cycle_utc<=?2 AND valid_from<=?3
-             AND valid_to>=?4 AND operation_timezone=?5 ORDER BY cycle_utc DESC,asset_id",
+            "SELECT asset_id,provider,model,product,cycle_utc FROM asset
+             WHERE cycle_utc<=?1 AND valid_from<=?2 AND valid_to>=?3 AND operation_timezone=?4
+             ORDER BY provider,model,product,cycle_utc DESC,asset_id",
         )?;
         let rows = statement.query_map(
             params![
-                provider,
-                cycle_at_or_before.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                cycle_at_or_before.to_rfc3339_opts(SecondsFormat::Secs, true),
                 start.format("%Y-%m-%dT%H:%M:%S").to_string(),
                 end.format("%Y-%m-%dT%H:%M:%S").to_string(),
                 zone
             ],
-            |row| row.get::<_, String>(0),
+            |row| {
+                Ok(ForecastAssetChoice {
+                    asset_id: row.get(0)?,
+                    provider: row.get(1)?,
+                    model: row.get(2)?,
+                    product: row.get(3)?,
+                    cycle_utc: row.get(4)?,
+                })
+            },
         )?;
-        for id in rows {
-            let id = id?;
-            if self.check_asset_available(&id).is_ok() {
-                return Ok(Some(id));
-            }
-        }
-        Ok(None)
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     pub fn correction_choices(&self) -> Result<Vec<(String, String)>, StoreError> {
@@ -353,33 +355,31 @@ impl ForecastCatalog {
         )?;
         connection.pragma_update(None, "foreign_keys", true)?;
         connection.prepare("SELECT source_format, native_path FROM asset LIMIT 0")?;
-        connection.prepare("SELECT correction_id FROM correction LIMIT 0")?;
         Ok(Self {
             workspace,
             root: PathBuf::new(),
             connection,
         })
     }
-    pub fn check_asset_available(&self, asset_id: &str) -> Result<(), StoreError> {
-        let (source, native): (String, String) = self
-            .connection
-            .query_row(
-                "SELECT source_path, native_path FROM asset WHERE asset_id=?1",
-                [asset_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .optional()?
-            .ok_or_else(|| invalid("unknown asset"))?;
-        for path in [source, native] {
-            let path = resolve(&self.workspace, Path::new(&path))?;
-            let metadata = fs::metadata(&path)?;
-            if !metadata.is_file() || metadata.len() == 0 {
-                return Err(invalid(format!(
-                    "unavailable forecast file {}",
-                    path.display()
-                )));
-            }
-            File::open(path)?;
+    pub(crate) fn check_native_available(&self, asset_id: &str) -> Result<(), StoreError> {
+        let (native, checksum, length): (String, String, i64) = self.connection.query_row(
+            "SELECT native_path,native_sha256,native_byte_length FROM asset WHERE asset_id=?1",
+            [asset_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        let path = resolve(&self.workspace, Path::new(&native))?;
+        let length =
+            u64::try_from(length).map_err(|_| invalid("invalid native forecast length"))?;
+        let metadata = fs::metadata(&path)?;
+        if !metadata.is_file()
+            || length == 0
+            || metadata.len() != length
+            || digest(&path)? != (checksum, length)
+        {
+            return Err(StoreError::Integrity(format!(
+                "unavailable or corrupt forecast file {}",
+                path.display()
+            )));
         }
         Ok(())
     }
@@ -417,9 +417,9 @@ impl ForecastCatalog {
         )?;
         if count == 0 {
             tx.execute_batch(SCHEMA)?;
+            tx.execute_batch(CORRECTION_SCHEMA)?;
         } else {
             tx.prepare("SELECT source_format, native_path FROM asset LIMIT 0")?;
-            tx.prepare("SELECT correction_id FROM correction LIMIT 0")?;
         }
         tx.commit()?;
         Ok(Self {
@@ -654,8 +654,8 @@ impl ForecastCatalog {
             };
             (retained_source, native_artifact, created)
         };
-        let source_file = resolve(&self.workspace, &retained_source)?;
         let native_file = resolve(&self.workspace, &native_artifact)?;
+        let source_file = resolve(&self.workspace, &retained_source)?;
         if digest(&source_file)? != (source.sha256.clone(), source.byte_length) {
             return Err(StoreError::Integrity(
                 "retained source hash mismatch".into(),
@@ -733,6 +733,13 @@ impl ForecastCatalog {
         })
     }
     pub fn load_native(&self, asset_id: &str) -> Result<(ForecastAsset, GridSeries), StoreError> {
+        self.read_native(asset_id, true)
+    }
+    fn read_native(
+        &self,
+        asset_id: &str,
+        verify_original: bool,
+    ) -> Result<(ForecastAsset, GridSeries), StoreError> {
         let row=self.connection.query_row("SELECT source_id,source_path,source_sha256,source_byte_length,native_path,native_sha256,native_byte_length,source_format,operation_timezone,valid_from,valid_to FROM asset WHERE asset_id=?",[asset_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?,r.get::<_,String>(2)?,r.get::<_,i64>(3)?,r.get::<_,String>(4)?,r.get::<_,String>(5)?,r.get::<_,i64>(6)?,r.get::<_,String>(7)?,r.get::<_,String>(8)?,r.get::<_,String>(9)?,r.get::<_,String>(10)?))).optional()?.ok_or_else(||invalid("unknown asset"))?;
         let (
             source_id,
@@ -749,12 +756,13 @@ impl ForecastCatalog {
         ) = row;
         let retained_source = PathBuf::from(src);
         let native_artifact = PathBuf::from(native);
-        let source_file = resolve(&self.workspace, &retained_source)?;
         let native_file = resolve(&self.workspace, &native_artifact)?;
         if !matches!(source_format.as_str(), "grib2" | "netcdf")
             || src_len < 0
             || native_len < 0
-            || digest(&source_file)? != (src_sha.clone(), src_len as u64)
+            || (verify_original
+                && digest(&resolve(&self.workspace, &retained_source)?)?
+                    != (src_sha.clone(), src_len as u64))
             || digest(&native_file)? != (native_sha.clone(), native_len as u64)
         {
             return Err(StoreError::Integrity(
@@ -821,6 +829,15 @@ impl ForecastCatalog {
             series,
         ))
     }
+    pub(crate) fn load_for_run(
+        &self,
+        asset_id: &str,
+    ) -> Result<(ForecastAsset, GridSeries), StoreError> {
+        let (asset, mut native) = self.read_native(asset_id, false)?;
+        self.selected_provenance(&asset, &mut native, false)?;
+        Ok((asset, native))
+    }
+
     pub fn save_correction(&self, c: &ForecastCorrection) -> Result<(), StoreError> {
         check_correction(c)?;
         self.connection.execute(
@@ -845,29 +862,11 @@ impl ForecastCatalog {
         &self,
         corrections: &[ForecastCorrection],
     ) -> Result<(), StoreError> {
-        self.write_corrections(corrections, None)
+        self.write_corrections(corrections)
     }
 
-    pub(crate) fn replace_corrections(
-        &self,
-        asset: &str,
-        corrections: &[ForecastCorrection],
-    ) -> Result<(), StoreError> {
-        self.write_corrections(corrections, Some(asset))
-    }
-
-    fn write_corrections(
-        &self,
-        corrections: &[ForecastCorrection],
-        replace_asset: Option<&str>,
-    ) -> Result<(), StoreError> {
+    fn write_corrections(&self, corrections: &[ForecastCorrection]) -> Result<(), StoreError> {
         let tx = self.connection.unchecked_transaction()?;
-        if let Some(asset) = replace_asset {
-            if corrections.iter().any(|row| row.asset_id != asset) {
-                return Err(invalid("correction asset differs from the selected cycle"));
-            }
-            tx.execute("DELETE FROM correction WHERE asset_id=?1", [asset])?;
-        }
         for c in corrections {
             check_correction(c)?;
             let existing: Option<bool> = tx.query_row(
@@ -976,6 +975,7 @@ impl ForecastCatalog {
         let tx = self.connection.unchecked_transaction()?;
         let mut destination_db = Connection::open(destination)?;
         destination_db.execute_batch(SCHEMA)?;
+        destination_db.execute_batch(CORRECTION_SCHEMA)?;
         let destination_tx = destination_db.transaction()?;
         let mut selected = Vec::new();
         let mut asset_ids = HashSet::new();

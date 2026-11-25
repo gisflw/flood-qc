@@ -1,12 +1,12 @@
 use super::{
-    Draft, ExecutionReport, OperationControl, OperationError, OperationProgress, absolute,
-    operation::{execute_locked, lock_workspace, run_draft_locked},
+    ExecutionReport, OperationControl, OperationError, OperationProgress, OperationalRun, absolute,
+    operation::{execute_locked, lock_workspace},
 };
 use crate::store::{automation_documents, write_automation_document};
 
 mod email;
 use self::email::{MailDelivery, deliver, valid_mailbox};
-use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Timelike, Utc};
+use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -43,10 +43,7 @@ pub struct AutomationJob {
 #[serde(deny_unknown_fields)]
 pub struct AutomationStep {
     pub kind: AutomationStepKind,
-    pub draft: Option<PathBuf>,
     pub prepared: Option<PathBuf>,
-    #[serde(default)]
-    pub rolling: bool,
     pub report: Option<AutomationReportConfiguration>,
     #[serde(default)]
     pub export: bool,
@@ -191,13 +188,9 @@ impl AutomationConfig {
             for (index, step) in job.steps.iter().enumerate() {
                 let post = step.report.is_some() || step.export || step.email;
                 let valid = match step.kind {
-                    AutomationStepKind::Prepare => {
-                        step.draft.is_some() && step.prepared.is_none() && !post
-                    }
-                    AutomationStepKind::RunAll => step.draft.is_some() && step.prepared.is_none(),
-                    AutomationStepKind::Execute => {
-                        step.draft.is_none() && step.prepared.is_some() && !step.rolling
-                    }
+                    AutomationStepKind::Prepare => step.prepared.is_none() && !post,
+                    AutomationStepKind::RunAll => step.prepared.is_none(),
+                    AutomationStepKind::Execute => step.prepared.is_some(),
                 };
                 if !valid || (step.email && self.smtp.is_none()) {
                     return Err(format!("invalid job {} step {}", job.id, index + 1));
@@ -253,9 +246,6 @@ fn decode_automation_config(
     config.validate()?;
     for job in &mut config.jobs {
         for step in &mut job.steps {
-            if let Some(path) = &mut step.draft {
-                *path = resolve_source(workspace, path, false)?;
-            }
             if let Some(path) = &mut step.prepared {
                 *path = resolve_source(workspace, path, true)?;
                 resolve_source(path, Path::new("manifest.json"), false)?;
@@ -349,6 +339,10 @@ pub struct AutomationStageStatus {
     pub stage: AutomationStage,
     pub state: AutomationState,
     pub artifacts: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub acquisition_findings: Vec<String>,
     pub error: Option<String>,
 }
 
@@ -382,7 +376,7 @@ type PostAction<'a> =
     dyn FnMut(AutomationPostAction, &Path, &Path) -> Result<Vec<PathBuf>, String> + 'a;
 
 fn automation_root(workspace: &Path) -> PathBuf {
-    workspace.join("data/automation")
+    workspace.join("runs/automation")
 }
 
 fn lease(workspace: &Path) -> Result<File, String> {
@@ -439,6 +433,7 @@ fn recover(workspace: &Path, now: DateTime<Utc>) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn scheduled(job: &AutomationJob, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     let date = now.with_timezone(&job.time_zone).date_naive();
     scheduled_on(job, date)
@@ -462,65 +457,45 @@ fn slot_path(workspace: &Path, job: &AutomationJob, slot: &str) -> PathBuf {
         .join(format!("{}.{slot}.json", job.id))
 }
 
-fn draft_for_slot(
-    workspace: &Path,
-    job: &AutomationJob,
-    step: &AutomationStep,
-    local: Option<NaiveDateTime>,
-) -> Result<Draft, String> {
-    let path = step.draft.as_deref().ok_or("draft step requires a draft")?;
-    let draft = Draft::open(workspace.to_path_buf(), workspace, path)?;
-    if step.rolling {
-        let local = local.ok_or("rolling draft needs a valid scheduled local time")?;
-        let operation = &draft.document.operation;
-        let zone = operation
-            .time_zone
-            .as_deref()
-            .and_then(|time_zone| time_zone.parse::<Tz>().ok());
-        if zone != Some(job.time_zone)
-            || operation.observed_horizon_days.is_none()
-            || operation.forecast_horizon_days.is_none()
-        {
-            return Err("rolling draft needs matching timezone and day-based horizons".into());
-        }
-        let reference = local.format("%Y-%m-%dT%H:%M:%S").to_string();
-        let mut slot = draft.for_rolling_slot(
-            &reference,
-            operation
-                .time_zone
-                .as_deref()
-                .ok_or("missing draft timezone")?,
-        )?;
-        slot.refresh_inputs()?;
-        return Ok(slot);
-    }
-    Ok(draft)
+enum StepOutput {
+    Preparation(PathBuf),
+    Run(ExecutionReport),
 }
 
 fn execute_step(
     workspace: &Path,
-    job: &AutomationJob,
     step: &AutomationStep,
-    local: Option<NaiveDateTime>,
+    reference: DateTime<Utc>,
     step_dir: &Path,
     control: &OperationControl,
     lock: &File,
-) -> Result<(PathBuf, PathBuf), OperationError> {
-    let draft = || {
-        draft_for_slot(workspace, job, step, local).map_err(|message| {
-            OperationError::InvalidRequest {
-                field: "draft".into(),
+    acquisition: &mut Option<super::AcquisitionReport>,
+) -> Result<StepOutput, OperationError> {
+    let run = || {
+        let mut operation = OperationalRun::open_workspace(workspace.to_path_buf(), reference)
+            .map_err(|message| OperationError::InvalidRequest {
+                field: "workspace".into(),
                 message,
-            }
-        })
+            })?;
+        let zone: Tz = operation
+            .time_zone()
+            .parse()
+            .expect("validated workspace timezone");
+        operation.set_reference(
+            reference
+                .with_timezone(&zone)
+                .format("%Y-%m-%dT%H:00:00")
+                .to_string(),
+        );
+        Ok::<_, OperationError>(operation)
     };
     match step.kind {
-        AutomationStepKind::Prepare => draft()?
-            .prepare_controlled(workspace.into(), step_dir.join("prepared"), control)
-            .map(|report| (report.prepared.clone(), report.prepared)),
-        AutomationStepKind::RunAll => {
-            run_draft_locked(&draft()?, control, workspace, lock).map(execution_root)
-        }
+        AutomationStepKind::Prepare => run()?
+            .prepare_locked(workspace.into(), step_dir.join("prepared"), control)
+            .map(|report| StepOutput::Preparation(report.prepared)),
+        AutomationStepKind::RunAll => run()?
+            .run_locked(control, lock, acquisition)
+            .map(StepOutput::Run),
         AutomationStepKind::Execute => execute_locked(
             workspace,
             step.prepared
@@ -533,12 +508,8 @@ fn execute_step(
             lock,
             false,
         )
-        .map(execution_root),
+        .map(StepOutput::Run),
     }
-}
-
-fn execution_root(report: ExecutionReport) -> (PathBuf, PathBuf) {
-    (report.run_root, report.attempt_manifest)
 }
 
 fn begin_stage(
@@ -552,6 +523,8 @@ fn begin_stage(
         stage,
         state: AutomationState::Running,
         artifacts: Vec::new(),
+        run_id: None,
+        acquisition_findings: Vec::new(),
         error: None,
     });
     write_automation_document(path, status)
@@ -741,15 +714,8 @@ impl Runner<'_> {
         let lock = lock_workspace(self.workspace);
         match lock {
             Ok(lock) => {
-                let local = reference.and_then(|time| {
-                    let local = time
-                        .with_timezone(&job.time_zone)
-                        .naive_local()
-                        .with_minute(0)?;
-                    job.time_zone.from_local_datetime(&local).single()?;
-                    Some(local)
-                });
-                self.run(job, &path, &lock, &mut status, local)?;
+                let reference = reference.unwrap_or_else(|| (self.clock)());
+                self.run(job, &path, &lock, &mut status, reference)?;
             }
             Err(OperationError::Busy { .. }) => {
                 status.state = AutomationState::Busy;
@@ -778,7 +744,7 @@ impl Runner<'_> {
         path: &Path,
         lock: &File,
         status: &mut AutomationJobStatus,
-        local: Option<NaiveDateTime>,
+        reference: DateTime<Utc>,
     ) -> Result<(), String> {
         for (index, step) in job.steps.iter().enumerate() {
             if self.control.is_stopped() {
@@ -806,18 +772,45 @@ impl Runner<'_> {
                 );
             }
             let control = self.control.begin();
-            let result = execute_step(self.workspace, job, step, local, &step_dir, &control, lock);
+            let mut acquisition = None;
+            let result = execute_step(
+                self.workspace,
+                step,
+                reference,
+                &step_dir,
+                &control,
+                lock,
+                &mut acquisition,
+            );
             self.control.end();
+            if let Some(acquisition) = acquisition
+                && let Some(stage) = status.stages.last_mut()
+            {
+                stage
+                    .acquisition_findings
+                    .extend(acquisition.forecasts.into_iter().filter_map(|forecast| {
+                        forecast
+                            .error
+                            .map(|error| format!("{:?}: {error}", forecast.provider))
+                    }));
+            }
             let artifact = match result {
-                Ok((artifact, durable_artifact)) => {
+                Ok(StepOutput::Preparation(prepared)) => {
                     finish_stage(
                         status,
                         path,
                         AutomationState::Completed,
-                        vec![durable_artifact],
+                        vec![prepared.clone()],
                         None,
                     )?;
-                    artifact
+                    prepared
+                }
+                Ok(StepOutput::Run(report)) => {
+                    if let Some(stage) = status.stages.last_mut() {
+                        stage.run_id = Some(report.run_id);
+                    }
+                    finish_stage(status, path, AutomationState::Completed, vec![], None)?;
+                    report.run_root
                 }
                 Err(OperationError::BatchFailed { report }) => {
                     let state = if self.control.is_stopped() {
@@ -829,7 +822,10 @@ impl Runner<'_> {
                         .error
                         .clone()
                         .or_else(|| Some("one or more scenarios failed".into()));
-                    return finish_stage(status, path, state, vec![report.attempt_manifest], error);
+                    if let Some(stage) = status.stages.last_mut() {
+                        stage.run_id = Some(report.run_id);
+                    }
+                    return finish_stage(status, path, state, vec![report.run_artifact], error);
                 }
                 Err(error) => {
                     let state = if matches!(error, OperationError::Cancelled { .. })
@@ -1017,10 +1013,6 @@ pub fn run_automation_now(
         .find(|job| job.id == job_id)
         .ok_or("unknown automation job")?;
     let now = Utc::now();
-    let at = scheduled(job, now).filter(|when| *when <= now);
-    if job.steps.iter().any(|step| step.rolling) && at.is_none() {
-        return Err("rolling job needs today's scheduled local time to occur first".into());
-    }
     let _lease = lease(&workspace)?;
     recover(&workspace, now)?;
     let slot = format!(
@@ -1036,7 +1028,7 @@ pub fn run_automation_now(
         clock: &Utc::now,
         previous_tick: None,
     }
-    .claim(job, slot, None, at)
+    .claim(job, slot, None, Some(now))
 }
 
 #[cfg(test)]
@@ -1044,7 +1036,6 @@ mod tests {
     use super::*;
 
     fn load(workspace: &Path) -> AutomationConfig {
-        fs::write(workspace.join("draft.json"), "{}").unwrap();
         fs::write(
             workspace.join("automation.toml"),
             r#"
@@ -1056,7 +1047,6 @@ hour = 7
 
 [[jobs.steps]]
 kind = "prepare"
-draft = "draft.json"
 "#,
         )
         .unwrap();
@@ -1068,10 +1058,6 @@ draft = "draft.json"
         let workspace = tempfile::tempdir().unwrap();
         let root = workspace.path();
         let config = load(root);
-        assert_eq!(
-            config.jobs[0].steps[0].draft.as_deref(),
-            Some(root.join("draft.json").as_path())
-        );
         let now: DateTime<Utc> = "2026-07-20T10:00:20Z".parse().unwrap();
         let control = AutomationControl::default();
         let lock = lease(root).unwrap();
@@ -1118,6 +1104,8 @@ draft = "draft.json"
                 stage: AutomationStage::Prepare,
                 state: AutomationState::Running,
                 artifacts: Vec::new(),
+                run_id: None,
+                acquisition_findings: Vec::new(),
                 error: None,
             }],
             error: None,

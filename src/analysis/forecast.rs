@@ -308,7 +308,7 @@ pub fn corrected_forecast_frames(
             valid: native.valid[i * cells..(i + 1) * cells].to_vec(),
             provenance: native.provenance.clone(),
         };
-        let mut applied = Vec::new();
+        let mut applied = 0;
         for (j, c) in corrections.iter().enumerate() {
             let start = cycle
                 .unwrap()
@@ -327,14 +327,11 @@ pub fn corrected_forecast_frames(
             if b.start >= start && b.end <= end {
                 frame = corrected_frame(frame, c)?;
                 coverage[j].native_interval_indices.push(i);
-                applied.push(c.clone());
+                applied += 1;
             }
         }
         if let Some(map) = frame.provenance.processing.as_object_mut() {
-            map.insert(
-                "corrections".into(),
-                serde_json::to_value(applied).map_err(|e| invalid(&e.to_string()))?,
-            );
+            map.insert("correction_count".into(), applied.into());
         }
         transformed.push(frame);
     }
@@ -451,10 +448,7 @@ pub fn prepare_forecast(
     let mut provenance = native.provenance.clone();
     let mut recipe = serde_json::Map::new();
     recipe.insert("parent".into(), provenance.processing.clone());
-    recipe.insert(
-        "corrections".into(),
-        serde_json::to_value(corrections).map_err(|e| invalid(&e.to_string()))?,
-    );
+    recipe.insert("correction_count".into(), corrections.len().into());
     recipe.insert(
         "target_axis".into(),
         serde_json::to_value(&request.timeline).map_err(|e| invalid(&e.to_string()))?,

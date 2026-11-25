@@ -2,8 +2,8 @@
 
 MGB Ops inspects regional workspaces, prepares forcing from saved observations
 and forecasts, and runs the external MGB numerical engine in isolation. The CLI
-and optional native desktop interface use the shared Rust library for operation
-drafts, previews, and analysis of the active run and explicitly saved runs.
+and optional native desktop interface use the shared Rust library for workspace
+runs, previews, and analysis of the active run and explicitly saved runs.
 
 ## Development
 
@@ -37,12 +37,11 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
 | Acquire standalone IMERG, BNDMET rain and wind, or ONS hourly flow files | `acquisition` | [Standalone acquisition](docs/contracts/acquisition.md#standalone-source-acquisition) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
-| Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#choose-an-execution-path) |
+| Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#run-from-a-workspace) |
 | Run an operation and update the rainfall display | Desktop **Processing → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
-| Edit, preview, or run an experiment | `draft` commands or **Draft → Run experiment** | [Draft workflow](docs/contracts/drafts.md#editing-source-acceptance-and-previews) |
 | Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **View → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
 | Generate and view an inundation mask | `inundation process`, then desktop **Map → Inundation** | [Inundation inputs and processing](docs/contracts/inundation.md) |
-| Inspect a workspace or review a draft edit with an installed agent | `assistant` or desktop **View → Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
+| Inspect a workspace or review a run parameter change with an installed agent | `assistant` or desktop **View → Pages → Assistant** | [Assistant setup and usage](docs/contracts/assistant.md) |
 | Review observations, export a bulletin, share runs, or schedule a job | CLI or desktop workflows | [Saved-data workflows](docs/contracts/saved-data.md) |
 
 ### Inspect a workspace
@@ -80,21 +79,20 @@ cargo run -- operation execute --workspace "$workspace" --prepared prepared --js
 ```
 
 Success replaces the workspace active run, including rainfall and scenario
-results. Past attempts keep a replay manifest. Export a bundle before replacement
+results. Past attempts keep a run manifest. Export a bundle before replacement
 to keep full results.
 [Controlled cancellation](docs/contracts/operations.md#controlled-actions-and-cancellation)
 covers SIGINT and the commit boundary.
 
-### Run an experiment
-
-Use a [draft](docs/contracts/drafts.md) to save incomplete settings and ordered
-edits. Once the operation is complete and saved as `draft.json`, explicitly
-accept the selected inputs and run the experiment.
+Use Run All to acquire configured inputs and run with the automatic scenarios.
 
 ```sh
-cargo run -- draft refresh --workspace "$workspace" --draft draft.json --json
-cargo run -- draft run --workspace "$workspace" --draft draft.json --json
+cargo run -- operation run-all --workspace "$workspace"
 ```
+
+Automatic scenarios include zero future rain and the latest usable raw cycle for
+each forecast product. See [scenario selection](docs/contracts/operations.md#scenarios)
+for one-run changes and forecast corrections.
 
 ## Desktop interface
 

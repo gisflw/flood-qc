@@ -1,4 +1,6 @@
-use super::{Draft, DraftDocument, InspectionReport, InspectionRequest, absolute, inspect};
+use super::{
+    InspectionReport, InspectionRequest, OperationalRun, RunParameters, absolute, inspect,
+};
 use crate::store::{
     OperationManifest, is_managed_run_path, read_result_series, read_retained_manifest,
 };
@@ -27,7 +29,8 @@ pub struct Session {
 struct State {
     selection: RunSelection,
     run_revision: u64,
-    draft: Option<DraftSnapshot>,
+    setup: Option<OperationalRun>,
+    setup_revision: u64,
     job: bool,
 }
 
@@ -40,39 +43,23 @@ pub enum RunSelection {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct DraftVersion {
+pub struct RunSetupRevision {
     session: u64,
-    draft: u64,
     revision: u64,
 }
 
 #[derive(Clone, Debug)]
-pub struct DraftSnapshot {
-    pub version: DraftVersion,
-    pub draft: Draft,
+pub struct RunSetupSnapshot {
+    pub revision: RunSetupRevision,
+    pub operation: OperationalRun,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DraftConflict {
-    Stale,
-    Busy,
-}
+pub struct WorkspaceJob(Session);
 
-impl std::fmt::Display for DraftConflict {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Stale => {
-                "The working draft changed. Request a new proposal from the current draft."
-            }
-            Self::Busy => "A draft job is running. Retry after it finishes.",
-        })
+impl Drop for WorkspaceJob {
+    fn drop(&mut self) {
+        self.0.state().job = false;
     }
-}
-impl std::error::Error for DraftConflict {}
-
-pub struct DraftJob {
-    session: Session,
-    pub snapshot: Option<DraftSnapshot>,
 }
 
 impl Session {
@@ -88,7 +75,8 @@ impl Session {
             state: Arc::new(Mutex::new(State {
                 selection: RunSelection::Active,
                 run_revision: 0,
-                draft: None,
+                setup: None,
+                setup_revision: 0,
                 job: false,
             })),
         }
@@ -114,149 +102,50 @@ impl Session {
         inspect((*self.settings).clone())
     }
 
-    pub fn open_draft(&self, path: &Path) -> Result<Draft, String> {
-        Draft::open(self.workspace().into(), &self.settings.invocation_dir, path)
-    }
-
-    pub fn draft(&self) -> Option<DraftSnapshot> {
-        self.state().draft.clone()
-    }
-
-    pub fn draft_time_zone(&self) -> Option<String> {
-        self.state()
-            .draft
-            .as_ref()?
-            .draft
-            .document
-            .operation
-            .time_zone
-            .clone()
-    }
-
-    pub fn draft_version(&self) -> Option<DraftVersion> {
-        self.state()
-            .draft
-            .as_ref()
-            .map(|snapshot| snapshot.version.clone())
-    }
-
-    pub fn replace_draft(&self, draft: Draft) -> Result<(), DraftConflict> {
-        let mut state = self.state();
-        if state.job {
-            return Err(DraftConflict::Busy);
-        }
-        state.draft = Some(self.new_draft(draft)?);
-        Ok(())
-    }
-
-    fn new_draft(&self, draft: Draft) -> Result<DraftSnapshot, DraftConflict> {
-        if draft.workspace != self.workspace() {
-            return Err(DraftConflict::Stale);
-        }
-        Ok(DraftSnapshot {
-            version: DraftVersion {
+    pub fn run_setup(&self) -> Option<RunSetupSnapshot> {
+        let state = self.state();
+        Some(RunSetupSnapshot {
+            revision: RunSetupRevision {
                 session: self.id,
-                draft: next_id(),
-                revision: 0,
+                revision: state.setup_revision,
             },
-            draft,
+            operation: state.setup.clone()?,
         })
     }
 
-    pub fn update_draft(&self, snapshot: DraftSnapshot) -> Result<(), DraftConflict> {
+    pub fn open_run_setup(&self, operation: OperationalRun) {
         let mut state = self.state();
-        state
-            .draft
-            .as_ref()
-            .filter(|draft| draft.version == snapshot.version)
-            .ok_or(DraftConflict::Stale)?;
-        if state.job {
-            return Err(DraftConflict::Busy);
-        }
-        let current = state.draft.as_mut().unwrap();
-        if snapshot.draft.workspace != self.workspace() {
-            return Err(DraftConflict::Stale);
-        }
-        if !current.draft.same_working_state(&snapshot.draft) {
-            current.advance();
-        }
-        current.draft = snapshot.draft;
-        Ok(())
+        state.setup = Some(operation);
+        state.setup_revision += 1;
     }
 
-    pub fn edit_draft<T>(&self, edit: impl FnOnce(&mut Draft) -> T) -> Result<T, DraftConflict> {
-        let mut state = self.state();
-        if state.job {
-            return Err(DraftConflict::Busy);
-        }
-        let current = state.draft.as_mut().ok_or(DraftConflict::Stale)?;
-        let mut candidate = current.draft.clone();
-        let result = edit(&mut candidate);
-        if candidate.workspace != self.workspace() {
-            return Err(DraftConflict::Stale);
-        }
-        if !current.draft.same_working_state(&candidate) {
-            current.advance();
-        }
-        current.draft = candidate;
-        Ok(result)
-    }
-
-    pub fn apply_draft(
+    pub fn update_run_setup(
         &self,
-        version: &DraftVersion,
-        mut document: DraftDocument,
-    ) -> Result<(), DraftConflict> {
+        revision: &RunSetupRevision,
+        parameters: RunParameters,
+    ) -> Result<(), String> {
         let mut state = self.state();
-        let current = state
-            .draft
-            .as_ref()
-            .filter(|draft| draft.version == *version)
-            .ok_or(DraftConflict::Stale)?;
         if state.job {
-            return Err(DraftConflict::Busy);
+            return Err("An operation is running".into());
         }
-        document
-            .visualization
-            .clone_from(&current.draft.document.visualization);
-        for (index, (previous, proposed)) in current
-            .draft
-            .document
-            .operation
-            .scenarios
-            .iter()
-            .zip(&document.operation.scenarios)
-            .enumerate()
-        {
-            if previous.asset_id != proposed.asset_id {
-                document
-                    .sources
-                    .accepted
-                    .remove(&format!("forecast:{index}"));
-            }
+        if revision.session != self.id || revision.revision != state.setup_revision {
+            return Err("The run form changed. Review the current selections.".into());
         }
-        let candidate = current
-            .draft
-            .validate_working_document(document)
-            .map_err(|_| DraftConflict::Stale)?;
-        let current = state.draft.as_mut().unwrap();
-        if !current.draft.same_working_state(&candidate) {
-            current.draft = candidate;
-            current.advance();
+        let operation = state.setup.as_mut().ok_or("Open the run form first")?;
+        if operation.parameters() != &parameters {
+            operation.set_parameters(parameters);
+            state.setup_revision += 1;
         }
         Ok(())
     }
 
-    pub fn start_draft_job(&self) -> Result<DraftJob, DraftConflict> {
+    pub fn start_workspace_job(&self) -> Result<WorkspaceJob, String> {
         let mut state = self.state();
         if state.job {
-            return Err(DraftConflict::Busy);
+            return Err("A job is already active in this workspace".into());
         }
         state.job = true;
-        Ok(DraftJob {
-            session: self.clone(),
-            snapshot: state.draft.clone(),
-        })
+        Ok(WorkspaceJob(self.clone()))
     }
 
     pub fn run_selection(&self) -> RunSelection {
@@ -303,41 +192,6 @@ impl Session {
     }
 }
 
-impl DraftSnapshot {
-    fn advance(&mut self) {
-        self.version.revision += 1;
-    }
-}
-
-impl DraftJob {
-    pub fn commit(&self, draft: Draft, newly_opened: bool) -> Result<(), DraftConflict> {
-        let mut state = self.session.state();
-        if state.draft.as_ref().map(|draft| &draft.version)
-            != self.snapshot.as_ref().map(|draft| &draft.version)
-        {
-            return Err(DraftConflict::Stale);
-        }
-        if newly_opened {
-            state.draft = Some(self.session.new_draft(draft)?);
-        } else {
-            let current = state.draft.as_mut().ok_or(DraftConflict::Stale)?;
-            if draft.workspace != self.session.workspace() {
-                return Err(DraftConflict::Stale);
-            }
-            if !current.draft.same_working_state(&draft) {
-                current.advance();
-            }
-            current.draft = draft;
-        }
-        Ok(())
-    }
-}
-impl Drop for DraftJob {
-    fn drop(&mut self) {
-        self.session.state().job = false;
-    }
-}
-
 #[derive(Clone)]
 pub struct RunSnapshot {
     session: Session,
@@ -362,8 +216,7 @@ impl RunSnapshot {
             if expected_root.is_some_and(|expected| root != expected) {
                 return Err("Active run changed while loading".into());
             }
-            let identity =
-                super::draft::identity(&(self.session.id, self.revision, root.to_string_lossy()))?;
+            let identity = format!("{}:{}:{}", self.session.id, self.revision, root.display());
             read(root, &identity)
         };
         match &self.selection {

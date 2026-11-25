@@ -7,8 +7,8 @@ use chrono::{DateTime, Days, NaiveDate, TimeZone};
 use chrono_tz::{America::Sao_Paulo, Tz};
 
 use crate::adapters::{
-    AnaReading, AnaStation, ProviderClient, aggregate_ana, ana_csv, ana_station_code,
-    parse_ana_xml, read_ana_csv, read_ana_inventory,
+    AnaAggregation, AnaReading, AnaStation, ProviderClient, aggregate_ana, ana_csv,
+    ana_station_code, parse_ana_xml, read_ana_csv,
 };
 use crate::store::{ObservationStore, create_workspace_dir, write_new_atomic};
 
@@ -16,94 +16,30 @@ use super::{
     AnaAcquisitionReport, AnaDocument, AnaStationOutcome, DownloadEvent, OperationControl,
 };
 
-fn prepare(
-    workspace: &Path,
-    config: &AnaDocument,
-    zone: Tz,
-) -> Result<(ObservationStore, Vec<AnaStation>), String> {
-    let database = workspace.join(&config.database);
-    let mut store = match database.try_exists() {
-        Ok(true) => ObservationStore::open_writable(&database),
-        Ok(false) => {
-            fs::create_dir_all(
-                database
-                    .parent()
-                    .ok_or("observation database requires a parent")?,
-            )
-            .map_err(|e| e.to_string())?;
-            ObservationStore::create(&database, zone.name())
-        }
-        Err(error) => return Err(format!("{}: {error}", database.display())),
-    }
-    .map_err(|e| e.to_string())?;
+fn prepare(workspace: &Path, zone: Tz) -> Result<(ObservationStore, Vec<AnaStation>), String> {
+    let database = super::super::operation_database(workspace);
+    let store = ObservationStore::open_writable(&database).map_err(|error| error.to_string())?;
     let db_zone = store.time_zone().map_err(|e| e.to_string())?;
     if db_zone != zone.name() {
         return Err("ANA observation database timezone differs from acquisition settings".into());
     }
-    let Some(inventory) = &config.inventory else {
-        let mut stations = Vec::new();
-        for location in store.station_locations().map_err(|e| e.to_string())? {
-            let station = location.station;
-            if station.provider_code == "ana" {
-                let variables = store
-                    .observed_variables(&station.station_id)
-                    .map_err(|e| e.to_string())?
-                    .iter()
-                    .map(|value| crate::adapters::AnaVariable::parse(value))
-                    .collect::<Result<BTreeSet<_>, _>>()?;
-                if !variables.is_empty() {
-                    stations.push(AnaStation { station, variables });
-                }
+    let mut stations = Vec::new();
+    for location in store.station_locations().map_err(|e| e.to_string())? {
+        let station = location.station;
+        if station.provider_code == "ana" {
+            let variables = store
+                .observed_variables(&station.station_id)
+                .map_err(|e| e.to_string())?
+                .iter()
+                .map(|value| crate::adapters::AnaVariable::parse(value))
+                .collect::<Result<BTreeSet<_>, _>>()?;
+            if !variables.is_empty() {
+                stations.push(AnaStation { station, variables });
             }
         }
-        if stations.is_empty() {
-            return Err("Import the ANA station inventory before acquisition".into());
-        }
-        return Ok((store, stations));
-    };
-    let inventory = workspace.join(inventory);
-    let mut stations = read_ana_inventory(
-        File::open(&inventory).map_err(|e| format!("{}: {e}", inventory.display()))?,
-    )?;
-    let mut selected = BTreeSet::new();
-    for code in &config.station_codes {
-        let code = ana_station_code(code)?;
-        if !selected.insert(code) || !stations.iter().any(|s| s.station.station_code == code) {
-            return Err(format!("unknown or duplicate requested ANA station {code}"));
-        }
     }
-    let mut existing = BTreeMap::<String, Vec<_>>::new();
-    for entry in store.station_locations().map_err(|e| e.to_string())? {
-        let station = entry.station;
-        if station.provider_code == "ana" {
-            let code = ana_station_code(&station.station_code)?.to_owned();
-            existing.entry(code).or_default().push(station);
-        }
-    }
-    for ana in &mut stations {
-        if let Some(matching) = existing.get(&ana.station.station_code) {
-            let [previous] = matching.as_slice() else {
-                return Err(format!(
-                    "ambiguous ANA station identity {}",
-                    ana.station.station_code
-                ));
-            };
-            ana.station.station_id = previous.station_id.clone();
-            ana.station.station_code = previous.station_code.clone();
-        }
-    }
-    store
-        .seed_ana_stations(
-            &stations
-                .iter()
-                .map(|entry| entry.station.clone())
-                .collect::<Vec<_>>(),
-        )
-        .map_err(|e| e.to_string())?;
-    if !selected.is_empty() {
-        stations.retain(|s| {
-            ana_station_code(&s.station.station_code).is_ok_and(|code| selected.contains(code))
-        });
+    if stations.is_empty() {
+        return Err("Import the ANA station inventory before acquisition".into());
     }
     Ok((store, stations))
 }
@@ -179,12 +115,16 @@ fn windows(dates: Vec<NaiveDate>, limit: u32) -> Vec<(NaiveDate, NaiveDate)> {
 
 fn import_readings(
     store: &mut ObservationStore,
-    config: &AnaDocument,
     reference: DateTime<Tz>,
     station: &AnaStation,
     readings: Vec<AnaReading>,
 ) -> Result<usize, String> {
-    let hourly = aggregate_ana(readings, station, reference.timezone(), config.aggregation)?;
+    let hourly = aggregate_ana(
+        readings,
+        station,
+        reference.timezone(),
+        AnaAggregation::default(),
+    )?;
     let values: Vec<_> = hourly
         .into_iter()
         .map(|(key, values)| (key.code(), values))
@@ -278,8 +218,7 @@ impl Fetch<'_> {
         let replay_rows = read_ana_csv(csv.as_slice())?
             .remove(code)
             .unwrap_or_default();
-        outcome.changed_samples =
-            import_readings(store, self.config, self.reference, station, replay_rows)?;
+        outcome.changed_samples = import_readings(store, self.reference, station, replay_rows)?;
         Ok(())
     }
 }
@@ -295,7 +234,7 @@ pub(super) fn acquire(
     let result = (|| -> Result<(), String> {
         control.check().map_err(|e| e.to_string())?;
         let dates = date_range(reference, config.request_days)?;
-        let (mut store, stations) = prepare(workspace, config, reference.timezone())?;
+        let (mut store, stations) = prepare(workspace, reference.timezone())?;
         let root = Path::new("downloads/ana");
         create_workspace_dir(workspace, root).map_err(|e| e.to_string())?;
         let directory = tempfile::Builder::new()
@@ -347,7 +286,6 @@ pub(super) fn acquire(
 
 pub(super) fn replay(
     workspace: &Path,
-    config: &AnaDocument,
     reference: DateTime<Tz>,
     paths: &[PathBuf],
     control: &OperationControl,
@@ -377,7 +315,7 @@ pub(super) fn replay(
     if control.is_cancelled() {
         return Ok(report);
     }
-    let (mut store, stations) = prepare(workspace, config, reference.timezone())?;
+    let (mut store, stations) = prepare(workspace, reference.timezone())?;
     let total = groups.len();
     for (index, (code, rows)) in groups.into_iter().enumerate() {
         if control.is_cancelled() {
@@ -394,7 +332,7 @@ pub(super) fn replay(
         };
         match station
             .ok_or_else(|| "ANA station is outside the selected inventory".into())
-            .and_then(|station| import_readings(&mut store, config, reference, station, rows))
+            .and_then(|station| import_readings(&mut store, reference, station, rows))
         {
             Ok(changed) => outcome.changed_samples = changed,
             Err(error) => outcome.error = Some(error),
@@ -415,11 +353,13 @@ mod tests {
         let workspace = tempfile::tempdir_in("runs").unwrap();
         let inventory = workspace.path().join("inventory.csv");
         fs::write(&inventory, "provider_code,station_code,station_name,latitude,longitude,observed_variables\nana,123,Station,0,0,\"rain,level\"\n").unwrap();
-        let config = AnaDocument {
-            inventory: Some(inventory),
-            ..Default::default()
-        };
-        let (mut store, stations) = prepare(workspace.path(), &config, Sao_Paulo).unwrap();
+        fs::write(
+            workspace.path().join("config.toml"),
+            "[run]\ntime_zone='America/Sao_Paulo'\n",
+        )
+        .unwrap();
+        super::super::import_workspace_inventory(workspace.path(), &inventory).unwrap();
+        let (mut store, stations) = prepare(workspace.path(), Sao_Paulo).unwrap();
         let station = &stations[0];
         let dates: Vec<_> = NaiveDate::from_ymd_opt(2026, 7, 20)
             .unwrap()

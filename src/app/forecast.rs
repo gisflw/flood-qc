@@ -39,6 +39,40 @@ pub fn import_canonical_forecast(
     })
 }
 
+/// Register canonical NetCDF in the selected operational workspace.
+pub fn import_workspace_forecast(
+    workspace: &std::path::Path,
+    source: PathBuf,
+    metadata: crate::store::CanonicalForecastMetadata,
+) -> Result<NormalizeForecastReport, String> {
+    let workspace = workspace
+        .canonicalize()
+        .map_err(|error| error.to_string())?;
+    let settings = super::read_workspace_config(&super::workspace_config_path(&workspace))?;
+    let time_zone = settings
+        .run
+        .and_then(|run| run.time_zone)
+        .ok_or("Set run.time_zone")?;
+    let grid = crate::store::read_grid_series(&super::absolute(&workspace, &source))
+        .map_err(|error| error.to_string())?;
+    if grid.timeline.time_zone != time_zone.name() {
+        return Err("Canonical forecast timezone differs from run.time_zone".into());
+    }
+    let _lock =
+        super::operation::lock_workspace_job(&workspace).map_err(|error| error.to_string())?;
+    super::workspace::initialize_database(&workspace, time_zone)?;
+    import_canonical_forecast(
+        &workspace,
+        CanonicalForecastDocument {
+            catalog: super::operation_database(&workspace),
+            artifact_root: "assets".into(),
+            source,
+            metadata,
+        },
+    )
+    .map_err(|error| error.to_string())
+}
+
 #[derive(Debug)]
 pub enum NormalizeForecastError {
     Configuration(String),
@@ -85,6 +119,50 @@ pub struct NormalizeForecastDocument {
     pub catalog: PathBuf,
     pub artifact_root: PathBuf,
 }
+/// Normalize a saved provider payload using the selected workspace's acquisition geometry.
+pub fn normalize_workspace_forecast(
+    workspace: &std::path::Path,
+    source: PathBuf,
+    provider: ForecastProvider,
+    model: String,
+    product: String,
+    cycle_utc: String,
+) -> Result<NormalizeForecastReport, NormalizeForecastError> {
+    let invalid = NormalizeForecastError::Configuration;
+    let settings =
+        super::read_workspace_config(&super::workspace_config_path(workspace)).map_err(invalid)?;
+    let time_zone = settings
+        .run
+        .as_ref()
+        .and_then(|run| run.time_zone)
+        .ok_or_else(|| invalid("Set run.time_zone".into()))?;
+    let bounds = settings
+        .spatial
+        .and_then(|spatial| spatial.bounds)
+        .ok_or_else(|| invalid("Set spatial.bounds".into()))?;
+    let fraction = settings.acquisition.unwrap_or_default().buffer_fraction;
+    let crop_bbox = super::acquisition::buffered_bbox(bounds, fraction).map_err(invalid)?;
+    let _lock = super::operation::lock_workspace_job(workspace)
+        .map_err(|error| invalid(error.to_string()))?;
+    super::workspace::initialize_database(workspace, time_zone).map_err(invalid)?;
+    normalize_forecast_document(
+        workspace,
+        workspace,
+        NormalizeForecastDocument {
+            schema_version: 1,
+            provider,
+            model,
+            product,
+            cycle_utc,
+            operation_timezone: time_zone.name().into(),
+            source,
+            crop_bbox,
+            catalog: super::workspace::DATABASE_PATH.into(),
+            artifact_root: "assets".into(),
+        },
+    )
+}
+
 pub fn normalize_forecast(
     request: NormalizeForecastRequest,
 ) -> Result<NormalizeForecastReport, NormalizeForecastError> {

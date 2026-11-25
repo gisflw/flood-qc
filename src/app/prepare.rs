@@ -80,7 +80,6 @@ use crate::store::{
     write_basin_forcing, write_grid_frame, write_grid_series, write_run_manifest,
 };
 use crate::store::{ForecastCorrection, ObservationReplacement};
-use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::path::PathBuf;
 
@@ -142,30 +141,20 @@ pub struct TypedPreparationRequest {
 pub fn prepare_typed(
     request: TypedPreparationRequest,
 ) -> Result<PreparationReport, OperationError> {
-    prepare_typed_checked(request, None, false, &super::OperationControl::default())
-}
-pub(super) fn prepare_typed_checked(
-    request: TypedPreparationRequest,
-    identities: Option<std::collections::BTreeMap<String, String>>,
-    operational: bool,
-    control: &super::OperationControl,
-) -> Result<PreparationReport, OperationError> {
-    prepare_typed_internal(request, identities, operational, None, control)
+    prepare_typed_internal(request, None, &super::OperationControl::default())
 }
 
-pub(super) fn prepare_replay(
+pub(super) fn prepare_workspace(
     request: TypedPreparationRequest,
-    expected: &OperationManifest,
+    scenarios: super::operational_run::ResolvedScenarios,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
-    prepare_typed_internal(request, None, true, Some(expected), control)
+    prepare_typed_internal(request, Some(scenarios), control)
 }
 
 fn prepare_typed_internal(
     mut request: TypedPreparationRequest,
-    identities: Option<BTreeMap<String, String>>,
-    operational: bool,
-    replay: Option<&OperationManifest>,
+    workspace_scenarios: Option<super::operational_run::ResolvedScenarios>,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
     if request.corrections.len() != request.document.scenarios.len() {
@@ -224,9 +213,7 @@ fn prepare_typed_internal(
         request.replacements,
         request.corrections,
         PathBuf::from("typed request"),
-        identities,
-        operational,
-        replay,
+        workspace_scenarios,
         control,
     )
 }
@@ -264,13 +251,11 @@ pub fn prepare_controlled(
         corrections,
         request_path,
         None,
-        false,
-        None,
         control,
     )
 }
 
-#[allow(clippy::too_many_arguments)] // Keep accepted inputs and their source identities explicit.
+#[allow(clippy::too_many_arguments)] // The resolved selection and destination are both required during freezing.
 fn prepare_accepted(
     workspace: PathBuf,
     output: PathBuf,
@@ -278,9 +263,7 @@ fn prepare_accepted(
     replacements: Option<Vec<ObservationReplacement>>,
     corrections: Vec<Option<Vec<ForecastCorrection>>>,
     request_path: PathBuf,
-    identities: Option<std::collections::BTreeMap<String, String>>,
-    operational: bool,
-    replay: Option<&OperationManifest>,
+    workspace_scenarios: Option<super::operational_run::ResolvedScenarios>,
     control: &super::OperationControl,
 ) -> Result<PreparationReport, OperationError> {
     control.set_progress(super::OperationStage::Preparation, None, None);
@@ -323,16 +306,11 @@ fn prepare_accepted(
         ] {
             fs::create_dir(stage.join(dir)).map_err(|e| source_error(&stage, e))?;
         }
-        fs::write(stage.join("request.toml"), &accepted.request_bytes)
-            .map_err(|e| source_error(&stage, e))?;
+        if workspace_scenarios.is_none() {
+            fs::write(stage.join("request.toml"), &accepted.request_bytes)
+                .map_err(|e| source_error(&stage, e))?;
+        }
         let doc = &accepted.document;
-        let mut source_identities = BTreeMap::new();
-        let inline_replacements = replacements.is_some();
-        let inline_corrections = corrections
-            .iter()
-            .enumerate()
-            .filter_map(|(index, values)| values.is_some().then_some(index))
-            .collect();
         super::additional::check_engine(doc, &doc.engine.executable)
             .map_err(|e| source_error(&doc.engine.executable, e))?;
         let edited_geometry = doc
@@ -352,28 +330,8 @@ fn prepare_accepted(
                 "geometry changed while reading",
             ));
         }
-        let actual = super::draft::identity(&geometry_digest)
-            .map_err(|e| source_error(&doc.geometry.mini_gtp, e))?;
-        source_identities.insert("geometry".to_owned(), actual);
         let soil_identity = super::additional::soil_identity(doc.calibration.as_ref())
             .map_err(|e| source_error(&request_path, e))?;
-        if let Some(identities) = &identities {
-            if identities.get("geometry") != source_identities.get("geometry") {
-                return Err(source_error(
-                    &doc.geometry.mini_gtp,
-                    "geometry changed or has not been accepted; refresh inputs",
-                ));
-            }
-            if soil_identity
-                .as_ref()
-                .is_some_and(|value| identities.get("soil") != Some(value))
-            {
-                return Err(source_error(
-                    &request_path,
-                    "soil calibration changed or has not been accepted; refresh inputs",
-                ));
-            }
-        }
         control.check()?;
         let selection = ObservationSelection {
             provider_codes: doc.observed.provider_codes.clone(),
@@ -395,16 +353,6 @@ fn prepare_accepted(
                 &extra_stations,
             )
             .map_err(|e| source_error(&doc.observed.path, e))?;
-        if let Some(identities) = &identities {
-            let actual = super::draft::identity(&offsets)
-                .map_err(|e| source_error(&doc.observed.path, e))?;
-            if identities.get("offsets") != Some(&actual) {
-                return Err(source_error(
-                    &doc.observed.path,
-                    "station offsets changed or have not been accepted; refresh inputs",
-                ));
-            }
-        }
         let source_replacements = inputs.replacements.clone();
         if let Some(values) = replacements {
             inputs.replacements = values;
@@ -443,31 +391,10 @@ fn prepare_accepted(
                 .iter()
                 .any(|series| series.series_id == sample.series_id)
         });
-        if let Some(identities) = &identities {
-            let mut source = inputs.clone();
-            source.replacements = source_replacements.clone();
-            let actual =
-                super::draft::observation_identity(&source, &accepted.historical, &selection)
-                    .map_err(|e| source_error(&doc.observed.path, e))?;
-            if identities.get("observations") != Some(&actual) {
-                return Err(source_error(
-                    &doc.observed.path,
-                    "observation source changed or has not been accepted; refresh inputs",
-                ));
-            }
-        }
         if let Some(additional) =
             super::additional::capture(&accepted, &inputs, &source_replacements)
                 .map_err(|e| source_error(&request_path, e))?
         {
-            if identities.as_ref().is_some_and(|values| {
-                values.get("additional_forcing") != Some(&additional.accepted)
-            }) {
-                return Err(source_error(
-                    &request_path,
-                    "additional forcing changed or has not been accepted; refresh inputs",
-                ));
-            }
             for (name, bytes) in additional.raw_files {
                 let path = stage.join("sources").join(name);
                 fs::write(&path, bytes).map_err(|e| source_error(&path, e))?;
@@ -587,37 +514,33 @@ fn prepare_accepted(
         control.check()?;
         let mut selected_forecasts = if selections.is_empty() {
             Vec::new().into_iter()
+        } else if workspace_scenarios.is_some() {
+            let catalog = ForecastCatalog::open_read_only(&workspace, &doc.forecasts.catalog)
+                .map_err(|e| source_error(&doc.forecasts.catalog, e))?;
+            let mut selected = Vec::with_capacity(selections.len());
+            for selection in &selections {
+                let (asset, native) = catalog
+                    .load_for_run(&selection.asset_id)
+                    .map_err(|e| source_error(&doc.forecasts.catalog, e))?;
+                let target = stage
+                    .join("sources/native")
+                    .join(format!("{}.nc", asset.asset_id));
+                if !target.exists() {
+                    write_grid_series(&target, &native).map_err(|e| source_error(&target, e))?;
+                }
+                selected.push((
+                    asset,
+                    native,
+                    selection.corrections.clone().unwrap_or_default(),
+                ));
+            }
+            selected.into_iter()
         } else {
             let catalog = ForecastCatalog::open_read_only(&workspace, &doc.forecasts.catalog)
                 .map_err(|e| source_error(&doc.forecasts.catalog, e))?;
             let selected = catalog
                 .snapshot_selected_values(&stage.join("sources/forecast.sqlite"), &selections)
                 .map_err(|e| source_error(&doc.forecasts.catalog, e))?;
-            if let Some(identities) = &identities {
-                let mut selected_iter = selected.iter();
-                for (index, scenario) in doc.scenarios.iter().enumerate() {
-                    if scenario.asset_id.is_none() {
-                        continue;
-                    }
-                    let (_, native, values) = selected_iter.next().ok_or_else(|| {
-                        source_error(&doc.forecasts.catalog, "missing selected forecast")
-                    })?;
-                    let empty = Vec::new();
-                    let registered = if corrections[index].is_some() {
-                        &empty
-                    } else {
-                        values
-                    };
-                    let actual = super::draft::identity(&(native, registered))
-                        .map_err(|e| source_error(&doc.forecasts.catalog, e))?;
-                    if identities.get(&format!("forecast:{index}")) != Some(&actual) {
-                        return Err(source_error(
-                            &doc.forecasts.catalog,
-                            "forecast source changed or has not been accepted; refresh inputs",
-                        ));
-                    }
-                }
-            }
             for (asset, _, _) in &selected {
                 for (source, target) in [
                     (
@@ -703,29 +626,6 @@ fn prepare_accepted(
             &stage.join(crate::store::PREPARED_ENGINE),
         )
         .map_err(|e| source_error(&doc.engine.executable, e))?;
-        {
-            let engine = stage.join(crate::store::PREPARED_ENGINE);
-            let inputs = stage.join("baseline/Input");
-            let actual_engine = super::draft::identity(
-                &digest_file(&engine).map_err(|e| source_error(&engine, e))?,
-            )
-            .map_err(|e| source_error(&engine, e))?;
-            let actual_inputs = super::draft::identity(
-                &collect_inputs(&inputs).map_err(|e| source_error(&inputs, e))?,
-            )
-            .map_err(|e| source_error(&inputs, e))?;
-            if identities.as_ref().is_some_and(|identities| {
-                identities.get("engine") != Some(&actual_engine)
-                    || identities.get("engine_inputs") != Some(&actual_inputs)
-            }) {
-                return Err(source_error(
-                    &doc.engine.input_dir,
-                    "engine inputs changed or have not been accepted; refresh inputs",
-                ));
-            }
-            source_identities.insert("engine".to_owned(), actual_engine);
-            source_identities.insert("engine_inputs".to_owned(), actual_inputs);
-        }
         let stage_input = stage.join("baseline/Input");
         let soil = doc
             .calibration
@@ -750,7 +650,6 @@ fn prepare_accepted(
             }
             if let Some(expected) = soil_identity {
                 let actual = digest_file(&stage_input.join("paruso.hig"))
-                    .and_then(|value| super::draft::identity(&value))
                     .map_err(|e| source_error(&stage_input, e))?;
                 if actual != expected {
                     return Err(source_error(
@@ -792,16 +691,25 @@ fn prepare_accepted(
             serde_json::to_value(&inputs.replacements)
                 .map_err(|e| source_error(&request_path, e))?,
         );
-        object.insert(
-            "correction_values".into(),
-            serde_json::to_value(correction_values).map_err(|e| source_error(&request_path, e))?,
-        );
+        if workspace_scenarios.is_some() {
+            let mut selected = doc.scenarios.clone();
+            for scenario in &mut selected {
+                scenario.correction_ids = None;
+            }
+            object.insert(
+                "scenarios".into(),
+                serde_json::to_value(selected).map_err(|e| source_error(&request_path, e))?,
+            );
+        } else {
+            object.insert(
+                "correction_values".into(),
+                serde_json::to_value(correction_values)
+                    .map_err(|e| source_error(&request_path, e))?,
+            );
+        }
         let recipe = ExecutionRecipe {
             document,
-            operational_workspace: operational.then(|| workspace.clone()),
-            source_identities,
-            inline_replacements,
-            inline_corrections,
+            workspace_scenarios,
             historical_count: accepted.historical.bounds.len(),
             forecast_count: accepted.forecast.bounds.len(),
             selected_station_ids: doc.levels.station_ids.clone(),
@@ -844,43 +752,6 @@ fn prepare_accepted(
             finished_at: None,
             error: None,
         };
-        if let Some(expected) = replay {
-            let mut original = expected.recipe.clone();
-            let mut actual = manifest.recipe.clone();
-            for recipe in [&mut original, &mut actual] {
-                if let Some(object) = recipe.as_object_mut() {
-                    object.remove("operational_workspace");
-                }
-            }
-            // Older manifests captured the preparation hashes without the raw identity map.
-            if original.get("source_identities").is_none()
-                && let Some(object) = actual.as_object_mut()
-            {
-                object.remove("source_identities");
-                object.remove("inline_replacements");
-                object.remove("inline_corrections");
-            }
-            if original != actual {
-                return Err(source_error(
-                    &request_path,
-                    "recorded operation recipe or source identities changed",
-                ));
-            }
-            let payload = |manifest: &OperationManifest| {
-                manifest
-                    .inputs
-                    .iter()
-                    .filter(|entry| entry.path != Path::new("request.toml"))
-                    .cloned()
-                    .collect::<Vec<_>>()
-            };
-            if !expected.inputs.is_empty() && payload(expected) != payload(&manifest) {
-                return Err(source_error(
-                    &request_path,
-                    "recorded preparation inputs changed",
-                ));
-            }
-        }
         control.check()?;
         sync_tree(&stage).map_err(|e| source_error(&stage, e))?;
         write_run_manifest(&stage, &manifest).map_err(|e| source_error(&stage, e))?;

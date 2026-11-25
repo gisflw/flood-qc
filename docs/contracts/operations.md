@@ -1,54 +1,64 @@
 # Saved preparation and execution
 
-## Choose an execution path
+## Run from a workspace
 
-| Action | Start with | Publishes after success |
-| --- | --- | --- |
-| `operation prepare` | Workspace configuration and saved inputs | A reusable preparation at the requested path |
-| `operation execute` | Saved preparation | A replacement active run |
-| `draft run` or **Run experiment** | Draft with accepted inputs | A replacement active run |
-| **Processing → New run → Run All** | Workspace configuration and a selected local reference | A replacement active run |
-| `run replay` | Workspace attempt manifest | A replacement active run |
-
-Use [operation drafts](drafts.md) to edit and preview a recipe, or the
-[desktop run form](desktop.md#controlled-jobs) to run a saved recipe for a selected
-reference. The shared library exposes `prepare(PreparationRequest)` and
-`execute_prepared(ExecutionRequest)`, also available through the CLI.
+Use **Processing → New run** in the desktop or run the corresponding CLI commands.
 
 ```sh
-mgb-ops operation prepare --workspace /regional/workspace --output prepared --json
-mgb-ops operation execute --workspace /regional/workspace --prepared prepared --json
+mgb-ops operation run-all --workspace /region --json
+mgb-ops operation prepare --workspace /region --output /region/runs/prepared --json
+mgb-ops operation execute --workspace /region --prepared /region/runs/prepared --json
 ```
 
-Use `--reference-time` to prepare a saved historical window. Set a repeatable
-`--scenario` when choosing a scenario explicitly. Use `zero`, `ecmwf`, or `noaa`,
-pin a cycle with `ecmwf@2026-07-20T00:00:00Z`, or use
-`corrected:ecmwf@2026-07-20T00:00:00Z` for a cycle with stored corrections.
+**Run All** acquires configured inputs, freezes the run inputs, executes MGB, and
+publishes the completed generation. **Save preparation** uses saved inputs and
+stops before execution. A saved preparation retains everything needed to execute
+after its original sources change. Relative command paths resolve from the
+invocation directory. Paths in workspace settings resolve from the workspace.
 
-Workspace, request, output and prepared arguments resolve from the invocation
-directory. Paths inside the request resolve from the selected workspace.
-Preparation creates a new directory and never invokes MGB. Execution uses retained
-prepared dependencies, independently of subsequent changes to their source files.
-A new preparation is needed to select different data or settings.
+Override the hour with `--reference-time` and the windows with
+`--lookback-days` and `--forecast-days`. Local labels use the workspace time
+zone and whole hours. History starts at midnight on the reference date minus
+the lookback days and ends at the reference hour. Forecast labels start one hour
+after the reference and end at the reference plus the forecast days plus one
+hour. Rainfall labels mark interval ends. Ambiguous or nonexistent local labels
+and time windows crossing a timezone offset change fail validation.
 
-Library callers can also use `prepare_typed(TypedPreparationRequest)` with a
-`PreparationDocument` and the same workspace, invocation-directory and output
-path rules. `replacements: None` resolves the document's replacement IDs;
-`Some(values)` supplies the ordered replacement values and replaces those IDs.
-`corrections` contains one entry per scenario in scenario order: `None` resolves
-its correction IDs, while `Some(values)` supplies ordered correction values and
-replaces those IDs. Use `None` for a zero scenario. Supplied records receive the
-same validation as registered records and are not registered in source catalogs.
-The prepared snapshot retains their actual values and a generated request, so it
-can execute after the original sources are removed.
+## Scenarios
 
-[Editable drafts](drafts.md) provide incomplete JSON recipes, explicit source
-acceptance and unregistered previews over this same typed preparation workflow.
+With no overrides, the run selects zero future rain and the latest usable raw
+cycle for each provider, model and product in `operation.sqlite`. Zero comes
+first. Eligible cycles begin at or before the run reference and cover its
+forecast window. The catalog can supply cycles from disabled acquisition
+providers. Automatic raw scenario IDs use the provider, model and product
+without the cycle for stable scheduled reporting. Run All resolves the
+automatic set after acquisition and reports
+unavailable providers in the acquisition outcome.
 
-The desktop's [standalone run form](desktop.md#controlled-jobs) loads the same
-workspace settings and supports explicit reference and scenario choices.
-Acquisition-enabled runs resolve their forecast assets before freezing values.
-The [acquisition contract](acquisition.md#run-all) covers Run All.
+Repeat `--scenario` to supply an explicit, ordered selection. Use `zero`,
+a provider such as `ecmwf` when it identifies one product, or a full
+`provider/model/product` label. Append `@UTC-cycle` to pin a cycle. For a
+corrected scenario, pass the cycle and ordered edits as one argument.
+
+```sh
+mgb-ops operation run-all --workspace /region \
+  --reference-time 2026-07-20T00:00:00 \
+  --scenario zero \
+  --scenario ecmwf/ifs/fc@2026-07-20T00:00:00Z \
+  --scenario '{"kind":"corrected","forecast":"ecmwf/ifs/fc@2026-07-20T00:00:00Z","corrections":[{"t0_hour":6,"t1_hour":18,"multiplication_factor":1.1}]}'
+```
+
+Each correction supplies `t0_hour` and `t1_hour`, measured from its forecast
+cycle. Pixel shifts (`shift_lat_pixels`, `shift_lon_pixels`) and
+`rotation_deg` default to zero. The positive `multiplication_factor` defaults
+to one. New run can preview and reorder corrections for a pinned forecast.
+The manifest retains the values in their applied order. Missing explicit
+selections stop the run before execution. All scenarios use the same effective
+[observation history](observations.md#selection-reviews-and-preparation).
+
+Library callers open an `OperationalRun` for a workspace, set typed
+`RunParameters`, and use `prepare_saved` or `run_all_report`. The same
+`RunScenario` values are used for selection and preview.
 
 ## Active run and rainfall cache
 
@@ -68,147 +78,12 @@ geometry and verified zero forecast intervals. Rainfall and basin summaries read
 the selected generation. A missing cache returns no rainfall. Missing or corrupt
 members produce findings.
 
-The workspace retains only a small attempt manifest for past executions under
-`runs/history/`. This includes the recipe, recorded input identities,
-outcome, and diagnostic excerpts. To keep full results, export a bundle or copy
-the active run to a user-owned location before another successful run.
-Explicitly saved preparations remain reusable. See
-[sharing and replay](saved-data.md#sharing-and-automation).
-
-### Upgrade an existing workspace
-
-Preview the migration with
-`mgb-ops operation migrate-cache --workspace /region --keep-run <run-id>`.
-The preview lists affected paths and estimates reclaimable space. Move any
-manually kept runs or bundles out of `data/runs/` before applying. Repeat the
-command with `--apply` to activate the selected completed run, preserve the
-legacy manifests, and remove the legacy payloads. Legacy rainfall is adopted
-when its forcing agrees with the selected run. A migrated run without matching
-rainfall has no rainfall overlay until a successful execution supplies it.
-
-Use `--inundation-donor <run-id>` to transfer existing products from a legacy
-copy with matching model outputs. The migration validates provenance against
-the workspace TIFFs at `data/source/HAND_Flood.tif` and
-`data/source/catchments.tif`. Applying the migration also retires that donor's
-legacy entry.
-
-## Request
-
-The separate UTF-8 TOML request is strict at every table: unknown keys fail.
-Use an explicit request for a standalone preparation outside the normal workspace workflow. This small example selects
-saved observations and a zero-rain forecast; replace paths and times for the
-selected regional baseline:
-
-```toml
-schema_version = 2
-time_zone = "America/Sao_Paulo"
-reference_time = "2026-07-20T00:00:00"
-observed_horizon_days = 10
-forecast_horizon_days = 5
-
-[observed]
-path = "data/observations.sqlite"
-provider_codes = ["ana"]
-station_ids = []
-series_ids = []
-replacement_ids = []
-
-[geometry]
-mini_gtp = "mgb_runner/Input/MINI.gtp"
-
-[grid]
-bbox = [-58.95016, -34.40217, -48.85759, -26.29721]
-resolution_degrees = 0.1
-
-[interpolation]
-nearest_stations = 5
-power = 2.0
-
-[qc]
-high_threshold_mm = 50.0
-sequence_lower_mm = 0.0
-sequence_upper_mm = 1.0
-sequence_min_length = 5
-
-[levels]
-station_ids = []
-
-[engine]
-executable = "mgb_runner/MGB_Inercial_Prev_RSH"
-input_dir = "mgb_runner/Input"
-omp_threads = 1
-
-[forecasts]
-catalog = "data/forecasts.sqlite"
-
-[[scenarios]]
-id = "zero"
-kind = "zero"
-```
-
-All shown scalar settings and tables are required. `series_ids` may be omitted;
-replacement IDs must be explicit, including `[]` to select no reviews. At least
-one provider or station selector is required. See the
-[observation contract](observations.md) for ranking and ordered replacements.
-QC findings do not automatically create reviews. Output level station IDs are
-explicit and ordered; `[]` requests no station columns. Unknown stations fail.
-
-Times are local `YYYY-MM-DDTHH:MM:SS`, hour aligned, in the supplied IANA timezone.
-Version 2 authoring has one datetime: `reference_time`. `observed_horizon_days`
-is a nonnegative integer; `forecast_horizon_days` is a positive integer. Hourly
-steps are fixed. The first historical label is midnight on the reference date
-minus observed days; the last is the reference. Forecast labels run from reference
-plus one hour through reference plus forecast days plus one hour, inclusively.
-Thus the example has 241 historical and 121 forecast labels; a non-midnight
-reference adds historical labels since midnight. These are interval-end labels,
-so covered rainfall begins one hour before the first label.
-Historical and forecast axes are contiguous. In the example, the first history
-interval starts at July 9, 23:00 and ends at the first history label, July 10,
-00:00. July 20, 00:00 is both the final historical label and the reference.
-The forecast labels run from July 20, 01:00 through July 25, 01:00.
-
-```mermaid
-flowchart TD
-    accTitle: Interval endpoints in the example operation
-    accDescr: Rainfall coverage starts at July 9 23:00. The first history label is July 10 00:00, the reference and final history label is July 20 00:00, and forecast labels run from July 20 01:00 through July 25 01:00.
-    start["July 9, 23:00 · coverage starts"] --> history["July 10, 00:00 · first history label"]
-    history --> reference["July 20, 00:00 · reference and last history label"]
-    reference --> forecast["July 20, 01:00 · first forecast label"]
-    forecast --> endLabel["July 25, 01:00 · last forecast label"]
-```
-
-Explicit boundary datetimes and `step_seconds` cannot be combined with version 2
-day horizons.
-
-Version 1 requests with `step_seconds = 3600` and explicit
-`historical_first_end`, `historical_last_end`, `forecast_first_end`, and
-`forecast_last_end` remain readable with their original exact coverage. The
-reference must equal the final historical endpoint, followed by the first
-forecast endpoint one hour later. The typed `PreparationDocument` API and retained
-recipes keep this resolved version 1 representation; retained preparations,
-requests and manifests are not rewritten. Draft import/export converts to version
-2 only when expansion reproduces every original boundary and step exactly;
-otherwise it retains version 1. No rounding to whole days occurs.
-Ambiguous/nonexistent local labels and offset transitions
-fail. Grid bounds and resolution, IDW settings, QC thresholds and thread count
-are validated. Engine-bound rainfall must be present, finite and nonnegative.
-
-Scenario IDs are unique and match `[A-Za-z0-9][A-Za-z0-9_-]{0,63}`. At least one
-scenario is required. `kind` selects:
-
-| Kind | Asset | Corrections |
-| --- | --- | --- |
-| `zero` | Omitted | Omitted |
-| `raw` | Required `asset_id` | Omitted or `correction_ids = []` |
-| `corrected` | Required `asset_id` | Required nonempty ordered `correction_ids` |
-
-IDs resolve through the explicitly selected forecast catalog. Duplicate/unknown
-instructions and cross-asset corrections fail. Zero scenarios need no forecast
-asset or catalog file. See the [forecast contract](forecasts.md) for normalization
-and correction semantics. Baseline Input must contain compatible geometry,
-metadata, calibration and initial-state dependencies. See the [additional inputs
-and state contract](saved-data.md#forcing-state-and-calibration) for optional
-forcing, calibration selection and state capture.
+The database records each attempt and its status.
+The active generation keeps its manifest under `cache/run/`. Retiring it
+archives the manifest under `runs/history/` and reclaims its results. Failed
+attempts retain their manifest and bounded diagnostics. Export a bundle before
+replacement to keep full results. Keep a [saved preparation](#prepared-dependencies-and-run-files)
+for exact reruns.
 
 ## Execution lifecycle
 
@@ -228,38 +103,25 @@ generation available. See [control and cancellation](#controlled-actions-and-can
 ## Prepared dependencies and run files
 
 Preparation freezes selected canonical observation rows, ordered replacement and
-correction values, station metadata/offsets, selected forecast source/native files,
-request bytes (or a generated typed request), numerical settings, baseline Input
+correction values, station metadata and offsets, selected normalized forecast
+grids, numerical settings, baseline Input
 and executable. Source SQLite subsets are read consistently rather than copied
-from an open WAL file. Canonical
-forcing/checkpoints retain f64 precision. A version-1 `manifest.json` records the
-recipe and input paths, kinds, sizes and SHA256 identities.
+from an open WAL file. Canonical forcing and checkpoints retain f64 precision.
+The generated `manifest.json` records resolved settings, scenario inputs and
+outcomes, and the files needed to validate the snapshot. Forecast correction
+values are recorded in this manifest. Derived grids carry their resulting
+rainfall values.
 
-Manifest fields are `schema_version`, `state`, `recipe`, `inputs`, `scenarios`,
-`created_at`, `finished_at`, `error` and optional `preparation_sha256`. The latter
-identifies the preparation used by a new trial; older manifests omit it. State is `prepared`, `running`, `failed`
-or `completed`. The recipe contains the resolved request document, full selected
-station/series and instruction records, historical/forecast counts, selected
-output stations, offsets and thread count. Each input reference has `path`,
-`kind`, `size` and `sha256`; paths are relative to the artifact directory.
-Scenario records preserve request order and contain `id`, `state`, timestamps,
-`exit_code`, `signal`, structured `error`, `stdout`, `stderr`, `basin_result`
-and `station_result`. Pending outcome fields are null. Errors contain `stage`,
-`message` and `log_paths`. Manifest timestamps use operation-local labels;
-execution logs additionally record monotonic `elapsed_seconds`.
-
-The prepared tree contains `request.toml`, `sources/`, `baseline/Input/`,
-`baseline/engine`, `forcing/` and `checkpoints/`. Each selected scenario has a
-combined historical/forecast `forcing/<id>.nc`. The original baseline and source
-files remain separate from writable engine inputs. Symlinks and escaping retained
-paths fail. Files are closed and synced before atomic finalization to a new
-destination on Linux. Failed or cancelled staging is removed; an existing complete
-preparation is preserved.
+The prepared tree contains `sources/`, `baseline/Input/`, `baseline/engine`,
+`forcing/` and `checkpoints/`. Each selected scenario has a combined
+historical/forecast `forcing/<id>.nc`. The baseline remains separate from
+writable engine inputs. Preparation stages a new destination and removes its
+staging files on failure or cancellation.
 
 Execution takes a nonblocking OS lock on `<workspace>/.operation.lock`, held until
 children and workers stop and file work finishes. Concurrent execution in that
 workspace returns `Busy`. Each invocation stages a generation privately under
-`data/cache/run/`. Finalization removes the verified preparation snapshot,
+`cache/run/`. Finalization removes the verified preparation snapshot,
 shared history inputs, and isolated worker inputs.
 
 The active generation supplies validated `results/<id>/basin.nc` and
@@ -270,11 +132,8 @@ for each successful scenario. See [inundation processing](inundation.md).
 
 `discover_trials(workspace)` returns the active root when present.
 `read_trial(root)` validates canonical results and required engine streams
-at an active or explicitly saved root. A manifest can replay a recipe using its
-referenced inputs. An independently saved preparation or a bundle with a
-preparation can reproduce an execution after the original sources are removed.
-Execution reports expose `run_root` for current results and `attempt_manifest`
-for the durable recipe. Automation job status keeps the durable reference.
+at an active or explicitly saved root. A saved preparation or a bundle with a
+preparation supports execution after the original sources are removed.
 
 Scenarios run concurrently in isolated directories with direct executable
 invocation, an explicit working directory, and only `MGB_INPUT_DIR`,
@@ -286,12 +145,9 @@ per-scenario status. Historical diagnostics are available in the attempt manifes
 
 ## Controlled actions and cancellation
 
-Use a fresh `OperationControl` per action with `prepare_controlled`,
-`Draft::prepare_controlled`, `execute_prepared_controlled` or `run_draft`. The
-ordinary preparation/execution functions use the same workflow with a fresh
-control. `run_draft` prepares current accepted draft values and executes while
-holding the workspace lock throughout. It removes its own temporary preparation;
-Prepare only saves a reusable preparation and stops before launching MGB.
+Use a fresh `OperationControl` for each preparation, Run All, or controlled
+execution. Run All holds the workspace lock from acquisition through publication
+and removes its temporary preparation on completion.
 
 Cloned controls expose `cancel()`, `is_cancelled()` and the latest `progress()`.
 Progress identifies acquisition, preparation, history, scenarios and finalization, includes the
@@ -301,12 +157,12 @@ updates and engine log chunks to a callback that can be called from concurrent w
 `tail_log(path, max_bytes)` reads at most 65,536 trailing bytes without loading the
 entire file.
 
-`operation prepare`, `operation execute`, `operation run-all`, `draft prepare`, `draft run`,
-`run replay` and `run regenerate` print live run milestones. The CLI displays
+`operation prepare`, `operation execute`, `operation run-all` and
+`run regenerate` print live run milestones. The CLI displays
 engine output as the executable flushes it. Each line identifies the shared
 history or scenario and the engine's stdout or stderr.
 Text commands use stdout. Commands returning JSON use stderr for live output,
-including draft commands and regeneration without `--json`. JSON reports
+including `run regenerate` without `--json`. JSON reports
 are single documents on stdout. If the console falls behind, its output names
 the affected stream and the number of skipped bytes. Engine log files retain
 their original bytes under the usual run retention rules.
