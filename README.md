@@ -30,6 +30,9 @@ cargo build --locked --release
 cargo build --locked --release --features desktop --bins
 ```
 
+After validation, follow the [release handoff](AGENTS.md#handoff) to remove debug
+build artifacts and leave both release binaries ready for terminal use.
+
 Routine checks use synthetic fixtures and do not require Python, regional data,
 provider access, or MGB. The architecture gate also runs under `cargo test`.
 
@@ -99,6 +102,13 @@ selection](docs/contracts/operations.md#scenarios).
 
 ## Desktop interface
 
+Linux desktop startup needs a working X11 or Wayland display, its window and
+keyboard libraries, and a graphics driver supported by WGPU. X11 includes the
+XKB runtime and keyboard data (`libxkbcommon-x11-0` and `xkb-data` on Debian).
+A successful compilation alone does not establish that these runtime services
+are available. Software-rendered qualification is recorded separately from
+operator-hardware evidence.
+
 ```sh
 workspace=/regional/workspace
 cargo run --locked --features desktop --bin mgb-ops-desktop -- "$workspace"
@@ -138,6 +148,7 @@ workspace. The [HGE emblem](assets/branding/README.md) and
 
 ## Project guidance
 
+- [Repository rules and exceptions](docs/contracts/rules-exceptions.md): safety, dependencies, documentation, validation and native-library exceptions.
 - [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.
 - [Series and CSV](docs/contracts/series.md): rainfall summaries, chart queries and selected-series exports.
 - [Local geometry](docs/contracts/spatial.md): mini topology, map coordinates and station links.

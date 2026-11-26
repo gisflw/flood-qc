@@ -185,10 +185,20 @@ observation-based AR(1) to retained flow or level series for comparison and
 reporting. It uses the raw and referenced model results without rewriting them.
 See [analysis and bulletins](contracts/saved-data.md#analysis-and-bulletins).
 
+## Dependency and Rust safety policy
+
+The [repository rules and exceptions](contracts/rules-exceptions.md#rust-safety-and-dependency-policy)
+own Rust safety and dependency policy. The
+[scoped NetCDF exception](contracts/rules-exceptions.md#approved-c-backed-exceptions)
+records the native mask writer's rationale, limits and Rust replacement criteria.
+OS and graphics integration use safe APIs. The ownership and execution lifecycle
+in this document apply equally to dependency wrappers and application code.
+
 ## Enforcement
 
 Rust privacy protects owner internals. Cargo's `unsafe_code = "forbid"` lint
-applies to owned targets; dependencies may use unsafe internally.
+enforces the owned-code restriction in the repository rules. Dependency compliance additionally
+requires the source and feature review described in the repository rules.
 The [architecture test](../tests/architecture.rs) enforces these source boundaries:
 
 - Every Rust source under `src/` belongs to a declared owner, the root facade, or

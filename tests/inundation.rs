@@ -1,16 +1,68 @@
-use super::{
+//! Keep native NetCDF lifecycle tests in their own executable. Subprocesses
+//! spawned by unrelated unit tests can inherit HDF5 descriptors and retain file
+//! locks after the writer closes. This test executable must not spawn children.
+use chrono::Timelike;
+use mgb_ops::app::{
     InundationProcessRequest, InundationProcessStatus, OperationControl, process_inundation,
+    process_workspace_inundation,
 };
-use crate::store::{
-    FLOOD_MASK_FILE, FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, FloodSource, IntervalAxis,
-    InundationLevel, InundationMask, Provenance, TimeInterval, digest_file, write_flood_source,
-};
-use chrono::{Duration, NaiveDate, Timelike};
+use mgb_ops::store::{FLOOD_MASK_FILE, InundationLevel, InundationMask, digest_file};
 use std::{fs, path::Path};
 use terrio::{DataType, Raster, RasterConfig, RasterWriteOptions, raster::RasterData};
 
 const WIDTH: usize = 2055;
 const HEIGHT: usize = 5;
+const FLOOD_SOURCE_FILE: &str = "flood_source.nc";
+const FLOOD_SOURCE_DIAGNOSTIC: &str = "flood_source_unavailable.txt";
+
+fn flood_source(path: &Path) {
+    let mut file = netcdf::create(path).unwrap();
+    file.add_attribute("schema_version", 1_i32).unwrap();
+    file.add_attribute("historical_count", 1_i64).unwrap();
+    for (name, value) in [
+        ("artifact_kind", "flood_source"),
+        ("units", "m"),
+        ("operation_timezone", "America/Sao_Paulo"),
+        ("source_id", "inundation-test"),
+        ("crs", "EPSG:4326"),
+        (
+            "processing_json",
+            r#"{"source_ids":["inundation-test"],"processing":{"flood_source":{"scenario":"reference","depth_datum":"model_channel_bed"}}}"#,
+        ),
+    ] {
+        file.add_attribute(name, value).unwrap();
+    }
+    for (name, size) in [("time", 4), ("bounds", 2), ("basin", 1)] {
+        file.add_dimension(name, size).unwrap();
+    }
+    let mut time = file.add_variable::<i64>("time", &["time"]).unwrap();
+    for (name, value) in [
+        ("units", "seconds since 2025-03-05 10:00:00"),
+        ("calendar", "proleptic_gregorian"),
+        ("bounds", "time_bounds"),
+    ] {
+        time.put_attribute(name, value).unwrap();
+    }
+    time.put_values(&[3600_i64, 7200, 10800, 14400], ..)
+        .unwrap();
+    file.add_variable::<i64>("time_bounds", &["time", "bounds"])
+        .unwrap()
+        .put_values(&[0_i64, 3600, 3600, 7200, 7200, 10800, 10800, 14400], ..)
+        .unwrap();
+    file.add_variable::<i64>("mini_id", &["basin"])
+        .unwrap()
+        .put_values(&[1_i64], ..)
+        .unwrap();
+    for (name, dimensions, values) in [
+        ("depth", &["time", "basin"][..], &[3_f32, 4., 4., 3.][..]),
+        ("channel_depth", &["basin"][..], &[2_f32][..]),
+    ] {
+        let mut variable = file.add_variable::<f32>(name, dimensions).unwrap();
+        variable.put_attribute("units", "m").unwrap();
+        variable.put_values(values, ..).unwrap();
+    }
+    file.close().unwrap();
+}
 
 fn raster(path: &Path, x_min: f64, epsg: Option<u32>, nodata: f64, data: RasterData) {
     let data_type = match data {
@@ -75,32 +127,7 @@ fn fixture(dir: &Path) -> InundationProcessRequest {
         }"#,
     )
     .unwrap();
-    let origin = NaiveDate::from_ymd_opt(2025, 3, 5)
-        .unwrap()
-        .and_hms_opt(10, 0, 0)
-        .unwrap();
-    let source = FloodSource {
-        timeline: IntervalAxis {
-            time_zone: "America/Sao_Paulo".into(),
-            bounds: (0..4)
-                .map(|t| TimeInterval {
-                    start: origin + Duration::hours(t),
-                    end: origin + Duration::hours(t + 1),
-                })
-                .collect(),
-        },
-        mini_ids: vec![1],
-        depth_m: vec![3., 4., 4., 3.],
-        channel_depth_m: vec![2.],
-        historical_count: 1,
-        provenance: Provenance {
-            source_ids: vec![],
-            processing: serde_json::from_str(
-                r#"{"flood_source": {"scenario": "reference", "depth_datum": "model_channel_bed"}}"#,
-            ).unwrap(),
-        },
-    };
-    write_flood_source(&scenario_dir.join(FLOOD_SOURCE_FILE), &source).unwrap();
+    flood_source(&scenario_dir.join(FLOOD_SOURCE_FILE));
     let request = InundationProcessRequest {
         run: dir.into(),
         scenario: "reference".into(),
@@ -290,7 +317,7 @@ fn workspace_inundation_derives_and_reuses_aligned_catchments() {
     )
     .unwrap();
     let process = || {
-        super::process_workspace_inundation(
+        process_workspace_inundation(
             root,
             Some(root.into()),
             "reference".into(),

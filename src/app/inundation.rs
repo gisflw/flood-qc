@@ -357,6 +357,3 @@ fn cancelled(control: &OperationControl) -> Result<(), StoreError> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests;

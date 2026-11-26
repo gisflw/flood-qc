@@ -8,6 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
+// Full-resolution and overview mask expectations are exercised separately in
+// rs_inundation.rs, against frozen depths and an independent raster oracle.
+// Keeping that check independent preserves coverage when engine rerun bytes drift.
 #[test]
 #[ignore = "requires the explicit consolidated RS reference and real engine"]
 fn saved_rs_full_workflow() {

@@ -34,5 +34,10 @@ The execution records preserve invocation, environment, status, stdout and stder
 
 The saved state is an empirical regression input; its temporal compatibility and hydrological validity are not established by repeatability. This evidence is Linux-only. Windows, acquisition and state generation remain unverified. Rust saved-path numerical equivalence is recorded separately below. The [inundation evidence](inundation.md) records the additional HAND stream and regional raster checks.
 
+The [corrected-rule mask reference](inundation.md#automated-corrected-rule-reference)
+extends the frozen case with independently calculated native and overview mask
+digests for all four scenarios and all 362 valid times. Its explicit regression
+uses frozen depths directly, so engine-rerun drift does not prevent mask checks.
+
 The [Rust qualification record](rust-qualification.md) records driver/source
 identity, saved-path comparisons and numerical caveats for the successor.

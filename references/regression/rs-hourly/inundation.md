@@ -40,6 +40,55 @@ HAND values by ten before comparing with model stages in metres and includes
 valid zero and negative HAND cells. The counts and timings below describe the
 earlier processing rule and do not qualify the corrected footprint.
 
+## Automated corrected-rule reference
+
+The [mask regression](../../../tests/rs_inundation.rs) selects the frozen RS
+bundle and the provisioned HAND and catchment GeoTIFFs explicitly. It assembles
+the 241 history rows and first 121 scenario rows from the original `HANDTUDO.MGB`
+streams, using the MINI identities and channel depths in frozen `Cell.hig`.
+It then runs the mask processor for zero, raw ECMWF, raw NOAA and the retained
+corrected ECMWF scenario in a disposable run. This is separate from rerunning
+the engine or qualifying the current forecast-edit pipeline.
+
+The [decoded expectations](inundation-expected.json) bind every source by SHA256.
+They are captured by an independent
+[GDAL/NumPy oracle](../../../tests/support/capture_rs_inundation.py), which
+implements float32 stage subtraction, conversion of HAND decimetres to float64
+metres, and the strict stage-above-HAND comparison. Overview expectations count
+wet pixels over each block's actual footprint, include excluded pixels in the
+denominator, and mark wholly excluded blocks as unavailable. No application
+mask or optimized tile-processing helper supplies the expected values.
+
+Each native and 4×/16× overview frame has a decoded SHA256 digest. Digests
+concatenate spatial tiles in y/x order and row-major pixels within each tile;
+the native tile span is 1024 and overview spans are divided by their scale.
+This covers every output pixel at all 362 times while keeping working memory
+bounded. NetCDF file bytes, compression encodings and creation metadata are not
+the numerical comparison. The Rust reader checks metadata and selected covered
+tiles against native readback as well.
+
+The grid has 12,589 columns and 10,610 rows in EPSG:4618. There are 64,062,236
+eligible pixels, including 5,437,446 valid zero-HAND pixels. The regional fixture
+contains no eligible negative-HAND pixels; synthetic tests retain that case.
+The source CRS assignment and rasterization provenance above remain part of the
+qualification. Agreement with this reference verifies the declared numerical
+rule and encoding, not an independently observed geographic flood footprint.
+
+The explicit test uses `MGB_RS_REFERENCE`, `MGB_RS_HAND` and
+`MGB_RS_CATCHMENTS` to select preserved inputs. Run it in release mode with
+`cargo test --locked --release --test rs_inundation -- --ignored --nocapture`.
+The capture tool's `--help` describes reproduction of the independent reference;
+`--self-check` checks strict equality, nonpositive HAND and overview edge rules.
+Ordinary test runs compile this check but leave the regional workload ignored.
+
+Linux qualification matched all 4,344 decoded frame digests: four scenarios,
+362 times, and three resolutions, with complete pixel coverage. Grid, timeline,
+source identities, processing provenance, and covered-window Rust/native reader
+agreement passed. The explicit check took 522 seconds including generation and
+full readback of all four masks. An altered raster was rejected by its identity
+check before generation. A repeat matched every digest and exited successfully.
+No frozen input or original reference was replaced.
+
 ## Linux qualification
 
 The [saved RS regression](rust-qualification.md) now verifies the assembled
