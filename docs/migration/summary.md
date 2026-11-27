@@ -223,10 +223,23 @@ than inventing completed coverage. Old run outcomes and unchanged inundation
 masks retain indexed original-manifest evidence. A release conversion took
 66.8 seconds with a 1,390,816 KiB peak child RSS on this host; this single run is
 not a general performance benchmark. Release preparation and all three real MGB
-scenarios (zero, ECMWF and NOAA) completed, and a portable regional bundle was
-verified. The original regional workspace is preserved separately at cutover.
+scenarios (zero, ECMWF and NOAA) completed. After removing the disposable source
+workspace, the portable regional bundle replayed all three scenarios and matched
+all twelve complete engine flow/level streams byte-for-byte. This is a same-host
+repeat, distinct from the historical frozen-environment limitation below.
 
-Final release handoff and target cutover results are recorded after completion.
+The final release-profile suites passed 185 default and 260 desktop tests,
+including the canonical-path guard check for SQLite symlink aliases. Release
+Clippy passed with warnings denied. Debug-profile cleanup removed only build
+artifacts, and both release binaries built afterward; no debug build followed.
+Release CLI help/version passed. Desktop startup returned the missing-display
+Winit error because neither X11 nor Wayland was configured; native rendering was
+not established. The regional target now uses the converted model with its
+original active results retained. All 2,098 original workspace entries were
+checked for unchanged bytes, modes and modification times before preserving the
+original directory as a separate backup. The conversion ledger records that
+backup location, and post-cutover workspace inspection passed.
+
 Windows, physical power-loss durability, operator hardware and unrestricted
 multiprocess WAL remain unqualified. The historical frozen engine-stream
 execution-environment limitation above is unchanged.
