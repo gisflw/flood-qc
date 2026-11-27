@@ -56,10 +56,15 @@ pub(crate) fn allocate_run_id(
     reference: chrono::NaiveDateTime,
     time_zone: &str,
 ) -> Result<String, String> {
+    use chrono::{Offset, TimeZone};
     use std::io::Write;
-    let _: chrono_tz::Tz = time_zone
+    let zone: chrono_tz::Tz = time_zone
         .parse()
         .map_err(|e: chrono_tz::ParseError| e.to_string())?;
+    let zoned = zone
+        .from_local_datetime(&reference)
+        .single()
+        .ok_or("ambiguous/nonexistent operational reference")?;
     let directory = workspace.join("runs");
     fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
     let base = reference.format("%Y%m%d-%H").to_string();
@@ -72,7 +77,10 @@ pub(crate) fn allocate_run_id(
         let path = directory.join(format!("{id}.toml"));
         match OpenOptions::new().write(true).create_new(true).open(&path) {
             Ok(mut file) => {
-                let initial = RunAttemptManifest::new(id.clone());
+                let mut initial = RunAttemptManifest::new(id.clone());
+                initial.reference_time = Some(zoned.to_rfc3339());
+                initial.time_zone = Some(zone.name().into());
+                initial.utc_offset_seconds = Some(zoned.offset().fix().local_minus_utc());
                 let document = super::draft::record_bytes(&path, &initial)?;
                 file.write_all(&document)
                     .and_then(|()| file.sync_all())
@@ -454,6 +462,10 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
                 && run_stage_id(&entry.path()).is_ok()
             {
                 archive_interrupted(workspace, &entry.path())?;
+            } else if entry.file_type().map_err(|e| e.to_string())?.is_dir()
+                && entry.file_name().to_string_lossy().starts_with(".inputs-")
+            {
+                fs::remove_dir_all(entry.path()).map_err(|e| e.to_string())?;
             }
         }
         sync_directory(&work)?;
@@ -502,6 +514,39 @@ fn recover_locked(workspace: &Path, root: &Path, active: Option<&Path>) -> Resul
         }
     }
     Ok(())
+}
+
+pub(crate) fn with_kept_run<T>(
+    workspace: &Path,
+    path: &Path,
+    read: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    with_available_run(workspace, path, false, read)
+}
+pub(crate) fn with_available_run<T>(
+    workspace: &Path,
+    path: &Path,
+    allow_active: bool,
+    read: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<T, String> {
+    let root = run_cache_root(workspace)
+        .canonicalize()
+        .map_err(|e| e.to_string())?;
+    let lock = access_lock(&root, false)?;
+    lock.lock_shared().map_err(|e| e.to_string())?;
+    let path = path.canonicalize().map_err(|e| e.to_string())?;
+    if path.parent() != Some(root.as_path())
+        || !fs::symlink_metadata(&path).is_ok_and(|m| m.is_dir())
+    {
+        return Err("invalid retained result path".into());
+    }
+    let kept = fs::symlink_metadata(path.join(RETAINED)).is_ok_and(|m| m.is_file());
+    let active = allow_active
+        && active_run(workspace)?.is_some_and(|p| p.canonicalize().is_ok_and(|p| p == path));
+    if !kept && !active {
+        return Err("run results are no longer retained or active".into());
+    }
+    read(&path)
 }
 
 #[cfg(test)]

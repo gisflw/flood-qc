@@ -85,10 +85,21 @@ pub fn execute_input_set(
 ) -> Result<ExecutionReport, OperationError> {
     let workspace = workspace.canonicalize().map_err(|e| fail(workspace, e))?;
     let lock = super::operation::lock_workspace(&workspace)?;
+    let frozen = read_input_set(inputs).map_err(|e| fail(inputs, e))?;
+    let reference = frozen.recipe["document"]["reference_time"]
+        .as_str()
+        .ok_or_else(|| fail(inputs, "missing operational reference"))?
+        .parse::<chrono::NaiveDateTime>()
+        .map_err(|e| fail(inputs, e))?;
+    let zone = frozen.recipe["document"]["time_zone"]
+        .as_str()
+        .ok_or_else(|| fail(inputs, "missing operational timezone"))?
+        .to_owned();
     super::operation::run_preparation_locked(
         control,
         &workspace,
         &lock,
+        (reference, &zone),
         |workspace, output, control| {
             materialize_captured(workspace, inputs, engine, output, control)
         },

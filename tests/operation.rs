@@ -678,6 +678,7 @@ fn failed_scenario_archives_sibling_outcome_and_lock_rejects_overlap() {
         .unwrap();
     assert_eq!(usage.status.code(), Some(2));
     assert!(matches!(report.status, mgb_ops::app::BatchStatus::Failed));
+    assert_eq!(fs::read_dir(path.join("work")).unwrap().count(), 0);
     assert!(mgb_ops::discover_trials(&path).unwrap().is_empty());
     assert!(
         report
@@ -1337,7 +1338,7 @@ fn cli_sigint_cancels_history_and_reaps_child() {
     assert!(progress.contains("Run failed: operation cancelled"));
     assert!(!attempt.exists());
     let archive = Path::new(result["report"]["run_artifact"].as_str().unwrap());
-    let manifest: serde_json::Value = mgb_ops::store::read_draft(&archive).unwrap();
+    let manifest: serde_json::Value = mgb_ops::store::read_draft(archive).unwrap();
     assert_eq!(manifest["state"], "cancelled");
     assert_eq!(
         manifest["operation"]["scenarios"][0]["error"]["stage"],
@@ -2012,6 +2013,7 @@ fn registered_imerg_runs_are_pinned_and_exported_for_replay() {
         &Default::default(),
     )
     .unwrap();
+    assert_eq!(repeated.run_id, "20260101-02");
     let original =
         mgb_ops::store::read_result_series(&run.run_root.join("results/zero/basin.nc")).unwrap();
     let replay =

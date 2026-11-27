@@ -40,6 +40,8 @@ pub enum Action {
     Run,
     CaptureInputs,
     ForecastChoices,
+    ImergChoices,
+    RegisterImerg(PathBuf),
     PreviewForecast(RunScenario),
     Workflow(super::workflows::Task),
 }
@@ -54,6 +56,11 @@ pub enum Outcome {
         defaults: Vec<RunScenario>,
     },
     Preview(RunSetupRevision, ForecastPreview),
+    ImergChoices(Vec<String>),
+    ImergRegistered {
+        ids: Vec<String>,
+        choices: Vec<String>,
+    },
     Workflow(super::workflows::Output),
 }
 pub struct Active {
@@ -101,6 +108,7 @@ pub struct Runners {
     acquisition: Option<Box<AcquisitionReport>>,
     window: Option<[String; 4]>,
     assets: Vec<String>,
+    imerg_assets: Option<Vec<String>>,
     defaults: Vec<RunScenario>,
     scenario_choice: String,
     preview: Option<(RunSetupRevision, ForecastPreview)>,
@@ -257,6 +265,14 @@ impl Runners {
                     Action::Workflow(task) => task
                         .run(workspace, &operation_control, automation_control.as_ref())
                         .map(Outcome::Workflow),
+                    Action::ImergChoices => Ok(Outcome::ImergChoices(mgb_ops::app::imerg_choices(
+                        workspace,
+                    )?)),
+                    Action::RegisterImerg(source) => {
+                        let ids = mgb_ops::app::register_imerg_acquisition(workspace, &[source])?;
+                        let choices = mgb_ops::app::imerg_choices(workspace)?;
+                        Ok(Outcome::ImergRegistered { ids, choices })
+                    }
                     Action::ForecastChoices => {
                         let operation = setup.ok_or("Open the run form first")?.operation;
                         Ok(Outcome::Choices {
@@ -373,6 +389,15 @@ impl Runners {
                 self.window = Some(window);
                 self.assets = assets;
                 self.defaults = defaults;
+                None
+            }
+            Ok(Outcome::ImergChoices(choices)) => {
+                self.imerg_assets = Some(choices);
+                None
+            }
+            Ok(Outcome::ImergRegistered { ids, choices }) => {
+                self.imerg_assets = Some(choices);
+                self.status = format!("Registered IMERG: {}", ids.join(", "));
                 None
             }
             Ok(Outcome::Preview(revision, preview)) => {
@@ -579,30 +604,67 @@ impl Runners {
             }
         });
         let mut imerg_changed = false;
+        let mut imerg_action = None;
         if let HistoricalRainfall::Imerg { object_ids } = &mut rainfall {
-            match mgb_ops::app::imerg_choices(session.workspace()) {
-                Ok(choices) if choices.is_empty() => {
+            if ui
+                .add_enabled(
+                    !self.busy(),
+                    egui::Button::new(text(
+                        pt,
+                        "Register IMERG NetCDF…",
+                        "Registrar NetCDF IMERG…",
+                    )),
+                )
+                .clicked()
+                && let Some(path) = super::dialogs::file(
+                    ui.ctx(),
+                    "register-imerg",
+                    session.workspace(),
+                    "NetCDF",
+                    &["nc"],
+                )
+            {
+                imerg_action = Some(Action::RegisterImerg(path));
+            }
+            if ui
+                .add_enabled(
+                    !self.busy(),
+                    egui::Button::new(text(pt, "Refresh IMERG days", "Atualizar dias IMERG")),
+                )
+                .clicked()
+            {
+                imerg_action = Some(Action::ImergChoices);
+            }
+            match &self.imerg_assets {
+                None => {
+                    ui.label(text(
+                        pt,
+                        "Loading registered IMERG days…",
+                        "Carregando dias IMERG registrados…",
+                    ));
+                    if !self.busy() && imerg_action.is_none() {
+                        imerg_action = Some(Action::ImergChoices);
+                    }
+                }
+                Some(choices) if choices.is_empty() => {
                     ui.label(text(
                         pt,
                         "No registered IMERG days",
                         "Nenhum dia IMERG registrado",
                     ));
                 }
-                Ok(choices) => {
+                Some(choices) => {
                     for id in choices {
-                        let mut selected = object_ids.contains(&id);
-                        if ui.checkbox(&mut selected, &id).changed() {
+                        let mut selected = object_ids.contains(id);
+                        if ui.checkbox(&mut selected, id).changed() {
                             if selected {
-                                object_ids.push(id);
+                                object_ids.push(id.clone());
                             } else {
-                                object_ids.retain(|v| v != &id);
+                                object_ids.retain(|v| v != id);
                             }
                             imerg_changed = true;
                         }
                     }
-                }
-                Err(error) => {
-                    ui.colored_label(ui.visuals().error_fg_color, error);
                 }
             }
         }
@@ -804,6 +866,15 @@ impl Runners {
                 .is_some_and(|setup| &setup.revision == revision)
         {
             forecast_preview(ui, pt, preview, &mut self.preview_step);
+        }
+        if !self.busy()
+            && let Some(action) = imerg_action
+        {
+            if matches!(action, Action::ImergChoices) {
+                self.imerg_assets = Some(Vec::new());
+            }
+            self.start(action, ui.ctx());
+            return;
         }
         let valid = coverage.is_ok();
         if !self.busy() && valid && coverage.ok().as_ref() != self.window.as_ref() {

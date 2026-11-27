@@ -197,20 +197,39 @@ and unrestricted multiprocess WAL remain unqualified.
 
 ## Registered inputs and runs
 
-Full registry implementation and validation are in progress. The production
-store preserves observation registry identity, immutable data revisions and row
-checksums. Complete ANA registrations include retained-response provenance and
+The full registry model replaces Parquet in production. SQLite schema versions
+and automatic schema migrations are not used. Observation data revisions and
+registry identities pin values; SHA-256 verifies samples and metadata. Complete
+ANA registrations atomically include values, retained-response provenance and
 full/partial coverage. Forecast revisions preserve earlier objects. IMERG uses
-complete regional UTC days and explicit selection; unavailable grids fail without
-station fallback. Portable bundles carry selected canonical values and pinned
-file inputs. Original conversion sources remain intact; legacy mask bindings
-retain indexed original manifest evidence.
+complete regional UTC days, explicit selection and no station fallback. Desktop
+registration and catalog refresh run outside UI frames. Kept results remain
+selectable under shared read locks; release cannot race a protected read.
 
-Final default/desktop checks, converted regional workspace verification and
-release handoff results are recorded here when complete. Earlier Linux graphics
-checks describe the preceding implementation; this migration's startup check
-must report its actual display environment. Windows and operator hardware remain
-unverified.
+Linux formatting, default and desktop Clippy with warnings denied, default tests
+(184 passed), desktop tests (259 passed), the standalone architecture gate
+(11 passed), and qualification Clippy passed. The explicit release transaction
+and crash suite passed five targets. Five external bridge tests passed, and the
+explicit legacy saved-set test converted and replayed both zero and
+forecast-bearing cases with exact decoded values, masks and timelines. Routine
+tests do not require Python or PyArrow.
+
+The regional legacy conversion preserved and independently compared all
+2,001,960 samples (including 1,116,615 valid zeros), 440 stations, 414 series,
+six replacements, 101 offsets and 810 inventory entries. SQLite integrity and
+foreign-key checks passed. The original had no acquisition-coverage table or
+complete response provenance; conversion preserves that unknown state rather
+than inventing completed coverage. Old run outcomes and unchanged inundation
+masks retain indexed original-manifest evidence. A release conversion took
+66.8 seconds with a 1,390,816 KiB peak child RSS on this host; this single run is
+not a general performance benchmark. Release preparation and all three real MGB
+scenarios (zero, ECMWF and NOAA) completed, and a portable regional bundle was
+verified. The original regional workspace is preserved separately at cutover.
+
+Final release handoff and target cutover results are recorded after completion.
+Windows, physical power-loss durability, operator hardware and unrestricted
+multiprocess WAL remain unqualified. The historical frozen engine-stream
+execution-environment limitation above is unchanged.
 
 ## Operational flow
 

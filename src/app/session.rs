@@ -241,10 +241,7 @@ impl Session {
             .canonicalize()
             .map_err(|error| format!("{}: {error}", path.display()))?;
         if is_managed_run_path(self.workspace(), &resolved) {
-            return Err(
-                "Select an independently saved run. Managed run generations follow the active run."
-                    .into(),
-            );
+            crate::store::with_kept_run(self.workspace(), &resolved, |_| Ok(()))?;
         }
         if !resolved.is_dir() {
             return Err("Select a saved run directory or bundle".into());
@@ -296,7 +293,11 @@ impl RunSnapshot {
                 if checked != *root {
                     return Err("Saved run directory was replaced by an alias".into());
                 }
-                resolved(root).map(Some)
+                if is_managed_run_path(self.session.workspace(), root) {
+                    crate::store::with_kept_run(self.session.workspace(), root, resolved).map(Some)
+                } else {
+                    resolved(root).map(Some)
+                }
             }
         }
     }
@@ -371,4 +372,40 @@ pub fn read_run_summary(root: &Path) -> Result<RunSummary, String> {
         }
     }
     Ok(result)
+}
+
+#[cfg(test)]
+mod retained_tests {
+    use super::*;
+    #[test]
+    fn retained_results_can_be_selected_and_release_rejects_further_reads() {
+        let directory = tempfile::tempdir().unwrap();
+        let workspace = directory.path();
+        let session = Session::new(InspectionRequest {
+            workspace: workspace.into(),
+            invocation_dir: workspace.into(),
+            config: None,
+            gpkg_path: None,
+            engine_executable: None,
+            engine_input_dir: None,
+        });
+        let first = crate::store::new_run_stage_for(workspace, "first").unwrap();
+        std::fs::write(first.join("manifest.toml"), b"{}").unwrap();
+        let first = crate::store::publish_run(workspace, &first).unwrap();
+        crate::store::keep_run_results(workspace, "first", true).unwrap();
+        let second = crate::store::new_run_stage_for(workspace, "second").unwrap();
+        std::fs::write(second.join("manifest.toml"), b"{}").unwrap();
+        crate::store::publish_run(workspace, &second).unwrap();
+        session
+            .select_run(RunSelection::Saved(first.clone()))
+            .unwrap();
+        let snapshot = session.run_snapshot();
+        let selected = snapshot
+            .read(None, |root, _| Ok(root.to_path_buf()))
+            .unwrap();
+        assert_eq!(selected, Some(first));
+        crate::store::keep_run_results(workspace, "first", false).unwrap();
+        let rejected = snapshot.read(None, |_, _| Ok(())).is_err();
+        assert!(rejected);
+    }
 }

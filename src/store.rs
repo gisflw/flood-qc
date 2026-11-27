@@ -132,3 +132,4 @@ pub use self::imerg::{
 pub(crate) use self::run_cache::new_run_stage;
 
 pub(crate) use self::draft::record_bytes as draft_record_bytes;
+pub(crate) use self::run_cache::{with_available_run, with_kept_run};

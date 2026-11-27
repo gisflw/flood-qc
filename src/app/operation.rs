@@ -780,9 +780,10 @@ pub(super) fn run_preparation_locked(
     control: &OperationControl,
     workspace: &Path,
     _lock: &std::fs::File,
+    reference: (chrono::NaiveDateTime, &str),
     prepare: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
-    run_attempt(workspace, control, None, |run_root, attempt| {
+    run_attempt(workspace, control, reference, |run_root, attempt| {
         let prepared = run_root.join("preparation");
         let report = prepare(workspace, prepared, control)?;
         let admitted = admit_preparation(&report.prepared)?;
@@ -815,7 +816,7 @@ pub(super) fn run_captured_locked(
     run_attempt(
         workspace,
         control,
-        Some((reference, time_zone)),
+        (reference, time_zone),
         |run_root, attempt| {
             let base = workspace.join("work");
             fs::create_dir_all(&base).map_err(|e| store_error(&base, e))?;
@@ -903,7 +904,7 @@ pub(super) fn execute_locked(
     run_attempt(
         workspace,
         control,
-        Some((reference, &zone)),
+        (reference, &zone),
         |run_root, attempt| {
             let staged = crate::store::stage_preparation(
                 workspace,
@@ -927,21 +928,12 @@ pub(super) fn execute_locked(
 fn run_attempt(
     workspace: &Path,
     control: &OperationControl,
-    reference: Option<(chrono::NaiveDateTime, &str)>,
+    reference: (chrono::NaiveDateTime, &str),
     execute: impl FnOnce(&Path, &mut RunAttemptManifest) -> Result<ExecutionReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
     control.check()?;
     use chrono::{Offset, TimeZone};
-    let configured = super::read_workspace_config(&super::workspace_config_path(workspace))
-        .ok()
-        .and_then(|c| c.run);
-    let fallback = configured
-        .as_ref()
-        .and_then(|run| super::workspace::reference(run, None, chrono::Utc::now()).ok());
-    let (reference, zone) = reference
-        .map(|(r, z)| (r, z.to_owned()))
-        .or_else(|| fallback.map(|r| (r.naive_local(), r.timezone().name().to_owned())))
-        .unwrap_or((chrono::Utc::now().naive_utc(), "UTC".into()));
+    let (reference, zone) = reference;
     let zone: chrono_tz::Tz = zone.parse().map_err(|e| store_error(workspace, e))?;
     let zoned = zone
         .from_local_datetime(&reference)
@@ -986,6 +978,15 @@ fn run_attempt(
     } else {
         Ok(())
     };
+    let cleanup = cleanup.and_then(|()| {
+        let materialized = workspace
+            .join("work")
+            .join(format!(".inputs-{}", attempt.attempt_id));
+        if materialized.exists() {
+            fs::remove_dir_all(&materialized).map_err(|e| store_error(&materialized, e))?;
+        }
+        Ok(())
+    });
     let result = result.and_then(|report| cleanup.map(|()| report));
 
     let result = result.and_then(|report| {
@@ -1612,17 +1613,14 @@ pub fn with_active_run<T>(
 }
 
 pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
-    if let Some(workspace) = root.ancestors().nth(3)
+    if let Some(workspace) = root.parent().and_then(Path::parent)
         && root.parent() == Some(run_cache_root(workspace).as_path())
+        && run_cache_root(workspace).join("access.lock").is_file()
     {
-        return with_active_run(workspace, |active| {
-            if active != root {
-                return Err("Run generation is no longer active".into());
-            }
-            read_trial_artifacts(root).map_err(|error| error.to_string())
+        return crate::store::with_available_run(workspace, root, true, |path| {
+            read_trial_artifacts(path).map_err(|e| e.to_string())
         })
-        .map_err(|error| store_error(root, error))?
-        .ok_or_else(|| store_error(root, "Workspace has no active run"));
+        .map_err(|e| store_error(root, e));
     }
     read_trial_artifacts(root)
 }

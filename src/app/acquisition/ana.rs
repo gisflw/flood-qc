@@ -96,12 +96,14 @@ fn windows(dates: Vec<NaiveDate>, limit: u32) -> Vec<(NaiveDate, NaiveDate)> {
     windows
 }
 
+type RegistrationCoverage<'a> = (&'a [String], &'a [NaiveDate], Option<(NaiveDate, i64)>);
+
 fn import_readings(
     store: &mut ObservationStore,
     reference: DateTime<Tz>,
     station: &AnaStation,
     readings: Vec<AnaReading>,
-    coverage: Option<(&[String], &[NaiveDate], Option<(NaiveDate, i64)>)>,
+    coverage: Option<RegistrationCoverage<'_>>,
     provenance: &[ObservationProvenance],
 ) -> Result<usize, String> {
     let hourly = aggregate_ana(

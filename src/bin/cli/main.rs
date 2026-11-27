@@ -613,7 +613,7 @@ impl RunOptions {
 #[derive(Subcommand)]
 enum InputCommand {
     /// Register the current session selections for later execution or export.
-    Capture(RunOptions),
+    Capture(Box<RunOptions>),
     /// Validate and inspect an independently saved input set.
     Open {
         #[arg(long)]
@@ -1107,7 +1107,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 InputCommand::Capture(options) => {
                     let json = options.json;
                     let force = options.force;
-                    let session = options.session()?;
+                    let session = (*options).session()?;
                     let result = progress::run(&mut out, json, |control| {
                         mgb_ops::app::capture_workspace_inputs(
                             &session,

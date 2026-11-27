@@ -141,15 +141,16 @@ fn register_files(
         };
         if let Some((object, member)) = canonical {
             let mut member = member;
-            if object == "forecasts" && !base.join(&object).join(&member).is_file() {
-                if let Some(parent) = member.parent() {
-                    let candidate = parent.join("native.nc");
-                    if base.join(&object).join(&candidate).is_file()
-                        && super::digest_file(&base.join(&object).join(&candidate))?
-                            == (file.sha256.clone(), file.size)
-                    {
-                        member = candidate;
-                    }
+            if object == "forecasts"
+                && !base.join(&object).join(&member).is_file()
+                && let Some(parent) = member.parent()
+            {
+                let candidate = parent.join("native.nc");
+                if base.join(&object).join(&candidate).is_file()
+                    && super::digest_file(&base.join(&object).join(&candidate))?
+                        == (file.sha256.clone(), file.size)
+                {
+                    member = candidate;
                 }
             }
             let existing = base.join(&object).join(&member);
@@ -195,7 +196,7 @@ fn register_files(
         let recorded: InputReference = read_draft(&destination.join("object.toml"))?;
         if recorded.sha256 != file.sha256
             || recorded.size != file.size
-            || super::digest_file(&destination.join(object_filename(file)))?
+            || super::digest_file(&destination.join(object_filename(&recorded)))?
                 != (file.sha256.clone(), file.size)
         {
             return Err("registered object failed integrity verification".into());
@@ -203,7 +204,7 @@ fn register_files(
         objects.push(RegisteredFile {
             path: file.path.clone(),
             object: id,
-            member: None,
+            member: Some(object_filename(&recorded).into()),
         });
     }
     manifest.objects = objects;
@@ -296,13 +297,12 @@ pub fn read_input_set(root: &Path) -> Result<InputSetManifest, String> {
             return Err("input-set payload does not match its complete index".into());
         }
     }
-    if let Some(snapshot) = &manifest.observation_snapshot {
-        if snapshot.path != Path::new("sources/observations.sqlite")
+    if let Some(snapshot) = &manifest.observation_snapshot
+        && (snapshot.path != Path::new("sources/observations.sqlite")
             || super::digest_file(&root.join(&snapshot.path))?
-                != (snapshot.sha256.clone(), snapshot.size)
-        {
-            return Err("invalid portable observation snapshot".into());
-        }
+                != (snapshot.sha256.clone(), snapshot.size))
+    {
+        return Err("invalid portable observation snapshot".into());
     }
     if root.join("sources").is_dir() || root.join("baseline/Input").is_dir() {
         let mut actual = super::operation::collect_selected_inputs(
@@ -675,4 +675,44 @@ pub(crate) fn clean_materialized_inputs(root: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    #[test]
+    fn identical_baseline_members_with_different_extensions_share_one_object() {
+        let temporary = tempfile::tempdir().unwrap();
+        let workspace = temporary.path();
+        let sources = workspace.join("work/source");
+        fs::create_dir_all(sources.join("baseline/Input")).unwrap();
+        fs::write(sources.join("baseline/Input/MINI.gtp"), b"same geometry").unwrap();
+        fs::write(sources.join("baseline/Input/MINI.mgb"), b"same geometry").unwrap();
+        let files = super::super::collect_inputs(&sources).unwrap();
+        let mut manifest = InputSetManifest {
+            id: "test".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            engine: files[0].clone(),
+            recipe: serde_json::Value::Null,
+            files,
+            objects: Vec::new(),
+            observation_snapshot: None,
+        };
+        register_files(workspace, &sources, &mut manifest).unwrap();
+        assert_eq!(manifest.objects[0].object, manifest.objects[1].object);
+        let selection = workspace.join("assets/selections/test");
+        fs::create_dir_all(&selection).unwrap();
+        for file in &manifest.files {
+            assert_eq!(
+                fs::read(input_member(&selection, &manifest, file).unwrap()).unwrap(),
+                b"same geometry"
+            );
+        }
+        assert_eq!(
+            fs::read_dir(workspace.join("assets/objects"))
+                .unwrap()
+                .count(),
+            1
+        );
+    }
 }

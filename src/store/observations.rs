@@ -2185,7 +2185,7 @@ mod sqlite_tests {
                     &["rain".into()],
                     &window,
                     &flags,
-                    &[sample.clone()]
+                    std::slice::from_ref(&sample)
                 )
                 .is_err()
         );
@@ -2196,7 +2196,7 @@ mod sqlite_tests {
                 &["rain".into()],
                 &window,
                 &flags,
-                &[sample.clone()],
+                std::slice::from_ref(&sample),
             )
             .unwrap();
         assert_eq!(excluded, BTreeSet::from([("rain".into(), at)]));

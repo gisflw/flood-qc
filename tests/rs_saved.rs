@@ -37,13 +37,17 @@ fn saved_rs_full_workflow() {
     eprintln!("RS qualification artifacts: {}", root.display());
     let observations = PathBuf::from(
         std::env::var_os("MGB_RS_OBSERVATIONS")
-            .expect("MGB_RS_OBSERVATIONS must name an exported canonical observation set"),
+            .expect("MGB_RS_OBSERVATIONS must name a canonical SQLite observation snapshot"),
     );
     assert!(
-        observations.is_dir(),
-        "MGB_RS_OBSERVATIONS must be a directory"
+        observations.is_file(),
+        "MGB_RS_OBSERVATIONS must be a SQLite file"
     );
-    copy_tree(&observations, &root.join("observations")).unwrap();
+    let original_store = ObservationStore::open_read_only(&observations).unwrap();
+    ObservationStore::open_revision(&observations, original_store.revision().unwrap())
+        .unwrap()
+        .export_revision(&root.join("observations"))
+        .unwrap();
     let store = ObservationStore::open_read_only(&root.join("observations")).unwrap();
     let station_ids: Vec<_> = store
         .station_locations()
@@ -82,7 +86,7 @@ fn saved_rs_full_workflow() {
         let source_path = root.join(format!("{provider}.grib2"));
         fs::copy(reference.join(source), &source_path).unwrap();
         let text = format!(
-            "schema_version = 1\nprovider = \"{provider}\"\nmodel = \"{model}\"\nproduct = \"fc\"\ncycle_utc = \"2026-07-20T00:00:00Z\"\noperation_timezone = \"America/Sao_Paulo\"\nsource = \"{}\"\ncrop_bbox = [-79.13530,-50.61209,-28.67245,-10.08729]\ncatalog = \"forecast-assets\"\nartifact_root = \"forecast-assets\"\n",
+            "provider = \"{provider}\"\nmodel = \"{model}\"\nproduct = \"fc\"\ncycle_utc = \"2026-07-20T00:00:00Z\"\noperation_timezone = \"America/Sao_Paulo\"\nsource = \"{}\"\ncrop_bbox = [-79.13530,-50.61209,-28.67245,-10.08729]\ncatalog = \"forecast-assets\"\nartifact_root = \"forecast-assets\"\n",
             source_path.display()
         );
         let path = root.join(format!("normalize-{provider}.toml"));
@@ -103,8 +107,7 @@ fn saved_rs_full_workflow() {
         .collect::<Vec<_>>()
         .join(",");
     let request = format!(
-        r#"schema_version = 1
-time_zone = "America/Sao_Paulo"
+        r#"time_zone = "America/Sao_Paulo"
 reference_time = "2026-07-20T00:00:00"
 step_seconds = 3600
 historical_first_end = "2026-07-10T00:00:00"

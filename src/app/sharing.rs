@@ -66,9 +66,15 @@ fn checked_bundle(root: &Path) -> Result<BundleManifest, String> {
     super::read_trial(root).map_err(|error| error.to_string())?;
     let manifest = read_retained_manifest(root)?;
     if root.join("legacy-manifest.json").exists() {
-        let reference=manifest.inputs.iter().find(|f|f.path==Path::new("legacy-manifest.json")).ok_or("unregistered legacy manifest evidence")?;
-        if manifest.recipe["legacy_manifest_sha256"].as_str()!=Some(reference.sha256.as_str()) {return Err("legacy manifest binding differs".into());}
-        crate::store::verify_inputs(root,std::slice::from_ref(reference))?;
+        let reference = manifest
+            .inputs
+            .iter()
+            .find(|f| f.path == Path::new("legacy-manifest.json"))
+            .ok_or("unregistered legacy manifest evidence")?;
+        if manifest.recipe["legacy_manifest_sha256"].as_str() != Some(reference.sha256.as_str()) {
+            return Err("legacy manifest binding differs".into());
+        }
+        crate::store::verify_inputs(root, std::slice::from_ref(reference))?;
     }
     let run_input_id = manifest
         .recipe
@@ -206,9 +212,13 @@ fn export_run_directory(
         .transpose()?;
     publish_directory(destination, |stage| {
         copy_member(run, Path::new("manifest.toml"), stage)?;
-        if let Some(reference)=manifest.inputs.iter().find(|f|f.path==Path::new("legacy-manifest.json")) {
-            crate::store::verify_inputs(run,std::slice::from_ref(reference))?;
-            copy_member(run,Path::new("legacy-manifest.json"),stage)?;
+        if let Some(reference) = manifest
+            .inputs
+            .iter()
+            .find(|f| f.path == Path::new("legacy-manifest.json"))
+        {
+            crate::store::verify_inputs(run, std::slice::from_ref(reference))?;
+            copy_member(run, Path::new("legacy-manifest.json"), stage)?;
         }
         copy_optional(run, Path::new("scenarios/.history/logs"), stage)?;
         let mut scenarios = std::collections::HashSet::new();
