@@ -63,6 +63,5 @@ mgb-ops-desktop /selected/workspace
 ```
 
 Do not run a debug build after this final cleanup. Preserve external data under
-`target/`, and leave disposable validation outputs under `runs/` removed after
-review. After merging PRs, reconcile the local checkout and preserve pending work
+`target/`, and leave disposable validation outputs under `runs/` . After merging PRs, reconcile the local checkout and preserve pending work  
 before reporting the repository state.
