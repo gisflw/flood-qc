@@ -439,7 +439,7 @@ impl ObservationStore {
             return Err(error("observation database does not exist"));
         }
         let store = Self {
-            path: path.into(),
+            path: path.canonicalize().map_err(io_error)?,
             writable,
             selected_revision,
         };
@@ -2103,6 +2103,40 @@ impl ObservationStore {
 #[cfg(test)]
 mod sqlite_tests {
     use super::*;
+    #[cfg(unix)]
+    #[test]
+    fn symlink_aliases_share_the_same_operation_guard() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("registry.sqlite");
+        let store = ObservationStore::create(&path, "UTC").unwrap();
+        let link = directory.path().join("alias.sqlite");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        let alias = ObservationStore::open_read_only(&link).unwrap();
+        let guard = store.read_lock().unwrap();
+        let (ready, started) = std::sync::mpsc::sync_channel(0);
+        let (done, finished) = std::sync::mpsc::sync_channel(1);
+        let worker = std::thread::spawn(move || {
+            ready.send(()).unwrap();
+            done.send(alias.revision()).unwrap();
+        });
+        started
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        let blocked = finished
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err();
+        drop(guard);
+        assert!(blocked);
+        assert_eq!(
+            finished
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap()
+                .unwrap(),
+            1
+        );
+        worker.join().unwrap();
+    }
+
     #[test]
     #[ignore = "regional legacy interchange import; requires runs/legacy-registry-export"]
     fn regional_interchange_import() {
