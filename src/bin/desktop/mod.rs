@@ -746,6 +746,15 @@ impl Monitoring {
             return;
         };
         self.run_check = Instant::now() + Duration::from_secs(2);
+        if let Ok(kept) = mgb_ops::app::retained_workspace_results(&project.workspace) {
+            self.comparison_runs
+                .retain(|path| !path.starts_with(project.workspace.join("results")));
+            for path in kept {
+                if !self.comparison_runs.contains(&path) {
+                    self.comparison_runs.push(path);
+                }
+            }
+        }
         let active = mgb_ops::app::discover_trials(&project.workspace)
             .map(|roots| roots.into_iter().next())
             .map_err(|error| error.to_string());

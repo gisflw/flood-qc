@@ -82,7 +82,7 @@ A model rainfall request has this shape:
   },
   "selections": [{
     "kind": "model",
-    "root": "/regional/workspace/cache/run/<generation>",
+    "root": "/regional/workspace/results/<run-id>",
     "scenario_id": "zero",
     "variable": "rain"
   }]

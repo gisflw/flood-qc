@@ -44,7 +44,7 @@ provider access, or MGB. The architecture gate also runs under `cargo test`.
 | Acquire ANA observations and ECMWF/NOAA forecasts | `observation acquire`, `forecast acquire`, or Desktop **Processing → Operation → Acquire inputs** | [Acquisition and Run All](docs/contracts/acquisition.md) |
 | Acquire standalone IMERG, BNDMET rain and wind, or ONS hourly flow files | `acquisition` | [Standalone acquisition](docs/contracts/acquisition.md#standalone-source-acquisition) |
 | Normalize a saved forecast | `forecast normalize` | [Forecast inputs and catalog](docs/contracts/forecasts.md) |
-| Capture, save, or replay run inputs | `inputs capture`, `inputs save`, `inputs execute` | [Run input sets](docs/contracts/inputs.md) |
+| Capture or replay registered inputs | `inputs capture`, `inputs execute` | [Registered inputs](docs/contracts/inputs.md) |
 | Prepare and execute a workspace operation | `operation prepare`, then `operation execute` | [Execution paths and retained artifacts](docs/contracts/operations.md#run-from-a-workspace) |
 | Run an operation and update the rainfall display | Desktop **Processing → Operation → New run → Run All** | [Operational run setup](docs/contracts/desktop.md#controlled-jobs) |
 | Monitor rainfall or compare explicitly saved runs | Desktop **Map → Rainfall**, or **Processing → Review and runs → Run comparison** | [Desktop controls](docs/contracts/desktop.md#common-tasks) |
@@ -78,7 +78,7 @@ path rules, findings, and inspection limits. Library callers use the same
 
 For a visual tour, start with the [workspace tree and data roles](docs/contracts/workspace.md#operating-layout),
 then follow [station acquisition](docs/contracts/acquisition.md#ana-observations),
-[input capture and replay](docs/contracts/inputs.md#capture-save-and-replay),
+[input capture and replay](docs/contracts/inputs.md#capture-export-and-replay),
 and [execution](docs/contracts/operations.md#run-from-a-workspace).
 The [architecture flow](docs/architecture.md#operational-data-flow) explains
 which module owns each stage.
@@ -86,19 +86,16 @@ which module owns each stage.
 Set the routine run window and providers in the workspace’s `config.toml`.
 Import station metadata as described in the [acquisition
 contract](docs/contracts/acquisition.md). Run All acquires configured inputs,
-freezes the selected data and settings, executes MGB and publishes the results.
+registers the selected data and settings, executes MGB and publishes the results.
 
 ```sh
 cargo run -- operation run-all --workspace "$workspace"
-cargo run -- inputs save --workspace "$workspace" --output /archive/july20-inputs
 ```
 
-Choose a new directory under an existing parent for the independent save. When
-replacing unsaved inputs, supply `--save-inputs-to PATH` or `--discard-inputs`.
-Past attempts retain manifests. Export a completed run to keep its full results.
-For a later replay with a matching installed engine, see [run input
-sets](docs/contracts/inputs.md). For one-run changes, see [scenario
-selection](docs/contracts/operations.md#scenarios).
+Registered versions and attempt manifests remain available for later replay.
+Keep or export a completed run to retain its full results. For independent
+input export and replay with a matching engine, see [registered inputs](docs/contracts/inputs.md).
+For one-run changes, see [scenario selection](docs/contracts/operations.md#scenarios).
 
 ## Desktop interface
 
@@ -152,7 +149,7 @@ workspace. The [HGE emblem](assets/branding/README.md) and
 - [Architecture](docs/architecture.md): product scope, ownership, lifecycle, and enforcement.
 - [Series and CSV](docs/contracts/series.md): rainfall summaries, chart queries and selected-series exports.
 - [Local geometry](docs/contracts/spatial.md): mini topology, map coordinates and station links.
-- [Canonical observations](docs/contracts/observations.md): Parquet 2, review selection, and observed forcing APIs.
+- [Canonical observations](docs/contracts/observations.md): SQLite revisions, review selection, and observed forcing APIs.
 - [Migration summary](docs/migration/summary.md): temporary capability tracking, validation status, and next work.
 - [Agent guidance](AGENTS.md): change and documentation rules.
 - [Legacy worktree record](references/retirement_record.md), [Python map](references/python_map.md),

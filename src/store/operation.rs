@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, Metadata, OpenOptions},
-    io::{Read, Write},
+    io::Read,
     path::{Component, Path, PathBuf},
 };
 
@@ -24,7 +24,6 @@ pub struct InputReference {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HotStartManifest {
-    pub schema_version: u32,
     pub saved_at: chrono::NaiveDateTime,
     pub time_zone: String,
     pub scenario: String,
@@ -61,7 +60,6 @@ pub struct ScenarioRecord {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationManifest {
-    pub schema_version: u32,
     #[serde(default)]
     pub preparation_sha256: Option<String>,
     pub state: String,
@@ -119,6 +117,23 @@ pub(super) fn collect_selected_inputs(
             if kind.is_dir() {
                 visit(root, &path, output)?;
             } else if kind.is_file() {
+                // SQLite access guards contain no data and are recreated on open.
+                if path
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().ends_with(".sqlite.lock"))
+                    && root
+                        .join(&path)
+                        .metadata()
+                        .map_err(|e| e.to_string())?
+                        .len()
+                        == 0
+                {
+                    let database =
+                        PathBuf::from(root.join(&path).to_string_lossy().trim_end_matches(".lock"));
+                    if database.is_file() {
+                        continue;
+                    }
+                }
                 let (sha256, size) = digest_file(&root.join(&path))?;
                 output.push(InputReference {
                     kind: path
@@ -267,12 +282,24 @@ pub(super) fn verify_input_contents(path: &Path, input: &InputReference) -> Resu
 }
 
 pub fn copy_tree(source: &Path, destination: &Path) -> Result<(), String> {
-    copy_tree_inner(source, destination, true)
+    copy_tree_inner(source, destination, true).map_err(|e| {
+        format!(
+            "copy {} to {}: {e}",
+            source.display(),
+            destination.display()
+        )
+    })
 }
 
 /// Copy into private staging. The caller discards the copy or syncs it before publication.
 pub(crate) fn copy_staged_tree(source: &Path, destination: &Path) -> Result<(), String> {
-    copy_tree_inner(source, destination, false)
+    copy_tree_inner(source, destination, false).map_err(|e| {
+        format!(
+            "copy {} to {}: {e}",
+            source.display(),
+            destination.display()
+        )
+    })
 }
 
 fn copy_tree_inner(source: &Path, destination: &Path, sync: bool) -> Result<(), String> {
@@ -343,26 +370,16 @@ fn make_working_input_writable(path: &Path) -> Result<(), String> {
 }
 
 pub fn write_run_manifest(root: &Path, manifest: &OperationManifest) -> Result<(), String> {
-    let temporary = root.join("manifest.json.tmp");
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|e| e.to_string())?;
-    serde_json::to_writer_pretty(&mut file, manifest).map_err(|e| e.to_string())?;
-    file.write_all(b"\n").map_err(|e| e.to_string())?;
-    file.sync_all().map_err(|e| e.to_string())?;
-    fs::rename(&temporary, root.join("manifest.json")).map_err(|e| e.to_string())?;
+    super::write_draft(&root.join("manifest.toml"), manifest)?;
     sync_directory(root)
 }
 
 pub fn read_retained_manifest(root: &Path) -> Result<OperationManifest, String> {
-    let manifest: OperationManifest = super::read_draft(&root.join("manifest.json"))?;
+    let manifest: OperationManifest = super::read_draft(&root.join("manifest.toml"))?;
     if manifest.state == "prepared" {
         return read_operation_manifest(root);
     }
-    if manifest.schema_version != 1
-        || !["completed", "failed"].contains(&manifest.state.as_str())
+    if !["completed", "failed"].contains(&manifest.state.as_str())
         || !manifest
             .scenarios
             .iter()
@@ -374,9 +391,8 @@ pub fn read_retained_manifest(root: &Path) -> Result<OperationManifest, String> 
 }
 
 pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String> {
-    let manifest: OperationManifest = super::read_draft(&root.join("manifest.json"))?;
-    if manifest.schema_version != 1
-        || manifest.state != "prepared"
+    let manifest: OperationManifest = super::read_draft(&root.join("manifest.toml"))?;
+    if manifest.state != "prepared"
         || manifest.scenarios.is_empty()
         || manifest
             .scenarios
@@ -436,11 +452,11 @@ pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String>
     validate_complete_inputs(
         root,
         &manifest.inputs,
-        &[Path::new("manifest.json"), Path::new("input-set.json")],
+        &[Path::new("manifest.toml"), Path::new("input-set.toml")],
     )?;
-    if root.join("input-set.json").is_file() {
-        let frozen: super::InputSetManifest = super::read_draft(&root.join("input-set.json"))?;
-        let selected: Vec<_> = manifest
+    if root.join("input-set.toml").is_file() {
+        let frozen: super::InputSetManifest = super::read_draft(&root.join("input-set.toml"))?;
+        let mut selected: Vec<_> = manifest
             .inputs
             .iter()
             .filter(|file| {
@@ -448,7 +464,13 @@ pub fn read_operation_manifest(root: &Path) -> Result<OperationManifest, String>
             })
             .cloned()
             .collect();
-        if frozen.files != selected
+        let mut expected = frozen.files;
+        if let Some(snapshot) = frozen.observation_snapshot {
+            expected.push(snapshot);
+        }
+        selected.sort_by(|a, b| a.path.cmp(&b.path));
+        expected.sort_by(|a, b| a.path.cmp(&b.path));
+        if expected != selected
             || frozen.recipe != manifest.recipe
             || !manifest.inputs.contains(&frozen.engine)
         {

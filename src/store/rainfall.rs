@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, Metadata};
 use std::path::{Path, PathBuf};
 
-const RAINFALL_MANIFEST: &str = "manifest.json";
+const RAINFALL_MANIFEST: &str = "manifest.toml";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -24,7 +24,6 @@ pub struct RainfallCacheInfo {
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RainfallManifest {
-    schema_version: u32,
     info: RainfallCacheInfo,
     inputs: Vec<InputReference>,
 }
@@ -37,8 +36,7 @@ fn safe_name(name: &str) -> bool {
 }
 
 fn validate(value: &RainfallManifest) -> Result<(), String> {
-    if value.schema_version != 1
-        || run_stage_id(Path::new(&value.info.generation)).is_err()
+    if run_stage_id(Path::new(&value.info.generation)).is_err()
         || value.info.time_zone.parse::<chrono_tz::Tz>().is_err()
         || value.info.coverage.start >= value.info.reference
         || value.info.coverage.end <= value.info.reference
@@ -224,7 +222,6 @@ pub(crate) fn stage_rainfall(
     fs::create_dir(&root).map_err(|error| error.to_string())?;
     build(&root)?;
     let manifest = RainfallManifest {
-        schema_version: 1,
         info,
         inputs: collect_inputs(&root)?,
     };
@@ -293,7 +290,6 @@ mod tests {
         let build = |text: &str| {
             let run = new_run_stage(workspace.path()).unwrap();
             let manifest = super::super::OperationManifest {
-                schema_version: 1,
                 preparation_sha256: None,
                 state: "completed".into(),
                 recipe: serde_json::Value::Null,
@@ -315,7 +311,7 @@ mod tests {
                     station_result: None,
                 }],
             };
-            write_draft(&run.join("manifest.json"), &manifest).unwrap();
+            write_draft(&run.join("manifest.toml"), &manifest).unwrap();
             let info = stage_rainfall(
                 &run,
                 reference,

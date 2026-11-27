@@ -729,7 +729,7 @@ impl Forms {
             self.job_path = "config/automation.toml".into();
         }
         if self.job_text.is_empty() {
-            self.job_text = "schema_version = 1\n".into();
+            self.job_text = "".into();
         }
         path_field(
             ui,

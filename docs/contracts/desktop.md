@@ -58,7 +58,7 @@ retain the previous display until the new generation is ready. Files shows the d
 run's status and provenance. Missing or corrupt scenario outputs produce
 findings. For previous attempts, see the [run history](operations.md#active-run-and-rainfall-cache).
 
-Use **Files → Open comparison run** to open a retained run or exported bundle.
+Kept workspace results appear in **Files → Run source**. Use **Files → Open comparison run** to open a kept run or an exported bundle.
 The Files selector keeps explicitly opened runs available until the workspace
 closes. Choose **Active run** to return to the managed generation.
 **Share runs → Import bundle** copies a bundle to a new folder at the selected
@@ -263,9 +263,7 @@ Use **Restore defaults** to return to the configured scenarios or automatic
 selection. Each scenario can use zero rain, a normalized forecast, or an earlier
 scenario as its base. Add or reorder working-grid edits and preview their effects.
 See [scenarios](operations.md#scenarios) for time windows, region and
-transformation semantics. Changes apply to this session. The [input-set
-contract](inputs.md) describes retaining or discarding frozen inputs before
-replacement or leaving the workspace.
+transformation semantics. Changes apply to this session. The [input contract](inputs.md) describes registered versions and independent exports.
 
 **Processing → Review and runs → Observation review** shows availability and spatial rainfall checks.
 Load, edit, and save the ordered workspace observation edits from the same page.
@@ -300,3 +298,7 @@ remain open. Basemap equivalence to the legacy Carto style is unqualified.
 
 The saved-data and acquisition forms use the same validated workflows as the
 CLI. See the [assistant contract](assistant.md) for assistant adapter settings.
+
+When IMERG is selected for historical rainfall, **Register IMERG NetCDF…**
+registers complete UTC-day canonical outputs. Registration and catalog refresh
+run as background jobs; the selector retains the exact chosen object IDs.

@@ -933,16 +933,58 @@ fn json_literals_check_embedded_rust_paths() {
     assert!(!check("app", r#"fn f() { json!({"key":1}); }"#).is_empty());
 }
 
+// Cargo.lock includes optional dependencies. Qualification is allowed only in its
+// named test feature; these checks do not replace a resolved-feature/source audit.
+// SQLite is an owned-store implementation detail. Defaults remain disabled;
+// no native SQLite or legacy Parquet graph is accepted by this source gate.
 #[test]
-fn operational_storage_has_no_sqlite_dependency() {
+fn registered_storage_dependency_policy() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("Cargo.toml")).unwrap()).unwrap();
+    let dependency = &manifest["dependencies"]["turso"];
+    assert_eq!(dependency["version"].as_str(), Some("=0.9.0-pre.6"));
+    assert_eq!(dependency["default-features"].as_bool(), Some(false));
+    assert!(dependency.get("optional").is_none());
+    assert!(dependency.get("features").is_none());
+    assert!(dependency.get("path").is_none());
+    assert!(dependency.get("git").is_none());
+    assert!(manifest["dependencies"].get("parquet").is_none());
     let lock: toml::Value =
         toml::from_str(&fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap();
     for package in lock["package"].as_array().unwrap() {
         let name = package["name"].as_str().unwrap();
         assert!(
-            !name.contains("sqlite"),
-            "operational SQLite dependency: {name}"
+            !["libsqlite3-sys", "rusqlite", "parquet", "zstd-sys"].contains(&name),
+            "unapproved persistence dependency {name}"
         );
+        if name.starts_with("turso") {
+            assert_eq!(package["version"].as_str(), Some("0.9.0-pre.6"));
+            assert!(
+                [
+                    "turso",
+                    "turso_core",
+                    "turso_ext",
+                    "turso_macros",
+                    "turso_parser",
+                    "turso_sdk_kit",
+                    "turso_sdk_kit_macros",
+                    "turso_sqlite"
+                ]
+                .contains(&name)
+            );
+        }
+    }
+    let mut files = Vec::new();
+    sources(&root.join("src"), &mut files);
+    for path in files {
+        if !path.starts_with(root.join("src/store")) {
+            let source = fs::read_to_string(&path).unwrap();
+            assert!(
+                !source.contains("turso::"),
+                "database API outside store: {}",
+                path.display()
+            );
+        }
     }
 }

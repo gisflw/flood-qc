@@ -59,7 +59,6 @@ pub struct ReleaseExtrapolation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ReservoirSchedules {
-    pub schema_version: u32,
     pub time_zone: String,
     pub samples: Vec<ReservoirScheduleSample>,
 }
@@ -75,7 +74,6 @@ pub struct ReservoirScheduleSample {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct WindObservations {
-    pub schema_version: u32,
     pub time_zone: String,
     pub samples: Vec<WindSample>,
 }
@@ -114,13 +112,9 @@ pub(crate) fn whole_hour(time: NaiveDateTime) -> bool {
 }
 
 fn saved_samples<'a>(
-    version: u32,
     time_zone: &str,
     samples: impl Iterator<Item = (&'a str, NaiveDateTime)>,
 ) -> Result<(), ValueError> {
-    if version != 1 {
-        return Err(ValueError("unsupported forcing schema version".into()));
-    }
     let zone = time_zone
         .parse::<chrono_tz::Tz>()
         .map_err(|_| ValueError("invalid forcing timezone".into()))?;
@@ -142,7 +136,6 @@ fn saved_samples<'a>(
 impl ReservoirSchedules {
     pub fn validate(&self) -> Result<(), ValueError> {
         saved_samples(
-            self.schema_version,
             &self.time_zone,
             self.samples
                 .iter()
@@ -163,7 +156,6 @@ impl ReservoirSchedules {
 impl WindObservations {
     pub fn validate(&self) -> Result<(), ValueError> {
         saved_samples(
-            self.schema_version,
             &self.time_zone,
             self.samples
                 .iter()
@@ -176,139 +168,33 @@ impl WindObservations {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct ScheduleRow {
-    series_id: String,
-    at: NaiveDateTime,
-    flow_m3s: Option<f64>,
-}
-#[derive(Serialize, Deserialize)]
-struct WindRow {
-    series_id: String,
-    at: NaiveDateTime,
-    speed_mps: Option<f64>,
-    direction_degrees: Option<f64>,
-}
-fn forcing_metadata(kind: &str, zone: &str) -> std::collections::HashMap<String, String> {
-    [
-        ("kind".into(), kind.into()),
-        ("version".into(), "1".into()),
-        ("time_zone".into(), zone.into()),
-    ]
-    .into()
-}
-fn forcing_zone(path: &Path, kind: &str) -> Result<String, ValueError> {
-    let metadata = super::parquet::read_metadata(path).map_err(ValueError)?;
-    if metadata.get("version").map(String::as_str) != Some("1")
-        || metadata.get("kind").map(String::as_str) != Some(kind)
-    {
-        return Err(ValueError("unsupported forcing Parquet schema".into()));
-    }
-    metadata
-        .get("time_zone")
-        .cloned()
-        .ok_or_else(|| ValueError("missing forcing timezone".into()))
-}
-fn schedule_columns() -> [(&'static str, super::parquet::Kind); 3] {
-    use super::parquet::Kind::{Float, Text};
-    [("series_id", Text), ("at", Text), ("flow_m3s", Float)]
-}
-fn wind_columns() -> [(&'static str, super::parquet::Kind); 4] {
-    use super::parquet::Kind::{Float, Text};
-    [
-        ("series_id", Text),
-        ("at", Text),
-        ("speed_mps", Float),
-        ("direction_degrees", Float),
-    ]
-}
 pub fn write_reservoir_schedules(
     path: &Path,
     schedules: &ReservoirSchedules,
 ) -> Result<(), ValueError> {
     schedules.validate()?;
-    let rows = schedules
-        .samples
-        .iter()
-        .map(|s| ScheduleRow {
-            series_id: s.series_id.clone(),
-            at: s.at,
-            flow_m3s: s.flow_m3s,
-        })
-        .collect::<Vec<_>>();
-    super::parquet::write_with_metadata(
-        path,
-        &schedule_columns(),
-        &rows,
-        forcing_metadata("reservoir_schedules", &schedules.time_zone),
-    )
-    .map_err(ValueError)
+    let contents = toml::to_string(schedules).map_err(|e| ValueError(e.to_string()))?;
+    super::write_atomic(path, contents.as_bytes()).map_err(ValueError)
 }
+
 pub fn write_wind_observations(path: &Path, wind: &WindObservations) -> Result<(), ValueError> {
     wind.validate()?;
-    let rows = wind
-        .samples
-        .iter()
-        .map(|s| WindRow {
-            series_id: s.series_id.clone(),
-            at: s.at,
-            speed_mps: s.wind.map(|w| w.speed_mps),
-            direction_degrees: s.wind.map(|w| w.direction_degrees),
-        })
-        .collect::<Vec<_>>();
-    super::parquet::write_with_metadata(
-        path,
-        &wind_columns(),
-        &rows,
-        forcing_metadata("wind_observations", &wind.time_zone),
-    )
-    .map_err(ValueError)
+    let contents = toml::to_string(wind).map_err(|e| ValueError(e.to_string()))?;
+    super::write_atomic(path, contents.as_bytes()).map_err(ValueError)
 }
+
 pub fn read_reservoir_schedules(path: &Path) -> Result<ReservoirSchedules, ValueError> {
-    let time_zone = forcing_zone(path, "reservoir_schedules")?;
-    let rows: Vec<ScheduleRow> =
-        super::parquet::read(path, &schedule_columns()).map_err(ValueError)?;
-    let schedules = ReservoirSchedules {
-        schema_version: 1,
-        time_zone,
-        samples: rows
-            .into_iter()
-            .map(|s| ReservoirScheduleSample {
-                series_id: s.series_id,
-                at: s.at,
-                flow_m3s: s.flow_m3s,
-            })
-            .collect(),
-    };
+    let contents = std::fs::read_to_string(path).map_err(|e| ValueError(e.to_string()))?;
+    let schedules: ReservoirSchedules =
+        toml::from_str(&contents).map_err(|e| ValueError(e.to_string()))?;
     schedules.validate()?;
     Ok(schedules)
 }
+
 pub fn read_wind_observations(path: &Path) -> Result<WindObservations, ValueError> {
-    let time_zone = forcing_zone(path, "wind_observations")?;
-    let rows: Vec<WindRow> = super::parquet::read(path, &wind_columns()).map_err(ValueError)?;
-    let samples = rows
-        .into_iter()
-        .map(|s| {
-            let wind = match (s.speed_mps, s.direction_degrees) {
-                (None, None) => None,
-                (Some(speed_mps), Some(direction_degrees)) => Some(WindVector {
-                    speed_mps,
-                    direction_degrees,
-                }),
-                _ => return Err(ValueError("unpaired wind components".into())),
-            };
-            Ok(WindSample {
-                series_id: s.series_id,
-                at: s.at,
-                wind,
-            })
-        })
-        .collect::<Result<Vec<_>, ValueError>>()?;
-    let wind = WindObservations {
-        schema_version: 1,
-        time_zone,
-        samples,
-    };
+    let contents = std::fs::read_to_string(path).map_err(|e| ValueError(e.to_string()))?;
+    let wind: WindObservations =
+        toml::from_str(&contents).map_err(|e| ValueError(e.to_string()))?;
     wind.validate()?;
     Ok(wind)
 }
@@ -457,5 +343,55 @@ impl PreparedAdditionalForcing {
             wind.truncate(len);
         }
         Ok(prefix)
+    }
+}
+
+#[cfg(test)]
+mod persistence_tests {
+    use super::*;
+
+    #[test]
+    fn toml_roundtrip_preserves_missing_and_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let at = NaiveDateTime::parse_from_str("2026-01-01T00:00:00", "%Y-%m-%dT%H:%M:%S").unwrap();
+        let wind = WindObservations {
+            time_zone: "UTC".into(),
+            samples: vec![
+                WindSample {
+                    series_id: "s".into(),
+                    at,
+                    wind: None,
+                },
+                WindSample {
+                    series_id: "s".into(),
+                    at: at + Duration::hours(1),
+                    wind: Some(WindVector {
+                        speed_mps: 0.0,
+                        direction_degrees: 0.0,
+                    }),
+                },
+            ],
+        };
+        let path = dir.path().join("wind.toml");
+        write_wind_observations(&path, &wind).unwrap();
+        assert_eq!(read_wind_observations(&path).unwrap(), wind);
+        let schedule = ReservoirSchedules {
+            time_zone: "UTC".into(),
+            samples: vec![
+                ReservoirScheduleSample {
+                    series_id: "r".into(),
+                    at,
+                    flow_m3s: None,
+                },
+                ReservoirScheduleSample {
+                    series_id: "r".into(),
+                    at: at + Duration::hours(1),
+                    flow_m3s: Some(0.0),
+                },
+            ],
+        };
+        let path = dir.path().join("reservoir.toml");
+        write_reservoir_schedules(&path, &schedule).unwrap();
+        assert_eq!(read_reservoir_schedules(&path).unwrap(), schedule);
     }
 }

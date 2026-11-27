@@ -33,7 +33,7 @@ mgb-ops observation import-inventory --workspace /regional/workspace --input /re
 Import the ANA station inventory before acquisition. Use `observation
 export-inventory --workspace /regional/workspace --output inventory.csv` to
 export the saved inventory for editing. Per-station variables are
-stored with the station inventory under `assets/observations/`. Acquisition
+stored with the station inventory in `assets/registry.sqlite`. Acquisition
 updates the canonical assets. Raw captures can be removed after normalization. CLI JSON reports station or provider outcomes.
 Standalone acquisition keeps successful sibling results on failure or cancellation.
 
@@ -140,8 +140,8 @@ and missing-value semantics.
 ### Publication, failures and downstream use
 
 Incoming values revise the station's unambiguous raw series in one transaction;
-a raw series is created when needed. Coverage is recorded after successful
-station processing. Higher-ranked series, manual replacements, and already
+a raw series is created when needed. The station samples and their complete and
+partial acquisition coverage publish in the same revision. Higher-ranked series, manual replacements, and already
 frozen run inputs retain their values. The regular
 [canonical JSON intake](saved-data.md#canonical-data-and-review) still rejects
 conflicting raw samples.
@@ -155,7 +155,7 @@ conflicting raw samples.
 Acquisition stores raw canonical measurements. Automatic precipitation flags,
 ordered manual replacements and interpolation belong to later
 [review and preparation](observations.md#selection-reviews-and-preparation).
-Run All completes acquisition before [freezing its input set](inputs.md).
+Run All completes acquisition before [registering its selected inputs](inputs.md).
 
 | Owner | Responsibility in this flow |
 | --- | --- |
@@ -193,6 +193,24 @@ that remain unavailable appear in the acquisition report. Automatic selection
 uses the usable catalog cycles. Explicit selections require their chosen cycle
 and coverage. A failed or cancelled run leaves the previous active generation
 available.
+
+## Registered IMERG
+
+The standalone IMERG workflow produces a canonical hourly grid. Register a
+complete UTC-day grid and list available object IDs:
+
+```sh
+mgb-ops workspace imerg register --workspace /region --source /path/imerg.nc
+mgb-ops workspace imerg list --workspace /region
+```
+
+Select station rainfall or registered IMERG explicitly for a run. For CLI runs,
+use `--historical-rainfall imerg` and repeat `--imerg-object ID` for each
+selected day; `--historical-rainfall stations` selects station rainfall. There
+is no blending or fallback to stations. Missing time coverage or incompatible geometry fails preparation; missing cells
+retain their validity masks through grid processing.
+Observations remain available for station levels and other non-rain inputs.
+Revised products register new objects; prior runs retain their selected versions.
 
 ## Standalone source acquisition
 

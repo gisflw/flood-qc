@@ -118,15 +118,8 @@ fn catchments(path: &Path, last_id: i32) {
 fn fixture(dir: &Path) -> InundationProcessRequest {
     let scenario_dir = dir.join("results/reference");
     fs::create_dir_all(&scenario_dir).unwrap();
-    fs::write(
-        dir.join("manifest.json"),
-        r#"{
-            "schema_version": 1, "state": "completed", "recipe": {}, "inputs": [],
-            "scenarios": [{"id": "reference", "state": "completed"}],
-            "created_at": "2025-03-05T10:00:00-03:00"
-        }"#,
-    )
-    .unwrap();
+    let manifest = serde_json::json!({"state":"completed","recipe":{},"inputs":[],"scenarios":[{"id":"reference","state":"completed"}],"created_at":"2025-03-05T10:00:00-03:00"});
+    mgb_ops::store::write_draft(&dir.join("manifest.toml"), &manifest).unwrap();
     flood_source(&scenario_dir.join(FLOOD_SOURCE_FILE));
     let request = InundationProcessRequest {
         run: dir.into(),

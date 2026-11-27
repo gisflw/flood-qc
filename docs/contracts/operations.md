@@ -11,8 +11,7 @@ mgb-ops operation execute --workspace /region --prepared /region/runs/prepared -
 ```
 
 **Run All** acquires configured inputs, freezes the run inputs, executes MGB, and
-publishes the completed generation. Desktop **Capture inputs** stops before
-materialization and execution; **Save current inputs** makes an independent copy.
+publishes the completed generation. Desktop **Capture inputs** stops before materialization and execution.
 The CLI `operation prepare` materializes saved inputs and stops before execution. A saved preparation retains everything needed to execute
 after its original sources change. Relative command paths resolve from the
 invocation directory. Paths in workspace settings resolve from the workspace.
@@ -31,8 +30,7 @@ flowchart TD
     validate -->|No| retain[Retain diagnostics and previous active results]
 ```
 
-The [input-set contract](inputs.md) defines capture, save/discard decisions and
-input retention. The [architecture](../architecture.md#operational-data-flow)
+The [input contract](inputs.md) defines registration, export and retention. The [architecture](../architecture.md#operational-data-flow)
 maps these stages to their owners. Execution and publication failure handling
 is specified [below](#execution-lifecycle).
 
@@ -106,27 +104,17 @@ workspace session. The frozen recipe records the resolved base and edit order.
 
 ## Active run and rainfall cache
 
-Each workspace has one active run after its first successful execution. The
-active generation recorded in `cache/run/active.json` selects the generation that supplies
-model results, rainfall, and any processed inundation masks. Successful
-execution publishes the whole generation together and reclaims the previous
-generation. An unsuccessful or cancelled execution preserves the active run.
-Concurrent executions use the same workspace lock. A later writable execution
-retries cleanup of abandoned staging and superseded generations.
+`results/active.toml` selects the successful result generation supplying model
+results, rainfall and processed masks. Publication switches the validated
+results and rainfall together. Failed or cancelled attempts retain diagnostics
+and leave the previous result active. Workspace executions share a lock.
 
-The active generation retains its completed manifest, canonical basin and station
-results, selected engine evidence and logs, and optional flood sources and masks.
-It also retains the observed and selected scenario working rainfall grids,
-prepared basin forcing, and frozen MINI.gtp. Zero scenarios use the working grid
-geometry and verified zero forecast intervals. Rainfall and basin summaries read
-the selected generation. A missing cache returns no rainfall. Missing or corrupt
-members produce findings.
-
-A JSON manifest records each attempt and its status.
-The active generation keeps its manifest under `cache/run/`. Retiring it
-archives the manifest under `runs/history/` and reclaims its results. Failed
-attempts retain their manifest and bounded diagnostics. Export a bundle before
-replacement to keep full results. Save the [input set](inputs.md) independently to regenerate forcing and rerun.
+Each attempt has a dated TOML manifest in `runs/`, including resolved inputs,
+settings and outcome. Ordinary superseded results may be reclaimed. Use
+`mgb-ops run keep --workspace /region --id RUN_ID` while results are available
+to retain them across replacement; `run release` permits later reclamation and
+`run retained` lists kept results. Independently export a run to retain it outside
+the workspace. Manifests and their registered inputs remain available separately.
 
 ## Execution lifecycle
 
@@ -148,11 +136,10 @@ generation available. See [control and cancellation](#controlled-actions-and-can
 Preparation freezes selected canonical observation rows, ordered observation replacements and
 scenario edits, station metadata and offsets, selected normalized forecast
 grids, numerical settings, and baseline Input. A prepared execution directory
-also carries a copy of the selected executable and generated forcing. For an
-independent archive, the [input-set format](inputs.md) retains the executable
-identity and recipes alongside the input files. Canonical forcing and
+also carries a copy of the selected executable and generated forcing. An [independent export](inputs.md) retains the executable
+identity and recipes alongside selected input values. Canonical forcing and
 checkpoints retain f64 precision.
-The generated `manifest.json` records resolved settings, scenario recipes and
+The generated `manifest.toml` records resolved settings, scenario recipes and
 outcomes, and the files needed to validate the snapshot.
 
 The prepared tree contains `sources/`, `baseline/Input/`, `baseline/engine`,
@@ -163,7 +150,7 @@ staging files on failure or cancellation.
 
 ```text
 <prepared>/
-├── manifest.json               Resolved recipe, input integrity and scenario records
+├── manifest.toml               Resolved recipe, input integrity and scenario records
 ├── sources/                    Frozen canonical dependencies and recipe
 ├── baseline/
 │   ├── Input/                  Retained baseline; separate from writable worker inputs
@@ -173,14 +160,12 @@ staging files on failure or cancellation.
 └── checkpoints/                Retained rainfall preparation checkpoints
 ```
 
-Unlike this materialized preparation, an independently saved
-[input set](inputs.md#manifest-and-payload) excludes generated forcing and the
-executable bytes.
+A portable input export excludes generated forcing and executable bytes.
 
 Execution takes a nonblocking OS lock on `<workspace>/.operation.lock`, held until
 children and workers stop and file work finishes. Concurrent execution in that
 workspace returns `Busy`. Each invocation stages a generation privately under
-`cache/run/`. Finalization removes the verified preparation snapshot,
+`work/`. Finalization removes the verified preparation snapshot,
 shared history inputs, and isolated worker inputs.
 
 The active generation supplies validated `results/<id>/basin.nc` and
@@ -232,7 +217,7 @@ boundaries, stops and reaps owned engines, joins concurrent workers, and finishe
 cleanup under the lock. Cancellation before the final commit records the
 cancellation reason in the attempt manifest and keeps the previous active run.
 Cancellation after the commit preserves success. After hard process termination,
-the next writable execution cleans up abandoned cache stages. Engine-created
+the next writable execution cleans up abandoned working stages. Engine-created
 descendant processes are outside the normal cancellation guarantee.
 
 ## Engine and canonical results

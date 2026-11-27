@@ -69,7 +69,7 @@ Overrides can replace missing/empty strings but cannot repair malformed syntax
 or wrong types. Reject all-whitespace effective paths; preserve whitespace in
 other paths. Do not echo source configuration lines or unrelated values in errors.
 There are no profiles, includes, environment/dotenv loading, generic parameter
-flags, implicit variable/tilde expansion, YAML fallback, or migration commands.
+flags, implicit variable/tilde expansion, YAML fallback, or implicit migration.
 
 ## Operating layout
 
@@ -77,66 +77,53 @@ Select the same workspace directory in the CLI and desktop.
 
 ```text
 workspace/
-├── config.toml                 Routine provider, run, grid and interpolation defaults
-├── source/                     Regional geometry, rasters and source inventory
-├── model/
-│   ├── engine                  Installed MGB executable (engine.exe on Windows)
-│   └── Input/                  Baseline model inputs, calibration and initial state
-├── downloads/                  Original provider responses where retained
+├── config.toml                  Routine defaults
+├── source/                      Regional source material
+├── model/                       Installed engine and editable baseline Input
+├── downloads/                   Original responses where retained
 ├── assets/
-│   ├── observations/           Canonical stations, samples, edits, offsets and coverage
-│   └── forecasts/              Normalized forecast bases and discovery metadata
-├── cache/
-│   ├── inputs/                 Current frozen input set; see the input-set contract
-│   │   └── current.json        Selects the current input set
-│   └── run/                    Results and rainfall from one successful execution
-│       └── active.json         Selects the active successful generation
-└── runs/
-    └── history/                Past attempt manifests and bounded diagnostics
+│   ├── registry.sqlite          Immutable station data revisions and metadata
+│   ├── objects/                 Versioned file inputs and forecasts/
+│   └── selections/              Resolved input-reference manifests
+├── runs/                        Dated attempt manifests and diagnostics
+├── work/                        Disposable execution files
+└── results/
+    ├── active.toml              Active successful result pointer
+    └── <run-id>/                Results and rainfall, with optional kept sets
 ```
 
-This is the operating layout, not an exhaustive list of generated files.
-Regional source and engine paths can be configured elsewhere. Generation members
-are application-managed; use the selected manifests rather than guessing filenames.
+Object names are readable stable IDs; checksums verify content. Station data
+and related coverage publish in one SQLite revision. Metadata and application
+records use TOML, with the null encoding described in [registered inputs](inputs.md#manifest-and-payload).
+Wind observations and reservoir schedules use TOML; gridded inputs, forcing and
+results use NetCDF. Regional geometry retains its native spatial format.
 
-### Data roles and retention
+Run IDs use the local operational reference hour as `YYYYMMDD-HH`; repeated
+attempts receive distinct suffixes. Full timestamps and timezone are retained
+in the manifest. Runs refer to shared registered inputs; they do not retain a
+separate permanent copy for each attempt. Failed runs retain diagnostics and
+leave active results unchanged. Use [result retention](operations.md#active-run-and-rainfall-cache)
+and [portable input exports](inputs.md#capture-export-and-replay) when needed.
 
-| Area | Question it answers | Lifetime |
-| --- | --- | --- |
-| `assets/` | What data have we acquired and reviewed? | Updated by acquisition and review |
-| `cache/inputs/` | Which exact values and settings did this attempt select? | Replaced through the explicit input save/discard workflow |
-| `cache/run/` | What did the last successful execution produce? | Replaced only by a successfully published generation |
-| `runs/history/` | What happened in past attempts? | Manifests and bounded diagnostics, not full result archives |
-| Independently saved inputs or exported runs | What has the operator chosen to preserve? | Retained at an explicit destination under operator control |
+Initialize with `mgb-ops workspace init --workspace /region`. Conversion of a
+legacy workspace is explicit: first export an interchange with
+`tools/export_legacy_registry.py`, then use `mgb-ops workspace convert` with
+that interchange and a new destination. The source must be quiescent and have
+its existing regular `.operation.lock`; conversion never creates a source lock.
+The Parquet bridge also locks its existing `access.lock` and verifies that the
+selected generation and every input member remain unchanged. The source is preserved:
 
-Inputs and results have separate lifecycles: a failed attempt can leave new
-current inputs while the previous successful results remain active. See
-[input retention](inputs.md#retention-and-failure-behavior) and
-[result publication](operations.md#active-run-and-rainfall-cache).
+```sh
+python3 tools/export_legacy_registry.py /old/workspace /tmp/legacy-interchange
+mgb-ops workspace convert --source /old/workspace --workspace /new/workspace \
+  --interchange /tmp/legacy-interchange
+```
 
-### Data formats
-
-| Data | Format | Contract |
-| --- | --- | --- |
-| Stations, observations, review instructions, offsets and coverage | Typed Parquet 2 with Zstandard compression | [Observations](observations.md#data-model) |
-| Wind observations and reservoir schedules | Typed Parquet 2 with Zstandard compression | [Forcing](saved-data.md#forcing-state-and-calibration) |
-| Normalized forecast bases | NetCDF | [Forecasts](forecasts.md#native-values-and-persistence) |
-| Working rainfall grids and basin forcing | NetCDF | [Scenarios](operations.md#scenarios) |
-| Basin and station results | NetCDF | [Results](operations.md#engine-and-canonical-results) |
-| Input/run manifests and generation pointers | JSON | [Input sets](inputs.md#manifest-and-payload), [operations](operations.md) |
-| Routine defaults | TOML | [Configuration](#configuration) |
-| Regional geometry | Spatial files, including GeoPackage | [Spatial data](spatial.md) |
-
-Atomic manifests select complete generations; readers never depend on
-half-written tables. There is no operational SQLite dependency, migration path
-or fallback. Existing spatial GeoPackage files remain readable through the pure
-Rust spatial reader.
-
-Run `mgb-ops workspace init --workspace /region` to initialize canonical assets.
-Inventory import and workspace acquisition can also initialize them. Start a
-fresh workspace from regional source files for this layout. See
-[acquisition](acquisition.md) for provider updates, [operations](operations.md)
-for scenario selection and [run input sets](inputs.md) for independent saves.
+The standalone Python bridge requires `pyarrow` for legacy Parquet inputs; it is
+not a runtime dependency. It also accepts independently saved legacy input sets
+and preserves their indexed payload for conversion. See the utility's help for
+arguments and supported legacy forms. There is no automatic schema migration
+framework.
 
 ## Path resolution
 
@@ -187,8 +174,7 @@ rainfall preparation establish the list. Do not require every discovered input,
 `HAND_Flood.asc`, backups, forcing binaries, observed flows/levels, wind, saved
 state, or run-specific dates/horizons.
 
-Report metadata presence of `assets/observations/`, `cache/`, and
-`cache/run/`. Absence or inaccessible metadata is informational. Inspection
+Report metadata presence of the optional registry, workspace cache, and runs directory. Absence or inaccessible metadata is informational. Inspection
 does not load those stores or determine which generation is active.
 
 Always report unchecked geometry/input contents, forcing, saved state, runtime

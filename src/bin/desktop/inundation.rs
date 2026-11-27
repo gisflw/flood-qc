@@ -1343,7 +1343,7 @@ mod tests {
             root: directory.path().into(),
             scenario: "test".into(),
         };
-        let manifest = source.root.join("manifest.json");
+        let manifest = source.root.join("manifest.toml");
         std::fs::write(&manifest, b"first manifest").unwrap();
         let mut provenance = grid(4326).meta.provenance;
         provenance.run_manifest_sha256 = digest_file(&manifest).unwrap().0;

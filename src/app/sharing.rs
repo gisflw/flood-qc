@@ -30,7 +30,7 @@ fn check_detached_destination(workspace: &Path, destination: &Path) -> Result<()
     );
     let data = workspace.canonicalize().map_err(|e| e.to_string())?;
     let resolved_data = data.canonicalize().unwrap_or_else(|_| data.clone());
-    for managed in ["cache", "runs/history"] {
+    for managed in ["cache", "assets", "runs", "work", "results"] {
         let managed_path = data.join(managed);
         if resolved_destination.starts_with(resolved_data.join(managed))
             || resolved_destination.starts_with(&managed_path)
@@ -65,6 +65,17 @@ fn checked_bundle(root: &Path) -> Result<BundleManifest, String> {
     let bundle = validate_bundle(root)?;
     super::read_trial(root).map_err(|error| error.to_string())?;
     let manifest = read_retained_manifest(root)?;
+    if root.join("legacy-manifest.json").exists() {
+        let reference = manifest
+            .inputs
+            .iter()
+            .find(|f| f.path == Path::new("legacy-manifest.json"))
+            .ok_or("unregistered legacy manifest evidence")?;
+        if manifest.recipe["legacy_manifest_sha256"].as_str() != Some(reference.sha256.as_str()) {
+            return Err("legacy manifest binding differs".into());
+        }
+        crate::store::verify_inputs(root, std::slice::from_ref(reference))?;
+    }
     let run_input_id = manifest
         .recipe
         .get("input_set_id")
@@ -76,11 +87,14 @@ fn checked_bundle(root: &Path) -> Result<BundleManifest, String> {
         }
         bind_inputs(&manifest, &inputs)?;
         let mut expected = inputs.files;
+        if let Some(snapshot) = inputs.observation_snapshot {
+            expected.push(snapshot);
+        }
         expected.push(crate::store::InputReference {
-            path: "input-set.json".into(),
-            kind: "input-set.json".into(),
-            sha256: crate::store::digest_file(&root.join("inputs/input-set.json"))?.0,
-            size: std::fs::metadata(root.join("inputs/input-set.json"))
+            path: "input-set.toml".into(),
+            kind: "input-set.toml".into(),
+            sha256: crate::store::digest_file(&root.join("inputs/input-set.toml"))?.0,
+            size: std::fs::metadata(root.join("inputs/input-set.toml"))
                 .map_err(|e| e.to_string())?
                 .len(),
         });
@@ -114,7 +128,8 @@ fn checked_bundle(root: &Path) -> Result<BundleManifest, String> {
         return Err("unregistered input set in bundle".into());
     }
     if bundle.files.iter().any(|file| {
-        file.path != Path::new("manifest.json")
+        file.path != Path::new("manifest.toml")
+            && file.path != Path::new("legacy-manifest.json")
             && ["results", "scenarios", "inputs"]
                 .iter()
                 .all(|entry| !file.path.starts_with(entry))
@@ -140,22 +155,27 @@ pub fn export_run(
     let run_path = run.canonicalize().map_err(|e| e.to_string())?;
     let name = run_path
         .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("expected a run directory name")?;
-    if let Some(workspace) = run_path.ancestors().nth(3)
-        && run_path.parent() == Some(workspace.join("cache/run").as_path())
-        && let Some(run_id) = name.strip_prefix("generation-")
+        .and_then(|n| n.to_str())
+        .ok_or("expected run directory")?;
+    if let Some(workspace) = run_path.parent().and_then(Path::parent)
+        && run_path.parent() == Some(workspace.join("results").as_path())
     {
-        return super::operation::with_active_run(workspace, |active| {
-            if active != run_path {
-                return Err("selected run is no longer active".into());
-            }
-            check_detached_destination(workspace, destination)?;
-            export_run_directory(run, run_id, inputs, destination)
-        })?
-        .ok_or_else(|| "workspace has no active run".into());
+        check_detached_destination(workspace, destination)?;
+        let lock =
+            fs::File::open(workspace.join("results/access.lock")).map_err(|e| e.to_string())?;
+        lock.lock_shared().map_err(|e| e.to_string())?;
+        if !run_path.join("manifest.toml").is_file() {
+            return Err("selected run results are no longer available".into());
+        }
+        let manifest = read_retained_manifest(&run_path)?;
+        let inferred = manifest
+            .recipe
+            .get("input_set_id")
+            .and_then(|v| v.as_str())
+            .map(|id| workspace.join("assets/selections").join(id));
+        return export_run_directory(&run_path, name, inputs.or(inferred.as_deref()), destination);
     }
-    export_run_directory(run, name, inputs, destination)
+    export_run_directory(&run_path, name, inputs, destination)
 }
 
 fn export_run_directory(
@@ -191,7 +211,15 @@ fn export_run_directory(
         })
         .transpose()?;
     publish_directory(destination, |stage| {
-        copy_member(run, Path::new("manifest.json"), stage)?;
+        copy_member(run, Path::new("manifest.toml"), stage)?;
+        if let Some(reference) = manifest
+            .inputs
+            .iter()
+            .find(|f| f.path == Path::new("legacy-manifest.json"))
+        {
+            crate::store::verify_inputs(run, std::slice::from_ref(reference))?;
+            copy_member(run, Path::new("legacy-manifest.json"), stage)?;
+        }
         copy_optional(run, Path::new("scenarios/.history/logs"), stage)?;
         let mut scenarios = std::collections::HashSet::new();
         for scenario in manifest.scenarios {
@@ -215,20 +243,17 @@ fn export_run_directory(
         }
         if let Some((source, inputs)) = &selected_inputs {
             let root = stage.join("inputs");
-            copy_member(source, Path::new("input-set.json"), &root)?;
-            for file in &inputs.files {
-                copy_member(source, &file.path, &root)?;
-            }
+            let _ = inputs;
+            crate::store::save_input_set(source, &root)?;
         }
         let bundle = BundleManifest {
-            version: 2,
             run_id: run_id.into(),
             input_set_id: selected_inputs
                 .as_ref()
                 .map(|(_, inputs)| inputs.id.clone()),
             files: payload_index(stage)?,
         };
-        write_draft(&stage.join("bundle.json"), &bundle)?;
+        write_draft(&stage.join("bundle.toml"), &bundle)?;
         checked_bundle(stage)?;
         Ok(RunBundleReport {
             root: destination.into(),
@@ -274,7 +299,7 @@ fn import_checked_run(
             .files
             .iter()
             .map(|file| file.path.as_path())
-            .chain([Path::new("bundle.json")])
+            .chain([Path::new("bundle.toml")])
         {
             copy_member(source, path, stage)?;
         }

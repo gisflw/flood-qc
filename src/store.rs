@@ -1,4 +1,3 @@
-pub(crate) mod parquet;
 pub(crate) use self::geometry::parse_basin_geometry;
 mod geometry;
 pub use self::geometry::{
@@ -12,9 +11,10 @@ mod values;
 pub(crate) use self::operation::PREPARED_ENGINE;
 
 pub use self::observations::{
-    LevelReference, ObservationBatch, ObservationError, ObservationInputs, ObservationReplacement,
-    ObservationSample, ObservationSelection, ObservationSeries, ObservationStore, ObservationValue,
-    ReplacementKind, Station, StationLocation, StationOffset, validate_replacement,
+    LevelReference, ObservationBatch, ObservationError, ObservationInputs, ObservationProvenance,
+    ObservationReplacement, ObservationSample, ObservationSelection, ObservationSeries,
+    ObservationStore, ObservationValue, ReplacementKind, Station, StationLocation, StationOffset,
+    validate_replacement,
 };
 pub use self::values::{
     BasinForcing, BasinGeometry, CorrectionCoverage, ForecastCorrection, ForecastPreparation,
@@ -74,13 +74,13 @@ mod automation;
 pub(crate) use self::automation::{automation_documents, write_automation_document};
 
 mod run_cache;
-pub(crate) use self::run_cache::{
-    RunAttemptManifest, active_run, collect_run_diagnostics, is_managed_run_path, new_run_stage,
-    publish_run_checked, recover_run_cache, run_cache_root, run_stage_id, with_active_run,
-    write_run_attempt, write_run_journal,
-};
 #[cfg(test)]
-pub(crate) use self::run_cache::{new_run_stage_for, publish_run};
+pub(crate) use self::run_cache::publish_run;
+pub(crate) use self::run_cache::{
+    RunAttemptManifest, active_run, allocate_run_id, collect_run_diagnostics, is_managed_run_path,
+    new_run_stage_for, publish_run_checked, recover_run_cache, run_cache_root, run_stage_id,
+    with_active_run, write_run_attempt, write_run_journal,
+};
 
 mod rainfall;
 pub use self::rainfall::RainfallCacheInfo;
@@ -115,9 +115,21 @@ pub use self::input_sets::{
     save_input_set,
 };
 pub(crate) use self::input_sets::{
-    clean_materialized_inputs, discard_current_inputs, publish_captured_input_set,
-    save_current_inputs, stage_preparation, write_cache_json,
+    clean_materialized_inputs, discard_current_inputs, materialize_input_set,
+    publish_captured_input_set, register_imported_selection, save_current_inputs,
+    stage_preparation, write_cache_json,
 };
 
 mod acquisition;
 pub(crate) use self::acquisition::AnaPartialCoverage;
+
+pub use self::run_cache::{keep_run_results, retained_run_results};
+mod imerg;
+pub use self::imerg::{
+    register_imerg_day, registered_imerg, registered_imerg_choices, registered_imerg_path,
+};
+#[cfg(test)]
+pub(crate) use self::run_cache::new_run_stage;
+
+pub(crate) use self::draft::record_bytes as draft_record_bytes;
+pub(crate) use self::run_cache::{with_available_run, with_kept_run};

@@ -5,7 +5,7 @@ use crate::model::{
 };
 use crate::store::{
     FLOOD_SOURCE_DIAGNOSTIC, FLOOD_SOURCE_FILE, RunAttemptManifest, ScenarioFailure,
-    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, digest_file, new_run_stage,
+    ScenarioRecord, StationOffset, active_run, collect_run_diagnostics, digest_file,
     publish_run_checked, read_basin_forcing, read_operation_manifest, recover_run_cache,
     run_cache_root, run_stage_id, stage_working_inputs, sync_tree, write_run_attempt,
     write_run_journal, write_run_manifest,
@@ -90,7 +90,6 @@ pub struct OperationControl {
     progress: Arc<Mutex<Option<OperationProgress>>>,
     committed: Arc<Mutex<bool>>,
     observer: Option<Observer>,
-    input_disposition: Option<super::InputDisposition>,
     force_acquisition: bool,
 }
 
@@ -112,13 +111,6 @@ impl OperationControl {
     }
     pub(super) fn force_acquisition(&self) -> bool {
         self.force_acquisition
-    }
-    pub fn with_input_disposition(mut self, disposition: super::InputDisposition) -> Self {
-        self.input_disposition = Some(disposition);
-        self
-    }
-    pub(super) fn input_disposition(&self) -> Option<&super::InputDisposition> {
-        self.input_disposition.as_ref()
     }
     pub fn cancel(&self) {
         let committed = self.committed.lock().unwrap_or_else(|e| e.into_inner());
@@ -314,9 +306,6 @@ pub enum OperationError {
         path: PathBuf,
         message: String,
     },
-    InputDecisionRequired {
-        input_set: String,
-    },
     Busy {
         workspace: PathBuf,
     },
@@ -346,6 +335,8 @@ impl std::error::Error for OperationError {}
 #[serde(deny_unknown_fields)]
 pub(super) struct ExecutionRecipe {
     pub engine_identity: crate::store::InputReference,
+    #[serde(default)]
+    pub observation_registry_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input_set_id: Option<String>,
     pub document: serde_json::Value,
@@ -353,6 +344,8 @@ pub(super) struct ExecutionRecipe {
     pub forecast_count: usize,
     pub selected_station_ids: Vec<String>,
     pub offsets: Vec<StationOffset>,
+    #[serde(default)]
+    pub registered_replacements: Vec<crate::store::ObservationReplacement>,
     pub omp_threads: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_scenarios: Option<super::operational_run::ResolvedScenarios>,
@@ -396,7 +389,7 @@ fn validate_recipe(
         .historical_count
         .checked_add(recipe.forecast_count)
         .ok_or("timeline overflow")?;
-    let binding: serde_json::Value = crate::store::read_draft(&root.join("sources/recipe.json"))?;
+    let binding: serde_json::Value = crate::store::read_draft(&root.join("sources/recipe.toml"))?;
     if binding != serde_json::to_value(recipe).map_err(|e| e.to_string())? {
         return Err("recipe differs from frozen input values".into());
     }
@@ -421,6 +414,7 @@ fn validate_recipe(
         .map_err(|error| error.to_string())?
         .document;
         retained.observed.path = document.observed.path.clone();
+        retained.observed.revision = document.observed.revision;
         retained.geometry.mini_gtp = document.geometry.mini_gtp.clone();
         retained.engine.executable = document.engine.executable.clone();
         retained.engine.input_dir = document.engine.input_dir.clone();
@@ -444,8 +438,7 @@ fn validate_recipe(
         }
     }
     super::additional::check_engine(&document, &root.join(crate::store::PREPARED_ENGINE))?;
-    if document.schema_version != 1
-        || document.step_seconds != 3600
+    if document.step_seconds != 3600
         || document.engine.omp_threads != recipe.omp_threads
         || document.levels.station_ids != recipe.selected_station_ids
         || document.scenarios.len() != scenarios.len()
@@ -510,7 +503,7 @@ fn validate_recipe(
     if first.timeline.bounds.len() != count || first.timeline.time_zone != document.time_zone {
         return Err("forcing timeline differs from recipe".into());
     }
-    let path = root.join("forcing/additional.json");
+    let path = root.join("forcing/additional.toml");
     if document
         .forcing
         .as_ref()
@@ -573,23 +566,53 @@ fn validate_recipe(
         provider_codes: document.observed.provider_codes.clone(),
         station_ids: document.observed.station_ids.clone(),
     };
-    let observations = ObservationStore::open_read_only(&root.join("sources/observations"))
-        .map_err(|e| e.to_string())?;
+    let observation_path = if root.join("sources/observations.sqlite").is_file() {
+        root.join("sources/observations.sqlite")
+    } else if document.observed.path.ends_with("assets/registry.sqlite") {
+        root.ancestors()
+            .find(|p| p.join("assets/registry.sqlite").is_file())
+            .map(|p| p.join("assets/registry.sqlite"))
+            .unwrap_or_else(|| document.observed.path.clone())
+    } else {
+        document.observed.path.clone()
+    };
+    let observations = match document.observed.revision {
+        Some(revision) => ObservationStore::open_revision(&observation_path, revision),
+        None => ObservationStore::open_read_only(&observation_path),
+    }
+    .map_err(|e| e.to_string())?;
+    if let Some(identity) = &recipe.observation_registry_id
+        && observations.registry_id().map_err(|e| e.to_string())? != *identity
+    {
+        return Err("observation registry identity differs from pinned inputs".into());
+    }
     let extra_stations = super::additional::extra_stations(&observations, &document)?;
-    let (inputs, offsets) = observations
-        .read_selection_with_stations(
-            &selection,
-            &historical,
-            &document.observed.replacement_ids,
-            &extra_stations,
-        )
-        .map_err(|e| e.to_string())?;
-    if serde_json::to_value(&inputs.series).map_err(|e| e.to_string())? != selected_series
+    let (inputs, offsets) = if selection.provider_codes.is_empty()
+        && selection.station_ids.is_empty()
+        && extra_stations.is_empty()
+        && matches!(
+            document.observed.historical_rainfall,
+            super::HistoricalRainfall::Imerg { .. }
+        ) {
+        (crate::store::ObservationInputs::default(), Vec::new())
+    } else {
+        observations
+            .read_selection_with_stations(&selection, &historical, &[], &extra_stations)
+            .map_err(|e| e.to_string())?
+    };
+    let selected_series: Vec<crate::store::ObservationSeries> =
+        serde_json::from_value(selected_series).map_err(|e| e.to_string())?;
+    if selected_series
+        .iter()
+        .any(|chosen| !inputs.series.contains(chosen))
         || serde_json::to_value(&inputs.stations).map_err(|e| e.to_string())? != selected_stations
-        || serde_json::to_value(&inputs.replacements).map_err(|e| e.to_string())?
-            != replacement_values
     {
         return Err("observation records disagree with recipe".into());
+    }
+    let replacements: Vec<crate::store::ObservationReplacement> =
+        serde_json::from_value(replacement_values).map_err(|e| e.to_string())?;
+    for replacement in &replacements {
+        crate::store::validate_replacement(replacement).map_err(|e| e.to_string())?;
     }
     if offsets != recipe.offsets
         || offsets
@@ -647,7 +670,7 @@ fn prepare_worker(
         horizon,
         &forcing.basins,
     )?;
-    let additional = snapshot.join("forcing/additional.json");
+    let additional = snapshot.join("forcing/additional.toml");
     if additional.is_file() {
         let values: crate::store::PreparedAdditionalForcing =
             crate::store::read_draft(&additional)?;
@@ -757,10 +780,10 @@ pub(super) fn run_preparation_locked(
     control: &OperationControl,
     workspace: &Path,
     _lock: &std::fs::File,
+    reference: (chrono::NaiveDateTime, &str),
     prepare: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
-    super::input_sets::resolve_input_replacement(workspace, control)?;
-    run_attempt(workspace, control, |run_root, attempt| {
+    run_attempt(workspace, control, reference, |run_root, attempt| {
         let prepared = run_root.join("preparation");
         let report = prepare(workspace, prepared, control)?;
         let admitted = admit_preparation(&report.prepared)?;
@@ -786,29 +809,41 @@ pub(super) fn run_captured_locked(
     control: &OperationControl,
     workspace: &Path,
     engine: &Path,
+    reference: chrono::NaiveDateTime,
+    time_zone: &str,
     capture: impl FnOnce(&Path, PathBuf, &OperationControl) -> Result<PreparationReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
-    run_attempt(workspace, control, |run_root, attempt| {
-        let base = workspace.join("cache/inputs");
-        fs::create_dir_all(&base).map_err(|e| store_error(&base, e))?;
-        let staged = base.join(format!(".{}", attempt.attempt_id));
-        let report = capture(workspace, staged, control)?;
-        let frozen = crate::store::publish_captured_input_set(
-            workspace,
-            &report.prepared,
-            &attempt.attempt_id,
-        )
-        .map_err(|e| store_error(workspace, e))?;
-        let metadata: crate::store::InputSetManifest =
-            crate::store::read_draft(&frozen.join("input-set.json"))
-                .map_err(|e| store_error(&frozen, e))?;
-        attempt.operation = Some(operation_from_inputs(&metadata));
-        write_run_journal(run_root, attempt).map_err(|e| store_error(run_root, e))?;
-        let materialized =
-            super::input_sets::materialize_current_input_set(workspace, &frozen, engine, control)?;
-        let admitted = admit_preparation(&materialized.prepared)?;
-        execute_in_stage(&materialized.prepared, run_root, attempt, control, admitted)
-    })
+    run_attempt(
+        workspace,
+        control,
+        (reference, time_zone),
+        |run_root, attempt| {
+            let base = workspace.join("work");
+            fs::create_dir_all(&base).map_err(|e| store_error(&base, e))?;
+            let staged = base.join(format!(".{}", attempt.attempt_id));
+            let report = capture(workspace, staged, control)?;
+            let frozen = crate::store::publish_captured_input_set(
+                workspace,
+                &report.prepared,
+                &attempt.attempt_id,
+            )
+            .map_err(|e| store_error(workspace, e))?;
+            let metadata: crate::store::InputSetManifest =
+                crate::store::read_draft(&frozen.join("input-set.toml"))
+                    .map_err(|e| store_error(&frozen, e))?;
+            attempt.operation = Some(operation_from_inputs(&metadata));
+            write_run_journal(run_root, attempt).map_err(|e| store_error(run_root, e))?;
+            let materialized = super::input_sets::materialize_captured(
+                workspace,
+                &frozen,
+                engine,
+                run_root.join("preparation"),
+                control,
+            )?;
+            let admitted = admit_preparation(&materialized.prepared)?;
+            execute_in_stage(&materialized.prepared, run_root, attempt, control, admitted)
+        },
+    )
 }
 fn operation_from_inputs(
     inputs: &crate::store::InputSetManifest,
@@ -821,7 +856,6 @@ fn operation_from_inputs(
         .map(|id| scenario_record(id.to_owned()))
         .collect();
     crate::store::OperationManifest {
-        schema_version: 1,
         preparation_sha256: None,
         state: "captured".into(),
         recipe: inputs.recipe.clone(),
@@ -858,46 +892,75 @@ pub(super) fn execute_locked(
             .map_err(|error| store_error(workspace, error))?;
     }
     let admitted = admit_preparation(prepared)?;
-    super::input_sets::resolve_input_replacement(workspace, control)?;
-    run_attempt(workspace, control, |run_root, attempt| {
-        let staged = crate::store::stage_preparation(
-            workspace,
-            prepared,
-            &attempt.attempt_id,
-            true,
-            &admitted.manifest,
-            &admitted.identity,
-        )
-        .map_err(|error| store_error(workspace, error))?;
-        let admitted = validate_staged_preparation(staged.path(), admitted)?;
-        control.check()?;
-        let frozen = staged
-            .publish()
+    let reference = admitted.recipe.document["reference_time"]
+        .as_str()
+        .ok_or_else(|| store_error(prepared, "missing run reference"))?
+        .parse::<chrono::NaiveDateTime>()
+        .map_err(|e| store_error(prepared, e))?;
+    let zone = admitted.recipe.document["time_zone"]
+        .as_str()
+        .ok_or_else(|| store_error(prepared, "missing run timezone"))?
+        .to_owned();
+    run_attempt(
+        workspace,
+        control,
+        (reference, &zone),
+        |run_root, attempt| {
+            let staged = crate::store::stage_preparation(
+                workspace,
+                prepared,
+                &attempt.attempt_id,
+                true,
+                &admitted.manifest,
+                &admitted.identity,
+            )
             .map_err(|error| store_error(workspace, error))?;
-        execute_in_stage(&frozen, run_root, attempt, control, admitted)
-    })
+            let admitted = validate_staged_preparation(staged.path(), admitted)?;
+            control.check()?;
+            let frozen = staged
+                .publish()
+                .map_err(|error| store_error(workspace, error))?;
+            execute_in_stage(&frozen, run_root, attempt, control, admitted)
+        },
+    )
 }
 
 fn run_attempt(
     workspace: &Path,
     control: &OperationControl,
+    reference: (chrono::NaiveDateTime, &str),
     execute: impl FnOnce(&Path, &mut RunAttemptManifest) -> Result<ExecutionReport, OperationError>,
 ) -> Result<ExecutionReport, OperationError> {
     control.check()?;
-    let run_root = new_run_stage(workspace).map_err(|error| store_error(workspace, error))?;
+    use chrono::{Offset, TimeZone};
+    let (reference, zone) = reference;
+    let zone: chrono_tz::Tz = zone.parse().map_err(|e| store_error(workspace, e))?;
+    let zoned = zone
+        .from_local_datetime(&reference)
+        .single()
+        .ok_or_else(|| store_error(workspace, "ambiguous/nonexistent run reference"))?;
+    let id = crate::store::allocate_run_id(workspace, reference, zone.name())
+        .map_err(|e| store_error(workspace, e))?;
+    let run_root =
+        crate::store::new_run_stage_for(workspace, &id).map_err(|e| store_error(workspace, e))?;
     let mut attempt = RunAttemptManifest::new(
         run_stage_id(&run_root)
             .map_err(|error| store_error(&run_root, error))?
             .into(),
     );
+    attempt.reference_time = Some(zoned.to_rfc3339());
+    attempt.time_zone = Some(zone.name().into());
+    attempt.utc_offset_seconds = Some(zoned.offset().fix().local_minus_utc());
     write_run_journal(&run_root, &attempt).map_err(|error| store_error(&run_root, error))?;
     control.set_progress(OperationStage::Preparation, None, Some(run_root.clone()));
     let result = execute(&run_root, &mut attempt);
-    let frozen = workspace.join("cache/inputs").join(&attempt.attempt_id);
-    let cleanup = if frozen.join("input-set.json").is_file() {
+    let frozen = workspace
+        .join("assets/selections")
+        .join(&attempt.attempt_id);
+    let cleanup = if frozen.join("input-set.toml").is_file() {
         (|| -> Result<(), OperationError> {
             let input_set: crate::store::InputSetManifest =
-                crate::store::read_draft(&frozen.join("input-set.json"))
+                crate::store::read_draft(&frozen.join("input-set.toml"))
                     .map_err(|e| store_error(&frozen, e))?;
             if attempt.operation.is_none() {
                 attempt.operation = Some(operation_from_inputs(&input_set));
@@ -915,6 +978,15 @@ fn run_attempt(
     } else {
         Ok(())
     };
+    let cleanup = cleanup.and_then(|()| {
+        let materialized = workspace
+            .join("work")
+            .join(format!(".inputs-{}", attempt.attempt_id));
+        if materialized.exists() {
+            fs::remove_dir_all(&materialized).map_err(|e| store_error(&materialized, e))?;
+        }
+        Ok(())
+    });
     let result = result.and_then(|report| cleanup.map(|()| report));
 
     let result = result.and_then(|report| {
@@ -932,6 +1004,20 @@ fn run_attempt(
             Ok(())
         })
         .map_err(|error| store_error(&run_root, error))?;
+        let destination = workspace.join("results").join(&attempt.attempt_id);
+        let mut report = report;
+        fn relocate(path: &mut PathBuf, old: &Path, new: &Path) {
+            if let Ok(relative) = path.strip_prefix(old) {
+                *path = new.join(relative);
+            }
+        }
+        relocate(&mut report.run_artifact, &run_root, &destination);
+        relocate(&mut report.run_root, &run_root, &destination);
+        for scenario in &mut report.scenarios {
+            for path in scenario.logs.iter_mut().chain(&mut scenario.results) {
+                relocate(path, &run_root, &destination);
+            }
+        }
         Ok(report)
     });
     let mut committed = control
@@ -998,12 +1084,12 @@ fn admit_preparation(prepared: &Path) -> Result<PreparedAdmission, OperationErro
         path: prepared.to_path_buf(),
         message,
     };
-    let identity = digest_file(&prepared.join("manifest.json")).map_err(invalid)?;
+    let identity = digest_file(&prepared.join("manifest.toml")).map_err(invalid)?;
     let manifest = read_operation_manifest(prepared).map_err(invalid)?;
     let recipe: ExecutionRecipe =
         serde_json::from_value(manifest.recipe.clone()).map_err(|e| invalid(e.to_string()))?;
     let document = validate_recipe(prepared, &recipe, &manifest.scenarios).map_err(invalid)?;
-    if digest_file(&prepared.join("manifest.json")).map_err(invalid)? != identity {
+    if digest_file(&prepared.join("manifest.toml")).map_err(invalid)? != identity {
         return Err(invalid(
             "prepared manifest changed during validation".into(),
         ));
@@ -1025,7 +1111,7 @@ fn validate_staged_preparation(
             path: root.into(),
             message,
         })?;
-    if digest_file(&root.join("manifest.json")).map_err(|error| store_error(root, error))?
+    if digest_file(&root.join("manifest.toml")).map_err(|error| store_error(root, error))?
         != admitted.identity
     {
         return Err(store_error(
@@ -1061,7 +1147,7 @@ fn execute_in_stage(
 
     let snapshot = prepared.to_path_buf();
     control.check()?;
-    if digest_file(&snapshot.join("manifest.json")).map_err(|error| store_error(run_root, error))?
+    if digest_file(&snapshot.join("manifest.toml")).map_err(|error| store_error(run_root, error))?
         != manifest_identity
     {
         return Err(store_error(
@@ -1115,7 +1201,7 @@ fn execute_in_stage(
         let history = run_root.join("scenarios/.history");
         clean_worker(&history, false).map_err(|error| store_error(&history, error))?;
         let input_set: crate::store::InputSetManifest =
-            crate::store::read_draft(&snapshot.join("input-set.json"))
+            crate::store::read_draft(&snapshot.join("input-set.toml"))
                 .map_err(|error| store_error(&snapshot, error))?;
         manifest.inputs = input_set.files;
         manifest
@@ -1129,6 +1215,13 @@ fn execute_in_stage(
         attempt.operation = Some(manifest.clone());
         write_run_journal(run_root, attempt).map_err(|error| store_error(run_root, error))?;
         write_run_manifest(run_root, &manifest).map_err(|error| store_error(run_root, error))?;
+        if snapshot.starts_with(run_root)
+            || snapshot
+                .parent()
+                .is_some_and(|p| p == run_root.parent().unwrap_or(run_root))
+        {
+            fs::remove_dir_all(&snapshot).map_err(|e| store_error(&snapshot, e))?;
+        }
     }
 
     let scenarios = manifest
@@ -1172,7 +1265,7 @@ fn execute_in_stage(
         })
         .collect();
     let report = ExecutionReport {
-        run_artifact: run_root.join("manifest.json"),
+        run_artifact: run_root.join("manifest.toml"),
         run_id: attempt.attempt_id.clone(),
         run_root: run_root.to_path_buf(),
         status: if complete && !cancelled {
@@ -1368,9 +1461,8 @@ fn run_scenario(
                 forcing.basins.mini_ids.len(),
             )?;
             crate::store::write_draft(
-                &state.join("state.json"),
+                &state.join("state.toml"),
                 &crate::store::HotStartManifest {
-                    schema_version: 1,
                     saved_at: at,
                     time_zone: forcing.timeline.time_zone.clone(),
                     scenario: id.into(),
@@ -1409,7 +1501,7 @@ fn run_scenario(
                 .into(),
         );
         processing.insert("snapshot_sha256".into(), snapshot_hash.into());
-        if snapshot.join("forcing/additional.json").is_file()
+        if snapshot.join("forcing/additional.toml").is_file()
             || recipe.document.get("calibration").is_some()
         {
             let mut selected = serde_json::Map::new();
@@ -1521,17 +1613,14 @@ pub fn with_active_run<T>(
 }
 
 pub fn read_trial(root: &Path) -> Result<TrialCache, OperationError> {
-    if let Some(workspace) = root.ancestors().nth(3)
+    if let Some(workspace) = root.parent().and_then(Path::parent)
         && root.parent() == Some(run_cache_root(workspace).as_path())
+        && run_cache_root(workspace).join("access.lock").is_file()
     {
-        return with_active_run(workspace, |active| {
-            if active != root {
-                return Err("Run generation is no longer active".into());
-            }
-            read_trial_artifacts(root).map_err(|error| error.to_string())
+        return crate::store::with_available_run(workspace, root, true, |path| {
+            read_trial_artifacts(path).map_err(|e| e.to_string())
         })
-        .map_err(|error| store_error(root, error))?
-        .ok_or_else(|| store_error(root, "Workspace has no active run"));
+        .map_err(|e| store_error(root, e));
     }
     read_trial_artifacts(root)
 }
@@ -1586,10 +1675,9 @@ fn read_trial_artifacts(root: &Path) -> Result<TrialCache, OperationError> {
         {
             let state = root.join("scenarios").join(id).join("state");
             let record: crate::store::HotStartManifest =
-                crate::store::read_draft(&state.join("state.json"))
+                crate::store::read_draft(&state.join("state.toml"))
                     .map_err(|e| store_error(root, e))?;
-            if record.schema_version != 1
-                || record.saved_at != at
+            if record.saved_at != at
                 || record.scenario != *id
                 || record.time_zone != values.timeline.time_zone
                 || values.provenance.processing["engine_sha256"].as_str()
@@ -1603,7 +1691,7 @@ fn read_trial_artifacts(root: &Path) -> Result<TrialCache, OperationError> {
             let actual = crate::store::collect_inputs(&state).map_err(|e| store_error(root, e))?;
             let actual: Vec<_> = actual
                 .into_iter()
-                .filter(|file| file.path != Path::new("state.json"))
+                .filter(|file| file.path != Path::new("state.toml"))
                 .collect();
             if actual != record.files || actual.len() != 6 {
                 return Err(store_error(

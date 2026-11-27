@@ -101,9 +101,49 @@ pub fn verify_inundation_run(
             provenance.scenario
         ));
     }
-    let manifest_sha256 = super::digest_file(&run.join("manifest.json"))?.0;
+    let manifest_sha256 = super::digest_file(&run.join("manifest.toml"))?.0;
     if provenance.run_manifest_sha256 == manifest_sha256 {
         return Ok(());
+    }
+    // Explicit legacy conversion retains the original manifest as indexed evidence.
+    // Bind the unchanged mask only when the old successful scenario and output
+    // paths still describe this converted run's successful scenario.
+    let Ok(manifest) = super::read_retained_manifest(run) else {
+        return Err("mask was generated for a different run manifest".into());
+    };
+    if manifest
+        .recipe
+        .get("legacy_manifest_path")
+        .and_then(|v| v.as_str())
+        == Some("legacy-manifest.json")
+        && manifest
+            .recipe
+            .get("legacy_manifest_sha256")
+            .and_then(|v| v.as_str())
+            == Some(provenance.run_manifest_sha256.as_str())
+    {
+        let path = Path::new("legacy-manifest.json");
+        if let Some(reference) = manifest.inputs.iter().find(|f| f.path == path)
+            && super::digest_file(&run.join(path))? == (reference.sha256.clone(), reference.size)
+            && reference.sha256 == provenance.run_manifest_sha256
+        {
+            let old: serde_json::Value = super::read_draft(&run.join(path))?;
+            let original = old
+                .get("scenarios")
+                .and_then(|v| v.as_array())
+                .and_then(|values| values.iter().find(|s| s["id"].as_str() == Some(scenario)));
+            let converted = manifest.scenarios.iter().find(|s| s.id == scenario);
+            if let (Some(original), Some(converted)) = (original, converted)
+                && original["state"].as_str() == Some("completed")
+                && converted.state == "completed"
+                && original["basin_result"]
+                    == serde_json::to_value(&converted.basin_result).map_err(|e| e.to_string())?
+                && original["station_result"]
+                    == serde_json::to_value(&converted.station_result).map_err(|e| e.to_string())?
+            {
+                return Ok(());
+            }
+        }
     }
     Err("mask was generated for a different run manifest".into())
 }
@@ -491,4 +531,62 @@ fn format_error(error: impl std::fmt::Display) -> StoreError {
 fn path_str(path: &Path) -> Result<&str, StoreError> {
     path.to_str()
         .ok_or_else(|| StoreError::InvalidPath(format!("path is not UTF-8: {}", path.display())))
+}
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+    #[test]
+    fn legacy_mask_binding_requires_indexed_original_and_matching_successful_scenario() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        let original = serde_json::json!({"scenarios":[{"id":"main","state":"completed","basin_result":"results/main/basin.nc","station_result":null}]});
+        super::super::write_draft(&root.join("legacy-manifest.json"), &original).unwrap();
+        let (hash, size) = super::super::digest_file(&root.join("legacy-manifest.json")).unwrap();
+        let mut manifest = super::super::OperationManifest {
+            preparation_sha256: None,
+            state: "completed".into(),
+            recipe: serde_json::json!({"legacy_manifest_path":"legacy-manifest.json","legacy_manifest_sha256":hash}),
+            inputs: vec![super::super::InputReference {
+                path: "legacy-manifest.json".into(),
+                kind: "legacy".into(),
+                size,
+                sha256: hash.clone(),
+            }],
+            scenarios: vec![super::super::ScenarioRecord {
+                id: "main".into(),
+                state: "completed".into(),
+                started_at: None,
+                finished_at: None,
+                exit_code: None,
+                signal: None,
+                error: None,
+                stdout: None,
+                stderr: None,
+                basin_result: Some("results/main/basin.nc".into()),
+                station_result: None,
+            }],
+            created_at: "2026-01-01T00:00:00".into(),
+            finished_at: None,
+            error: None,
+        };
+        super::super::write_run_manifest(root, &manifest).unwrap();
+        let provenance = InundationProvenance {
+            run_manifest_sha256: hash,
+            scenario: "main".into(),
+            hand_sha256: "0".repeat(64),
+            catchments_sha256: "0".repeat(64),
+            flood_source_sha256: "0".repeat(64),
+            hand_sidecars: Vec::new(),
+            catchments_sidecars: Vec::new(),
+            vertical_datum: "Z0".into(),
+            hand_vertical_shift_m: 0,
+            include_nonpositive_hand: false,
+            hand_in_decimetres: false,
+        };
+        verify_inundation_run(root, "main", &provenance).unwrap();
+        manifest.scenarios[0].basin_result = Some("results/other/basin.nc".into());
+        super::super::write_run_manifest(root, &manifest).unwrap();
+        assert!(verify_inundation_run(root, "main", &provenance).is_err());
+    }
 }

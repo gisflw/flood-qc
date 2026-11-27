@@ -435,6 +435,25 @@ fn calibration_action(
 }
 #[derive(Subcommand)]
 enum RunCommand {
+    /// Retain a result set when the active results change.
+    Keep {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        id: String,
+    },
+    /// Allow a retained result set to be reclaimed after it is no longer active.
+    Release {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        id: String,
+    },
+    /// List explicitly retained result sets.
+    Retained {
+        #[arg(long)]
+        workspace: PathBuf,
+    },
     Export {
         #[arg(long)]
         run: PathBuf,
@@ -458,8 +477,6 @@ enum RunCommand {
         bundle: PathBuf,
         #[arg(long)]
         engine: PathBuf,
-        #[command(flatten)]
-        policy: InputPolicy,
         #[arg(long)]
         json: bool,
     },
@@ -503,8 +520,6 @@ struct RunOptions {
     workspace: PathBuf,
     #[arg(long)]
     config: Option<PathBuf>,
-    #[command(flatten)]
-    input_policy: InputPolicy,
     #[arg(long)]
     force: bool,
     #[arg(long)]
@@ -513,6 +528,12 @@ struct RunOptions {
     lookback_days: Option<u32>,
     #[arg(long)]
     forecast_days: Option<u32>,
+    /// Historical rainfall source: stations or registered IMERG grids.
+    #[arg(long)]
+    historical_rainfall: Option<String>,
+    /// Registered IMERG day object ID; repeat for multiple days.
+    #[arg(long = "imerg-object")]
+    imerg_objects: Vec<String>,
     /// Select zero, a forecast product/cycle, or a JSON scenario value. Repeat to select a set.
     #[arg(long = "scenario")]
     scenarios: Vec<mgb_ops::app::RunScenario>,
@@ -561,6 +582,12 @@ impl RunOptions {
                 reference_time: self.reference_time,
                 lookback_days: self.lookback_days,
                 forecast_days: self.forecast_days,
+                historical_rainfall: match self.historical_rainfall.as_deref() {
+                    Some("stations") if self.imerg_objects.is_empty() => Some(mgb_ops::app::HistoricalRainfall::Stations),
+                    Some("imerg") if !self.imerg_objects.is_empty() => Some(mgb_ops::app::HistoricalRainfall::Imerg { object_ids: self.imerg_objects }),
+                    None if self.imerg_objects.is_empty() => None,
+                    _ => return Err("select --historical-rainfall imerg with one or more --imerg-object values, or stations without objects".into()),
+                },
                 scenarios: (!self.scenarios.is_empty()).then_some(self.scenarios),
                 forcing: self.forcing.as_deref().map(parse_parameter).transpose()?,
                 calibration: self
@@ -583,36 +610,10 @@ impl RunOptions {
     }
 }
 
-#[derive(Args, Clone, Default)]
-struct InputPolicy {
-    /// Save the previous unsaved inputs before replacing them.
-    #[arg(long, conflicts_with = "discard_inputs")]
-    save_inputs_to: Option<PathBuf>,
-    /// Explicitly discard the previous inputs when replacing them.
-    #[arg(long)]
-    discard_inputs: bool,
-}
-impl InputPolicy {
-    fn control(&self, control: &mgb_ops::OperationControl) -> mgb_ops::OperationControl {
-        if let Some(destination) = &self.save_inputs_to {
-            control
-                .clone()
-                .with_input_disposition(mgb_ops::app::InputDisposition::Save {
-                    destination: destination.clone(),
-                })
-        } else if self.discard_inputs {
-            control
-                .clone()
-                .with_input_disposition(mgb_ops::app::InputDisposition::Discard)
-        } else {
-            control.clone()
-        }
-    }
-}
 #[derive(Subcommand)]
 enum InputCommand {
-    /// Capture a self-contained input set from the current session selections.
-    Capture(RunOptions),
+    /// Register the current session selections for later execution or export.
+    Capture(Box<RunOptions>),
     /// Validate and inspect an independently saved input set.
     Open {
         #[arg(long)]
@@ -625,7 +626,14 @@ enum InputCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Discard current inputs, preserving run manifests.
+    /// Convert an exported legacy input set into retained registrations.
+    Convert {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        interchange: PathBuf,
+    },
+    /// Clear the current input selection while retaining registrations and runs.
     Discard {
         #[arg(long)]
         workspace: PathBuf,
@@ -638,8 +646,6 @@ enum InputCommand {
         inputs: PathBuf,
         #[arg(long)]
         engine: PathBuf,
-        #[command(flatten)]
-        policy: InputPolicy,
         #[arg(long)]
         json: bool,
     },
@@ -661,8 +667,6 @@ enum OperationCommand {
         workspace: PathBuf,
         #[arg(long)]
         prepared: PathBuf,
-        #[command(flatten)]
-        policy: InputPolicy,
         #[arg(long)]
         json: bool,
     },
@@ -717,6 +721,27 @@ enum ConfigCommand {
 }
 #[derive(Subcommand)]
 enum WorkspaceCommand {
+    /// Register a complete IMERG UTC-day grid.
+    Imerg {
+        #[command(subcommand)]
+        command: WorkspaceImergCommand,
+    },
+    /// Import logical station data into the registry.
+    ImportObservations {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        interchange: PathBuf,
+    },
+    /// Convert a legacy workspace into a new workspace.
+    Convert {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        interchange: PathBuf,
+    },
     /// Initialize the workspace assets using config.toml.
     Init {
         #[arg(long)]
@@ -735,6 +760,19 @@ enum WorkspaceCommand {
         engine_input_dir: Option<PathBuf>,
         #[arg(long)]
         json: bool,
+    },
+}
+#[derive(Subcommand)]
+enum WorkspaceImergCommand {
+    Register {
+        #[arg(long)]
+        workspace: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+    },
+    List {
+        #[arg(long)]
+        workspace: PathBuf,
     },
 }
 fn run() -> Result<bool, Box<dyn std::error::Error>> {
@@ -931,6 +969,20 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         }
         Command::Run { command } => {
             match command {
+                RunCommand::Keep { workspace, id } => {
+                    mgb_ops::app::keep_workspace_results(&workspace, &id, true)?;
+                    write!(out, "Retained {id}")?;
+                }
+                RunCommand::Release { workspace, id } => {
+                    mgb_ops::app::keep_workspace_results(&workspace, &id, false)?;
+                    write!(out, "Released {id}")?;
+                }
+                RunCommand::Retained { workspace } => {
+                    serde_json::to_writer(
+                        &mut out,
+                        &mgb_ops::app::retained_workspace_results(&workspace)?,
+                    )?;
+                }
                 RunCommand::Export {
                     run,
                     inputs,
@@ -951,16 +1003,10 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     workspace,
                     bundle,
                     engine,
-                    policy,
                     json,
                 } => {
                     let result = progress::run(&mut out, true, |control| {
-                        mgb_ops::app::regenerate_run(
-                            &workspace,
-                            &bundle,
-                            &engine,
-                            &policy.control(control),
-                        )
+                        mgb_ops::app::regenerate_run(&workspace, &bundle, &engine, control)
                     })?;
                     let Some(report) = operation_result(result, json, &mut out)? else {
                         return Ok(false);
@@ -1060,13 +1106,12 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
             match command {
                 InputCommand::Capture(options) => {
                     let json = options.json;
-                    let policy = options.input_policy.clone();
                     let force = options.force;
-                    let session = options.session()?;
+                    let session = (*options).session()?;
                     let result = progress::run(&mut out, json, |control| {
                         mgb_ops::app::capture_workspace_inputs(
                             &session,
-                            &policy.control(control).with_force_acquisition(force),
+                            &control.clone().with_force_acquisition(force),
                         )
                     })?;
                     let manifest = result?;
@@ -1084,6 +1129,18 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                         &mgb_ops::app::save_workspace_inputs(&workspace.canonicalize()?, &output)?,
                     )?;
                 }
+                InputCommand::Convert {
+                    workspace,
+                    interchange,
+                } => {
+                    serde_json::to_writer_pretty(
+                        &mut out,
+                        &mgb_ops::app::convert_saved_inputs(
+                            &workspace.canonicalize()?,
+                            &interchange,
+                        )?,
+                    )?;
+                }
                 InputCommand::Discard { workspace } => {
                     mgb_ops::app::discard_workspace_inputs(&workspace.canonicalize()?)?;
                 }
@@ -1091,16 +1148,10 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                     workspace,
                     inputs,
                     engine,
-                    policy,
                     json,
                 } => {
                     let result = progress::run(&mut out, json, |control| {
-                        mgb_ops::app::execute_input_set(
-                            &workspace,
-                            &inputs,
-                            &engine,
-                            &policy.control(control),
-                        )
+                        mgb_ops::app::execute_input_set(&workspace, &inputs, &engine, control)
                     })?;
                     let Some(report) = operation_result(result, json, &mut out)? else {
                         return Ok(false);
@@ -1116,10 +1167,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         } => {
             let json = options.json;
             let report = progress::run_all(&mut out, json, |control| {
-                let configured = options
-                    .input_policy
-                    .control(control)
-                    .with_force_acquisition(options.force);
+                let configured = control.clone().with_force_acquisition(options.force);
                 options
                     .operation()
                     .map(|operation| operation.run_all_report(&configured))
@@ -1168,7 +1216,6 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                 OperationCommand::Execute {
                     workspace,
                     prepared,
-                    policy,
                     json,
                 },
         } => {
@@ -1180,7 +1227,7 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
                         invocation_dir,
                         prepared,
                     },
-                    &policy.control(control),
+                    control,
                 )
             })?;
             let Some(report) = operation_result(result, json, &mut out)? else {
@@ -1272,6 +1319,46 @@ fn run() -> Result<bool, Box<dyn std::error::Error>> {
         } => {
             write!(out, "{}", mgb_ops::example_config())?;
             out.flush()?;
+            Ok(true)
+        }
+        Command::Workspace {
+            command: WorkspaceCommand::Imerg { command },
+        } => {
+            match command {
+                WorkspaceImergCommand::Register { workspace, source } => writeln!(
+                    out,
+                    "{}",
+                    mgb_ops::app::register_workspace_imerg(&workspace, &source)?
+                )?,
+                WorkspaceImergCommand::List { workspace } => {
+                    for id in mgb_ops::app::imerg_choices(&workspace)? {
+                        writeln!(out, "{id}")?;
+                    }
+                }
+            }
+            Ok(true)
+        }
+        Command::Workspace {
+            command:
+                WorkspaceCommand::ImportObservations {
+                    workspace,
+                    interchange,
+                },
+        } => {
+            let revision = mgb_ops::app::import_registered_observations(&workspace, &interchange)?;
+            writeln!(out, "Imported observation revision {revision}")?;
+            Ok(true)
+        }
+        Command::Workspace {
+            command:
+                WorkspaceCommand::Convert {
+                    source,
+                    workspace,
+                    interchange,
+                },
+        } => {
+            mgb_ops::app::convert_workspace(&source, &workspace, &interchange)?;
+            writeln!(out, "Converted workspace: {}", workspace.display())?;
             Ok(true)
         }
         Command::Workspace {

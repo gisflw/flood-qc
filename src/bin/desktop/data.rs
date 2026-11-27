@@ -909,7 +909,6 @@ mod tests {
             station_result: None,
         };
         let manifest = canonical::OperationManifest {
-            schema_version: 1,
             preparation_sha256: None,
             state: "failed".into(),
             recipe: serde_json::Value::Null,
@@ -923,11 +922,7 @@ mod tests {
             finished_at: None,
             error: Some("synthetic sibling failure".into()),
         };
-        std::fs::write(
-            root.join("manifest.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
+        canonical::write_draft(&root.join("manifest.toml"), &manifest).unwrap();
     }
     #[test]
     fn partial_runs_keep_usable_siblings_and_reject_unsafe_scenario_paths() {
@@ -946,11 +941,7 @@ mod tests {
 
         let mut manifest = run.manifest.clone();
         manifest.scenarios[0].id = "../outside".into();
-        std::fs::write(
-            dir.path().join("manifest.json"),
-            serde_json::to_vec(&manifest).unwrap(),
-        )
-        .unwrap();
+        canonical::write_draft(&dir.path().join("manifest.toml"), &manifest).unwrap();
         assert!(read_run(dir.path().into()).is_err());
     }
     #[test]
@@ -978,7 +969,7 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
             std::fs::remove_dir_all(&synthetic).unwrap();
         }
         saved_trial(&synthetic, geometry.longitudes[0], geometry.latitudes[0]);
-        let history = root.join("assets/observations");
+        let history = root.join("assets/registry.sqlite");
         if !history.exists() {
             let mut database = canonical::ObservationStore::create(&history, "UTC").unwrap();
             let station_id = "002".to_owned();
@@ -1097,7 +1088,8 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         }]));
         std::fs::create_dir_all(root.join("data")).unwrap();
         let mut database =
-            canonical::ObservationStore::create(&root.join("assets/observations"), "UTC").unwrap();
+            canonical::ObservationStore::create(&root.join("assets/registry.sqlite"), "UTC")
+                .unwrap();
         database
             .write_batch(&canonical::ObservationBatch {
                 stations: vec![canonical::Station {
@@ -1134,7 +1126,8 @@ executable = "/workspace/rs_hydro_forecast/mgb_runner/MGB_Inercial_Prev_RSH"
         std::fs::write(&config, "[spatial]\ngpkg_path = \"missing.gpkg\"\n").unwrap();
         let original = std::fs::read(&config).unwrap();
         let mut database =
-            canonical::ObservationStore::create(&root.join("assets/observations"), "UTC").unwrap();
+            canonical::ObservationStore::create(&root.join("assets/registry.sqlite"), "UTC")
+                .unwrap();
         let start = timestamp("2026-01-01T00:00:00").unwrap();
         database
             .write_batch(&canonical::ObservationBatch {

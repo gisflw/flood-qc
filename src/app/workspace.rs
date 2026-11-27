@@ -158,6 +158,7 @@ pub struct WorkspaceRun {
     pub lookback_days: u32,
     pub forecast_days: u32,
     pub timestep_hours: u32,
+    pub historical_rainfall: super::request::HistoricalRainfall,
 }
 impl Default for WorkspaceRun {
     fn default() -> Self {
@@ -167,6 +168,7 @@ impl Default for WorkspaceRun {
             lookback_days: 5,
             forecast_days: 5,
             timestep_hours: 1,
+            historical_rainfall: Default::default(),
         }
     }
 }
@@ -197,8 +199,8 @@ impl Default for WorkspaceAcquisition {
 }
 
 pub(super) const CONFIG_PATH: &str = "config.toml";
-pub(super) const OBSERVATIONS_PATH: &str = "assets/observations";
-pub(super) const FORECASTS_PATH: &str = "assets/forecasts";
+pub(super) const OBSERVATIONS_PATH: &str = "assets/registry.sqlite";
+pub(super) const FORECASTS_PATH: &str = "assets/objects/forecasts";
 
 pub fn read_workspace_config(path: &Path) -> Result<WorkspaceConfig, String> {
     let contents = fs::read_to_string(path).map_err(|e| e.to_string())?;
@@ -290,10 +292,10 @@ mini_layers = "source/geometry.gpkg"
 # sequence_upper_mm = 1.0
 # sequence_min_length = 5
 
-# Optional routine defaults. Canonical forcing paths are Parquet files.
+# Optional routine defaults. Canonical forcing paths are TOML files.
 # [forcing]
-# wind_observations = "assets/wind/observations.parquet"
-# reservoir_schedules = "assets/reservoirs/schedules.parquet"
+# wind_observations = "assets/wind/observations.toml"
+# reservoir_schedules = "assets/reservoirs/schedules.toml"
 # [[forcing.mappings.wind]]
 # block = 1
 # series_id = "inmet:station"
@@ -598,8 +600,8 @@ pub fn inspect(request: InspectionRequest) -> InspectionReport {
     );
     for (name, relative) in [
         ("database", OBSERVATIONS_PATH),
-        ("cache", "cache"),
-        ("runs", "cache/run"),
+        ("cache", "work"),
+        ("runs", "results"),
     ] {
         let path = workspace.join(relative);
         let (code, message) = match fs::metadata(&path) {
@@ -660,7 +662,7 @@ pub fn initialize_workspace(workspace: &Path) -> Result<PathBuf, String> {
     crate::store::ForecastCatalog::open(
         &workspace,
         &forecast_assets(&workspace),
-        Path::new("assets/forecasts"),
+        Path::new(FORECASTS_PATH),
     )
     .map_err(|error| error.to_string())?;
     Ok(path)
@@ -766,7 +768,6 @@ pub(super) fn operational_document(
             .map_err(|e| e.to_string())?;
     }
     Ok(PreparationDocument {
-        schema_version: 1,
         time_zone: reference.timezone().name().into(),
         reference_time: label(local),
         step_seconds: 3600,
@@ -775,6 +776,8 @@ pub(super) fn operational_document(
         forecast_first_end: label(forecast_first),
         forecast_last_end: label(forecast_last),
         observed: ObservedDocument {
+            historical_rainfall: run.historical_rainfall.clone(),
+            revision: None,
             path: database.clone(),
             provider_codes: providers,
             station_ids: Vec::new(),

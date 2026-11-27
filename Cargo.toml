@@ -17,11 +17,8 @@ krilla = "=0.8.2"
 resvg = { version = "=0.45.1", default-features = false, features = ["text"] }
 reqwest = { version = "=0.13.5", default-features = false, features = ["blocking", "query", "rustls"] }
 roxmltree = "0.20"
-arrow-array = "=60.2.0"
-arrow-schema = "=60.2.0"
-parquet = { version = "=60.2.0", default-features = false, features = ["arrow", "zstd"] }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }
 same-file = "=1.0.6"
 sha2 = "0.10.9"
 tempfile = "3"
@@ -30,9 +27,10 @@ toml = "0.9"
 egui_commonmark = { version = "=0.25.0", default-features = false, features = ["pulldown_cmark"], optional = true }
 egui_extras = { version = "=0.36.2", default-features = false, optional = true }
 pulldown-cmark = { version = "=0.13.6", default-features = false, optional = true }
+turso = { version = "=0.9.0-pre.6", default-features = false }
+pollster = "0.4"
 
 [dev-dependencies]
-pollster = "0.4"
 proc-macro2 = "1"
 syn = { version = "2", features = ["full", "visit"] }
 
@@ -59,6 +57,7 @@ version = "=0.1.6"
 
 [features]
 default = []
+sqlite-qualification = []
 desktop = [
     "dep:eframe",
     "dep:rsplot",
@@ -82,6 +81,11 @@ path = "src/bin/cli/main.rs"
 name = "mgb-ops-desktop"
 path = "src/bin/monitor.rs"
 required-features = ["desktop"]
+
+[[test]]
+name = "sqlite_qualification"
+path = "tests/sqlite_qualification.rs"
+required-features = ["sqlite-qualification"]
 
 [dependencies.eframe]
 version = "=0.36.2"

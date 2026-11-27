@@ -33,30 +33,21 @@ correction order used for that capture. The [qualification
 record](../../references/regression/rs-hourly/rust-qualification.md) preserves the
 driver identities, comparisons and numerical caveats.
 
-The [input-set workflow](../contracts/inputs.md) implements the clean
-storage break: Parquet 2 observations and forcing tables, NetCDF forecast bases,
-and JSON run and input manifests. Scenarios apply ordered edits to hourly working
-grids. Linux paired release checks completed with exact unchanged forcing/result
-arrays and no established repeatable slowdown; see [input-set
-qualification](#input-set-qualification). Independent saved-input regeneration,
-replacement, corruption and failure retention have automated coverage.
+The [registered-input workflow](../contracts/inputs.md) replaces operational
+Parquet with pure-Rust SQLite observations and TOML wind/reservoir tables.
+Immutable canonical grids and other files are shared through registered objects.
+Dated run records pin observation registry identities/revisions, input objects,
+resolved settings and engine identity; disposable work and retained results have
+separate lifecycles. See [registry validation](#registered-inputs-and-runs).
+The earlier [input-set measurements](#input-set-qualification) remain historical
+evidence for the preceding Parquet implementation.
 
-Current Linux validation passed formatting, both Clippy configurations, both
-full test suites at normal parallelism, the standalone architecture gate and
-the desktop build. Native mask lifecycle checks are isolated from unit tests
-that launch children. The explicit RS mask regression matched all 4,344 decoded
-native and overview frame digests. The release CLI passed version/help checks;
-the release desktop opened and closed normally under Xvfb with Mesa llvmpipe,
-and the explicit PNG export check passed on that software renderer. These are
-software-rendering checks; operator hardware and Windows remain unverified.
-
-The strict frozen engine-stream check does not pass on the current host. Direct
-execution of the frozen engine and byte-identical frozen inputs reproduces the
-same drift without Rust; the [execution-environment
+The strict frozen engine-stream check has the separately established current-host
+execution-environment drift. Direct execution of the frozen engine and identical
+frozen inputs reproduced it without Rust; the [execution-environment
 record](../../references/regression/rs-hourly/rust-qualification.md#current-execution-environment)
-records the evidence and limits. The frozen byte requirement is unchanged.
-Windows, operator hardware and rendering of the new input-decision dialog remain
-unverified.
+retains the evidence. The frozen byte requirement is unchanged. Operator hardware
+and Windows remain unverified.
 Current usage lives in the [workspace](../contracts/workspace.md),
 [observation](../contracts/observations.md),
 [forecast](../contracts/forecasts.md) and
@@ -79,12 +70,13 @@ record unverified platforms and remaining gaps explicitly.
 | --- | --- | --- |
 | [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: consolidated reference capture | Complete: canonical fixtures and staged expectations for four scenarios, exact fresh repeat, direct source normalization equality and shared history-only level recovery. Linux only; acquisition, Windows, state qualification and Rust equivalence remain outside this evidence. |
 | [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | Complete for Linux inspection: strict TOML, path semantics, text/JSON findings, source preservation and architecture checks pass. Hosted CI and Windows remain unverified. Numerical execution acceptance is separate below. |
-| [Workspace layout and run input retention](../contracts/inputs.md) | Input-set change | Implemented on Linux. TOML, revision-checked API sessions, current inputs, independent saves and per-run manifests have distinct lifecycles. Automated checks cover independent regeneration with a matching installed engine, explicit replacement decisions and incomplete-cache recovery. |
-| [Shared registered inputs and dated run manifests](../../.dev/plans/registered-inputs-and-runs.md) | Planned storage direction | Planned; intention only, with no implementation or new qualification. Current workspace and input-set contracts still apply. |
+| [Workspace layout and run input retention](../contracts/inputs.md) | Registry migration | Implemented. Registrations remain available without replacement decisions; portable selected-data exports and matching-engine regeneration have automated checks. |
+| [Shared registered inputs and dated run manifests](../contracts/inputs.md) | Registry migration | Implemented. Shared objects, immutable SQLite revision pins, TOML manifests, local-hour run IDs, latest-plus-kept results, explicit conversion and station/IMERG selection replace the old storage model. See [validation](#registered-inputs-and-runs). |
+| [Rust SQLite qualification](../../tests/support/sqlite-qualification.md) | Registry foundation | The pure-Rust candidate is now the production store. The earlier crash/transaction experiment and asymmetric benchmark are recorded [below](#rust-sqlite-qualification); they do not establish Windows or physical-power-loss durability. |
 | [Live CLI run output](../contracts/operations.md#controlled-actions-and-cancellation) | Saved-run CLI follow-up | Complete for direct saved-run commands on Linux. Synthetic checks cover live history and scenario output, JSON stream routing, engine failure, SIGINT, and publication with blocked or closed console output. Retained engine logs match the fixture bytes. Windows remains unverified. |
 | [Live CLI download progress](../contracts/acquisition.md#cli-download-progress) | Acquisition CLI follow-up | Linux fixtures cover ANA spinner refresh and cleanup, redirected station summaries, JSON stream routing, forecast cycle fallback and reuse, and the transition to MGB in Run All. Live provider and Windows checks were outside this console validation. |
-| [History, assets, and persisted operation data](core_and_cli.md) | Input-set change | Implemented on Linux. Observation metadata and samples use Parquet 2, grids use NetCDF, and JSON manifests select active data and results. Default and desktop dependency graphs contain no SQLite package; CLI linkage has no SQLite library. Spatial GeoPackages use the pure Rust reader. |
-| [Canonical observations, QC, and observed forcing](../contracts/observations.md) | Input-set change | Implemented on Linux. Ranking, ordered replacements, QC and interpolation consume columnar assets. Matched raw-series reports and unchanged preparation arrays agree exactly with the preceding implementation; null, missing and zero, concurrent readers, rollback and revision precedence have automated coverage. |
+| [History, assets, and persisted operation data](core_and_cli.md) | Registry migration | SQLite retains observations and data revisions; NetCDF retains canonical grids and results; TOML records select inputs and results. Parquet/Arrow and native Zstandard packages are removed from the application graph. |
+| [Canonical observations, QC, and observed forcing](../contracts/observations.md) | Registry migration | Typed values, null/absent/zero, integer levels, ranking, edits, flags, offsets and full/partial coverage retain their scientific behavior. SHA-256 verifies stored rows and metadata. Acquisition commits values, provenance and coverage together; QC rejects stale revision changes. |
 | [Saved forecast normalization and forecast forcing](../contracts/forecasts.md) | Input-set change | Implemented on Linux. Folder discovery selects normalized bases independently of raw downloads. Zero, forecast and earlier-scenario bases share the hourly working-grid recipe. Tests cover ordered edits, preview equality, cross-format reuse, force replacement and atomic rollback. An offline ECMWF cycle reused its asset with the raw source removed. Frozen native-grid correction results remain historical evidence. |
 | [Saved RS integration, execution, and decoded results](../contracts/operations.md) | Saved-data execution | Current-host Linux checks reproduce the preceding implementation’s complete unchanged forcing and decoded result arrays for zero, ECMWF and NOAA. Saved-input repeats and real engine execution succeed. Cross-environment frozen byte equivalence remains unqualified as explained above; Windows and hydrological validity remain unqualified. |
 | [Canonical saved input intake](../contracts/saved-data.md#canonical-data-and-review) | 5 | Implemented on Linux. Canonical observations/inventory, normalized forecast registration and explicit wind/reservoir JSON import produce the new layout. Automated checks cover repeat, collision, corruption, replacement and rollback. |
@@ -164,6 +156,94 @@ A five-day regional scenario preview took 152 ms cold and 22 ms warm median
 set held 174 MiB of indexed payload; 200 independent copies would occupy about
 34 GiB, excluding small manifests and any separately retained outputs.
 
+## Rust SQLite qualification
+
+The initial Turso 0.9.0-pre.6 experiment preceded production adoption. Its Linux
+and Windows qualification graphs, also combined with desktop features, preserved
+the selected pure-Rust crypto path with allocator and SIMD defaults disabled.
+The [harness notes](../../tests/support/sqlite-qualification.md) describe the
+examined sources/build scripts and dynamic-extension restrictions; this does
+not resolve existing application-wide dependency deviations.
+
+Linux formatting, default Clippy/tests (178 passed, 5 explicitly ignored),
+the independent architecture gate (12 passed), qualification Clippy and the
+explicit release qualification suite passed. Twenty further parallel functional
+suite repetitions passed, including 320 injected process-crash cases. External
+guards explicitly unlock after database handles close. The qualification
+executable's inspected dynamic dependencies were the platform loader, libc,
+libm and libgcc_s; absence from that list alone does not rule out static code.
+
+Five paired release repetitions alternated backend order in separate processes
+with 159,280 synthetic samples. Every selected value and digest matched. The
+final measurements were:
+
+| Measurement | Parquet | Turso |
+| --- | ---: | ---: |
+| Bulk ingestion, median | 322.88 ms | 793.05 ms |
+| Fresh-handle window read, median | 4.57 ms | 20.16 ms |
+| Warm window read, median | 3.58 ms | 4.62 ms |
+| Rolling append including open, median | 7.79 ms | 30.41 ms |
+| Historical window read, median | 4.49 ms | 5.35 ms |
+| Maximum child peak RSS | 46,004 KiB | 69,420 KiB |
+
+Other repetitions also showed slower reads and greater memory use. These paths
+return matching selected samples, but compare the full existing Parquet API
+with a minimal SQL prototype, rather than equivalent complete operational APIs.
+They do not establish end-to-end forecast performance or regional qualification.
+The subsequent requested full migration adopted the pure-Rust implementation.
+These prototype timings remain historical evidence and do not qualify the final
+registry API performance. Physical power-loss durability, Windows runtime/linkage
+and unrestricted multiprocess WAL remain unqualified.
+
+## Registered inputs and runs
+
+The full registry model replaces Parquet in production. SQLite schema versions
+and automatic schema migrations are not used. Observation data revisions and
+registry identities pin values; SHA-256 verifies samples and metadata. Complete
+ANA registrations atomically include values, retained-response provenance and
+full/partial coverage. Forecast revisions preserve earlier objects. IMERG uses
+complete regional UTC days, explicit selection and no station fallback. Desktop
+registration and catalog refresh run outside UI frames. Kept results remain
+selectable under shared read locks; release cannot race a protected read.
+
+Linux formatting, default and desktop Clippy with warnings denied, default tests
+(184 passed), desktop tests (259 passed), the standalone architecture gate
+(11 passed), and qualification Clippy passed. The explicit release transaction
+and crash suite passed five targets. Five external bridge tests passed, and the
+explicit legacy saved-set test converted and replayed both zero and
+forecast-bearing cases with exact decoded values, masks and timelines. Routine
+tests do not require Python or PyArrow.
+
+The regional legacy conversion preserved and independently compared all
+2,001,960 samples (including 1,116,615 valid zeros), 440 stations, 414 series,
+six replacements, 101 offsets and 810 inventory entries. SQLite integrity and
+foreign-key checks passed. The original had no acquisition-coverage table or
+complete response provenance; conversion preserves that unknown state rather
+than inventing completed coverage. Old run outcomes and unchanged inundation
+masks retain indexed original-manifest evidence. A release conversion took
+66.8 seconds with a 1,390,816 KiB peak child RSS on this host; this single run is
+not a general performance benchmark. Release preparation and all three real MGB
+scenarios (zero, ECMWF and NOAA) completed. After removing the disposable source
+workspace, the portable regional bundle replayed all three scenarios and matched
+all twelve complete engine flow/level streams byte-for-byte. This is a same-host
+repeat, distinct from the historical frozen-environment limitation below.
+
+The final release-profile suites passed 185 default and 260 desktop tests,
+including the canonical-path guard check for SQLite symlink aliases. Release
+Clippy passed with warnings denied. Debug-profile cleanup removed only build
+artifacts, and both release binaries built afterward; no debug build followed.
+Release CLI help/version passed. Desktop startup returned the missing-display
+Winit error because neither X11 nor Wayland was configured; native rendering was
+not established. The regional target now uses the converted model with its
+original active results retained. All 2,098 original workspace entries were
+checked for unchanged bytes, modes and modification times before preserving the
+original directory as a separate backup. The conversion ledger records that
+backup location, and post-cutover workspace inspection passed.
+
+Windows, physical power-loss durability, operator hardware and unrestricted
+multiprocess WAL remain unqualified. The historical frozen engine-stream
+execution-environment limitation above is unchanged.
+
 ## Operational flow
 
 ```text
@@ -173,7 +253,7 @@ Acquire observations and forecasts
     -> freeze selected data, corrections, settings, calibration, geometry, and state
     -> analysis prepares canonical forcing; model serializes engine inputs
     -> execute forecast scenarios and stage decoded canonical outputs
-    -> record run/scenario outcomes and output locations in per-run JSON manifests
+    -> record run/scenario outcomes and output locations in per-run TOML manifests
     -> inspect and post-process results
     -> produce bulletins and data exports
     -> optionally copy generated files for long-term storage or share completed runs
@@ -251,8 +331,8 @@ this checklist, and preserve unique scientific provenance with its reference.
    it rather than creating the entire storage design upfront.
 3. Reproduce the saved preparation, real MGB execution, and decoded-results path
    in Rust. Compare with the regression target, carrying the required initial
-   state unchanged. Generate execution-start input snapshots and per-run
-   JSON manifests through shared app workflows/store; keep failure
+   state unchanged. Generate registered input references and per-run
+   TOML manifests through shared app workflows/store; keep failure
    diagnostics and successful sibling outputs without changing other runs. Hot-start
    generation and chaining follow later.
 4. Introduce a working GUI over that shared core. Perform the available operation

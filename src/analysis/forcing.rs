@@ -249,7 +249,6 @@ mod tests {
             ..ObservationInputs::default()
         };
         let schedules = ReservoirSchedules {
-            schema_version: 1,
             time_zone: "UTC".into(),
             samples: vec![
                 ReservoirScheduleSample {

@@ -237,7 +237,7 @@ fn compare_mask(path: &Path, expected: &Expected, scenario: &Scenario) {
                 .unwrap()
                 .parent()
                 .unwrap()
-                .join("manifest.json")
+                .join("manifest.toml")
         )
         .unwrap()
         .0
@@ -354,12 +354,8 @@ fn saved_rs_inundation_masks() {
         .tempdir_in("runs")
         .unwrap();
     let run = directory.path().canonicalize().unwrap();
-    let manifest = serde_json::json!({"schema_version":1,"state":"completed","recipe":{},"inputs":[],"scenarios":expected.scenarios.iter().map(|s| serde_json::json!({"id":s.id,"state":"completed"})).collect::<Vec<_>>(),"created_at":"2026-07-20T00:00:00-03:00"});
-    fs::write(
-        run.join("manifest.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    let manifest = serde_json::json!({"state":"completed","recipe":{},"inputs":[],"scenarios":expected.scenarios.iter().map(|s| serde_json::json!({"id":s.id,"state":"completed"})).collect::<Vec<_>>(),"created_at":"2026-07-20T00:00:00-03:00"});
+    mgb_ops::store::write_draft(&run.join("manifest.toml"), &manifest).unwrap();
     for scenario in &expected.scenarios {
         let raw_path = reference
             .join("capture/runs")

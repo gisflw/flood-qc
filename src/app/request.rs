@@ -24,7 +24,6 @@ fn invalid(field: &str, message: impl Into<String>) -> RequestError {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparationDocument {
-    pub schema_version: u32,
     pub time_zone: String,
     pub reference_time: String,
     pub step_seconds: u32,
@@ -84,10 +83,23 @@ pub enum RoutingMode {
     Inertial,
     MuskingumCunge,
 }
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HistoricalRainfall {
+    #[default]
+    Stations,
+    Imerg {
+        object_ids: Vec<String>,
+    },
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ObservedDocument {
+    #[serde(default)]
+    pub historical_rainfall: HistoricalRainfall,
     pub path: PathBuf,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revision: Option<i64>,
     pub provider_codes: Vec<String>,
     pub station_ids: Vec<String>,
     #[serde(default)]
@@ -316,7 +328,7 @@ pub(super) fn historical_start(
         .ok_or_else(|| invalid("observed_horizon_days", "timestamp overflow"))
 }
 
-// Authoring periods expand once; retained recipes keep the qualified v1 representation.
+// Authoring periods expand once; retained recipes keep explicit hourly bounds.
 pub(super) fn expand_period(value: &mut serde_json::Value) -> Result<(), RequestError> {
     let object = value
         .as_object_mut()
@@ -406,15 +418,7 @@ pub(super) fn request_value(request_bytes: &[u8]) -> Result<serde_json::Value, R
 pub(super) fn decode_request_value(
     mut value: serde_json::Value,
 ) -> Result<PreparationDocument, RequestError> {
-    if value.get("schema_version").and_then(|v| v.as_u64()) == Some(2) {
-        if value.get("observed_horizon_days").is_none()
-            || value.get("forecast_horizon_days").is_none()
-        {
-            return Err(invalid("timeline", "version 2 requires both day horizons"));
-        }
-        expand_period(&mut value)?;
-        value["schema_version"] = 1.into();
-    }
+    expand_period(&mut value)?;
     serde_json::from_value(value).map_err(|e| invalid("request", e.to_string()))
 }
 
@@ -447,9 +451,6 @@ pub(super) fn validate_document(
     document: PreparationDocument,
     request_bytes: Vec<u8>,
 ) -> Result<ValidatedRequest, RequestError> {
-    if document.schema_version != 1 {
-        return Err(invalid("schema_version", "unsupported schema version"));
-    }
     if document.step_seconds != 3600 {
         return Err(invalid("step_seconds", "only hourly steps are qualified"));
     }
@@ -540,11 +541,36 @@ pub(super) fn validate_document(
     ] {
         identifiers(field, ids)?;
     }
-    if document.observed.provider_codes.is_empty() && document.observed.station_ids.is_empty() {
+    if matches!(
+        document.observed.historical_rainfall,
+        HistoricalRainfall::Stations
+    ) && document.observed.provider_codes.is_empty()
+        && document.observed.station_ids.is_empty()
+    {
         return Err(invalid(
             "observed",
             "select at least one provider or station",
         ));
+    }
+    if let HistoricalRainfall::Imerg { object_ids } = &document.observed.historical_rainfall {
+        identifiers("observed.historical_rainfall.object_ids", object_ids)?;
+        if object_ids.iter().any(|id| {
+            id.len() > 128
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        }) {
+            return Err(invalid(
+                "observed.historical_rainfall.object_ids",
+                "invalid registered object ID",
+            ));
+        }
+        if object_ids.is_empty() {
+            return Err(invalid(
+                "observed.historical_rainfall",
+                "select at least one IMERG object",
+            ));
+        }
     }
     if document.engine.omp_threads == 0 {
         return Err(invalid(
@@ -623,7 +649,7 @@ pub(super) fn resolve_request(
         workspace,
         "observed.path",
         &mut document.observed.path,
-        true,
+        false,
     )?;
     resolve_file(
         workspace,
@@ -701,8 +727,7 @@ pub(super) fn resolve_request(
 mod tests {
     use super::*;
     fn request_text() -> String {
-        r#"schema_version = 1
-time_zone = "America/Sao_Paulo"
+        r#"time_zone = "America/Sao_Paulo"
 reference_time = "2026-07-20T00:00:00"
 step_seconds = 3600
 historical_first_end = "2026-07-10T00:00:00"
@@ -741,7 +766,7 @@ id = "zero"
         .into()
     }
     fn v2_text() -> String {
-        let mut text = request_text().replace("schema_version = 1", "schema_version = 2");
+        let mut text = request_text();
         for line in request_text().lines().filter(|line| {
             line.starts_with("step_seconds")
                 || line.starts_with("historical_")
@@ -822,10 +847,25 @@ id = "zero"
         assert_eq!(arbitrary, original);
     }
     #[test]
+    fn historical_rainfall_selection_is_explicit_and_requires_unique_imerg_objects() {
+        let stations = parse_request(request_text().into_bytes()).unwrap();
+        assert_eq!(
+            stations.document.observed.historical_rainfall,
+            HistoricalRainfall::Stations
+        );
+        let text = request_text().replace("[observed]", "[observed]\nhistorical_rainfall = { kind = \"imerg\", object_ids = [\"day-1\", \"day-2\"] }");
+        let imerg = parse_request(text.clone().into_bytes()).unwrap();
+        let expected = HistoricalRainfall::Imerg {
+            object_ids: vec!["day-1".into(), "day-2".into()],
+        };
+        assert_eq!(imerg.document.observed.historical_rainfall, expected);
+        assert!(parse_request(text.replace("[\"day-1\", \"day-2\"]", "[]").into_bytes()).is_err());
+        assert!(parse_request(text.replace("\"day-2\"", "\"day-1\"").into_bytes()).is_err());
+    }
+    #[test]
     fn retained_day_horizons_require_exact_frozen_hourly_boundaries() {
         let preparation = decode_request(v2_text().as_bytes()).unwrap();
         let mut manifest = crate::store::OperationManifest {
-            schema_version: 1,
             preparation_sha256: None,
             state: "completed".into(),
             recipe: serde_json::Value::Object(
@@ -851,7 +891,7 @@ id = "zero"
     #[test]
     fn saved_axis_and_paths_are_explicit_and_zero_needs_no_forecast_catalog() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join("observations")).unwrap();
+        std::fs::write(dir.path().join("observations"), b"fixture").unwrap();
         for file in ["MINI.gtp", "engine"] {
             std::fs::write(dir.path().join(file), b"fixture").unwrap();
         }
@@ -871,7 +911,6 @@ id = "zero"
         }
         assert!(valid.document.observed.series_ids.is_empty());
         for text in [
-            request_text().replace("schema_version = 1", "schema_version = 2"),
             request_text().replace("step_seconds = 3600", "step_seconds = 1800"),
             request_text().replace(
                 "reference_time = \"2026-07-20T00:00:00\"",

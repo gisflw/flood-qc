@@ -145,7 +145,6 @@ fn canonical_comparisons_are_isolated_and_csv_is_atomic() {
         station_result: None,
     };
     let manifest = OperationManifest {
-        schema_version: 1,
         preparation_sha256: None,
         state: "completed".into(),
         recipe: serde_json::Value::Null,
@@ -158,11 +157,7 @@ fn canonical_comparisons_are_isolated_and_csv_is_atomic() {
         finished_at: None,
         error: None,
     };
-    fs::write(
-        root.join("manifest.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    mgb_ops::store::write_draft(&root.join("manifest.toml"), &manifest).unwrap();
     let selection = |scenario: &str| SeriesSelection::Model {
         root: root.clone(),
         scenario_id: scenario.into(),

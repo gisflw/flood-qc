@@ -16,7 +16,7 @@ pub(crate) fn automation_documents<T: DeserializeOwned>(
     for entry in entries {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.extension().is_some_and(|ext| ext == "json") {
+        if path.extension().is_some_and(|ext| ext == "toml") {
             if !entry.file_type().map_err(|e| e.to_string())?.is_file() {
                 return Err(format!("invalid automation status file {}", path.display()));
             }

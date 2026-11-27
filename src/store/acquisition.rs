@@ -1,6 +1,6 @@
 use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct AnaPartialCoverage {
@@ -17,20 +17,6 @@ impl AnaPartialCoverage {
         variables.sort();
         variables.dedup();
         serde_json::to_string(&(station, variables)).map_err(|e| e.to_string())
-    }
-    pub(crate) fn read(workspace: &Path) -> Result<Self, String> {
-        let path = workspace.join("assets/ana-partial-coverage.json");
-        if !path.try_exists().map_err(|e| e.to_string())? {
-            return Ok(Self::default());
-        }
-        super::read_draft(&path)
-    }
-    pub(crate) fn write(&self, workspace: &Path) -> Result<(), String> {
-        let path = workspace.join("assets/ana-partial-coverage.json");
-        if path.try_exists().map_err(|e| e.to_string())? && Self::read(workspace)? == *self {
-            return Ok(());
-        }
-        super::write_draft(&path, self)
     }
     pub(crate) fn covers(
         &self,

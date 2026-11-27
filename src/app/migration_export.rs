@@ -79,7 +79,7 @@ pub fn publish_automation_artifacts(
         }
         AutomationPostAction::Export => {
             let report = super::export_run(run, None, output)?;
-            Ok(vec![report.root.join("manifest.json")])
+            Ok(vec![report.root.join("manifest.toml")])
         }
     }
 }

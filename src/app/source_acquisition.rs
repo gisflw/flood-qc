@@ -235,14 +235,15 @@ impl<'a> Attempt<'a> {
             return Err("no complete wind observations in the requested range".into());
         }
         let wind = WindObservations {
-            schema_version: 1,
             time_zone: self.zone.name().into(),
             samples,
         };
         wind.validate().map_err(|e| e.to_string())?;
         self.normalized(
-            &format!("wind-{station}.json"),
-            &serde_json::to_vec_pretty(&wind).map_err(|e| e.to_string())?,
+            &format!("wind-{station}.toml"),
+            toml::to_string_pretty(&wind)
+                .map_err(|e| e.to_string())?
+                .as_bytes(),
         )
     }
 
@@ -528,7 +529,7 @@ pub fn acquire_source(
     };
     control.check().map_err(|e| e.to_string())?;
     let mut report = attempt.report;
-    report.metadata = request.output.join("acquisition.json");
+    report.metadata = request.output.join("acquisition.toml");
     let relative_paths = |paths: &[PathBuf]| {
         paths
             .iter()
@@ -536,16 +537,15 @@ pub fn acquire_source(
             .collect::<Vec<_>>()
     };
     let document = serde_json::json!({
-        "schema_version": 1,
         "time_zone": request.time_zone.name(),
         "source": request.source,
         "originals": relative_paths(&report.originals),
         "normalized": relative_paths(&report.normalized),
         "issues": report.issues,
     });
-    write_new_atomic(
+    crate::store::write_new_atomic(
         &report.metadata,
-        &serde_json::to_vec_pretty(&document).map_err(|e| e.to_string())?,
+        &crate::store::draft_record_bytes(&report.metadata, &document)?,
     )?;
     Ok(report)
 }

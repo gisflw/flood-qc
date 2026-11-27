@@ -34,8 +34,8 @@ pub use self::operation::{
 };
 pub use self::request::{
     CalibrationDocument, EngineDocument, ForcingDocument, ForecastsDocument, GeometryDocument,
-    GridDocument, HotStartDocument, InterpolationDocument, LevelsDocument, ObservedDocument,
-    PreparationDocument, RoutingMode, ScenarioDocument, retained_day_horizons,
+    GridDocument, HistoricalRainfall, HotStartDocument, InterpolationDocument, LevelsDocument,
+    ObservedDocument, PreparationDocument, RoutingMode, ScenarioDocument, retained_day_horizons,
 };
 pub use self::sharing::{RunBundleReport, export_run, import_run, import_run_to, regenerate_run};
 mod acquisition;
@@ -125,7 +125,15 @@ pub use self::source_acquisition::{
 
 mod input_sets;
 pub use self::input_sets::{
-    InputDisposition, capture_run_inputs, capture_workspace_inputs, current_workspace_inputs,
+    capture_run_inputs, capture_workspace_inputs, current_workspace_inputs,
     discard_workspace_inputs, execute_input_set, save_workspace_inputs,
-    workspace_inputs_need_decision,
 };
+mod registry;
+pub use self::registry::register_imerg_acquisition;
+pub use self::registry::{
+    imerg_choices, import_registered_observations, keep_workspace_results,
+    register_workspace_imerg, retained_workspace_results,
+};
+
+mod legacy_conversion;
+pub use self::legacy_conversion::{convert_saved_inputs, convert_workspace};
