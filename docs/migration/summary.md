@@ -80,7 +80,8 @@ record unverified platforms and remaining gaps explicitly.
 | [Frozen RS hourly reference](../../references/regression/rs-hourly/README.md) | 1: consolidated reference capture | Complete: canonical fixtures and staged expectations for four scenarios, exact fresh repeat, direct source normalization equality and shared history-only level recovery. Linux only; acquisition, Windows, state qualification and Rust equivalence remain outside this evidence. |
 | [Rust workspace inspection, shared library, and CLI foundation](core_and_cli.md) | 2: read-only foundation | Complete for Linux inspection: strict TOML, path semantics, text/JSON findings, source preservation and architecture checks pass. Hosted CI and Windows remain unverified. Numerical execution acceptance is separate below. |
 | [Workspace layout and run input retention](../contracts/inputs.md) | Input-set change | Implemented on Linux. TOML, revision-checked API sessions, current inputs, independent saves and per-run manifests have distinct lifecycles. Automated checks cover independent regeneration with a matching installed engine, explicit replacement decisions and incomplete-cache recovery. |
-| [Shared registered inputs and dated run manifests](../../.dev/plans/registered-inputs-and-runs.md) | Planned storage direction | Planned; intention only, with no implementation or new qualification. Current workspace and input-set contracts still apply. |
+| [Shared registered inputs and dated run manifests](../../.dev/plans/registered-inputs-and-runs.md) | Planned storage direction | Planned for production. The first qualification increment is recorded below; no registry or layout switch is implemented. Current workspace and input-set contracts still apply. |
+| [Rust SQLite qualification](../../.dev/changes/rust-sqlite-qualification.md) | Registry foundation experiment | Complete for the Linux experiment. The isolated opt-in harness passes revision, transaction, read-only, extension denial, locking and process-crash checks. Performance is slower on the matched synthetic fixture; operational adoption remains pending. See [measurements and limits](#rust-sqlite-qualification). Windows execution and linkage remain unverified. |
 | [Live CLI run output](../contracts/operations.md#controlled-actions-and-cancellation) | Saved-run CLI follow-up | Complete for direct saved-run commands on Linux. Synthetic checks cover live history and scenario output, JSON stream routing, engine failure, SIGINT, and publication with blocked or closed console output. Retained engine logs match the fixture bytes. Windows remains unverified. |
 | [Live CLI download progress](../contracts/acquisition.md#cli-download-progress) | Acquisition CLI follow-up | Linux fixtures cover ANA spinner refresh and cleanup, redirected station summaries, JSON stream routing, forecast cycle fallback and reuse, and the transition to MGB in Run All. Live provider and Windows checks were outside this console validation. |
 | [History, assets, and persisted operation data](core_and_cli.md) | Input-set change | Implemented on Linux. Observation metadata and samples use Parquet 2, grids use NetCDF, and JSON manifests select active data and results. Default and desktop dependency graphs contain no SQLite package; CLI linkage has no SQLite library. Spatial GeoPackages use the pure Rust reader. |
@@ -163,6 +164,52 @@ A five-day regional scenario preview took 152 ms cold and 22 ms warm median
 (24.7 ms warm maximum), with the same checksum over 21 calls. A captured input
 set held 174 MiB of indexed payload; 200 independent copies would occupy about
 34 GiB, excluding small manifests and any separately retained outputs.
+
+## Rust SQLite qualification
+
+Turso 0.9.0-pre.6 is available only to the explicit qualification harness.
+Default and desktop operational graphs contain no Turso packages. Linux and
+Windows qualification graphs, also combined with desktop features, preserve
+the selected pure-Rust crypto path with allocator and SIMD defaults disabled.
+The [harness notes](../../tests/support/sqlite-qualification.md) describe the
+examined sources/build scripts and dynamic-extension restrictions; this does
+not resolve existing application-wide dependency deviations.
+
+Linux formatting, default Clippy/tests (178 passed, 5 explicitly ignored),
+the independent architecture gate (12 passed), qualification Clippy and the
+explicit release qualification suite passed. Twenty further parallel functional
+suite repetitions passed, including 320 injected process-crash cases. External
+guards explicitly unlock after database handles close. The qualification
+executable's inspected dynamic dependencies were the platform loader, libc,
+libm and libgcc_s; absence from that list alone does not rule out static code.
+
+Five paired release repetitions alternated backend order in separate processes
+with 159,280 synthetic samples. Every selected value and digest matched. The
+final measurements were:
+
+| Measurement | Parquet | Turso |
+| --- | ---: | ---: |
+| Bulk ingestion, median | 322.88 ms | 793.05 ms |
+| Fresh-handle window read, median | 4.57 ms | 20.16 ms |
+| Warm window read, median | 3.58 ms | 4.62 ms |
+| Rolling append including open, median | 7.79 ms | 30.41 ms |
+| Historical window read, median | 4.49 ms | 5.35 ms |
+| Maximum child peak RSS | 46,004 KiB | 69,420 KiB |
+
+Other repetitions also showed slower reads and greater memory use. These paths
+return matching selected samples, but compare the full existing Parquet API
+with a minimal SQL prototype, rather than equivalent complete operational APIs.
+They do not establish end-to-end forecast performance or regional qualification.
+The candidate is not accepted for operational storage. Resolve the performance
+tradeoff and qualify a complete registry implementation before switching stores.
+Physical power-loss durability, Windows runtime/linkage and unrestricted
+multiprocess WAL remain unqualified. Production migration, TOML records, dated
+runs and IMERG registration remain future work under the broader plan.
+
+Both release binaries built after debug-profile cleanup, and release CLI help
+and version checks passed. Desktop startup exited with Winit's missing-display
+error: neither a Wayland nor X11 display was configured, and no Xvfb was
+available. Native-window rendering and operator hardware remain unverified.
 
 ## Operational flow
 

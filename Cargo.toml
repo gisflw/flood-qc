@@ -30,6 +30,7 @@ toml = "0.9"
 egui_commonmark = { version = "=0.25.0", default-features = false, features = ["pulldown_cmark"], optional = true }
 egui_extras = { version = "=0.36.2", default-features = false, optional = true }
 pulldown-cmark = { version = "=0.13.6", default-features = false, optional = true }
+turso = { version = "=0.9.0-pre.6", default-features = false, optional = true }
 
 [dev-dependencies]
 pollster = "0.4"
@@ -59,6 +60,7 @@ version = "=0.1.6"
 
 [features]
 default = []
+sqlite-qualification = ["dep:turso"]
 desktop = [
     "dep:eframe",
     "dep:rsplot",
@@ -82,6 +84,11 @@ path = "src/bin/cli/main.rs"
 name = "mgb-ops-desktop"
 path = "src/bin/monitor.rs"
 required-features = ["desktop"]
+
+[[test]]
+name = "sqlite_qualification"
+path = "tests/sqlite_qualification.rs"
+required-features = ["sqlite-qualification"]
 
 [dependencies.eframe]
 version = "=0.36.2"

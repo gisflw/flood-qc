@@ -933,16 +933,247 @@ fn json_literals_check_embedded_rust_paths() {
     assert!(!check("app", r#"fn f() { json!({"key":1}); }"#).is_empty());
 }
 
-#[test]
-fn operational_storage_has_no_sqlite_dependency() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let lock: toml::Value =
-        toml::from_str(&fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap();
+// Cargo.lock includes optional dependencies. Qualification is allowed only in its
+// named test feature; these checks do not replace a resolved-feature/source audit.
+const SQLITE_CANDIDATE: &str = "0.9.0-pre.6";
+const SQLITE_PACKAGES: &[&str] = &[
+    "turso",
+    "turso_core",
+    "turso_ext",
+    "turso_macros",
+    "turso_parser",
+    "turso_sdk_kit",
+    "turso_sdk_kit_macros",
+    "turso_sqlite",
+];
+
+fn sqlite_configuration_errors(manifest: &toml::Value, lock: &toml::Value) -> Vec<String> {
+    fn dependency_tables<'a>(value: &'a toml::Value, tables: &mut Vec<&'a toml::Value>) {
+        if let Some(table) = value.as_table() {
+            for (key, value) in table {
+                if ["dependencies", "dev-dependencies", "build-dependencies"]
+                    .contains(&key.as_str())
+                {
+                    tables.push(value);
+                } else if key == "target" || key.starts_with("cfg(") || key.contains('-') {
+                    dependency_tables(value, tables);
+                }
+            }
+        }
+    }
+    fn enables_candidate(
+        name: &str,
+        features: &toml::Value,
+        visited: &mut std::collections::HashSet<String>,
+    ) -> bool {
+        if name == "dep:turso"
+            || name == "turso"
+            || name.starts_with("turso/")
+            || name.starts_with("turso?/")
+        {
+            return true;
+        }
+        if !visited.insert(name.into()) {
+            return false;
+        }
+        features
+            .get(name)
+            .and_then(toml::Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .filter_map(toml::Value::as_str)
+                    .any(|item| enables_candidate(item, features, visited))
+            })
+    }
+    let mut errors = Vec::new();
+    let mut tables = Vec::new();
+    dependency_tables(manifest, &mut tables);
+    let candidates = tables
+        .iter()
+        .filter_map(|v| v.as_table())
+        .flat_map(|t| t.iter())
+        .filter(|(name, value)| {
+            name.starts_with("turso")
+                || value
+                    .get("package")
+                    .and_then(toml::Value::as_str)
+                    .is_some_and(|p| p.starts_with("turso"))
+        })
+        .collect::<Vec<_>>();
+    let dependency = manifest.get("dependencies").and_then(|v| v.get("turso"));
+    if candidates.len() != 1
+        || dependency
+            .and_then(|v| v.get("version"))
+            .and_then(toml::Value::as_str)
+            != Some("=0.9.0-pre.6")
+        || dependency
+            .and_then(|v| v.get("optional"))
+            .and_then(toml::Value::as_bool)
+            != Some(true)
+        || dependency
+            .and_then(|v| v.get("default-features"))
+            .and_then(toml::Value::as_bool)
+            != Some(false)
+        || dependency
+            .and_then(|v| v.get("features"))
+            .is_some_and(|v| v.as_array().is_none_or(|v| !v.is_empty()))
+        || dependency.and_then(|v| v.get("package")).is_some()
+        || dependency
+            .and_then(toml::Value::as_table)
+            .is_some_and(|table| {
+                table.keys().any(|key| {
+                    !["version", "optional", "default-features", "features"].contains(&key.as_str())
+                })
+            })
+    {
+        errors.push("SQLite candidate must be the exact optional, default-disabled qualification dependency".into());
+    }
+    if let Some(features) = manifest.get("features") {
+        let qualification = features
+            .get("sqlite-qualification")
+            .and_then(toml::Value::as_array);
+        if qualification.is_none_or(|v| v.len() != 1 || v[0].as_str() != Some("dep:turso")) {
+            errors.push("SQLite qualification feature must enable only dep:turso".into());
+        }
+        // No alternate feature may activate this experimental dependency.
+        if let Some(table) = features.as_table() {
+            for name in table
+                .keys()
+                .filter(|name| name.as_str() != "sqlite-qualification")
+            {
+                if enables_candidate(name, features, &mut Default::default()) {
+                    errors.push(format!("SQLite qualification leaks into feature {name}"));
+                }
+            }
+        }
+    } else {
+        errors.push("missing SQLite qualification feature".into());
+    }
+    let target = manifest
+        .get("test")
+        .and_then(toml::Value::as_array)
+        .and_then(|targets| {
+            targets.iter().find(|t| {
+                t.get("name").and_then(toml::Value::as_str) == Some("sqlite_qualification")
+            })
+        });
+    if target
+        .and_then(|t| t.get("path"))
+        .and_then(toml::Value::as_str)
+        != Some("tests/sqlite_qualification.rs")
+        || target
+            .and_then(|t| t.get("required-features"))
+            .and_then(toml::Value::as_array)
+            .is_none_or(|v| v.len() != 1 || v[0].as_str() != Some("sqlite-qualification"))
+    {
+        errors.push("SQLite harness must require its explicit qualification feature".into());
+    }
     for package in lock["package"].as_array().unwrap() {
         let name = package["name"].as_str().unwrap();
+        if name.starts_with("turso") {
+            if !SQLITE_PACKAGES.contains(&name)
+                || package["version"].as_str() != Some(SQLITE_CANDIDATE)
+                || package.get("source").and_then(toml::Value::as_str)
+                    != Some("registry+https://github.com/rust-lang/crates.io-index")
+            {
+                errors.push(format!("unreviewed SQLite candidate package: {name}"));
+            }
+        } else if name.contains("sqlite") || name == "libsql" || name.starts_with("libsql-") {
+            errors.push(format!("unreviewed SQLite implementation: {name}"));
+        }
+    }
+    errors
+}
+
+fn references_sqlite_candidate(source: &str) -> bool {
+    fn tokens(stream: proc_macro2::TokenStream) -> bool {
+        stream.into_iter().any(|token| match token {
+            proc_macro2::TokenTree::Ident(name) => {
+                SQLITE_PACKAGES.contains(&name.to_string().as_str())
+            }
+            proc_macro2::TokenTree::Group(group) => tokens(group.stream()),
+            _ => false,
+        })
+    }
+    tokens(source.parse().unwrap())
+}
+
+#[test]
+fn sqlite_candidate_is_isolated_from_operational_storage() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("Cargo.toml")).unwrap()).unwrap();
+    let lock: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap();
+    assert_eq!(
+        sqlite_configuration_errors(&manifest, &lock),
+        Vec::<String>::new()
+    );
+    let mut files = Vec::new();
+    sources(&root.join("src"), &mut files);
+    for file in files {
         assert!(
-            !name.contains("sqlite"),
-            "operational SQLite dependency: {name}"
+            !references_sqlite_candidate(&fs::read_to_string(&file).unwrap()),
+            "qualification-only dependency in production source: {}",
+            file.display()
         );
     }
+}
+
+#[test]
+fn sqlite_qualification_policy_rejects_bypasses() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let manifest: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("Cargo.toml")).unwrap()).unwrap();
+    let lock: toml::Value =
+        toml::from_str(&fs::read_to_string(root.join("Cargo.lock")).unwrap()).unwrap();
+    for (field, value) in [
+        ("optional", toml::Value::Boolean(false)),
+        ("default-features", toml::Value::Boolean(true)),
+        ("version", toml::Value::String("0.9".into())),
+        ("path", toml::Value::String("unreviewed".into())),
+        (
+            "features",
+            toml::Value::Array(vec![toml::Value::String("simd".into())]),
+        ),
+    ] {
+        let mut changed = manifest.clone();
+        changed["dependencies"]["turso"]
+            .as_table_mut()
+            .unwrap()
+            .insert(field.into(), value);
+        assert!(
+            !sqlite_configuration_errors(&changed, &lock).is_empty(),
+            "{field}"
+        );
+    }
+    let mut changed = manifest.clone();
+    changed["features"]["desktop"]
+        .as_array_mut()
+        .unwrap()
+        .push(toml::Value::String("sqlite-qualification".into()));
+    assert!(!sqlite_configuration_errors(&changed, &lock).is_empty());
+    let mut changed = manifest.clone();
+    changed["dev-dependencies"].as_table_mut().unwrap().insert(
+        "alias".into(),
+        toml::from_str::<toml::Value>("package='turso'\nversion='=0.9.0-pre.6'").unwrap(),
+    );
+    assert!(!sqlite_configuration_errors(&changed, &lock).is_empty());
+    let mut changed = lock.clone();
+    changed["package"]
+        .as_array_mut()
+        .unwrap()
+        .push(toml::from_str("name='libsqlite3-sys'\nversion='0.1.0'").unwrap());
+    assert!(!sqlite_configuration_errors(&manifest, &changed).is_empty());
+    for source in [
+        "use turso::Builder;",
+        "use turso as database;",
+        "extern crate turso as database;",
+        "fn f(){ ::turso::Builder::new_local(\"x\"); }",
+        "macro_rules! f { () => { turso::Builder }; }",
+    ] {
+        assert!(references_sqlite_candidate(source), "{source}");
+    }
+    assert!(!references_sqlite_candidate("fn f(){let note=\"turso\";}"));
 }

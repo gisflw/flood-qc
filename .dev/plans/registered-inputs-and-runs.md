@@ -2,6 +2,8 @@
 
 Status: planned direction; intention only. This plan records the intended
 workspace organization and storage behavior for future implementation. The
+[first increment](../changes/rust-sqlite-qualification.md) qualifies a Rust
+SQLite candidate before changing production storage. The
 [current architecture](../../docs/architecture.md),
 [workspace contract](../../docs/contracts/workspace.md) and
 [input-set contract](../../docs/contracts/inputs.md) still describe implemented
@@ -25,9 +27,10 @@ the numerical engine.
 
 ## Intended workspace layout
 
-The following tree illustrates roles and readable names. TOML extensions show
-the format being evaluated, rather than an accepted format change. Exact object
-names and time partitioning remain to be decided.
+The following tree illustrates roles and readable names. TOML is selected for
+future application-owned workspace records; existing formats remain in use
+until implementation and explicit conversion. Exact object names remain to be
+specified.
 
 ```text
 workspace/
@@ -64,16 +67,16 @@ Use human-readable, stable object IDs in folder names. Retain checksums as
 metadata for verification and reuse. A changed input is a new version; existing
 references continue to identify the original values.
 
-Run manifest names use `YYYYMMDD-HH`. Repeated attempts must have distinct names
-without overwriting earlier attempts. Decide whether the hour represents the
-operational reference or execution time, its timezone convention, and the suffix
-for repeated attempts. Preserve full timestamps and timezone information in the
-manifest regardless of the filename.
+Run manifest names use `YYYYMMDD-HH` from the operational reference hour in
+the configured local timezone. Repeated attempts append `-02`, `-03`, and
+so on, without overwriting earlier attempts. Preserve full timestamps, timezone
+and UTC offset information in the manifest regardless of its filename.
 
-Evaluate TOML consistently for application-owned persisted manifests and metadata,
+Use TOML consistently for application-owned workspace manifests and metadata,
 including object descriptions, acquisition records and the active-result pointer.
-Preserve explicit missing-value and exclusion meanings when evaluating the
-format. Provider responses and external protocols retain their required formats.
+Encode missing-value and exclusion meanings explicitly rather than dropping
+them during conversion. Provider responses and external protocols retain their
+required formats.
 
 ## Storage and retention intentions
 
@@ -96,8 +99,8 @@ format. Provider responses and external protocols retain their required formats.
   area alongside the registry and objects.
 - Validated results become active together. Failed or cancelled attempts retain
   their manifest and useful diagnostics while preserving the previous successful
-  results. Keeping only the latest successful results is the proposed default;
-  retention of additional results is a separate operator choice.
+  results. Keep only the latest successful results by default, with an explicit
+  operator action to retain additional result sets before replacement.
 - Independent exports include the referenced data needed outside the original
   workspace. A manifest alone depends on continued access to its registered
   inputs. Matching engine and runtime requirements still apply to replay.
@@ -111,18 +114,19 @@ and source provenance. The [standalone acquisition contract](../../docs/contract
 describes the current behavior; registration and operational processing are
 future work.
 
-Decide the registration interval and regional partitioning, handling of revised
-or incomplete products, and how IMERG is selected alongside station-derived
-rainfall. Daily regional objects are an option to evaluate. The shared grid
-format does not by itself settle combination, precedence, QC or missing-data
-policies.
+Register complete regional UTC-day objects for each selected product and crop.
+Revised products create new versions; incomplete days are not published as
+complete observation objects. A run explicitly selects station-derived rainfall
+or IMERG, without blending or automatic fallback. The shared grid format does
+not by itself settle IMERG QC or missing-data processing policies.
 
 ## Remaining decisions and related work
 
-Settle the metadata format, naming conventions, registration scope, retention
-choices and transition policy for existing Parquet workspaces and independently
-saved input sets. Preserve operational data and frozen reference evidence while
-making those decisions. Returning station observations to SQLite does not imply
+Provide explicit, non-destructive conversion of existing Parquet workspaces and
+independently saved input sets, verifying the new representation while preserving
+the originals. Registration scope, exact schemas and conversion mechanics still
+need implementation specifications. Preserve operational data and frozen
+reference evidence. Returning station observations to SQLite does not imply
 changing every other tabular input format.
 
 The separate crate-refactoring task should preserve the ownership responsibilities
