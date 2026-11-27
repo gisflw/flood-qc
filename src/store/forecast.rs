@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, File, OpenOptions},
-    io::{BufReader, Write},
+    io::Write,
     path::{Component, Path, PathBuf},
 };
 
@@ -17,6 +17,7 @@ pub struct ForecastAssetChoice {
     pub model: String,
     pub product: String,
     pub cycle_utc: String,
+    pub registered_at: String,
 }
 #[derive(Debug, Clone)]
 pub struct ForecastAsset {
@@ -90,11 +91,55 @@ fn canonical_source_id(hash: &str, settings: &str) -> String {
     identity.update(settings.as_bytes());
     format!("{:x}", identity.finalize())
 }
-fn forecast_asset_id(identity: &serde_json::Value) -> Result<String, StoreError> {
+fn forecast_asset_id(identity: &serde_json::Value, source_id: &str) -> Result<String, StoreError> {
     let mut digest = Sha256::new();
-    digest.update(b"forecast-asset-v2:");
+    digest.update(b"forecast-asset:");
     digest.update(serde_json::to_vec(identity).map_err(|e| invalid(e.to_string()))?);
-    Ok(format!("{:x}", digest.finalize()))
+    digest.update(source_id.as_bytes());
+    let label = |key: &str| -> Result<String, StoreError> {
+        let text = identity
+            .get(key)
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| invalid("missing forecast identity field"))?;
+        let label: String = text
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .take(24)
+            .collect();
+        if label.is_empty() {
+            return Err(invalid("empty forecast identity field"));
+        }
+        Ok(label)
+    };
+    let cycle = identity
+        .get("cycle_utc")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| invalid("missing forecast cycle"))?;
+    let cycle = DateTime::parse_from_rfc3339(cycle)
+        .map_err(|e| invalid(e.to_string()))?
+        .with_timezone(&Utc)
+        .format("%Y%m%dT%H%M%SZ");
+    Ok(format!(
+        "{}-{}-{}-{}-{:x}",
+        label("provider")?,
+        label("model")?,
+        label("product")?,
+        cycle,
+        digest.finalize()
+    ))
+}
+fn valid_asset_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 160
+        && id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'T' || b == b'Z'
+        })
 }
 fn logical_identity(
     provider: &str,
@@ -283,12 +328,32 @@ pub fn check_correction(c: &ForecastCorrection) -> Result<(), StoreError> {
     }
     Ok(())
 }
+// Keep the original JSON representation for identities supplied by adapters.
+// TOML table ordering is not stable and would otherwise change their digest.
+mod json_string {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(
+        value: &serde_json::Value,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        let text = serde_json::to_string(value).map_err(serde::ser::Error::custom)?;
+        serializer.serialize_str(&text)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<serde_json::Value, D::Error> {
+        let text = String::deserialize(deserializer)?;
+        serde_json::from_str(&text).map_err(serde::de::Error::custom)
+    }
+}
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AssetRecord {
     asset_id: String,
     source_id: String,
+    #[serde(with = "json_string")]
     logical_identity: serde_json::Value,
+    registered_at: String,
     provider: String,
     model: String,
     product: String,
@@ -300,6 +365,7 @@ struct AssetRecord {
     source_format: String,
     source_sha256: String,
     source_byte_length: u64,
+    #[serde(with = "json_string")]
     normalization: serde_json::Value,
     operation_timezone: String,
     valid_from: String,
@@ -331,19 +397,19 @@ impl ForecastCatalog {
         Ok(())
     }
     fn record(&self, id: &str) -> Result<AssetRecord, StoreError> {
-        if id.len() != 64
-            || !id
-                .bytes()
-                .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-        {
+        if !valid_asset_id(id) {
             return Err(invalid("invalid asset ID"));
         }
-        let relative_path = self.root.join(id).join("metadata.json");
+        let relative_path = self.root.join(id).join("metadata.toml");
         let path = resolve(&self.workspace, &relative_path)?;
-        let record: AssetRecord = serde_json::from_reader(BufReader::new(File::open(path)?))
-            .map_err(|e| StoreError::Integrity(e.to_string()))?;
-        if record.asset_id != id || forecast_asset_id(&record.logical_identity)? != id {
-            return Err(StoreError::Integrity("asset identity mismatch".into()));
+        let record: AssetRecord = super::read_draft(&path).map_err(StoreError::Integrity)?;
+        if record.asset_id != id
+            || forecast_asset_id(&record.logical_identity, &record.source_id)? != id
+        {
+            return Err(StoreError::Integrity(format!(
+                "asset identity mismatch: {id} != {}",
+                forecast_asset_id(&record.logical_identity, &record.source_id)?
+            )));
         }
         Ok(record)
     }
@@ -358,11 +424,7 @@ impl ForecastCatalog {
             let Some(id) = name.to_str() else {
                 continue;
             };
-            if id.len() == 64
-                && id
-                    .bytes()
-                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
-            {
+            if valid_asset_id(id) {
                 records.push(self.record(id)?);
             }
         }
@@ -375,6 +437,7 @@ impl ForecastCatalog {
             model: r.model.clone(),
             product: r.product.clone(),
             cycle_utc: r.cycle_utc.clone(),
+            registered_at: r.registered_at.clone(),
         }
     }
     pub fn asset_choices(&self) -> Result<Vec<ForecastAssetChoice>, StoreError> {
@@ -382,6 +445,7 @@ impl ForecastCatalog {
         result.sort_by(|a, b| {
             b.cycle_utc
                 .cmp(&a.cycle_utc)
+                .then(b.registered_at.cmp(&a.registered_at))
                 .then(a.asset_id.cmp(&b.asset_id))
         });
         Ok(result)
@@ -411,6 +475,7 @@ impl ForecastCatalog {
             (&a.provider, &a.model, &a.product)
                 .cmp(&(&b.provider, &b.model, &b.product))
                 .then(b.cycle_utc.cmp(&a.cycle_utc))
+                .then(b.registered_at.cmp(&a.registered_at))
                 .then(a.asset_id.cmp(&b.asset_id))
         });
         Ok(result)
@@ -491,7 +556,7 @@ impl ForecastCatalog {
         source: &Path,
         series: &GridSeries,
         canonical: bool,
-        force: bool,
+        _force: bool,
     ) -> Result<ForecastAsset, StoreError> {
         if !self.writable {
             return Err(invalid("forecast catalog is read-only"));
@@ -504,7 +569,7 @@ impl ForecastCatalog {
                 "forecast asset is not a directory".into(),
             ));
         }
-        if dir.exists() && !force {
+        if dir.exists() {
             let (asset, previous) = self.load_native_unlocked(&record.asset_id)?;
             if previous.timeline != series.timeline
                 || !same_physical_grid(&previous.grid, &series.grid)
@@ -538,61 +603,17 @@ impl ForecastCatalog {
         }
         let native = stage.path().join("native.nc");
         if canonical {
-            copy_source(&stage.path().join(original), &native)?;
+            fs::rename(stage.path().join(original), &native)?;
         } else {
             write_grid_series(&native, series)?;
             File::open(&native)?.sync_all()?;
         }
         (record.native_sha256, record.native_byte_length) = digest(&native)?;
         let relative_dir = self.root.join(&record.asset_id);
-        if force && dir.is_dir() {
-            let suffix = stage
-                .path()
-                .file_name()
-                .and_then(|v| v.to_str())
-                .ok_or_else(|| invalid("invalid staging name"))?;
-            let source_name = format!("source-{suffix}.{}", if canonical { "nc" } else { "grib2" });
-            let native_name = format!("native-{suffix}.nc");
-            record.retained_source = relative_dir.join(&source_name);
-            record.native_artifact = relative_dir.join(&native_name);
-            // Readers retain the shared lock until they finish using the old files.
-            fs::rename(stage.path().join(original), dir.join(source_name))?;
-            fs::rename(&native, dir.join(native_name))?;
-            super::sync_directory(&dir).map_err(std::io::Error::other)?;
-            super::write_draft(&dir.join("metadata.json"), &record)
-                .map_err(std::io::Error::other)?;
-            super::sync_directory(&dir).map_err(std::io::Error::other)?;
-            let keep_native = record
-                .native_artifact
-                .file_name()
-                .ok_or_else(|| invalid("missing native name"))?;
-            let keep_source = record
-                .retained_source
-                .file_name()
-                .ok_or_else(|| invalid("missing source name"))?;
-            for entry in fs::read_dir(&dir)? {
-                let entry = entry?;
-                let name = entry.file_name();
-                if name != "metadata.json" && name != keep_native && name != keep_source {
-                    if entry.file_type()?.is_dir() {
-                        return Err(invalid("unexpected forecast asset directory"));
-                    }
-                    fs::remove_file(entry.path())?;
-                }
-            }
-            super::sync_directory(&dir).map_err(std::io::Error::other)?;
-            return Ok(ForecastAsset {
-                asset_id: record.asset_id,
-                source_id: record.source_id,
-                retained_source: record.retained_source,
-                native_artifact: record.native_artifact,
-            });
-        }
-        record.retained_source = relative_dir.join(original);
+        record.retained_source = relative_dir.join(if canonical { "native.nc" } else { original });
         record.native_artifact = relative_dir.join("native.nc");
-        let file = File::create(stage.path().join("metadata.json"))?;
-        serde_json::to_writer_pretty(&file, &record).map_err(|e| invalid(e.to_string()))?;
-        file.sync_all()?;
+        super::write_draft(&stage.path().join("metadata.toml"), &record)
+            .map_err(std::io::Error::other)?;
         super::sync_directory(stage.path()).map_err(std::io::Error::other)?;
         match fs::rename(stage.path(), &dir) {
             Ok(()) => super::sync_directory(&root).map_err(std::io::Error::other)?,
@@ -649,9 +670,10 @@ impl ForecastCatalog {
             &series,
         );
         let record = AssetRecord {
-            asset_id: forecast_asset_id(&logical_identity)?,
+            asset_id: forecast_asset_id(&logical_identity, &source_id)?,
             source_id,
             logical_identity,
+            registered_at: Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
             provider: metadata.provider.clone(),
             model: metadata.model.clone(),
             product: metadata.product.clone(),
@@ -712,9 +734,10 @@ impl ForecastCatalog {
             native,
         );
         let record = AssetRecord {
-            asset_id: forecast_asset_id(&logical_identity)?,
+            asset_id: forecast_asset_id(&logical_identity, &source.source_id)?,
             source_id: source.source_id.clone(),
             logical_identity,
+            registered_at: Utc::now().to_rfc3339_opts(SecondsFormat::Nanos, true),
             provider: provider.into(),
             model: source.model.clone(),
             product: source.product.clone(),
@@ -894,9 +917,8 @@ impl ForecastCatalog {
         for record in records {
             let directory = destination.join(&record.asset_id);
             fs::create_dir_all(&directory)?;
-            let file = File::create(directory.join("metadata.json"))?;
-            serde_json::to_writer_pretty(&file, &record).map_err(|e| invalid(e.to_string()))?;
-            file.sync_all()?;
+            super::write_draft(&directory.join("metadata.toml"), &record)
+                .map_err(std::io::Error::other)?;
         }
         Ok(selected)
     }
@@ -955,7 +977,7 @@ mod tests {
         )
         .unwrap();
         let asset = catalog.register_canonical(&input, &metadata).unwrap();
-        fs::remove_file(workspace.join(&asset.retained_source)).unwrap();
+        assert_eq!(asset.retained_source, asset.native_artifact);
         fs::remove_file(input).unwrap();
         assert_eq!(catalog.load_native(&asset.asset_id).unwrap().1.values, [3.]);
         fs::write(workspace.join(&asset.native_artifact), b"corrupt").unwrap();

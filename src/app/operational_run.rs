@@ -19,6 +19,7 @@ pub struct RunParameters {
     pub reference_time: Option<String>,
     pub lookback_days: Option<u32>,
     pub forecast_days: Option<u32>,
+    pub historical_rainfall: Option<super::request::HistoricalRainfall>,
     /// None selects zero and the latest usable raw cycle of each product.
     pub scenarios: Option<Vec<RunScenario>>,
     pub forcing: Option<ForcingDocument>,
@@ -277,7 +278,23 @@ impl OperationalRun {
         if let Some(days) = self.parameters.forecast_days {
             run.forecast_days = days;
         }
+        if let Some(selection) = &self.parameters.historical_rainfall {
+            run.historical_rainfall = selection.clone();
+        }
         settings
+    }
+
+    pub fn historical_rainfall(&self) -> super::request::HistoricalRainfall {
+        self.parameters
+            .historical_rainfall
+            .clone()
+            .unwrap_or_else(|| {
+                self.settings
+                    .run
+                    .as_ref()
+                    .map(|run| run.historical_rainfall.clone())
+                    .unwrap_or_default()
+            })
     }
 
     fn document(
@@ -398,11 +415,13 @@ impl OperationalRun {
         }
         let catalog = self.catalog()?;
         let document = self.document(Vec::new(), false)?;
+        let mut seen = HashSet::new();
         Ok(self
             .covering_assets(&catalog, &document)?
             .iter()
             .filter(|asset| catalog.check_native_available(&asset.asset_id).is_ok())
             .map(forecast_label)
+            .filter(|label| seen.insert(label.clone()))
             .collect())
     }
 
@@ -456,7 +475,7 @@ impl OperationalRun {
             .next()
             .ok_or_else(|| format!("{forecast}: no usable cycle covers the operation window"))?;
         for other in candidates {
-            if product_key(asset) != product_key(other) || asset.cycle_utc == other.cycle_utc {
+            if product_key(asset) != product_key(other) {
                 return Err(format!(
                     "{forecast}: ambiguous forecast; select a provider, model, product and cycle"
                 ));
@@ -534,6 +553,17 @@ impl OperationalRun {
 
     pub fn check_parameters(&self) -> Result<(), String> {
         self.coverage()?;
+        if let super::request::HistoricalRainfall::Imerg { object_ids } = self.historical_rainfall()
+        {
+            let mut seen = HashSet::new();
+            if object_ids.is_empty()
+                || object_ids
+                    .iter()
+                    .any(|id| id.trim().is_empty() || !seen.insert(id))
+            {
+                return Err("Select one or more distinct registered IMERG objects".into());
+            }
+        }
         if let Some(scenarios) = &self.parameters.scenarios {
             if scenarios.is_empty() {
                 return Err("Select at least one scenario".into());
@@ -804,7 +834,6 @@ impl OperationalRun {
         lock: &std::fs::File,
         report: &mut Option<AcquisitionReport>,
     ) -> Result<ExecutionReport, OperationError> {
-        super::input_sets::resolve_input_replacement(&self.workspace, control)?;
         *report = self.acquire_locked(control)?;
         let engine = self
             .document(Vec::new(), false)
@@ -812,11 +841,19 @@ impl OperationalRun {
             .engine
             .executable;
         let engine = super::absolute(&self.workspace, &engine);
+        let reference = super::workspace::reference(
+            self.settings.run.as_ref().unwrap(),
+            Some(self.reference()),
+            self.opened_at,
+        )
+        .map_err(invalid)?;
         let _ = lock;
         run_captured_locked(
             control,
             &self.workspace,
             &engine,
+            reference.naive_local(),
+            reference.timezone().name(),
             |workspace, output, control| self.capture_locked(workspace.into(), output, control),
         )
     }

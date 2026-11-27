@@ -117,7 +117,6 @@ noncompliance; it does not extend the NetCDF or platform exceptions.
 | --- | --- | --- |
 | `reqwest` → Rustls → `aws-lc-rs` → `aws-lc-sys` | AWS-LC C and assembly | Unapproved application-crypto dependency; replacement or an explicit scoped exception remains open. |
 | `lettre` and TLS verification → `ring` | C and assembly crypto primitives | Unapproved application-crypto dependency; replacement or an explicit scoped exception remains open. |
-| `parquet` → `zstd` → `zstd-safe` → `zstd-sys` | Zstandard C | Unapproved application-compression dependency; replacement or an explicit scoped exception remains open. |
 
 System netCDF builds can additionally link optional DAP/network, XML, filter,
 compression, TLS and authentication libraries. The observed Linux system build

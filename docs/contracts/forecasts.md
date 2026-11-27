@@ -11,7 +11,7 @@ mgb-ops forecast normalize --workspace /region --source /region/downloads/ifs.gr
 Use `ecmwf` with `ifs` or `noaa` with `gfs`, product `fc`. The cycle
 uses whole seconds in UTC. Workspace and source arguments resolve from the
 invocation directory. Registration stores the normalized NetCDF under
-`assets/forecasts/`, beside lightweight metadata. Use
+`assets/objects/forecasts/`, beside lightweight metadata. Use
 [forecast acquisition](acquisition.md#forecast-acquisition) to fetch provider
 cycles directly.
 
@@ -35,38 +35,23 @@ features and no GDAL dependency. The adapter additionally checks raw GRIB2 grid
 sections because the driver otherwise pads/crops later fields to the first grid.
 Changed grids, malformed messages and unsupported multi-field messages fail.
 
-Logical identity uses provider, model, product, cycle, physical grid and operation
-timezone. Equivalent normalized values reuse one asset across source formats;
-requested crop metadata remains provenance. Revised values require a forced
-refresh.
-
-Folder discovery reads metadata for provider, model, product, cycle, coverage, and
-the retained file locations. Operators select forecasts by those labels.
-Working grids and basin forcing belong to their preparation or run.
-Ordered edits are [scenario parameters](operations.md#scenarios);
-the operation manifest retains their values and base identities.
-
-| Asset metadata | Purpose |
-| --- | --- |
-| Provider, model, product, UTC cycle | Operator selection and source-cycle provenance |
-| Physical grid and operation timezone | Logical asset identity alongside provider labels and cycle |
-| Valid interval coverage | Decide whether a base covers the requested forecast window |
-| Normalized artifact path, byte length and SHA-256 | Verify the canonical NetCDF used by preparation |
-| Source format, identity, retained path and digest | Retain source provenance independently of normalized-grid reuse |
-| Normalization settings and crop metadata | Explain how the native canonical values were produced |
+A forecast version identifies provider, model, product, UTC cycle, physical
+grid, operation timezone and source identity. Its readable ID includes a digest.
+Repeated registration of the same version reuses it after verification; revised
+source data creates a new version and leaves prior versions available. Selection
+of a product and cycle uses the newest registered matching version.
 
 ```text
-assets/forecasts/<asset-id>/
-├── metadata.json               Discovery, identity, coverage and integrity
+assets/objects/forecasts/<asset-id>/
+├── metadata.toml               Identity, coverage and checksums
 ├── native.nc                   Normalized native intervals and grid
-└── ...                         Retained source payload where present
+└── source.nc or source.grib2  Retained source
 ```
 
-The tree illustrates the payload roles; a forced refresh can publish different
-retained filenames through the metadata. Readers follow the recorded paths.
-Reuse validates the normalized artifact and works after the original download
-is removed. Derived scenario grids belong to preparations and results, outside
-the acquired asset catalog.
+Reuse validates the native artifact even after the original download is removed.
+Derived scenario grids belong to preparations and results. Ordered edits are
+[scenario parameters](operations.md#scenarios); the manifest retains their
+values and base identities.
 
 ## Pure preparation
 

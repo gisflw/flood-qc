@@ -7,11 +7,6 @@ use std::path::PathBuf;
 use chrono::{Datelike, NaiveDateTime, TimeZone, Timelike};
 use serde::{Deserialize, Serialize};
 
-use super::parquet;
-use parquet::Kind::{Float, Int32, Int64, Text};
-#[cfg(test)]
-const TIME_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationError(pub String);
 impl std::fmt::Display for ObservationError {
@@ -22,15 +17,6 @@ impl std::fmt::Display for ObservationError {
 impl std::error::Error for ObservationError {}
 fn error(message: impl Into<String>) -> ObservationError {
     ObservationError(message.into())
-}
-#[cfg(test)]
-fn timestamp(value: &str, context: &str) -> Result<NaiveDateTime, ObservationError> {
-    let result = NaiveDateTime::parse_from_str(value, TIME_FORMAT)
-        .map_err(|_| error(format!("{context}: invalid local timestamp {value}")))?;
-    if result.format(TIME_FORMAT).to_string() != value {
-        return Err(error(format!("{context}: invalid local timestamp {value}")));
-    }
-    Ok(result)
 }
 fn validate_time(value: NaiveDateTime, context: &str) -> Result<(), ObservationError> {
     if value.nanosecond() != 0 || value.year() < 0 || value.year() > 9999 {
@@ -120,6 +106,20 @@ pub struct ObservationInputs {
     pub replacements: Vec<ObservationReplacement>,
     #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
     pub excluded_rain: std::collections::BTreeSet<(String, NaiveDateTime)>,
+}
+/// Retained source evidence associated with an observation registration.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObservationProvenance {
+    pub provider: String,
+    pub station_id: String,
+    pub variables: Vec<String>,
+    pub request_start: Option<chrono::NaiveDate>,
+    pub request_end: Option<chrono::NaiveDate>,
+    pub reference_time: String,
+    pub source_kind: String,
+    pub source_path: PathBuf,
+    pub sha256: String,
+    pub byte_length: u64,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ObservationBatch {
@@ -253,16 +253,11 @@ fn validate_level_references(references: &[LevelReference]) -> Result<(), Observ
     Ok(())
 }
 
-const MAX_DELTA_SEGMENTS: usize = 8;
-const MAX_DELTA_ROWS: usize = 4096;
-
-#[derive(Clone, Default, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Manifest {
     time_zone: String,
-    generation: String,
-    partitions: BTreeMap<String, String>,
-    deltas: BTreeMap<String, Vec<String>>,
-    tables: BTreeMap<String, String>,
+    revision: i64,
+    metadata_key: String,
 }
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 struct InventoryVariable {
@@ -281,66 +276,7 @@ struct Flag {
     observed_at: NaiveDateTime,
     reason: String,
 }
-#[cfg(test)]
-#[derive(Clone, Serialize, Deserialize)]
-struct StoredSample {
-    series_id: String,
-    observed_at: NaiveDateTime,
-    rain: Option<f64>,
-    flow: Option<f64>,
-    level: Option<i32>,
-}
-const STATIONS: &[(&str, parquet::Kind)] = &[
-    ("station_id", Text),
-    ("provider_code", Text),
-    ("station_code", Text),
-    ("name", Text),
-    ("latitude", Float),
-    ("longitude", Float),
-];
-const SERIES: &[(&str, parquet::Kind)] = &[
-    ("series_id", Text),
-    ("station_id", Text),
-    ("variable", Text),
-    ("state", Text),
-    ("unit", Text),
-    ("interval_seconds", Int64),
-    ("created_at", Text),
-];
-const SAMPLES: &[(&str, parquet::Kind)] = &[
-    ("series_id", Text),
-    ("observed_at", Text),
-    ("rain", Float),
-    ("flow", Float),
-    ("level", Int32),
-];
-const REPLACEMENTS: &[(&str, parquet::Kind)] = &[
-    ("replacement_id", Text),
-    ("station_id", Text),
-    ("variable", Text),
-    ("kind", Text),
-    ("start_at", Text),
-    ("end_at", Text),
-    ("value", Float),
-    ("reason", Text),
-];
-const OFFSETS: &[(&str, parquet::Kind)] = &[
-    ("station_id", Text),
-    ("mini_id", Int64),
-    ("offset_m", Float),
-];
-const REFERENCES: &[(&str, parquet::Kind)] = &[
-    ("station_id", Text),
-    ("kind", Text),
-    ("date", Text),
-    ("level_cm", Float),
-];
-const VARIABLES: &[(&str, parquet::Kind)] = &[("station_id", Text), ("variable", Text)];
-const COVERAGE: &[(&str, parquet::Kind)] =
-    &[("station_id", Text), ("variables_key", Text), ("day", Text)];
-const FLAGS: &[(&str, parquet::Kind)] =
-    &[("series_id", Text), ("observed_at", Text), ("reason", Text)];
-#[derive(Clone, Default, PartialEq)]
+#[derive(Clone, Default, PartialEq, Serialize, Deserialize)]
 struct Metadata {
     stations: Vec<Station>,
     series: Vec<ObservationSeries>,
@@ -350,398 +286,16 @@ struct Metadata {
     variables: Vec<InventoryVariable>,
     flags: Vec<Flag>,
     coverage: Vec<Coverage>,
+    #[serde(default)]
+    partial_coverage: Option<serde_json::Value>,
+    #[serde(default)]
+    provenance: Vec<ObservationProvenance>,
 }
-
 fn partition_key(id: &str, _at: NaiveDateTime) -> String {
-    format!("{:x}", Sha256::digest(id.as_bytes()))
+    id.to_owned()
 }
 fn io_error(e: impl std::fmt::Display) -> ObservationError {
     error(e.to_string())
-}
-fn write_table<T: Serialize>(
-    path: &Path,
-    name: &str,
-    schema: &[(&str, parquet::Kind)],
-    values: &[T],
-) -> Result<(), ObservationError> {
-    parquet::write_staged(&path.join(format!("{name}.parquet")), schema, values).map_err(io_error)
-}
-fn metadata_batches(
-    root: &Path,
-    m: &Manifest,
-    name: &str,
-    schema: &[(&str, parquet::Kind)],
-) -> Result<Vec<arrow_array::RecordBatch>, ObservationError> {
-    let path = m
-        .tables
-        .get(name)
-        .ok_or_else(|| error(format!("missing table {name}")))?;
-    parquet::read_batches(&root.join(path), schema).map_err(io_error)
-}
-fn text_column<'a>(
-    batch: &'a arrow_array::RecordBatch,
-    name: &str,
-) -> Result<&'a arrow_array::StringArray, ObservationError> {
-    batch
-        .column_by_name(name)
-        .and_then(|v| v.as_any().downcast_ref::<arrow_array::StringArray>())
-        .ok_or_else(|| error(format!("invalid column {name}")))
-}
-fn float_column<'a>(
-    batch: &'a arrow_array::RecordBatch,
-    name: &str,
-) -> Result<&'a arrow_array::Float64Array, ObservationError> {
-    batch
-        .column_by_name(name)
-        .and_then(|v| v.as_any().downcast_ref::<arrow_array::Float64Array>())
-        .ok_or_else(|| error(format!("invalid column {name}")))
-}
-fn int_column<'a>(
-    batch: &'a arrow_array::RecordBatch,
-    name: &str,
-) -> Result<&'a arrow_array::Int64Array, ObservationError> {
-    batch
-        .column_by_name(name)
-        .and_then(|v| v.as_any().downcast_ref::<arrow_array::Int64Array>())
-        .ok_or_else(|| error(format!("invalid column {name}")))
-}
-fn required_str(array: &arrow_array::StringArray, row: usize) -> Result<&str, ObservationError> {
-    use arrow_array::Array;
-    if array.is_null(row) {
-        return Err(error("null required text"));
-    }
-    Ok(array.value(row))
-}
-fn optional_float(
-    array: &arrow_array::Float64Array,
-    row: usize,
-) -> Result<Option<f64>, ObservationError> {
-    use arrow_array::Array;
-    if array.is_null(row) {
-        return Ok(None);
-    }
-    let value = array.value(row);
-    if !value.is_finite() {
-        return Err(error("nonfinite float"));
-    }
-    Ok(Some(value))
-}
-fn read_stations(
-    root: &Path,
-    m: &Manifest,
-    selected: Option<&str>,
-) -> Result<Vec<Station>, ObservationError> {
-    let mut rows = Vec::new();
-    for batch in metadata_batches(root, m, "stations", STATIONS)? {
-        let id = text_column(&batch, "station_id")?;
-        let provider = text_column(&batch, "provider_code")?;
-        let code = text_column(&batch, "station_code")?;
-        let name = text_column(&batch, "name")?;
-        let lat = float_column(&batch, "latitude")?;
-        let lon = float_column(&batch, "longitude")?;
-        for row in 0..batch.num_rows() {
-            let id = required_str(id, row)?;
-            let provider = required_str(provider, row)?;
-            let code = required_str(code, row)?;
-            let name = required_str(name, row)?;
-            let latitude = optional_float(lat, row)?;
-            let longitude = optional_float(lon, row)?;
-            if selected.is_none_or(|s| s == id) {
-                rows.push(Station {
-                    station_id: id.to_owned(),
-                    provider_code: provider.to_owned(),
-                    station_code: code.to_owned(),
-                    name: name.to_owned(),
-                    latitude,
-                    longitude,
-                });
-            }
-        }
-    }
-    Ok(rows)
-}
-fn read_series_metadata(
-    root: &Path,
-    m: &Manifest,
-    selected: Option<&str>,
-) -> Result<Vec<ObservationSeries>, ObservationError> {
-    use arrow_array::Array;
-    let mut rows = Vec::new();
-    for batch in metadata_batches(root, m, "series", SERIES)? {
-        let id = text_column(&batch, "series_id")?;
-        let station = text_column(&batch, "station_id")?;
-        let variable = text_column(&batch, "variable")?;
-        let state = text_column(&batch, "state")?;
-        let unit = text_column(&batch, "unit")?;
-        let interval = int_column(&batch, "interval_seconds")?;
-        let created = text_column(&batch, "created_at")?;
-        for row in 0..batch.num_rows() {
-            let id = required_str(id, row)?;
-            let station = required_str(station, row)?;
-            let variable = required_str(variable, row)?;
-            let state = required_str(state, row)?;
-            let unit = required_str(unit, row)?;
-            let created_at = required_str(created, row)?
-                .parse::<NaiveDateTime>()
-                .map_err(io_error)?;
-            let interval_seconds = if interval.is_null(row) {
-                None
-            } else {
-                Some(interval.value(row))
-            };
-            if selected.is_none_or(|s| s == station) {
-                rows.push(ObservationSeries {
-                    series_id: id.to_owned(),
-                    station_id: station.to_owned(),
-                    variable: variable.to_owned(),
-                    state: state.to_owned(),
-                    unit: unit.to_owned(),
-                    interval_seconds,
-                    created_at,
-                });
-            }
-        }
-    }
-    Ok(rows)
-}
-fn read_inventory_variables(
-    root: &Path,
-    m: &Manifest,
-    collect: bool,
-) -> Result<Vec<InventoryVariable>, ObservationError> {
-    let mut rows = Vec::new();
-    for batch in metadata_batches(root, m, "variables", VARIABLES)? {
-        let station = text_column(&batch, "station_id")?;
-        let variable = text_column(&batch, "variable")?;
-        for row in 0..batch.num_rows() {
-            let station = required_str(station, row)?;
-            let variable = required_str(variable, row)?;
-            if collect {
-                rows.push(InventoryVariable {
-                    station_id: station.to_owned(),
-                    variable: variable.to_owned(),
-                });
-            }
-        }
-    }
-    Ok(rows)
-}
-
-impl Metadata {
-    fn read(root: &Path, m: &Manifest) -> Result<Self, ObservationError> {
-        Self::read_projected(root, m, None)
-    }
-    fn read_projected(
-        root: &Path,
-        m: &Manifest,
-        selected: Option<&str>,
-    ) -> Result<Self, ObservationError> {
-        fn table<T: serde::de::DeserializeOwned>(
-            root: &Path,
-            m: &Manifest,
-            name: &str,
-            schema: &[(&str, parquet::Kind)],
-        ) -> Result<Vec<T>, ObservationError> {
-            let path = m
-                .tables
-                .get(name)
-                .ok_or_else(|| error(format!("missing table {name}")))?;
-            parquet::read(&root.join(path), schema).map_err(io_error)
-        }
-        Ok(Self {
-            stations: read_stations(root, m, selected)?,
-            series: read_series_metadata(root, m, selected)?,
-            replacements: table(root, m, "replacements", REPLACEMENTS)?,
-            offsets: table(root, m, "offsets", OFFSETS)?,
-            references: table(root, m, "references", REFERENCES)?,
-            variables: read_inventory_variables(root, m, selected.is_none())?,
-            flags: table(root, m, "flags", FLAGS)?,
-            coverage: table(root, m, "coverage", COVERAGE)?,
-        })
-    }
-    fn write_changed(
-        &self,
-        old: Option<&Self>,
-        path: &Path,
-        id: &str,
-        m: &mut Manifest,
-    ) -> Result<(), ObservationError> {
-        write_changed_table(
-            path,
-            id,
-            m,
-            "stations",
-            STATIONS,
-            &self.stations,
-            old.map(|o| o.stations.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "series",
-            SERIES,
-            &self.series,
-            old.map(|o| o.series.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "replacements",
-            REPLACEMENTS,
-            &self.replacements,
-            old.map(|o| o.replacements.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "offsets",
-            OFFSETS,
-            &self.offsets,
-            old.map(|o| o.offsets.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "references",
-            REFERENCES,
-            &self.references,
-            old.map(|o| o.references.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "variables",
-            VARIABLES,
-            &self.variables,
-            old.map(|o| o.variables.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "flags",
-            FLAGS,
-            &self.flags,
-            old.map(|o| o.flags.as_slice()),
-        )?;
-        write_changed_table(
-            path,
-            id,
-            m,
-            "coverage",
-            COVERAGE,
-            &self.coverage,
-            old.map(|o| o.coverage.as_slice()),
-        )?;
-        Ok(())
-    }
-}
-
-fn write_changed_table<T: Serialize + PartialEq>(
-    path: &Path,
-    id: &str,
-    m: &mut Manifest,
-    name: &str,
-    schema: &[(&str, parquet::Kind)],
-    rows: &[T],
-    old: Option<&[T]>,
-) -> Result<(), ObservationError> {
-    if old != Some(rows) {
-        write_table(path, name, schema, rows)?;
-        m.tables
-            .insert(name.into(), format!("generations/{id}/{name}.parquet"));
-    }
-    Ok(())
-}
-
-fn write_sample_batch(path: &Path, rows: &[ObservationSample]) -> Result<(), ObservationError> {
-    use arrow_array::{ArrayRef, Float64Array, Int32Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-    use std::sync::Arc;
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("series_id", DataType::Utf8, true),
-        Field::new("observed_at", DataType::Utf8, true),
-        Field::new("rain", DataType::Float64, true),
-        Field::new("flow", DataType::Float64, true),
-        Field::new("level", DataType::Int32, true),
-    ]));
-    let timestamps = rows
-        .iter()
-        .map(|r| r.observed_at.format("%Y-%m-%dT%H:%M:%S").to_string())
-        .collect::<Vec<_>>();
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from(
-            rows.iter()
-                .map(|r| Some(r.series_id.as_str()))
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(StringArray::from(
-            timestamps
-                .iter()
-                .map(|t| Some(t.as_str()))
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Float64Array::from(
-            rows.iter()
-                .map(|r| match r.value {
-                    Some(ObservationValue::RainMm(v)) => Some(v),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Float64Array::from(
-            rows.iter()
-                .map(|r| match r.value {
-                    Some(ObservationValue::FlowM3s(v)) => Some(v),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        )),
-        Arc::new(Int32Array::from(
-            rows.iter()
-                .map(|r| match r.value {
-                    Some(ObservationValue::LevelCm(v)) => Some(v),
-                    _ => None,
-                })
-                .collect::<Vec<_>>(),
-        )),
-    ];
-    let batch = RecordBatch::try_new(schema, arrays).map_err(io_error)?;
-    parquet::write_batch_staged(path, &batch, 1024).map_err(io_error)
-}
-
-fn sync_generation(path: &Path) -> Result<(), ObservationError> {
-    let mut files = Vec::new();
-    for entry in fs::read_dir(path).map_err(io_error)? {
-        let entry = entry.map_err(io_error)?;
-        if !entry.file_type().map_err(io_error)?.is_file() {
-            return Err(error("unexpected staged generation entry"));
-        }
-        files.push(entry.path());
-    }
-    // All generation files are immutable before publication. Waiting for each
-    // bounded group permits the filesystem to combine their durability work.
-    for chunk in files.chunks(8) {
-        std::thread::scope(|scope| -> Result<(), ObservationError> {
-            let workers = chunk
-                .iter()
-                .map(|file| scope.spawn(move || File::open(file).and_then(|f| f.sync_data())))
-                .collect::<Vec<_>>();
-            for worker in workers {
-                worker
-                    .join()
-                    .map_err(|_| error("generation sync worker panicked"))?
-                    .map_err(io_error)?;
-            }
-            Ok(())
-        })?;
-    }
-    super::sync_directory(path).map_err(io_error)
 }
 
 struct PendingPartition {
@@ -749,60 +303,145 @@ struct PendingPartition {
     rows: Vec<ObservationSample>,
 }
 
+// Each operation holds the external process lock until every database handle is dropped.
 pub struct ObservationStore {
     path: PathBuf,
     writable: bool,
-    metadata_cache: std::sync::Mutex<Option<(String, std::sync::Arc<Metadata>)>>,
-    manifest_cache: std::sync::Mutex<Option<(same_file::Handle, std::sync::Arc<Manifest>)>>,
+    selected_revision: Option<i64>,
+}
+
+struct RegistryLock(File);
+impl Drop for RegistryLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+struct Db {
+    conn: turso::Connection,
+    _db: turso::Database,
+}
+impl Db {
+    fn open(path: &Path, writable: bool) -> Result<Self, ObservationError> {
+        pollster::block_on(async {
+            let db = turso::Builder::new_local(
+                path.to_str()
+                    .ok_or_else(|| error("database path is not UTF-8"))?,
+            )
+            .read_only(!writable)
+            .build()
+            .await
+            .map_err(io_error)?;
+            let conn = db.connect().map_err(io_error)?;
+            conn.execute("PRAGMA foreign_keys=ON", ())
+                .await
+                .map_err(io_error)?;
+            if writable {
+                conn.execute("PRAGMA synchronous=FULL", ())
+                    .await
+                    .map_err(io_error)?;
+            }
+            Ok(Self { conn, _db: db })
+        })
+    }
 }
 impl ObservationStore {
+    fn lock_path(&self) -> PathBuf {
+        let mut name = self.path.as_os_str().to_os_string();
+        name.push(".lock");
+        name.into()
+    }
+    fn read_lock(&self) -> Result<RegistryLock, ObservationError> {
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(self.lock_path())
+            .map_err(io_error)?;
+        file.lock().map_err(io_error)?;
+        Ok(RegistryLock(file))
+    }
+    fn lock(&self) -> Result<RegistryLock, ObservationError> {
+        if !self.writable || self.selected_revision.is_some() {
+            return Err(error("observation store is read-only"));
+        }
+        self.read_lock()
+    }
     pub fn create(path: &Path, time_zone: &str) -> Result<Self, ObservationError> {
-        time_zone
-            .parse::<chrono_tz::Tz>()
-            .map_err(|_| error(format!("invalid time zone {time_zone}")))?;
+        time_zone.parse::<chrono_tz::Tz>().map_err(io_error)?;
         if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
             fs::create_dir_all(parent).map_err(io_error)?;
         }
-        fs::create_dir(path).map_err(io_error)?;
+        let store = Self {
+            path: path.into(),
+            writable: true,
+            selected_revision: None,
+        };
+        let guard = store.lock()?;
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(path)
+            .map_err(io_error)?;
         let result = (|| {
-            fs::create_dir(path.join("generations")).map_err(io_error)?;
-            File::create(path.join("access.lock")).map_err(io_error)?;
-            let store = Self {
-                path: path.into(),
-                writable: true,
-                metadata_cache: std::sync::Mutex::new(None),
-                manifest_cache: std::sync::Mutex::new(None),
-            };
-            let mut manifest = Manifest {
-                time_zone: time_zone.into(),
-                ..Default::default()
-            };
-            store.publish(
-                &mut manifest,
-                &Metadata::default(),
-                None,
-                BTreeMap::new(),
-                BTreeMap::new(),
-            )?;
-            Ok(store)
+            let db = Db::open(path, true)?;
+            pollster::block_on(async {
+                db.conn.execute_batch("CREATE TABLE registry_identity (id TEXT PRIMARY KEY); CREATE TABLE observation_metadata (key TEXT PRIMARY KEY, payload TEXT NOT NULL); CREATE TABLE observation_revision (id INTEGER PRIMARY KEY, time_zone TEXT NOT NULL, metadata_key TEXT NOT NULL REFERENCES observation_metadata(key)); CREATE TABLE observation_sample (series_id TEXT NOT NULL, observed_at TEXT NOT NULL, revision INTEGER NOT NULL REFERENCES observation_revision(id), payload TEXT NOT NULL, payload_sha256 TEXT NOT NULL, PRIMARY KEY(series_id, observed_at, revision));").await.map_err(io_error)?;
+                let mut random = [0u8; 32];
+                getrandom::fill(&mut random).map_err(io_error)?;
+                let identity = format!("{:x}", Sha256::digest(random));
+                db.conn
+                    .execute("INSERT INTO registry_identity VALUES (?1)", [identity])
+                    .await
+                    .map_err(io_error)?;
+                let payload = serde_json::to_string(&Metadata::default()).map_err(io_error)?;
+                let key = format!("{:x}", Sha256::digest(payload.as_bytes()));
+                db.conn
+                    .execute(
+                        "INSERT INTO observation_metadata VALUES (?1,?2)",
+                        (key.clone(), payload),
+                    )
+                    .await
+                    .map_err(io_error)?;
+                db.conn
+                    .execute(
+                        "INSERT INTO observation_revision VALUES (1,?1,?2)",
+                        (time_zone.to_owned(), key),
+                    )
+                    .await
+                    .map_err(io_error)?;
+                Ok::<_, ObservationError>(())
+            })
         })();
         if result.is_err() {
-            let _ = fs::remove_dir_all(path);
+            let _ = fs::remove_file(path);
         }
-        result
+        result?;
+        drop(guard);
+        Ok(store)
     }
     pub fn open_read_only(path: &Path) -> Result<Self, ObservationError> {
-        Self::open(path, false)
+        Self::open(path, false, None)
     }
     pub fn open_writable(path: &Path) -> Result<Self, ObservationError> {
-        Self::open(path, true)
+        Self::open(path, true, None)
     }
-    fn open(path: &Path, writable: bool) -> Result<Self, ObservationError> {
+    pub fn open_revision(path: &Path, revision: i64) -> Result<Self, ObservationError> {
+        Self::open(path, false, Some(revision))
+    }
+    fn open(
+        path: &Path,
+        writable: bool,
+        selected_revision: Option<i64>,
+    ) -> Result<Self, ObservationError> {
+        if !path.is_file() {
+            return Err(error("observation database does not exist"));
+        }
         let store = Self {
             path: path.into(),
             writable,
-            metadata_cache: std::sync::Mutex::new(None),
-            manifest_cache: std::sync::Mutex::new(None),
+            selected_revision,
         };
         let guard = store.read_lock()?;
         let m = store.manifest()?;
@@ -810,95 +449,106 @@ impl ObservationStore {
         drop(guard);
         Ok(store)
     }
-    fn manifest(&self) -> Result<std::sync::Arc<Manifest>, ObservationError> {
-        use std::io::Read;
-        let handle =
-            same_file::Handle::from_path(self.path.join("current.json")).map_err(io_error)?;
-        let mut cache = self
-            .manifest_cache
-            .lock()
-            .map_err(|_| error("observation manifest cache poisoned"))?;
-        if let Some((old, manifest)) = &*cache
-            && *old == handle
-        {
-            return Ok(manifest.clone());
-        }
-        let mut bytes = Vec::new();
-        handle.as_file().read_to_end(&mut bytes).map_err(io_error)?;
-        let m: Manifest = serde_json::from_slice(&bytes).map_err(io_error)?;
-        if m.generation.is_empty()
-            || !m
-                .generation
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-        {
-            return Err(error("invalid generation"));
-        }
-        m.time_zone
-            .parse::<chrono_tz::Tz>()
-            .map_err(|_| error("invalid time zone"))?;
-        for path in m
-            .partitions
-            .values()
-            .chain(m.tables.values())
-            .chain(m.deltas.values().flatten())
-        {
-            if Path::new(path)
-                .components()
-                .any(|c| !matches!(c, std::path::Component::Normal(_)))
+    /// Stable identity shared by this registry and its independent snapshots.
+    pub fn registry_id(&self) -> Result<String, ObservationError> {
+        let _guard = self.read_lock()?;
+        self.registry_id_locked()
+    }
+    fn registry_id_locked(&self) -> Result<String, ObservationError> {
+        let db = Db::open(&self.path, false)?;
+        pollster::block_on(async {
+            let mut rows = db
+                .conn
+                .query("SELECT id FROM registry_identity", ())
+                .await
+                .map_err(io_error)?;
+            let row = rows
+                .next()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(|| error("missing registry identity"))?;
+            let id = match row.get_value(0).map_err(io_error)? {
+                turso::Value::Text(id) => id,
+                _ => return Err(error("invalid registry identity")),
+            };
+            if id.len() != 64
+                || !id
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                || rows.next().await.map_err(io_error)?.is_some()
             {
-                return Err(error("invalid partition path"));
+                return Err(error("invalid registry identity"));
             }
-        }
-        let m = std::sync::Arc::new(m);
-        *cache = Some((handle, m.clone()));
-        Ok(m)
+            Ok(id)
+        })
+    }
+    pub fn revision(&self) -> Result<i64, ObservationError> {
+        let _guard = self.read_lock()?;
+        Ok(self.manifest()?.revision)
     }
     pub fn time_zone(&self) -> Result<String, ObservationError> {
         let _guard = self.read_lock()?;
         Ok(self.manifest()?.time_zone.clone())
     }
+    fn manifest(&self) -> Result<std::sync::Arc<Manifest>, ObservationError> {
+        let db = Db::open(&self.path, false)?;
+        pollster::block_on(async {
+            let mut rows = match self.selected_revision {
+                Some(id) => db.conn.query("SELECT id,time_zone,metadata_key FROM observation_revision WHERE id=?1", [id]).await,
+                None => db.conn.query("SELECT id,time_zone,metadata_key FROM observation_revision ORDER BY id DESC LIMIT 1", ()).await,
+            }.map_err(io_error)?;
+            let row = rows
+                .next()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(|| error("observation revision not found"))?;
+            let revision = match row.get_value(0).map_err(io_error)? {
+                turso::Value::Integer(v) => v,
+                _ => return Err(error("invalid revision")),
+            };
+            let time_zone = match row.get_value(1).map_err(io_error)? {
+                turso::Value::Text(v) => v,
+                _ => return Err(error("invalid time zone")),
+            };
+            let metadata_key = match row.get_value(2).map_err(io_error)? {
+                turso::Value::Text(v) => v,
+                _ => return Err(error("invalid metadata key")),
+            };
+            time_zone.parse::<chrono_tz::Tz>().map_err(io_error)?;
+            Ok(std::sync::Arc::new(Manifest {
+                revision,
+                time_zone,
+                metadata_key,
+            }))
+        })
+    }
     fn metadata(&self, m: &Manifest) -> Result<std::sync::Arc<Metadata>, ObservationError> {
-        let mut cache = self
-            .metadata_cache
-            .lock()
-            .map_err(|_| error("observation metadata cache poisoned"))?;
-        if let Some((generation, metadata)) = &*cache
-            && *generation == m.generation
-        {
-            return Ok(metadata.clone());
-        }
-        let metadata = std::sync::Arc::new(Metadata::read(&self.path, m)?);
-        *cache = Some((m.generation.clone(), metadata.clone()));
-        Ok(metadata)
-    }
-    fn read_lock(&self) -> Result<File, ObservationError> {
-        let file = File::open(self.path.join("access.lock")).map_err(io_error)?;
-        file.lock_shared().map_err(io_error)?;
-        Ok(file)
-    }
-    fn lock(&self) -> Result<File, ObservationError> {
-        if !self.writable {
-            return Err(error("observation store is read-only"));
-        }
-        let lock = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(self.path.join("access.lock"))
-            .map_err(io_error)?;
-        lock.lock().map_err(io_error)?;
-        Ok(lock)
-    }
-    fn samples(&self, m: &Manifest, key: &str) -> Result<Vec<ObservationSample>, ObservationError> {
-        let start = chrono::NaiveDate::from_ymd_opt(0, 1, 1)
-            .expect("valid year")
-            .and_hms_opt(0, 0, 0)
-            .expect("valid time");
-        let end = chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
-            .expect("valid year")
-            .and_hms_opt(23, 59, 59)
-            .expect("valid time");
-        self.samples_range(m, key, start, end)
+        let db = Db::open(&self.path, false)?;
+        pollster::block_on(async {
+            let mut rows = db
+                .conn
+                .query(
+                    "SELECT payload FROM observation_metadata WHERE key=?1",
+                    [m.metadata_key.as_str()],
+                )
+                .await
+                .map_err(io_error)?;
+            let row = rows
+                .next()
+                .await
+                .map_err(io_error)?
+                .ok_or_else(|| error("missing metadata"))?;
+            let payload = match row.get_value(0).map_err(io_error)? {
+                turso::Value::Text(v) => v,
+                _ => return Err(error("invalid metadata")),
+            };
+            if format!("{:x}", Sha256::digest(payload.as_bytes())) != m.metadata_key {
+                return Err(error("metadata checksum mismatch"));
+            }
+            Ok(std::sync::Arc::new(
+                serde_json::from_str(&payload).map_err(io_error)?,
+            ))
+        })
     }
     fn samples_range(
         &self,
@@ -907,163 +557,132 @@ impl ObservationStore {
         start: NaiveDateTime,
         end: NaiveDateTime,
     ) -> Result<Vec<ObservationSample>, ObservationError> {
-        use arrow_array::{Array, Float64Array, Int32Array, StringArray};
-        let paths = m
-            .partitions
-            .get(key)
-            .into_iter()
-            .chain(m.deltas.get(key).into_iter().flatten());
-        let from = start.format("%Y-%m-%dT%H:%M:%S").to_string();
-        let to = end.format("%Y-%m-%dT%H:%M:%S").to_string();
-        let mut out = BTreeMap::new();
-        for path in paths {
-            for batch in parquet::sample_batches(&self.path.join(path), SAMPLES, &from, &to)
-                .map_err(io_error)?
-            {
-                let text = |name: &str| {
-                    batch
-                        .column_by_name(name)
-                        .and_then(|c| c.as_any().downcast_ref::<StringArray>())
-                        .ok_or_else(|| error(format!("invalid column {name}")))
+        let db = Db::open(&self.path, false)?;
+        pollster::block_on(async {
+            let mut rows = db.conn.query("SELECT observed_at,payload,payload_sha256 FROM observation_sample WHERE series_id=?1 AND observed_at>=?2 AND observed_at<=?3 AND revision<=?4 ORDER BY observed_at,revision", (key.to_owned(), start.format("%Y-%m-%dT%H:%M:%S").to_string(), end.format("%Y-%m-%dT%H:%M:%S").to_string(), m.revision)).await.map_err(io_error)?;
+            let mut result = BTreeMap::new();
+            while let Some(row) = rows.next().await.map_err(io_error)? {
+                let at = match row.get_value(0).map_err(io_error)? {
+                    turso::Value::Text(v) => v,
+                    _ => return Err(error("invalid sample timestamp")),
                 };
-                let number = |name: &str| {
-                    batch
-                        .column_by_name(name)
-                        .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
-                        .ok_or_else(|| error(format!("invalid column {name}")))
+                let payload = match row.get_value(1).map_err(io_error)? {
+                    turso::Value::Text(v) => v,
+                    _ => return Err(error("invalid sample")),
                 };
-                let id = text("series_id")?;
-                let times = text("observed_at")?;
-                let rain = number("rain")?;
-                let flow = number("flow")?;
-                let level = batch
-                    .column_by_name("level")
-                    .and_then(|c| c.as_any().downcast_ref::<Int32Array>())
-                    .ok_or_else(|| error("invalid level column"))?;
-                for i in 0..batch.num_rows() {
-                    if times.is_null(i) || id.is_null(i) {
-                        return Err(error("null sample identity"));
-                    }
-                    let at = times.value(i);
-                    if at < from.as_str() || at > to.as_str() {
-                        continue;
-                    }
-                    let observed_at =
-                        NaiveDateTime::parse_from_str(at, "%Y-%m-%dT%H:%M:%S").map_err(io_error)?;
-                    let value = match (!rain.is_null(i), !flow.is_null(i), !level.is_null(i)) {
-                        (false, false, false) => None,
-                        (true, false, false) => Some(ObservationValue::RainMm(rain.value(i))),
-                        (false, true, false) => Some(ObservationValue::FlowM3s(flow.value(i))),
-                        (false, false, true) => Some(ObservationValue::LevelCm(level.value(i))),
-                        _ => return Err(error("invalid sample columns")),
-                    };
-                    out.insert(
-                        observed_at,
-                        ObservationSample {
-                            series_id: id.value(i).into(),
-                            observed_at,
-                            value,
-                        },
-                    );
+                let digest = match row.get_value(2).map_err(io_error)? {
+                    turso::Value::Text(v) => v,
+                    _ => return Err(error("invalid sample checksum")),
+                };
+                if format!("{:x}", Sha256::digest(payload.as_bytes())) != digest {
+                    return Err(error("sample checksum mismatch"));
                 }
+                let sample: ObservationSample = serde_json::from_str(&payload).map_err(io_error)?;
+                if sample.series_id != key
+                    || sample.observed_at.format("%Y-%m-%dT%H:%M:%S").to_string() != at
+                {
+                    return Err(error("sample identity mismatch"));
+                }
+                result.insert(sample.observed_at, sample);
             }
-        }
-        Ok(out.into_values().collect())
+            Ok(result.into_values().collect())
+        })
+    }
+    fn samples(&self, m: &Manifest, key: &str) -> Result<Vec<ObservationSample>, ObservationError> {
+        let start = chrono::NaiveDate::from_ymd_opt(0, 1, 1)
+            .expect("valid")
+            .and_hms_opt(0, 0, 0)
+            .expect("valid");
+        let end = chrono::NaiveDate::from_ymd_opt(9999, 12, 31)
+            .expect("valid")
+            .and_hms_opt(23, 59, 59)
+            .expect("valid");
+        self.samples_range(m, key, start, end)
     }
     fn publish(
         &self,
         m: &mut Manifest,
         meta: &Metadata,
-        old: Option<&Metadata>,
+        _old: Option<&Metadata>,
         changed: BTreeMap<String, PendingPartition>,
         deltas: BTreeMap<String, Vec<ObservationSample>>,
     ) -> Result<(), ObservationError> {
-        let dir = tempfile::Builder::new()
-            .prefix("g-")
-            .tempdir_in(self.path.join("generations"))
-            .map_err(io_error)?;
-        let id = dir
-            .path()
-            .file_name()
-            .ok_or_else(|| error("invalid generation"))?
-            .to_string_lossy()
-            .into_owned();
-        meta.write_changed(old, dir.path(), &id, m)?;
-        for (key, pending) in changed {
-            let mut values = pending.rows;
-            values.sort_by_key(|s| s.observed_at);
-            let filename = format!("{}.parquet", key.replace('/', "-"));
-            write_sample_batch(&dir.path().join(&filename), &values)?;
-            m.deltas.remove(&key);
-            m.partitions
-                .insert(key, format!("generations/{id}/{filename}"));
-        }
-        for (key, mut values) in deltas {
-            values.sort_by_key(|s| s.observed_at);
-            let filename = format!("{key}-delta.parquet");
-            write_sample_batch(&dir.path().join(&filename), &values)?;
-            m.deltas
-                .entry(key)
-                .or_default()
-                .push(format!("generations/{id}/{filename}"));
-        }
-        m.generation = id.clone();
-        let bytes = serde_json::to_vec(m).map_err(io_error)?;
-        fs::write(dir.path().join("manifest.json"), bytes).map_err(io_error)?;
-        sync_generation(dir.path())?;
-        let generation = dir.keep();
-        super::sync_directory(&self.path.join("generations")).map_err(io_error)?;
-        let temporary = tempfile::Builder::new()
-            .prefix(".current-")
-            .tempfile_in(&self.path)
-            .map_err(io_error)?;
-        let temporary_path = temporary.path().to_path_buf();
-        temporary.close().map_err(io_error)?;
-        let result = (|| {
-            fs::hard_link(generation.join("manifest.json"), &temporary_path).map_err(io_error)?;
-            fs::rename(&temporary_path, self.path.join("current.json")).map_err(io_error)
-        })();
-        if result.is_err() {
-            let _ = fs::remove_file(&temporary_path);
-        }
-        result?;
-        super::sync_directory(&self.path).map_err(io_error)?;
-        self.cleanup_generations(m);
-        Ok(())
-    }
-    fn cleanup_generations(&self, m: &Manifest) {
-        let mut referenced = m
-            .tables
-            .values()
-            .chain(m.partitions.values())
-            .chain(m.deltas.values().flatten())
-            .map(|v| self.path.join(v))
-            .collect::<HashSet<_>>();
-        referenced.insert(
-            self.path
-                .join("generations")
-                .join(&m.generation)
-                .join("manifest.json"),
-        );
-        let Ok(dirs) = fs::read_dir(self.path.join("generations")) else {
-            return;
-        };
-        for dir in dirs.flatten() {
-            let path = dir.path();
-            if !dir.file_type().is_ok_and(|t| t.is_dir()) {
-                continue;
-            }
-            let Ok(files) = fs::read_dir(&path) else {
-                continue;
-            };
-            for file in files.flatten() {
-                let p = file.path();
-                if !referenced.contains(&p) && file.file_type().is_ok_and(|t| t.is_file()) {
-                    let _ = fs::remove_file(p);
+        let payload = serde_json::to_string(meta).map_err(io_error)?;
+        let key = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        let revision = m
+            .revision
+            .checked_add(1)
+            .ok_or_else(|| error("revision overflow"))?;
+        let db = Db::open(&self.path, true)?;
+        pollster::block_on(async {
+            db.conn
+                .execute("BEGIN IMMEDIATE", ())
+                .await
+                .map_err(io_error)?;
+            let result = async {
+                db.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO observation_metadata VALUES (?1,?2)",
+                        (key.clone(), payload),
+                    )
+                    .await
+                    .map_err(io_error)?;
+                db.conn
+                    .execute(
+                        "INSERT INTO observation_revision VALUES (?1,?2,?3)",
+                        (revision, m.time_zone.clone(), key.clone()),
+                    )
+                    .await
+                    .map_err(io_error)?;
+                for (id, pending) in changed {
+                    let prior: BTreeMap<_, _> = pending
+                        .original
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|s| (s.observed_at, s))
+                        .collect();
+                    for sample in pending.rows {
+                        if prior.get(&sample.observed_at) == Some(&sample) {
+                            continue;
+                        }
+                        let at = sample.observed_at.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        let value = serde_json::to_string(&sample).map_err(io_error)?;
+                        let checksum = format!("{:x}", Sha256::digest(value.as_bytes()));
+                        db.conn
+                            .execute(
+                                "INSERT INTO observation_sample VALUES (?1,?2,?3,?4,?5)",
+                                (id.clone(), at, revision, value, checksum),
+                            )
+                            .await
+                            .map_err(io_error)?;
+                    }
                 }
+                for (id, rows) in deltas {
+                    for sample in rows {
+                        let at = sample.observed_at.format("%Y-%m-%dT%H:%M:%S").to_string();
+                        let value = serde_json::to_string(&sample).map_err(io_error)?;
+                        let checksum = format!("{:x}", Sha256::digest(value.as_bytes()));
+                        db.conn
+                            .execute(
+                                "INSERT INTO observation_sample VALUES (?1,?2,?3,?4,?5)",
+                                (id.clone(), at, revision, value, checksum),
+                            )
+                            .await
+                            .map_err(io_error)?;
+                    }
+                }
+                db.conn.execute("COMMIT", ()).await.map_err(io_error)?;
+                Ok::<_, ObservationError>(())
             }
-            let _ = fs::remove_dir(path);
-        }
+            .await;
+            if result.is_err() {
+                let _ = db.conn.execute("ROLLBACK", ()).await;
+            }
+            result
+        })?;
+        m.revision = revision;
+        m.metadata_key = key;
+        Ok(())
     }
     fn mutate<T>(
         &mut self,
@@ -1074,17 +693,28 @@ impl ObservationStore {
             &mut BTreeMap<String, PendingPartition>,
         ) -> Result<T, ObservationError>,
     ) -> Result<T, ObservationError> {
+        self.mutate_revision(f).map(|(value, _)| value)
+    }
+    fn mutate_revision<T>(
+        &mut self,
+        f: impl FnOnce(
+            &Self,
+            &Manifest,
+            &mut Metadata,
+            &mut BTreeMap<String, PendingPartition>,
+        ) -> Result<T, ObservationError>,
+    ) -> Result<(T, i64), ObservationError> {
         let _lock = self.lock()?;
         let mut m = (*self.manifest()?).clone();
-        let mut metadata = (*self.metadata(&m)?).clone();
-        let old = metadata.clone();
+        let mut meta = (*self.metadata(&m)?).clone();
+        let old = meta.clone();
         let mut changed = BTreeMap::new();
-        let value = f(self, &m, &mut metadata, &mut changed)?;
-        changed.retain(|_, pending| pending.original.as_ref() != Some(&pending.rows));
-        if metadata != old || !changed.is_empty() {
-            self.publish(&mut m, &metadata, Some(&old), changed, BTreeMap::new())?;
+        let result = f(self, &m, &mut meta, &mut changed)?;
+        changed.retain(|_, p| p.original.as_ref() != Some(&p.rows));
+        if meta != old || !changed.is_empty() {
+            self.publish(&mut m, &meta, Some(&old), changed, BTreeMap::new())?;
         }
-        Ok(value)
+        Ok((result, m.revision))
     }
     fn partition<'a>(
         &self,
@@ -1096,8 +726,13 @@ impl ObservationStore {
         let key = partition_key(id, at);
         if !changed.contains_key(&key) {
             let rows = self.samples(m, &key)?;
-            let original = m.partitions.contains_key(&key).then(|| rows.clone());
-            changed.insert(key.clone(), PendingPartition { original, rows });
+            changed.insert(
+                key.clone(),
+                PendingPartition {
+                    original: Some(rows.clone()),
+                    rows,
+                },
+            );
         }
         Ok(&mut changed.get_mut(&key).expect("inserted partition").rows)
     }
@@ -1298,12 +933,7 @@ impl ObservationStore {
         interval: &super::IntervalAxis,
         ids: &[String],
     ) -> Result<(ObservationInputs, Vec<StationOffset>), ObservationError> {
-        let store = Self {
-            path: path.into(),
-            writable: false,
-            metadata_cache: std::sync::Mutex::new(None),
-            manifest_cache: std::sync::Mutex::new(None),
-        };
+        let store = Self::open_read_only(path)?;
         let selection = ObservationSelection {
             provider_codes: Vec::new(),
             station_ids: vec![station.to_owned()],
@@ -1339,22 +969,10 @@ impl ObservationStore {
         if selection.provider_codes.is_empty() && selection.station_ids.is_empty() {
             return Err(error("selection requires providers or stations"));
         }
-        let initial = if let Some(station) = projected {
-            let m = self.manifest()?;
-            let metadata =
-                std::sync::Arc::new(Metadata::read_projected(&self.path, &m, Some(station))?);
-            Some((m, metadata))
-        } else {
-            None
-        };
+        let _ = projected;
         interval.validate().map_err(io_error)?;
-        let (m, meta) = if let Some(initial) = initial {
-            initial
-        } else {
-            let m = self.manifest()?;
-            let metadata = self.metadata(&m)?;
-            (m, metadata)
-        };
+        let m = self.manifest()?;
+        let meta = self.metadata(&m)?;
         if m.time_zone != interval.time_zone {
             return Err(error("observation and request time zones differ"));
         }
@@ -1662,11 +1280,44 @@ impl ObservationStore {
             .map(|s| s.observed_at)
             .collect())
     }
+    #[cfg(test)]
     pub(crate) fn upsert_ana_raw(
         &mut self,
         station: &str,
         created_at: NaiveDateTime,
         variables: &[(&str, ProviderSamples)],
+    ) -> Result<usize, ObservationError> {
+        self.upsert_ana_raw_with_coverage(station, created_at, variables, &[], &[], None, &[])
+    }
+    /// Source records visible at this selected revision; legacy data may have none.
+    pub fn acquisition_provenance(&self) -> Result<Vec<ObservationProvenance>, ObservationError> {
+        let _guard = self.read_lock()?;
+        let manifest = self.manifest()?;
+        Ok(self.metadata(&manifest)?.provenance.clone())
+    }
+    pub(crate) fn ana_partial_coverage(
+        &self,
+    ) -> Result<super::AnaPartialCoverage, ObservationError> {
+        let _guard = self.read_lock()?;
+        let manifest = self.manifest()?;
+        let meta = self.metadata(&manifest)?;
+        meta.partial_coverage
+            .clone()
+            .map(serde_json::from_value)
+            .transpose()
+            .map_err(io_error)
+            .map(Option::unwrap_or_default)
+    }
+    #[allow(clippy::too_many_arguments)] // The registration groups data, coverage and retained source evidence.
+    pub(crate) fn upsert_ana_raw_with_coverage(
+        &mut self,
+        station: &str,
+        created_at: NaiveDateTime,
+        variables: &[(&str, ProviderSamples)],
+        coverage_variables: &[String],
+        full_days: &[chrono::NaiveDate],
+        partial: Option<(chrono::NaiveDate, i64)>,
+        provenance: &[ObservationProvenance],
     ) -> Result<usize, ObservationError> {
         let _lock = self.lock()?;
         let mut m = (*self.manifest()?).clone();
@@ -1743,51 +1394,80 @@ impl ObservationStore {
                 }
             }
         }
-        let mut bases = BTreeMap::new();
-        let mut deltas = BTreeMap::new();
-        for (key, rows) in updates {
-            let prior = m.deltas.get(&key).map(Vec::as_slice).unwrap_or(&[]);
-            let mut total = rows.len();
-            for path in prior {
-                total = total
-                    .checked_add(
-                        parquet::sample_row_count(&self.path.join(path)).map_err(io_error)?,
-                    )
-                    .ok_or_else(|| error("delta row count overflow"))?;
+        for source in provenance {
+            if source.provider != "ana"
+                || source.station_id != station
+                || source.variables.is_empty()
+                || coverage_key(&source.variables).is_err()
+                || !matches!(source.source_kind.as_str(), "ana_xml" | "ana_csv")
+                || !source.source_path.starts_with("downloads/ana")
+                || source
+                    .source_path
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+                || source.sha256.len() != 64
+                || !source
+                    .sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+                || chrono::DateTime::parse_from_rfc3339(&source.reference_time).is_err()
+                || source
+                    .request_start
+                    .zip(source.request_end)
+                    .is_some_and(|(a, b)| a > b)
+                || source.request_start.is_some() != source.request_end.is_some()
+            {
+                return Err(error("invalid acquisition provenance"));
             }
-            if total >= MAX_DELTA_ROWS {
-                let mut merged = self
-                    .samples(&m, &key)?
-                    .into_iter()
-                    .map(|s| (s.observed_at, s))
-                    .collect::<BTreeMap<_, _>>();
-                merged.extend(rows);
-                bases.insert(
-                    key,
-                    PendingPartition {
-                        original: None,
-                        rows: merged.into_values().collect(),
-                    },
-                );
-            } else if prior.len() >= MAX_DELTA_SEGMENTS {
-                // Consolidate only the revisions. The base is immutable until
-                // the bounded revision count requires a full merge.
-                let mut delta_only = m.clone();
-                delta_only.partitions.remove(&key);
-                let mut merged = self
-                    .samples(&delta_only, &key)?
-                    .into_iter()
-                    .map(|s| (s.observed_at, s))
-                    .collect::<BTreeMap<_, _>>();
-                merged.extend(rows);
-                m.deltas.remove(&key);
-                deltas.insert(key, merged.into_values().collect());
-            } else {
-                deltas.insert(key, rows.into_values().collect());
+            if !meta.provenance.iter().any(|existing| {
+                existing.provider == source.provider
+                    && existing.station_id == source.station_id
+                    && existing.variables == source.variables
+                    && existing.request_start == source.request_start
+                    && existing.request_end == source.request_end
+                    && existing.reference_time == source.reference_time
+                    && existing.source_kind == source.source_kind
+                    && existing.sha256 == source.sha256
+                    && existing.byte_length == source.byte_length
+            }) {
+                meta.provenance.push(source.clone());
             }
         }
-        if meta != old || !bases.is_empty() || !deltas.is_empty() {
-            self.publish(&mut m, &meta, Some(&old), bases, deltas)?;
+        if !full_days.is_empty() || partial.is_some() {
+            let key = coverage_key(coverage_variables)?;
+            for day in full_days {
+                if !meta
+                    .coverage
+                    .iter()
+                    .any(|c| c.station_id == station && c.variables_key == key && c.day == *day)
+                {
+                    meta.coverage.push(Coverage {
+                        station_id: station.into(),
+                        variables_key: key.clone(),
+                        day: *day,
+                    });
+                }
+            }
+            if let Some((day, through_utc)) = partial {
+                let mut coverage: super::AnaPartialCoverage = meta
+                    .partial_coverage
+                    .clone()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(io_error)?
+                    .unwrap_or_default();
+                coverage
+                    .record(station, coverage_variables, day, through_utc)
+                    .map_err(io_error)?;
+                meta.partial_coverage = Some(serde_json::to_value(coverage).map_err(io_error)?);
+            }
+        }
+        let deltas = updates
+            .into_iter()
+            .map(|(key, rows)| (key, rows.into_values().collect()))
+            .collect::<BTreeMap<_, Vec<_>>>();
+        if meta != old || !deltas.is_empty() {
+            self.publish(&mut m, &meta, Some(&old), BTreeMap::new(), deltas)?;
         }
         Ok(written)
     }
@@ -1814,17 +1494,40 @@ impl ObservationStore {
             .map(|f| (f.series_id.clone(), f.observed_at, f.reason.clone()))
             .collect())
     }
-    pub(crate) fn replace_precipitation_flags(
+    pub(crate) fn replace_precipitation_flags_for_revision(
         &mut self,
+        expected_revision: i64,
+        series_ids: &[String],
+        window: &super::IntervalAxis,
+        flags: &[(String, NaiveDateTime, String)],
+        expected: &[ObservationSample],
+    ) -> Result<(BTreeSet<(String, NaiveDateTime)>, i64), ObservationError> {
+        self.replace_precipitation_flags_inner(
+            Some(expected_revision),
+            series_ids,
+            window,
+            flags,
+            Some(expected),
+        )
+    }
+    fn replace_precipitation_flags_inner(
+        &mut self,
+        expected_revision: Option<i64>,
         series_ids: &[String],
         window: &super::IntervalAxis,
         flags: &[(String, NaiveDateTime, String)],
         expected: Option<&[ObservationSample]>,
-    ) -> Result<BTreeSet<(String, NaiveDateTime)>, ObservationError> {
+    ) -> Result<(BTreeSet<(String, NaiveDateTime)>, i64), ObservationError> {
         window.validate().map_err(io_error)?;
         let start = window.bounds.first().expect("valid window").start;
         let end = window.bounds.last().expect("valid window").end;
-        self.mutate(|store, m, meta, changed| {
+        self.mutate_revision(|store, m, meta, changed| {
+            if m.time_zone != window.time_zone {
+                return Err(error("observation and request time zones differ"));
+            }
+            if expected_revision.is_some_and(|revision| revision != m.revision) {
+                return Err(error("observations changed while evaluating exclusions"));
+            }
             if let Some(expected) = expected {
                 for id in series_ids {
                     let mut current = BTreeMap::new();
@@ -1917,6 +1620,7 @@ impl ObservationStore {
             .map(|c| c.day)
             .collect())
     }
+    #[cfg(test)]
     pub(crate) fn mark_ana_coverage(
         &mut self,
         station: &str,
@@ -1950,506 +1654,697 @@ impl ObservationStore {
     }
 }
 
-#[cfg(test)]
-mod parquet_tests {
-    use super::*;
-    use ::parquet::{
-        basic::{Compression, Type},
-        column::page::Page,
-        file::reader::{FileReader, SerializedFileReader},
-    };
-
-    fn time(s: &str) -> NaiveDateTime {
-        timestamp(s, "test").unwrap()
+#[derive(Deserialize)]
+struct InterchangeTable {
+    file: String,
+    count: usize,
+    sha256: String,
+}
+#[derive(Deserialize)]
+struct InterchangeManifest {
+    time_zone: String,
+    tables: BTreeMap<String, InterchangeTable>,
+    #[serde(default)]
+    partial_coverage: Option<String>,
+}
+#[derive(Deserialize)]
+struct InterchangeSample {
+    series_id: String,
+    observed_at: NaiveDateTime,
+    rain: Option<f64>,
+    flow: Option<f64>,
+    level: Option<i32>,
+}
+fn interchange_path(root: &Path, name: &str) -> Result<PathBuf, ObservationError> {
+    let path = Path::new(name);
+    if path
+        .components()
+        .any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return Err(error("invalid interchange path"));
     }
-    #[test]
-    fn projected_selection_rejects_corruption_in_unrelated_metadata() {
-        use arrow_array::{ArrayRef, Float64Array, Int64Array, RecordBatch, StringArray};
-        use arrow_schema::{DataType, Field, Schema};
-        use std::sync::Arc;
-        fs::create_dir_all("runs").unwrap();
-        let dir = tempfile::tempdir_in("runs").unwrap();
-        let mut store = ObservationStore::create(&dir.path().join("obs"), "UTC").unwrap();
-        let at = time("2026-01-01T01:00:00");
-        let selected = Station {
-            station_id: "selected".into(),
-            provider_code: "ana".into(),
-            station_code: "1".into(),
-            name: "Selected".into(),
-            latitude: Some(0.0),
-            longitude: Some(0.0),
-        };
-        let other = Station {
-            station_id: "other".into(),
-            provider_code: "ana".into(),
-            station_code: "2".into(),
-            name: "Other".into(),
-            latitude: Some(0.0),
-            longitude: Some(0.0),
-        };
-        store
-            .write_batch(&ObservationBatch {
-                stations: vec![selected.clone(), other.clone()],
-                series: vec![ObservationSeries {
-                    series_id: "rain".into(),
-                    station_id: "selected".into(),
-                    variable: "rain".into(),
-                    state: "raw".into(),
-                    unit: "mm".into(),
-                    interval_seconds: Some(3600),
-                    created_at: at,
-                }],
-                ..Default::default()
-            })
-            .unwrap();
-        store
-            .import_ana_inventory(
-                &[selected, other],
-                &[
-                    ("selected".into(), vec!["rain".into()]),
-                    ("other".into(), vec!["rain".into()]),
-                ],
-            )
-            .unwrap();
-        let manifest = store.manifest().unwrap();
-        let axis = super::super::IntervalAxis {
-            time_zone: "UTC".into(),
-            bounds: vec![super::super::TimeInterval {
-                start: at - chrono::Duration::hours(1),
-                end: at,
-            }],
-        };
-        let rejected = |expected: &str| {
-            let projected =
-                ObservationStore::read_station_selection(&store.path, "selected", &axis, &[])
-                    .unwrap_err();
-            let full = ObservationStore::open_read_only(&store.path).err().unwrap();
-            assert!(projected.0.contains(expected), "{}", projected.0);
-            assert!(full.0.contains(expected), "{}", full.0);
-        };
-        let station_path = store.path.join(manifest.tables.get("stations").unwrap());
-        let original = fs::read(&station_path).unwrap();
-        let station_schema = Arc::new(Schema::new(vec![
-            Field::new("station_id", DataType::Utf8, true),
-            Field::new("provider_code", DataType::Utf8, true),
-            Field::new("station_code", DataType::Utf8, true),
-            Field::new("name", DataType::Utf8, true),
-            Field::new("latitude", DataType::Float64, true),
-            Field::new("longitude", DataType::Float64, true),
-        ]));
-        for (name, latitude, expected) in [
-            (None, Some(0.0), "null required text"),
-            (Some("Other"), Some(f64::NAN), "nonfinite float"),
-        ] {
-            let arrays: Vec<ArrayRef> = vec![
-                Arc::new(StringArray::from(Vec::from([
-                    Some("selected"),
-                    Some("other"),
-                ]))),
-                Arc::new(StringArray::from(Vec::from([Some("ana"), Some("ana")]))),
-                Arc::new(StringArray::from(Vec::from([Some("1"), Some("2")]))),
-                Arc::new(StringArray::from(Vec::from([Some("Selected"), name]))),
-                Arc::new(Float64Array::from(Vec::from([Some(0.0), latitude]))),
-                Arc::new(Float64Array::from(Vec::from([Some(0.0), Some(0.0)]))),
-            ];
-            let batch = RecordBatch::try_new(station_schema.clone(), arrays).unwrap();
-            parquet::write_batch_staged(&station_path, &batch, 1024).unwrap();
-            rejected(expected);
-        }
-        fs::write(&station_path, original).unwrap();
-        let series_path = store.path.join(manifest.tables.get("series").unwrap());
-        let original = fs::read(&series_path).unwrap();
-        let series_schema = Arc::new(Schema::new(vec![
-            Field::new("series_id", DataType::Utf8, true),
-            Field::new("station_id", DataType::Utf8, true),
-            Field::new("variable", DataType::Utf8, true),
-            Field::new("state", DataType::Utf8, true),
-            Field::new("unit", DataType::Utf8, true),
-            Field::new("interval_seconds", DataType::Int64, true),
-            Field::new("created_at", DataType::Utf8, true),
-        ]));
-        let arrays: Vec<ArrayRef> = vec![
-            Arc::new(StringArray::from(Vec::from([
-                Some("rain"),
-                Some("other-rain"),
-            ]))),
-            Arc::new(StringArray::from(Vec::from([
-                Some("selected"),
-                Some("other"),
-            ]))),
-            Arc::new(StringArray::from(Vec::from([Some("rain"), Some("rain")]))),
-            Arc::new(StringArray::from(Vec::from([Some("raw"), Some("raw")]))),
-            Arc::new(StringArray::from(Vec::from([Some("mm"), Some("mm")]))),
-            Arc::new(Int64Array::from(Vec::from([Some(3600), Some(3600)]))),
-            Arc::new(StringArray::from(Vec::from([
-                Some("2026-01-01T01:00:00"),
-                Some("bad-time"),
-            ]))),
-        ];
-        let batch = RecordBatch::try_new(series_schema, arrays).unwrap();
-        parquet::write_batch_staged(&series_path, &batch, 1024).unwrap();
-        assert!(
-            ObservationStore::read_station_selection(&store.path, "selected", &axis, &[]).is_err()
-        );
-        assert!(ObservationStore::open_read_only(&store.path).is_err());
-        fs::write(&series_path, original).unwrap();
-        let variable_path = store.path.join(manifest.tables.get("variables").unwrap());
-        let original = fs::read(&variable_path).unwrap();
-        let variable_schema = Arc::new(Schema::new(vec![
-            Field::new("station_id", DataType::Utf8, true),
-            Field::new("variable", DataType::Utf8, true),
-        ]));
-        let arrays: Vec<ArrayRef> = vec![
-            Arc::new(StringArray::from(Vec::from([
-                Some("selected"),
-                Some("other"),
-            ]))),
-            Arc::new(StringArray::from(Vec::from([Some("rain"), None]))),
-        ];
-        let batch = RecordBatch::try_new(variable_schema, arrays).unwrap();
-        parquet::write_batch_staged(&variable_path, &batch, 1024).unwrap();
-        rejected("null required text");
-        fs::write(&variable_path, original).unwrap();
-        let reference_path = store.path.join(manifest.tables.get("references").unwrap());
-        fs::remove_file(reference_path).unwrap();
-        assert!(
-            ObservationStore::read_station_selection(&store.path, "selected", &axis, &[]).is_err()
-        );
-        assert!(ObservationStore::open_read_only(&store.path).is_err());
+    Ok(root.join(path))
+}
+fn interchange_rows<T: for<'a> Deserialize<'a>>(
+    root: &Path,
+    manifest: &InterchangeManifest,
+    name: &str,
+) -> Result<Vec<T>, ObservationError> {
+    let table = manifest
+        .tables
+        .get(name)
+        .ok_or_else(|| error(format!("missing interchange table {name}")))?;
+    let bytes = fs::read(interchange_path(root, &table.file)?).map_err(io_error)?;
+    if format!("{:x}", Sha256::digest(&bytes)) != table.sha256 {
+        return Err(error(format!("{name}: checksum mismatch")));
     }
-    #[test]
-    fn typed_station_decoder_rejects_null_required_fields_and_nonfinite_coordinates() {
-        use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
-        use arrow_schema::{DataType, Field, Schema};
-        use std::sync::Arc;
-        fs::create_dir_all("runs").unwrap();
-        let dir = tempfile::tempdir_in("runs").unwrap();
-        let store = ObservationStore::create(&dir.path().join("obs"), "UTC").unwrap();
-        let manifest = store.manifest().unwrap();
-        let path = store.path.join(manifest.tables.get("stations").unwrap());
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("station_id", DataType::Utf8, true),
-            Field::new("provider_code", DataType::Utf8, true),
-            Field::new("station_code", DataType::Utf8, true),
-            Field::new("name", DataType::Utf8, true),
-            Field::new("latitude", DataType::Float64, true),
-            Field::new("longitude", DataType::Float64, true),
-        ]));
-        for (name, latitude) in [(None, Some(0.0)), (Some("Station"), Some(f64::NAN))] {
-            let arrays: Vec<ArrayRef> = vec![
-                Arc::new(StringArray::from(Vec::from([Some("s")]))),
-                Arc::new(StringArray::from(Vec::from([Some("ana")]))),
-                Arc::new(StringArray::from(Vec::from([Some("1")]))),
-                Arc::new(StringArray::from(Vec::from([name]))),
-                Arc::new(Float64Array::from(Vec::from([latitude]))),
-                Arc::new(Float64Array::from(Vec::from([Some(0.0)]))),
-            ];
-            let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
-            parquet::write_batch_staged(&path, &batch, 1024).unwrap();
-            assert!(read_stations(&store.path, &manifest, None).is_err());
-            let legacy_decode = parquet::read::<Station>(&path, STATIONS);
-            assert!(legacy_decode.is_err());
-        }
+    let rows = bytes
+        .split(|b| *b == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice(line).map_err(io_error))
+        .collect::<Result<Vec<T>, _>>()?;
+    if rows.len() != table.count {
+        return Err(error(format!("{name}: row count mismatch")));
     }
-    #[test]
-    fn ana_updates_overlay_and_compact_without_losing_values() {
-        fs::create_dir_all("runs").unwrap();
-        let dir = tempfile::tempdir_in("runs").unwrap();
-        let mut store = ObservationStore::create(&dir.path().join("obs"), "UTC").unwrap();
-        let at = time("2026-01-01T01:00:00");
-        store
-            .write_batch(&ObservationBatch {
-                stations: vec![Station {
-                    station_id: "s".into(),
-                    provider_code: "ana".into(),
-                    station_code: "1".into(),
-                    name: "S".into(),
-                    latitude: None,
-                    longitude: None,
-                }],
-                series: vec![ObservationSeries {
-                    series_id: "rain".into(),
-                    station_id: "s".into(),
-                    variable: "rain".into(),
-                    state: "raw".into(),
-                    unit: "mm".into(),
-                    interval_seconds: Some(3600),
-                    created_at: at,
-                }],
-                samples: vec![
-                    ObservationSample {
-                        series_id: "rain".into(),
-                        observed_at: at,
-                        value: Some(ObservationValue::RainMm(0.0)),
-                    },
-                    ObservationSample {
-                        series_id: "rain".into(),
-                        observed_at: at - chrono::Duration::hours(1),
-                        value: None,
-                    },
-                ],
-                ..Default::default()
-            })
-            .unwrap();
-        let initial_manifest = store.manifest().unwrap();
-        let base_key = partition_key("rain", at);
-        let original_base = initial_manifest.partitions.get(&base_key).unwrap().clone();
-        let other_at = at - chrono::Duration::hours(2);
-        let other_values = vec![(other_at, ObservationValue::RainMm(7.0))];
-        assert_eq!(
-            store
-                .upsert_ana_raw("s", at, &[("rain", other_values)])
-                .unwrap(),
-            1
-        );
-        for i in 1..=19 {
-            let values = vec![(at, ObservationValue::RainMm(f64::from(i)))];
-            assert_eq!(
-                store
-                    .upsert_ana_raw("s", at, &[("rain", values.clone())])
-                    .unwrap(),
-                1
-            );
-            assert_eq!(
-                store.upsert_ana_raw("s", at, &[("rain", values)]).unwrap(),
-                0
-            );
-            let m = store.manifest().unwrap();
-            let key = partition_key("rain", at);
-            assert!(
-                m.deltas
-                    .get(&key)
-                    .is_none_or(|v| v.len() <= MAX_DELTA_SEGMENTS)
-            );
-            assert_eq!(m.partitions.get(&key), Some(&original_base));
-            let samples = store.samples(&m, &key).unwrap();
-            assert_eq!(samples.len(), 3);
-            assert_eq!(samples[0].value, Some(ObservationValue::RainMm(7.0)));
-            assert_eq!(samples[1].value, None);
-            assert_eq!(
-                samples[2].value,
-                Some(ObservationValue::RainMm(f64::from(i)))
+    Ok(rows)
+}
+impl ObservationStore {
+    /// Import an independently verified legacy interchange into a new SQLite file.
+    pub fn import_interchange(path: &Path, root: &Path) -> Result<Self, ObservationError> {
+        let manifest: InterchangeManifest =
+            serde_json::from_slice(&fs::read(root.join("manifest.json")).map_err(io_error)?)
+                .map_err(io_error)?;
+        let zone = manifest
+            .time_zone
+            .parse::<chrono_tz::Tz>()
+            .map_err(io_error)?;
+        let mut meta = Metadata {
+            stations: interchange_rows(root, &manifest, "stations")?,
+            series: interchange_rows(root, &manifest, "series")?,
+            replacements: interchange_rows(root, &manifest, "replacements")?,
+            offsets: interchange_rows(root, &manifest, "offsets")?,
+            references: interchange_rows(root, &manifest, "references")?,
+            variables: interchange_rows(root, &manifest, "variables")?,
+            flags: interchange_rows(root, &manifest, "flags")?,
+            coverage: interchange_rows(root, &manifest, "coverage")?,
+            partial_coverage: None,
+            provenance: Vec::new(),
+        };
+        if let Some(file) = &manifest.partial_coverage {
+            meta.partial_coverage = Some(
+                serde_json::from_slice(&fs::read(interchange_path(root, file)?).map_err(io_error)?)
+                    .map_err(io_error)?,
             );
         }
-        let bulk = (0..MAX_DELTA_ROWS)
-            .map(|i| {
-                (
-                    at + chrono::Duration::hours(i as i64 + 1),
-                    ObservationValue::RainMm(i as f64),
-                )
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(
-            store.upsert_ana_raw("s", at, &[("rain", bulk)]).unwrap(),
-            MAX_DELTA_ROWS
-        );
-        let reopened = ObservationStore::open_read_only(&store.path).unwrap();
-        let m = reopened.manifest().unwrap();
-        assert_ne!(m.partitions.get(&base_key), Some(&original_base));
-        let no_deltas = !m.deltas.contains_key(&base_key);
-        assert!(no_deltas);
-        let values = reopened.samples(&m, &base_key).unwrap();
-        assert_eq!(values.len(), MAX_DELTA_ROWS + 3);
-        assert_eq!(values[0].value, Some(ObservationValue::RainMm(7.0)));
-        assert_eq!(values[1].value, None);
-        assert_eq!(values[2].value, Some(ObservationValue::RainMm(19.0)));
-        assert_eq!(
-            values.last().unwrap().value,
-            Some(ObservationValue::RainMm((MAX_DELTA_ROWS - 1) as f64))
-        );
-    }
-    #[test]
-    fn readers_pin_generations_until_writer_finishes() {
-        use std::{sync::mpsc, time::Duration};
-        fs::create_dir_all("runs").unwrap();
-        let dir = tempfile::tempdir_in("runs").unwrap();
-        let path = dir.path().join("assets");
-        let reader = ObservationStore::create(&path, "UTC").unwrap();
-        let guard = reader.read_lock().unwrap();
-        let (tx, rx) = mpsc::channel();
-        let target = path.clone();
-        let writer = std::thread::spawn(move || {
-            let mut store = ObservationStore::open_writable(&target).unwrap();
-            tx.send(()).unwrap();
-            store
-                .write_batch(&ObservationBatch {
-                    stations: vec![Station {
-                        station_id: "s".into(),
-                        provider_code: "ana".into(),
-                        station_code: "1".into(),
-                        name: "S".into(),
-                        latitude: None,
-                        longitude: None,
-                    }],
-                    ..Default::default()
-                })
-                .unwrap();
-            tx.send(()).unwrap();
-        });
-        rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        assert!(rx.recv_timeout(Duration::from_millis(50)).is_err());
-        drop(guard);
-        rx.recv_timeout(Duration::from_secs(5)).unwrap();
-        writer.join().unwrap();
-        assert_eq!(reader.station_locations().unwrap().len(), 1);
-        let m = reader.manifest().unwrap();
-        let mut references = m
-            .tables
-            .values()
-            .chain(m.partitions.values())
-            .chain(m.deltas.values().flatten())
-            .cloned()
-            .collect::<HashSet<_>>();
-        references.insert(format!("generations/{}/manifest.json", m.generation));
-        let mut total = 0;
-        for dir in fs::read_dir(path.join("generations")).unwrap() {
-            for file in fs::read_dir(dir.unwrap().path()).unwrap() {
-                let file = file.unwrap().path();
-                let rel = file
-                    .strip_prefix(&path)
-                    .unwrap()
-                    .to_str()
-                    .unwrap()
-                    .replace('\\', "/");
-                assert!(references.contains(&rel));
-                total += 1;
+        if let Some(partial) = &meta.partial_coverage {
+            let _: super::AnaPartialCoverage =
+                serde_json::from_value(partial.clone()).map_err(io_error)?;
+        }
+        let mut station_ids = HashSet::new();
+        let mut provider_ids = HashSet::new();
+        for station in &meta.stations {
+            validate_station(station)?;
+            if !station_ids.insert(station.station_id.clone())
+                || !provider_ids
+                    .insert((station.provider_code.clone(), station.station_code.clone()))
+            {
+                return Err(error("duplicate station identity"));
             }
         }
-        assert_eq!(total, references.len());
+        let mut series = BTreeMap::new();
+        for item in &meta.series {
+            validate_series(item)?;
+            if !station_ids.contains(&item.station_id)
+                || series
+                    .insert(item.series_id.clone(), item.variable.clone())
+                    .is_some()
+            {
+                return Err(error("invalid series identity"));
+            }
+        }
+        let mut replacement_ids = HashSet::new();
+        for item in &meta.replacements {
+            if !replacement_ids.insert(&item.replacement_id) {
+                return Err(error("duplicate replacement"));
+            }
+            validate_replacement(item)?;
+            local_time(zone, item.start_at, &item.replacement_id)?;
+            if let Some(end) = item.end_at {
+                local_time(zone, end, &item.replacement_id)?;
+            }
+            if !station_ids.contains(&item.station_id) {
+                return Err(error("unknown replacement station"));
+            }
+        }
+        let mut offset_ids = HashSet::new();
+        for item in &meta.offsets {
+            if !offset_ids.insert(&item.station_id) {
+                return Err(error("duplicate offset"));
+            }
+            validate_offset(item)?;
+            if !station_ids.contains(&item.station_id) {
+                return Err(error("unknown offset station"));
+            }
+        }
+        validate_level_references(&meta.references)?;
+        if meta
+            .references
+            .iter()
+            .any(|v| !station_ids.contains(&v.station_id))
+            || meta
+                .variables
+                .iter()
+                .any(|v| !station_ids.contains(&v.station_id))
+            || meta
+                .coverage
+                .iter()
+                .any(|v| !station_ids.contains(&v.station_id))
+        {
+            return Err(error("unknown metadata station"));
+        }
+        let mut variables_seen = HashSet::new();
+        for item in &meta.variables {
+            if !matches!(item.variable.as_str(), "rain" | "level" | "flow")
+                || !variables_seen.insert((&item.station_id, &item.variable))
+            {
+                return Err(error("invalid inventory variable"));
+            }
+        }
+        let mut coverage_seen = HashSet::new();
+        for item in &meta.coverage {
+            let vars: Vec<String> = item.variables_key.split(',').map(str::to_owned).collect();
+            if coverage_key(&vars)? != item.variables_key
+                || !coverage_seen.insert((&item.station_id, &item.variables_key, item.day))
+            {
+                return Err(error("invalid coverage"));
+            }
+        }
+        let mut flag_keys = HashSet::new();
+        for flag in &meta.flags {
+            if !matches!(flag.reason.as_str(), "threshold" | "sequence")
+                || series.get(&flag.series_id).map(String::as_str) != Some("rain")
+                || !flag_keys.insert((
+                    flag.series_id.clone(),
+                    flag.observed_at,
+                    flag.reason.clone(),
+                ))
+            {
+                return Err(error("invalid precipitation flag"));
+            }
+        }
+        let mut flag_samples: HashSet<_> = meta
+            .flags
+            .iter()
+            .map(|f| (f.series_id.clone(), f.observed_at))
+            .collect();
+        let mut samples = Vec::new();
+        for item in interchange_rows::<InterchangeSample>(root, &manifest, "samples")? {
+            let value = match (item.rain, item.flow, item.level) {
+                (None, None, None) => None,
+                (Some(v), None, None) => Some(ObservationValue::RainMm(v)),
+                (None, Some(v), None) => Some(ObservationValue::FlowM3s(v)),
+                (None, None, Some(v)) => Some(ObservationValue::LevelCm(v)),
+                _ => return Err(error("invalid sample value columns")),
+            };
+            let sample = ObservationSample {
+                series_id: item.series_id,
+                observed_at: item.observed_at,
+                value,
+            };
+            let variable = series
+                .get(&sample.series_id)
+                .ok_or_else(|| error("unknown sample series"))?;
+            validate_sample(&sample, variable)?;
+            // Legacy local labels may fall in historical DST overlaps. Preserve
+            // the source label without assigning it an inferred UTC instant.
+            if !flag_samples.is_empty() {
+                flag_samples.remove(&(sample.series_id.clone(), sample.observed_at));
+            }
+            samples.push(sample);
+        }
+        if !flag_samples.is_empty() {
+            return Err(error("flag references unknown sample"));
+        }
+        let parent = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let staging = tempfile::Builder::new()
+            .prefix(".observation-import-")
+            .tempdir_in(parent)
+            .map_err(io_error)?;
+        let staged_path = staging.path().join("observations.sqlite");
+        let store = Self::create(&staged_path, &manifest.time_zone)?;
+        store.replace_initial(&meta, &samples, 1, None)?;
+        store.finish_export()?;
+        drop(store);
+        let destination = Self {
+            path: path.into(),
+            writable: true,
+            selected_revision: None,
+        };
+        let guard = destination.lock()?;
+        fs::hard_link(&staged_path, path).map_err(io_error)?;
+        super::sync_directory(parent).map_err(io_error)?;
+        drop(guard);
+        Self::open_writable(path)
+    }
+    fn replace_initial(
+        &self,
+        meta: &Metadata,
+        samples: &[ObservationSample],
+        revision: i64,
+        identity: Option<&str>,
+    ) -> Result<(), ObservationError> {
+        let _guard = self.lock()?;
+        let m = self.manifest()?;
+        let db = Db::open(&self.path, true)?;
+        let payload = serde_json::to_string(meta).map_err(io_error)?;
+        let key = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        pollster::block_on(async {
+            db.conn
+                .execute("BEGIN IMMEDIATE", ())
+                .await
+                .map_err(io_error)?;
+            let result = async {
+                if let Some(identity) = identity {
+                    db.conn
+                        .execute("UPDATE registry_identity SET id=?1", [identity])
+                        .await
+                        .map_err(io_error)?;
+                }
+                db.conn
+                    .execute(
+                        "INSERT OR IGNORE INTO observation_metadata VALUES (?1,?2)",
+                        (key.clone(), payload),
+                    )
+                    .await
+                    .map_err(io_error)?;
+                db.conn
+                    .execute("DELETE FROM observation_revision", ())
+                    .await
+                    .map_err(io_error)?;
+                db.conn
+                    .execute(
+                        "INSERT INTO observation_revision VALUES (?1,?2,?3)",
+                        (revision, m.time_zone.clone(), key),
+                    )
+                    .await
+                    .map_err(io_error)?;
+                let mut stmt = db
+                    .conn
+                    .prepare("INSERT INTO observation_sample VALUES (?1,?2,?3,?4,?5)")
+                    .await
+                    .map_err(io_error)?;
+                for sample in samples {
+                    let payload = serde_json::to_string(sample).map_err(io_error)?;
+                    let checksum = format!("{:x}", Sha256::digest(payload.as_bytes()));
+                    stmt.execute((
+                        sample.series_id.clone(),
+                        sample.observed_at.format("%Y-%m-%dT%H:%M:%S").to_string(),
+                        revision,
+                        payload,
+                        checksum,
+                    ))
+                    .await
+                    .map_err(io_error)?;
+                }
+                drop(stmt);
+                db.conn.execute("COMMIT", ()).await.map_err(io_error)?;
+                Ok::<_, ObservationError>(())
+            }
+            .await;
+            if result.is_err() {
+                let _ = db.conn.execute("ROLLBACK", ()).await;
+            }
+            result
+        })
+    }
+    fn finish_export(&self) -> Result<(), ObservationError> {
+        let guard = self.lock()?;
+        {
+            let db = Db::open(&self.path, true)?;
+            pollster::block_on(async {
+                let mut rows = db
+                    .conn
+                    .query("PRAGMA wal_checkpoint(TRUNCATE)", ())
+                    .await
+                    .map_err(io_error)?;
+                let row = rows
+                    .next()
+                    .await
+                    .map_err(io_error)?
+                    .ok_or_else(|| error("checkpoint returned no status"))?;
+                if row.get_value(0).map_err(io_error)? != turso::Value::Integer(0) {
+                    return Err(error("checkpoint was busy"));
+                }
+                Ok::<_, ObservationError>(())
+            })?;
+        }
+        File::open(&self.path)
+            .and_then(|file| file.sync_all())
+            .map_err(io_error)?;
+        for suffix in ["-wal", "-shm"] {
+            let mut name = self.path.as_os_str().to_os_string();
+            name.push(suffix);
+            match fs::remove_file(PathBuf::from(name)) {
+                Ok(()) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(io_error(e)),
+            }
+        }
+        if let Some(parent) = self.path.parent() {
+            super::sync_directory(parent).map_err(io_error)?;
+        }
+        drop(guard);
+        fs::remove_file(self.lock_path()).map_err(io_error)?;
+        Ok(())
+    }
+    /// Export all values visible at a pinned revision into an independent database.
+    pub fn export_revision(&self, destination: &Path) -> Result<(), ObservationError> {
+        let revision = self
+            .selected_revision
+            .ok_or_else(|| error("export requires a pinned revision"))?;
+        let guard = self.read_lock()?;
+        let manifest = self.manifest()?;
+        let metadata = self.metadata(&manifest)?;
+        let mut samples = Vec::new();
+        for series in &metadata.series {
+            samples.extend(self.samples(&manifest, &series.series_id)?);
+        }
+        let time_zone = manifest.time_zone.clone();
+        let identity = self.registry_id_locked()?;
+        drop(manifest);
+        drop(guard);
+        let target = Self::create(destination, &time_zone)?;
+        target.replace_initial(&metadata, &samples, revision, Some(&identity))?;
+        target.finish_export()
+    }
+    /// Materialize a pinned revision's selected values for a portable input set.
+    pub fn snapshot_revision(
+        &self,
+        destination: &Path,
+        selection: &ObservationSelection,
+        interval: &super::IntervalAxis,
+        replacement_ids: &[String],
+        extra_stations: &[String],
+    ) -> Result<(), ObservationError> {
+        let revision = self
+            .selected_revision
+            .ok_or_else(|| error("snapshot requires a pinned revision"))?;
+        let (inputs, offsets) = self.read_selection_with_stations(
+            selection,
+            interval,
+            replacement_ids,
+            extra_stations,
+        )?;
+        let _guard = self.read_lock()?;
+        let m = self.manifest()?;
+        let original = self.metadata(&m)?;
+        let identity = self.registry_id_locked()?;
+        let station_ids: HashSet<_> = inputs
+            .stations
+            .iter()
+            .map(|s| s.station_id.as_str())
+            .collect();
+        let series_ids: HashSet<_> = inputs.series.iter().map(|s| s.series_id.as_str()).collect();
+        let metadata = Metadata {
+            stations: inputs.stations.clone(),
+            series: inputs.series.clone(),
+            replacements: inputs.replacements.clone(),
+            offsets,
+            references: original
+                .references
+                .iter()
+                .filter(|r| station_ids.contains(r.station_id.as_str()))
+                .cloned()
+                .collect(),
+            variables: original
+                .variables
+                .iter()
+                .filter(|r| station_ids.contains(r.station_id.as_str()))
+                .cloned()
+                .collect(),
+            flags: original
+                .flags
+                .iter()
+                .filter(|r| {
+                    series_ids.contains(r.series_id.as_str())
+                        && inputs
+                            .samples
+                            .iter()
+                            .any(|s| s.series_id == r.series_id && s.observed_at == r.observed_at)
+                })
+                .cloned()
+                .collect(),
+            coverage: original
+                .coverage
+                .iter()
+                .filter(|r| station_ids.contains(r.station_id.as_str()))
+                .cloned()
+                .collect(),
+            partial_coverage: original.partial_coverage.clone(),
+            provenance: original
+                .provenance
+                .iter()
+                .filter(|source| station_ids.contains(source.station_id.as_str()))
+                .cloned()
+                .collect(),
+        };
+        drop(original);
+        drop(m);
+        drop(_guard);
+        let destination_store = Self::create(destination, &interval.time_zone)?;
+        destination_store.replace_initial(&metadata, &inputs.samples, revision, Some(&identity))?;
+        destination_store.finish_export()
+    }
+}
+
+#[cfg(test)]
+mod sqlite_tests {
+    use super::*;
+    #[test]
+    #[ignore = "regional legacy interchange import; requires runs/legacy-registry-export"]
+    fn regional_interchange_import() {
+        let root = Path::new("runs/legacy-registry-export");
+        let dir = tempfile::Builder::new()
+            .prefix("sqlite-import-")
+            .tempdir_in("runs")
+            .unwrap();
+        let store =
+            ObservationStore::import_interchange(&dir.path().join("observations.sqlite"), root)
+                .unwrap();
+        assert_eq!(store.station_locations().unwrap().len(), 440);
+        assert_eq!(store.series_choices().unwrap().len(), 414);
+        assert_eq!(store.replacement_choices().unwrap().len(), 6);
+        let guard = store.read_lock().unwrap();
+        let manifest = store.manifest().unwrap();
+        let metadata = store.metadata(&manifest).unwrap();
+        let mut count = 0;
+        for series in &metadata.series {
+            count += store.samples(&manifest, &series.series_id).unwrap().len();
+        }
+        assert_eq!(count, 2_001_960);
+        drop(guard);
     }
     #[test]
-    fn typed_samples_and_atomic_publication() {
-        fs::create_dir_all("runs").unwrap();
-        let temp = tempfile::tempdir_in("runs").unwrap();
-        let root = temp.path().join("observations");
-        let mut store = ObservationStore::create(&root, "UTC").unwrap();
+    fn flag_revision_compare_and_swap_is_atomic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.sqlite");
+        let mut store = ObservationStore::create(&path, "UTC").unwrap();
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+            .unwrap()
+            .and_hms_opt(1, 0, 0)
+            .unwrap();
         let station = Station {
             station_id: "s".into(),
             provider_code: "ana".into(),
             station_code: "1".into(),
-            name: "Station".into(),
-            latitude: Some(0.0),
-            longitude: Some(0.0),
+            name: "old".into(),
+            latitude: None,
+            longitude: None,
         };
-        let series = ObservationSeries {
+        let sample = ObservationSample {
             series_id: "rain".into(),
-            station_id: "s".into(),
-            variable: "rain".into(),
-            state: "raw".into(),
-            unit: "mm".into(),
-            interval_seconds: Some(3600),
-            created_at: time("2026-01-01T00:00:00"),
+            observed_at: at,
+            value: Some(ObservationValue::RainMm(1.0)),
         };
-        let samples = vec![
-            ObservationSample {
-                series_id: "rain".into(),
-                observed_at: time("2026-01-01T01:00:00"),
-                value: Some(ObservationValue::RainMm(0.0)),
-            },
-            ObservationSample {
-                series_id: "rain".into(),
-                observed_at: time("2026-01-01T02:00:00"),
-                value: None,
-            },
-            ObservationSample {
-                series_id: "rain".into(),
-                observed_at: time("2026-02-01T01:00:00"),
-                value: Some(ObservationValue::RainMm(1.23456789012345)),
-            },
-        ];
-        let batch = ObservationBatch {
-            stations: vec![station],
-            series: vec![series],
-            samples: samples.clone(),
-            ..Default::default()
-        };
-        store.write_batch(&batch).unwrap();
-        store.ingest_batch(&batch).unwrap();
-        let before = store.manifest().unwrap();
-        let mut conflict = batch.clone();
-        conflict.samples[0].value = Some(ObservationValue::RainMm(1.0));
-        assert!(store.ingest_batch(&conflict).is_err());
-        assert_eq!(store.manifest().unwrap().generation, before.generation);
-        let axis = super::super::IntervalAxis {
-            time_zone: "UTC".into(),
-            bounds: vec![super::super::TimeInterval {
-                start: time("2026-01-01T00:00:00"),
-                end: time("2026-02-01T01:00:00"),
-            }],
-        };
-        let selection = ObservationSelection {
-            station_ids: vec!["s".into()],
-            provider_codes: vec![],
-        };
-        assert_eq!(
-            store
-                .read_selection(&selection, &axis, &[])
-                .unwrap()
-                .0
-                .samples,
-            samples
-        );
-        let path = root.join(
-            before
-                .partitions
-                .get(&partition_key("rain", samples[0].observed_at))
-                .unwrap(),
-        );
-        let reader = SerializedFileReader::new(File::open(&path).unwrap()).unwrap();
-        assert_eq!(reader.metadata().file_metadata().version(), 2);
-        let row_group = reader.metadata().row_group(0);
-        let compressed = matches!(row_group.column(2).compression(), Compression::ZSTD(_));
-        assert!(compressed);
-        assert_eq!(row_group.column(2).column_type(), Type::DOUBLE);
-        assert_eq!(row_group.column(4).column_type(), Type::INT32);
-        let group = reader.get_row_group(0).unwrap();
-        let mut pages = group.get_column_page_reader(2).unwrap();
-        let mut v2 = false;
-        while let Some(page) = pages.get_next_page().unwrap() {
-            if matches!(page, Page::DataPageV2 { .. }) {
-                v2 = true;
-            }
-        }
-        assert!(v2);
-        let rows = parquet::read::<StoredSample>(&path, SAMPLES).unwrap();
-        assert_eq!(rows[0].rain, Some(0.0));
-        assert_eq!(rows[1].rain, None);
-        let flags = [(
-            "rain".to_string(),
-            samples[0].observed_at,
-            "threshold".to_string(),
-        )];
+        store
+            .write_batch(&ObservationBatch {
+                stations: vec![station.clone()],
+                series: vec![ObservationSeries {
+                    series_id: "rain".into(),
+                    station_id: "s".into(),
+                    variable: "rain".into(),
+                    state: "raw".into(),
+                    unit: "mm".into(),
+                    interval_seconds: Some(3600),
+                    created_at: at,
+                }],
+                samples: vec![sample.clone()],
+                ..Default::default()
+            })
+            .unwrap();
+        let old_revision = store.revision().unwrap();
+        let mut changed = station;
+        changed.name = "new".into();
+        store.update_station_inventory(&[changed]).unwrap();
+        let current = store.revision().unwrap();
         let window = super::super::IntervalAxis {
             time_zone: "UTC".into(),
             bounds: vec![super::super::TimeInterval {
-                start: time("2026-01-01T00:00:00"),
-                end: time("2026-01-01T02:00:00"),
+                start: at - chrono::TimeDelta::hours(1),
+                end: at,
             }],
         };
-        assert_eq!(
-            store
-                .replace_precipitation_flags(&["rain".into()], &window, &flags, Some(&samples[..2]))
-                .unwrap()
-                .len(),
-            1
-        );
+        let flags = vec![("rain".into(), at, "threshold".into())];
         assert!(
             store
-                .replace_precipitation_flags(&["rain".into()], &window, &[], Some(&[]))
+                .replace_precipitation_flags_for_revision(
+                    old_revision,
+                    &["rain".into()],
+                    &window,
+                    &flags,
+                    &[sample.clone()]
+                )
                 .is_err()
         );
-        assert_eq!(
-            store
-                .read_precipitation_flags(&["rain".into()], &window)
-                .unwrap(),
-            flags
-        );
-        let selected = store.read_selection(&selection, &axis, &[]).unwrap().0;
-        assert_eq!(selected.samples, samples);
+        assert_eq!(store.revision().unwrap(), current);
+        let (excluded, revised) = store
+            .replace_precipitation_flags_for_revision(
+                current,
+                &["rain".into()],
+                &window,
+                &flags,
+                &[sample.clone()],
+            )
+            .unwrap();
+        assert_eq!(excluded, BTreeSet::from([("rain".into(), at)]));
+        assert_eq!(store.revision().unwrap(), revised);
+        assert!(revised > current);
+        let prior = ObservationStore::open_revision(&path, current).unwrap();
         assert!(
-            selected
-                .excluded_rain
-                .contains(&("rain".into(), samples[0].observed_at))
+            prior
+                .read_precipitation_flags(&["rain".into()], &window)
+                .unwrap()
+                .is_empty()
+        );
+        let (unchanged, same) = store
+            .replace_precipitation_flags_for_revision(
+                revised,
+                &["rain".into()],
+                &window,
+                &flags,
+                &[sample],
+            )
+            .unwrap();
+        assert_eq!(unchanged, excluded);
+        assert_eq!(same, revised);
+    }
+    #[test]
+    fn revisions_keep_prior_values_and_skip_identical_ingest() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("observations.sqlite");
+        let mut store = ObservationStore::create(&path, "UTC").unwrap();
+        let identity = store.registry_id().unwrap();
+        let unrelated =
+            ObservationStore::create(&dir.path().join("unrelated.sqlite"), "UTC").unwrap();
+        assert_ne!(identity, unrelated.registry_id().unwrap());
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 1, 1)
+            .unwrap()
+            .and_hms_opt(0, 0, 0)
+            .unwrap();
+        let station = Station {
+            station_id: "ana:1".into(),
+            provider_code: "ana".into(),
+            station_code: "1".into(),
+            name: "old".into(),
+            latitude: None,
+            longitude: None,
+        };
+        let sample = ObservationSample {
+            series_id: "rain".into(),
+            observed_at: at,
+            value: Some(ObservationValue::RainMm(0.0)),
+        };
+        let batch = ObservationBatch {
+            stations: vec![station.clone()],
+            series: vec![ObservationSeries {
+                series_id: "rain".into(),
+                station_id: station.station_id.clone(),
+                variable: "rain".into(),
+                state: "raw".into(),
+                unit: "mm".into(),
+                interval_seconds: Some(3600),
+                created_at: at,
+            }],
+            samples: vec![sample.clone()],
+            ..Default::default()
+        };
+        store.ingest_batch(&batch).unwrap();
+        let original = store.revision().unwrap();
+        store.ingest_batch(&batch).unwrap();
+        assert_eq!(store.revision().unwrap(), original);
+        let mut changed = station;
+        changed.name = "new".into();
+        store.update_station_inventory(&[changed]).unwrap();
+        store
+            .upsert_ana_raw_with_coverage(
+                "ana:1",
+                at,
+                &[("rain", vec![(at, ObservationValue::RainMm(7.0))])],
+                &["rain".into()],
+                &[at.date()],
+                Some((at.date(), 42)),
+                &[ObservationProvenance {
+                    provider: "ana".into(),
+                    station_id: "ana:1".into(),
+                    variables: vec!["rain".into()],
+                    request_start: Some(at.date()),
+                    request_end: Some(at.date()),
+                    reference_time: "2026-01-01T00:00:00Z".into(),
+                    source_kind: "ana_xml".into(),
+                    source_path: "downloads/ana/a/source.xml".into(),
+                    sha256: "a".repeat(64),
+                    byte_length: 42,
+                }],
+            )
+            .unwrap();
+        assert_eq!(
+            store.samples(&store.manifest().unwrap(), "rain").unwrap()[0].value,
+            Some(ObservationValue::RainMm(7.0))
+        );
+        assert!(
+            store
+                .ana_coverage("ana:1", &["rain".into()])
+                .unwrap()
+                .contains(&at.date())
+        );
+        assert!(
+            store
+                .ana_partial_coverage()
+                .unwrap()
+                .covers("ana:1", &["rain".into()], at.date(), 42)
+                .unwrap()
+        );
+        assert_eq!(store.acquisition_provenance().unwrap().len(), 1);
+        let old = ObservationStore::open_revision(&path, original).unwrap();
+        assert!(old.acquisition_provenance().unwrap().is_empty());
+        assert!(
+            old.ana_coverage("ana:1", &["rain".into()])
+                .unwrap()
+                .is_empty()
+        );
+        let old_partial = old
+            .ana_partial_coverage()
+            .unwrap()
+            .covers("ana:1", &["rain".into()], at.date(), 42)
+            .unwrap();
+        assert_eq!(old_partial, bool::default());
+        assert_eq!(old.station_locations().unwrap()[0].station.name, "old");
+        assert_eq!(store.station_locations().unwrap()[0].station.name, "new");
+        let expected_samples = vec![sample];
+        assert_eq!(
+            old.samples(&old.manifest().unwrap(), "rain").unwrap(),
+            expected_samples
+        );
+        let copy = dir.path().join("copy.sqlite");
+        old.export_revision(&copy).unwrap();
+        assert_eq!(
+            ObservationStore::open_revision(&copy, original)
+                .unwrap()
+                .registry_id()
+                .unwrap(),
+            identity
+        );
+        assert_eq!(
+            ObservationStore::open_revision(&copy, original)
+                .unwrap()
+                .station_locations()
+                .unwrap()[0]
+                .station
+                .name,
+            "old"
         );
     }
 }

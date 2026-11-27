@@ -1,39 +1,24 @@
 # SQLite qualification harness
 
-This opt-in harness uses Turso 0.9.0-pre.6 with defaults disabled. Its append-only
-schema qualifies SQL primitives, not a supported workspace or production schema.
-The architecture gate checks isolation, not dependency-language compliance.
+The application uses Turso 0.9.0-pre.6 with defaults disabled for its SQLite
+registry. The additional opt-in harness exercises transaction and process
+failure behavior independently of the production schema. The dependency audit
+below records source inspection, not a blanket native-library exception.
 
 ## Run
 
 From the repository root:
 
 ~~~sh
-cargo test --locked --features sqlite-qualification --test sqlite_qualification -- --ignored --skip sqlite_parquet_comparison
-cargo test --locked --release --features sqlite-qualification --test sqlite_qualification -- --ignored --nocapture
+cargo test --locked --features sqlite-qualification --test sqlite_qualification -- --ignored
 cargo clippy --locked --features sqlite-qualification --all-targets -- -D warnings
 ~~~
 
-The benchmark requires release mode. The child test is a subprocess fixture,
-inactive without its parent's environment. Databases and logs use
-runs/sqlite-qualification/. Child readiness/exit waits are bounded, and guards
-kill and reap children on failure. Every database open holds the exclusive OS
-lock until all handles drop. Pollster drives safe async calls with query timeouts.
-
-Five paired benchmark repetitions alternate backend order in fresh processes.
-Each backend receives 440 stations with 362 samples each (159,280 rows), queries
-the same 32-station/72-hour window, retains missing samples, and appends 24 samples
-to one station. Nine warm reads yield a median. Selected identities, timestamps,
-masks and values are compared exactly; digests must match across processes.
-SQL reads revision 1 after the append. This does not measure overlapping
-historical revisions or full forcing preparation. Fresh-handle reads do not
-clear the operating-system page cache. Linux peak RSS includes fixture and
-validation allocations. Measurements use runs/sqlite-qualification/benchmark.json.
-Both rolling-update timings include opening their store. The Parquet reader
-uses the existing full selection/validation API, while SQL uses the minimal
-prototype's sample query. These timings compare matched selected values through
-those paths, not equivalent complete operational APIs or an isolated engine
-algorithm. They cannot establish end-to-end forecast performance.
+The child test is a subprocess fixture, inactive without its parent's
+environment. Databases and logs use `runs/sqlite-qualification/`. Child waits
+are bounded and guards reap children on failure. The earlier Parquet comparison
+was a historical experiment; its benchmark is no longer part of this harness.
+The migration checklist records measured results and their limits.
 
 ## Pinned dependency audit
 
@@ -60,7 +45,7 @@ the candidate; a lockfile includes dormant optional and custom-cfg packages.
   disabled; SQL checks that flag before loading. The harness verifies rejection
   of load_extension and never enables loading.
 
-Inspect default, desktop and qualification metadata separately, filtering for
+Inspect production default, desktop and qualification metadata separately, filtering for
 Linux and Windows. Inspect actual Linux executable linkage as additional
 evidence, recognizing existing native deviations in the repository rules.
 
@@ -72,4 +57,4 @@ complete revision; an acknowledged commit must survive. The exclusive-open
 protocol does not qualify experimental multiprocess WAL. Source scanning and
 linkage are bounded evidence, not proof about every runtime path.
 The [migration checklist](../../docs/migration/summary.md) owns results and
-adoption status.
+current evidence and remaining qualification gaps.

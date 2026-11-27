@@ -134,8 +134,8 @@ fn active_selection_rejects_aliases_and_keeps_saved_reads_fixed() {
         .unwrap();
 
     let first = crate::store::new_run_stage_for(session.workspace(), "test-first").unwrap();
-    fs::write(first.join("manifest.json"), b"{}").unwrap();
-    crate::store::publish_run(session.workspace(), &first).unwrap();
+    fs::write(first.join("manifest.toml"), b"{}").unwrap();
+    let first = crate::store::publish_run(session.workspace(), &first).unwrap();
     assert!(
         session
             .select_run(RunSelection::Saved(first.clone()))
@@ -156,7 +156,7 @@ fn active_selection_rejects_aliases_and_keeps_saved_reads_fixed() {
     );
     session.select_run(RunSelection::Active).unwrap();
     let second = crate::store::new_run_stage_for(session.workspace(), "test-second").unwrap();
-    fs::write(second.join("manifest.json"), b"{}").unwrap();
+    fs::write(second.join("manifest.toml"), b"{}").unwrap();
     let reader = session.run_snapshot();
     let workspace = session.workspace().to_path_buf();
     let second_path = second.clone();
@@ -173,11 +173,11 @@ fn active_selection_rejects_aliases_and_keeps_saved_reads_fixed() {
             assert_eq!(root, first);
             start.send(()).unwrap();
             assert!(status.recv_timeout(Duration::from_millis(70)).is_err());
-            assert_eq!(fs::read(root.join("manifest.json")).unwrap(), b"{}");
+            assert_eq!(fs::read(root.join("manifest.toml")).unwrap(), b"{}");
             Ok(id.to_owned())
         })
         .unwrap();
-    status.recv().unwrap().unwrap();
+    let second = status.recv().unwrap().unwrap();
     publication.join().unwrap();
     let second_id = reader
         .read(None, |root, id| {
@@ -701,7 +701,6 @@ fn series_queries_keep_masks_units_and_detect_stale_sources() {
         station_result: None,
     };
     let manifest = OperationManifest {
-        schema_version: 1,
         preparation_sha256: None,
         state: "completed".into(),
         recipe: Value::Null,
@@ -711,11 +710,10 @@ fn series_queries_keep_masks_units_and_detect_stale_sources() {
         finished_at: None,
         error: None,
     };
-    let bytes = serde_json::to_vec(&manifest).unwrap();
-    fs::write(first.join("manifest.json"), &bytes).unwrap();
+    crate::store::write_draft(&first.join("manifest.toml"), &manifest).unwrap();
     let saved = session.workspace().join("saved");
     fs::create_dir(&saved).unwrap();
-    fs::write(saved.join("manifest.json"), &bytes).unwrap();
+    crate::store::write_draft(&saved.join("manifest.toml"), &manifest).unwrap();
     crate::store::publish_run(session.workspace(), &first).unwrap();
     let summary = result(commands::run(
         &session,
@@ -784,7 +782,7 @@ fn series_queries_keep_masks_units_and_detect_stale_sources() {
     assert_eq!(finding["code"], "stale_run");
     session.select_run(RunSelection::Active).unwrap();
     let second = crate::store::new_run_stage_for(session.workspace(), "series-second").unwrap();
-    fs::write(second.join("manifest.json"), bytes).unwrap();
+    crate::store::write_draft(&second.join("manifest.toml"), &manifest).unwrap();
     crate::store::publish_run(session.workspace(), &second).unwrap();
     let stale = commands::run(&session, "series.query", query("rain", mini, start, end));
     let Err(finding) = stale else {

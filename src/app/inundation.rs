@@ -116,7 +116,7 @@ pub fn process_inundation(
         ));
     }
     validate_scenario_id(&request.scenario)?;
-    let manifest_path = run.join("manifest.json");
+    let manifest_path = run.join("manifest.toml");
     let run_manifest_sha256 = digest(&manifest_path)?;
     let manifest = read_retained_manifest(&run).map_err(StoreError::Schema)?;
     let scenario_matches = manifest

@@ -263,9 +263,7 @@ Use **Restore defaults** to return to the configured scenarios or automatic
 selection. Each scenario can use zero rain, a normalized forecast, or an earlier
 scenario as its base. Add or reorder working-grid edits and preview their effects.
 See [scenarios](operations.md#scenarios) for time windows, region and
-transformation semantics. Changes apply to this session. The [input-set
-contract](inputs.md) describes retaining or discarding frozen inputs before
-replacement or leaving the workspace.
+transformation semantics. Changes apply to this session. The [input contract](inputs.md) describes registered versions and independent exports.
 
 **Processing → Review and runs → Observation review** shows availability and spatial rainfall checks.
 Load, edit, and save the ordered workspace observation edits from the same page.

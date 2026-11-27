@@ -1,23 +1,23 @@
 # Canonical observations and observed forcing
 
-Workspaces store observations and station metadata under `assets/observations/`.
-Standalone observation APIs accept an explicit canonical asset directory. See
+Workspaces store observations and station metadata in `assets/registry.sqlite`.
+Standalone observation APIs accept an explicit registry database. See
 [input sets](inputs.md) for run capture and retention.
 
 ## Persistence
 
-`ObservationStore::create(path, time_zone)` creates a new asset directory and rejects an
+`ObservationStore::create(path, time_zone)` creates a new registry database and rejects an
 existing destination. `open_read_only(path)` validates its tables and IANA
 timezone without creating data. `write_batch` commits all
 supplied rows together and rolls back invalid batches. Publication validates referential integrity and atomically selects a complete generation.
 
-Typed Parquet tables implement the [data model](#data-model). IDs are
+SQLite records implement the [data model](#data-model). IDs are
 nonempty strings. Station coordinates are both present or both absent. Missing
 station coordinates are permitted for search and data-only review; forcing
 interpolation requires coordinates for selected rain stations.
 Duplicate keys, orphan rows, invalid units and nonfinite values fail.
 Replacement reason text may be empty or omitted; supplied text is preserved.
-`open_writable` opens an existing asset directory without creating one.
+`open_writable` opens an existing registry database without creating one.
 Workspace edits are an ordered table. Review or change them in
 **Observation review** or [import/export them as CSV](saved-data.md#canonical-data-and-review).
 Saving replaces the list in an atomic publication.
@@ -36,8 +36,7 @@ erDiagram
     STATION ||--o{ COVERAGE : tracks_requests
 ```
 
-The following are logical records; application-managed generations can store
-their rows across multiple files. IDs and timestamp labels are text unless
+The following are logical records; revisions preserve their selected values. IDs and timestamp labels are text unless
 otherwise specified.
 
 | Record | Fields |
@@ -59,7 +58,7 @@ otherwise specified.
 | Flow | Finite `FlowM3s(f64)`, m3/s | Instantaneous |
 
 Missing samples use `None`; a recorded missing row remains distinct from an
-absent row and from a valid zero. Levels use Parquet INT32, including zero,
+absent row and from a valid zero. Levels use signed i32 values, including zero,
 negative values and both i32 limits. Reads reject fractional or out-of-range
 canonical levels. They never round or convert units. Finite suspicious raw rain,
 including negative measurements, is retained for review.

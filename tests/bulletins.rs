@@ -161,7 +161,6 @@ fn trial(root: &Path) {
     write_result_series(&upper.join("basin.nc"), &basin).unwrap();
     write_station_results(&upper.join("station.nc"), &station).unwrap();
     let manifest = OperationManifest {
-        schema_version: 1,
         preparation_sha256: None,
         state: "completed".into(),
         recipe: serde_json::Value::Null,
@@ -186,11 +185,7 @@ fn trial(root: &Path) {
         finished_at: None,
         error: None,
     };
-    fs::write(
-        root.join("manifest.json"),
-        serde_json::to_vec(&manifest).unwrap(),
-    )
-    .unwrap();
+    mgb_ops::store::write_draft(&root.join("manifest.toml"), &manifest).unwrap();
 }
 
 fn observation_db(path: &Path) {

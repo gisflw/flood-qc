@@ -68,14 +68,14 @@ impl ChatHistoryStore {
         Ok(Self { root })
     }
     pub fn load(&self) -> Result<ChatHistory, String> {
-        let path = self.root.join("history.json");
+        let path = self.root.join("history.toml");
         if !path.exists() {
             return Ok(ChatHistory::default());
         }
         super::read_draft(&path)
     }
     pub fn save(&self, history: &ChatHistory) -> Result<(), String> {
-        let bytes = serde_json::to_vec(history).map_err(|e| e.to_string())?;
+        let bytes = super::draft::record_bytes(&self.root.join("history.toml"), history)?;
         let file = tempfile::Builder::new()
             .prefix(".history-")
             .tempfile_in(&self.root)
@@ -85,7 +85,7 @@ impl ChatHistoryStore {
         file.write_all(&bytes)
             .and_then(|()| file.as_file().sync_all())
             .map_err(|e| e.to_string())?;
-        file.persist(self.root.join("history.json"))
+        file.persist(self.root.join("history.toml"))
             .map_err(|e| e.to_string())?;
         Ok(())
     }

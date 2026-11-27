@@ -14,10 +14,6 @@ use std::{
 };
 use turso::{Connection, Database, IntoParams, Value, transaction::TransactionBehavior};
 
-mod support {
-    pub mod sqlite_benchmark;
-}
-
 type Result<T> = std::result::Result<T, Box<dyn Error + Send + Sync>>;
 const ZONE: &str = "America/Sao_Paulo";
 const LABEL: &str = "2026-07-20T00:00:00";
@@ -743,9 +739,6 @@ fn sqlite_child() -> Result<()> {
     };
     let root = PathBuf::from(std::env::var_os(CHILD_ROOT).ok_or("missing child root")?);
     let mode = mode.to_str().ok_or("invalid child mode")?;
-    if mode.starts_with("benchmark-") {
-        return support::sqlite_benchmark::child(&root, mode);
-    }
     pollster::block_on(async {
         if mode == "busy" || mode == "busy-readonly" {
             let error = match LockedDb::open(&root, mode == "busy-readonly").await {
@@ -789,10 +782,4 @@ fn sqlite_child() -> Result<()> {
         std::io::stdin().read_exact(&mut byte)?;
         Err("parent must terminate crash fixture".into())
     })
-}
-
-#[test]
-#[ignore = "explicit release benchmark; synthetic data in independent processes under runs/"]
-fn sqlite_parquet_comparison() -> Result<()> {
-    support::sqlite_benchmark::run()
 }

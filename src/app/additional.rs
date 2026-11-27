@@ -166,7 +166,7 @@ pub(super) fn capture(
         .as_ref()
         .map(|_| {
             crate::store::read_reservoir_schedules(
-                &staging.join("sources/reservoir-schedules.parquet"),
+                &staging.join("sources/reservoir-schedules.toml"),
             )
             .map_err(|e| e.to_string())
         })
@@ -175,7 +175,7 @@ pub(super) fn capture(
         .wind_observations
         .as_ref()
         .map(|_| {
-            crate::store::read_wind_observations(&staging.join("sources/wind-observations.parquet"))
+            crate::store::read_wind_observations(&staging.join("sources/wind-observations.toml"))
                 .map_err(|e| e.to_string())
         })
         .transpose()?;

@@ -230,14 +230,12 @@ fn run_engine_inner(
             ))),
         },
     };
-    write_outcome(&plan.logs.join("execution.json"), &outcome)?;
+    write_outcome(&plan.logs.join("execution.toml"), &outcome)?;
     Ok(outcome)
 }
 
 fn write_outcome(path: &Path, outcome: &ProcessOutcome) -> Result<(), String> {
-    let file = File::create(path).map_err(|error| error.to_string())?;
-    serde_json::to_writer_pretty(&file, outcome).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())
+    crate::store::write_draft(path, outcome)
 }
 
 pub(crate) fn run_engine(

@@ -130,20 +130,17 @@ form. See the [assistant contract](contracts/assistant.md).
 
 ## Operational data decisions
 
-Canonical observations and other tabular inputs use typed Parquet 2. Normalized
-forecast bases use NetCDF. Acquisition assets are discovered from their folders
-and coverage metadata; SQL databases and a shared object registry are unnecessary.
-Store owns canonical formats, atomic publication, integrity, and file lifecycle.
-The pure Rust GeoPackage reader remains a spatial capability; operational code
-has no SQLite dependency or legacy data fallback.
+Canonical observations and their metadata are revisioned in SQLite. Shared
+file objects retain canonical NetCDF grids and other input files. Store owns
+registration, immutable identities, integrity and atomic publication. Acquisition
+and review publish new revisions; retained runs select the original values.
+The pure Rust GeoPackage reader remains a spatial capability. Independent exports
+include selected data and require a matching installed engine for replay.
 
-Each run has a self-contained input set, independent of subsequent acquisition
-or edits. The [input-set contract](contracts/inputs.md) defines saving and discard.
 TOML owns routine defaults; app's shared session owns experiments and revisioned
-job admission; manifests own resolved values and changing model configuration.
-Historical runs retain manifests. Current inputs and the active successful result
-generation have independent lifecycles. Derived scenarios are recipes and
-disposable materializations, rather than acquired assets.
+job admission; run manifests own resolved values and input references. Historical
+attempts retain their manifests. Active results and registered inputs have
+independent lifecycles. Derived forcing and scenario grids are disposable.
 
 Geometry and CRS readers are store capabilities using the pinned Terrio vector
 integration. Analysis derives upstream membership from validated model topology and local areas, not map-coordinate
@@ -233,12 +230,9 @@ Saved preparation and execution follow these rules:
   executable identity.
   Store retains values or immutable versions, not merely selectors, mutable paths,
   or hashes without retained data.
-- Later acquisition/editing cannot alter an execution. Refreshing inputs creates a
-  new input set. Users explicitly save or discard current inputs before replacing
-  them. Current input sets use atomic cache publication without a power-loss
-  durability guarantee. An explicitly saved set is independently verified and
-  synced before it is marked saved; it regenerates forcing with a matching
-  installed engine.
+- Later acquisition or editing creates new registered versions without changing
+  prior references. Portable exports independently retain the selected inputs and
+  regenerate forcing with a matching installed engine.
 - Model stages canonical outputs. App owns execution status, overlap/failure policy,
   and scenario-set coordination; store owns persistence and file lifecycle.
 - Each workspace publishes a single active generation containing results and
@@ -246,7 +240,7 @@ Saved preparation and execution follow these rules:
   generation. Store owns atomic publication and file retirement. App decides
   when to commit based on all requested scenarios and required outputs.
 - Superseded and failed attempts retain their manifests. Operators explicitly
-  export full results or save input sets for long-term retention.
+  keep or export full results for long-term retention.
   See the [operation contract](contracts/operations.md#active-run-and-rainfall-cache).
 
 The [operation contract](contracts/operations.md) defines prepared snapshots,

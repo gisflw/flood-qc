@@ -2,8 +2,9 @@ use super::{layout::Form, text};
 use chrono::{TimeZone, Timelike};
 use eframe::egui;
 use mgb_ops::app::{
-    AcquisitionReport, ForecastAdjustment, ForecastPreview, OperationalRun, OperationalRunReport,
-    RunScenario, RunSetupRevision, ScenarioBase, Session, WorkspaceConfig, WorkspaceJob,
+    AcquisitionReport, ForecastAdjustment, ForecastPreview, HistoricalRainfall, OperationalRun,
+    OperationalRunReport, RunScenario, RunSetupRevision, ScenarioBase, Session, WorkspaceConfig,
+    WorkspaceJob,
 };
 use std::{
     path::{Path, PathBuf},
@@ -104,8 +105,6 @@ pub struct Runners {
     scenario_choice: String,
     preview: Option<(RunSetupRevision, ForecastPreview)>,
     preview_step: usize,
-    pending_input_action: Option<Action>,
-    next_input_disposition: Option<mgb_ops::app::InputDisposition>,
 }
 
 impl Runners {
@@ -117,9 +116,7 @@ impl Runners {
     }
 
     pub fn unsaved_inputs(&self) -> bool {
-        self.session.as_ref().is_some_and(|session| {
-            mgb_ops::app::workspace_inputs_need_decision(session.workspace()).unwrap_or(true)
-        })
+        false
     }
     pub fn save_inputs_dialog(&mut self, ctx: &egui::Context) {
         if let Some(destination) = self.input_save_destination(ctx) {
@@ -136,39 +133,7 @@ impl Runners {
     pub fn discard_inputs(&mut self, ctx: &egui::Context) {
         self.start(Action::DiscardInputs, ctx);
     }
-    pub fn input_retention_dialog(&mut self, ctx: &egui::Context, pt: bool) {
-        if self.pending_input_action.is_none() || self.busy() {
-            return;
-        }
-        let mut run = false;
-        egui::Modal::new(egui::Id::new("replace-unsaved-inputs")).show(ctx, |ui| {
-            ui.heading(text(pt, "Keep current inputs?", "Manter entradas atuais?"));
-            ui.label(text(
-                pt,
-                "Save current inputs before starting a new run.",
-                "Salve as entradas atuais antes de iniciar uma nova execução.",
-            ));
-            ui.horizontal(|ui| {
-                if ui.button(text(pt, "Save", "Salvar")).clicked()
-                    && let Some(destination) = self.input_save_destination(ctx)
-                {
-                    self.next_input_disposition =
-                        Some(mgb_ops::app::InputDisposition::Save { destination });
-                    run = true;
-                }
-                if ui.button(text(pt, "Discard", "Descartar")).clicked() {
-                    self.next_input_disposition = Some(mgb_ops::app::InputDisposition::Discard);
-                    run = true;
-                }
-                if ui.button(text(pt, "Cancel", "Cancelar")).clicked() {
-                    self.pending_input_action = None;
-                }
-            });
-        });
-        if run && let Some(action) = self.pending_input_action.take() {
-            self.start(action, ctx);
-        }
-    }
+    pub fn input_retention_dialog(&mut self, _ctx: &egui::Context, _pt: bool) {}
 
     pub fn localized_status(&self, pt: bool) -> String {
         match self.status.as_str() {
@@ -202,17 +167,6 @@ impl Runners {
             self.status = "Open a workspace first".into();
             return;
         };
-        if matches!(
-            action,
-            Action::Run
-                | Action::CaptureInputs
-                | Action::Workflow(super::workflows::Task::Regenerate(..))
-        ) && self.next_input_disposition.is_none()
-            && self.unsaved_inputs()
-        {
-            self.pending_input_action = Some(action);
-            return;
-        }
         let (guard, setup) = match session.start_job_with_setup() {
             Ok(snapshot) => snapshot,
             Err(error) => {
@@ -226,10 +180,7 @@ impl Runners {
         let config_path = self.config_path.clone();
         let config = self.config.clone();
         let baseline = self.baseline.clone();
-        let mut control = mgb_ops::app::OperationControl::default();
-        if let Some(disposition) = self.next_input_disposition.take() {
-            control = control.with_input_disposition(disposition);
-        }
+        let control = mgb_ops::app::OperationControl::default();
         let operation_control = control.clone();
         let automation = match &action {
             Action::Workflow(task) if task.needs_automation_control() => {
@@ -537,6 +488,31 @@ impl Runners {
             return;
         };
         let operation = &setup.operation;
+        if !self.busy()
+            && ui
+                .button(text(pt, "Keep active results", "Manter resultados ativos"))
+                .clicked()
+        {
+            let result = mgb_ops::app::discover_trials(session.workspace())
+                .map_err(|error| error.to_string())
+                .and_then(|roots| {
+                    roots
+                        .into_iter()
+                        .next()
+                        .ok_or_else(|| "No active results".to_owned())
+                })
+                .and_then(|root| {
+                    let id = root
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or("Invalid active result ID")?;
+                    mgb_ops::app::keep_workspace_results(session.workspace(), id, true)
+                });
+            self.status = match result {
+                Ok(()) => text(pt, "Active results retained", "Resultados ativos mantidos"),
+                Err(error) => error,
+            };
+        }
         let mut parameters = operation.parameters().clone();
         let mut reference = operation.reference().to_owned();
         ui.label(text(pt, "Reference hour", "Hora de referência"));
@@ -572,6 +548,67 @@ impl Runners {
                 parameters.forecast_days = Some(days);
             }
         });
+        ui.label(text(
+            pt,
+            "Historical rainfall source",
+            "Fonte de chuva observada",
+        ));
+        let mut rainfall = operation.historical_rainfall();
+        ui.horizontal(|ui| {
+            if ui
+                .selectable_label(
+                    matches!(rainfall, HistoricalRainfall::Stations),
+                    text(pt, "Stations", "Estações"),
+                )
+                .clicked()
+            {
+                rainfall = HistoricalRainfall::Stations;
+                parameters.historical_rainfall = Some(rainfall.clone());
+            }
+            if ui
+                .selectable_label(
+                    matches!(rainfall, HistoricalRainfall::Imerg { .. }),
+                    "IMERG",
+                )
+                .clicked()
+            {
+                rainfall = HistoricalRainfall::Imerg {
+                    object_ids: Vec::new(),
+                };
+                parameters.historical_rainfall = Some(rainfall.clone());
+            }
+        });
+        let mut imerg_changed = false;
+        if let HistoricalRainfall::Imerg { object_ids } = &mut rainfall {
+            match mgb_ops::app::imerg_choices(session.workspace()) {
+                Ok(choices) if choices.is_empty() => {
+                    ui.label(text(
+                        pt,
+                        "No registered IMERG days",
+                        "Nenhum dia IMERG registrado",
+                    ));
+                }
+                Ok(choices) => {
+                    for id in choices {
+                        let mut selected = object_ids.contains(&id);
+                        if ui.checkbox(&mut selected, &id).changed() {
+                            if selected {
+                                object_ids.push(id);
+                            } else {
+                                object_ids.retain(|v| v != &id);
+                            }
+                            imerg_changed = true;
+                        }
+                    }
+                }
+                Err(error) => {
+                    ui.colored_label(ui.visuals().error_fg_color, error);
+                }
+            }
+        }
+        if imerg_changed {
+            parameters.historical_rainfall = Some(rainfall);
+        }
         let mut current = operation.clone();
         current.set_parameters(parameters.clone());
         let coverage = current.coverage();
@@ -803,7 +840,7 @@ impl Runners {
             }
             if ui
                 .add_enabled(
-                    self.unsaved_inputs(),
+                    self.session.is_some() && !self.busy(),
                     egui::Button::new(text(pt, "Save current inputs", "Salvar entradas atuais")),
                 )
                 .clicked()

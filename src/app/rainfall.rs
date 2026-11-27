@@ -400,7 +400,7 @@ mod tests {
         let scenario = "rain";
         let build = |forecast_amount: f64| {
             let run = new_run_stage(root.path()).unwrap();
-            std::fs::write(run.join("manifest.json"), "{}").unwrap();
+            std::fs::write(run.join("manifest.toml"), "{}").unwrap();
             let info = stage_rainfall(
                 &run,
                 reference,

@@ -22,7 +22,6 @@ use std::{
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutomationConfig {
-    schema_version: u32,
     #[serde(default)]
     pub jobs: Vec<AutomationJob>,
     pub smtp: Option<SmtpConfiguration>,
@@ -43,8 +42,6 @@ pub struct AutomationJob {
 #[serde(deny_unknown_fields)]
 pub struct AutomationStep {
     pub kind: AutomationStepKind,
-    #[serde(default)]
-    pub inputs: Option<super::InputDisposition>,
     pub prepared: Option<PathBuf>,
     pub report: Option<AutomationReportConfiguration>,
     #[serde(default)]
@@ -171,8 +168,8 @@ fn resolve_source(workspace: &Path, path: &Path, directory: bool) -> Result<Path
 
 impl AutomationConfig {
     fn validate(&self) -> Result<(), String> {
-        if self.schema_version != 1 || (self.jobs.is_empty() && self.smtp.is_none()) {
-            return Err("automation schema 1 requires jobs or SMTP configuration".into());
+        if self.jobs.is_empty() && self.smtp.is_none() {
+            return Err("automation requires jobs or SMTP configuration".into());
         }
         if let Some(smtp) = &self.smtp {
             smtp.validate()?;
@@ -250,7 +247,7 @@ fn decode_automation_config(
         for step in &mut job.steps {
             if let Some(path) = &mut step.prepared {
                 *path = resolve_source(workspace, path, true)?;
-                resolve_source(path, Path::new("manifest.json"), false)?;
+                resolve_source(path, Path::new("manifest.toml"), false)?;
             }
             if let Some(report) = &mut step.report {
                 report.profile = resolve_source(workspace, &report.profile, false)?;
@@ -351,7 +348,6 @@ pub struct AutomationStageStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AutomationJobStatus {
-    pub schema_version: u32,
     pub job_id: String,
     pub slot: String,
     pub scheduled_at: Option<DateTime<Utc>>,
@@ -404,9 +400,6 @@ pub fn automation_status(workspace: &Path) -> Result<Vec<AutomationJobStatus>, S
         .into_iter()
         .map(|(_, status)| status)
         .collect();
-    if jobs.iter().any(|job| job.schema_version != 1) {
-        return Err("unsupported automation status schema".into());
-    }
     jobs.sort_by_key(|job| std::cmp::Reverse(job.started_at));
     Ok(jobs)
 }
@@ -414,9 +407,6 @@ pub fn automation_status(workspace: &Path) -> Result<Vec<AutomationJobStatus>, S
 fn recover(workspace: &Path, now: DateTime<Utc>) -> Result<(), String> {
     let directory = automation_root(workspace).join("status");
     for (path, mut job) in automation_documents::<AutomationJobStatus>(&directory)? {
-        if job.schema_version != 1 {
-            return Err("unsupported automation status schema".into());
-        }
         if job.state == AutomationState::Running {
             job.state = AutomationState::Interrupted;
             job.error = Some("automation runner stopped before recording the outcome".into());
@@ -456,7 +446,7 @@ fn slot_key(job: &AutomationJob, when: DateTime<Utc>) -> String {
 fn slot_path(workspace: &Path, job: &AutomationJob, slot: &str) -> PathBuf {
     automation_root(workspace)
         .join("status")
-        .join(format!("{}.{slot}.json", job.id))
+        .join(format!("{}.{slot}.toml", job.id))
 }
 
 enum StepOutput {
@@ -473,18 +463,6 @@ fn execute_step(
     lock: &File,
     acquisition: &mut Option<super::AcquisitionReport>,
 ) -> Result<StepOutput, OperationError> {
-    let configured = if let Some(disposition) = &step.inputs {
-        let disposition = match disposition {
-            super::InputDisposition::Save { destination } => super::InputDisposition::Save {
-                destination: super::absolute(workspace, destination),
-            },
-            super::InputDisposition::Discard => super::InputDisposition::Discard,
-        };
-        control.clone().with_input_disposition(disposition)
-    } else {
-        control.clone()
-    };
-    let control = &configured;
     let run = || {
         let mut operation = OperationalRun::open_workspace(workspace.to_path_buf(), reference)
             .map_err(|message| OperationError::InvalidRequest {
@@ -567,7 +545,6 @@ fn finish_stage(
 
 #[derive(Serialize)]
 struct DeliveryRecord {
-    schema_version: u32,
     started_at: DateTime<Utc>,
     finished_at: Option<DateTime<Utc>>,
     state: AutomationState,
@@ -589,13 +566,12 @@ pub fn send_automation_email(
         .collect::<Result<_, _>>()?;
     let started_at = Utc::now();
     let filename = format!(
-        "{}-{}.json",
+        "{}-{}.toml",
         started_at.format("%Y%m%dT%H%M%S%.9f"),
         std::process::id()
     );
     let path = automation_root(&workspace).join("delivery").join(filename);
     let mut status = DeliveryRecord {
-        schema_version: 1,
         started_at,
         finished_at: None,
         state: AutomationState::Running,
@@ -685,7 +661,6 @@ impl Runner<'_> {
     ) -> Result<AutomationJobStatus, String> {
         let path = slot_path(self.workspace, job, &slot);
         let status = AutomationJobStatus {
-            schema_version: 1,
             job_id: job.id.clone(),
             slot,
             scheduled_at: Some(when),
@@ -714,7 +689,6 @@ impl Runner<'_> {
             ));
         }
         let mut status = AutomationJobStatus {
-            schema_version: 1,
             job_id: job.id.clone(),
             slot,
             scheduled_at,
@@ -1053,7 +1027,6 @@ mod tests {
         fs::write(
             workspace.join("automation.toml"),
             r#"
-schema_version = 1
 [[jobs]]
 id = "rs"
 time_zone = "America/Sao_Paulo"
@@ -1106,7 +1079,6 @@ kind = "prepare"
         let slot = scheduled(&config.jobs[0], now).unwrap();
         let path = slot_path(root, &config.jobs[0], "20260721-0700");
         let interrupted = AutomationJobStatus {
-            schema_version: 1,
             job_id: "rs".into(),
             slot: "20260721-0700".into(),
             scheduled_at: Some(slot),
@@ -1221,7 +1193,6 @@ kind = "prepare"
         fs::write(
             &path,
             r#"
-schema_version = 1
 [smtp]
 host="smtp.example.org"
 tls="starttls"
@@ -1247,7 +1218,7 @@ password="secret-that-must-not-appear"
             "history.sqlite",
             "geometry.gpkg",
             "map.gpkg",
-            "prepared/manifest.json",
+            "prepared/manifest.toml",
         ] {
             fs::write(root.join(name), b"fixture").unwrap();
         }
@@ -1255,7 +1226,6 @@ password="secret-that-must-not-appear"
         fs::write(
             &config_path,
             r#"
-schema_version = 1
 [[jobs]]
 id = "rs"
 time_zone = "America/Sao_Paulo"

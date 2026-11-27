@@ -41,6 +41,9 @@ pub(super) enum AcquisitionCommand {
         /// Geographic west,south,east,north crop without an antimeridian crossing.
         #[arg(long)]
         bbox: String,
+        /// Register completed regional UTC days in this workspace.
+        #[arg(long)]
+        workspace: Option<PathBuf>,
         #[command(flatten)]
         destination: Destination,
     },
@@ -91,7 +94,7 @@ pub(super) fn run(
     control: &OperationControl,
     out: &mut impl Write,
 ) -> Result<bool, Box<dyn std::error::Error>> {
-    let (source, destination) = match command {
+    let (source, destination, workspace) = match command {
         AcquisitionCommand::Bndmet {
             product,
             station,
@@ -105,6 +108,7 @@ pub(super) fn run(
                 wind: matches!(product, BndmetProduct::Wind),
             },
             destination,
+            None,
         ),
         AcquisitionCommand::Ons {
             reservoir,
@@ -117,12 +121,14 @@ pub(super) fn run(
                 reservoirs: reservoir,
             },
             destination,
+            None,
         ),
         AcquisitionCommand::Imerg {
             start,
             end,
             bbox,
             destination,
+            workspace,
         } => (
             AcquisitionSource::ImergEarly {
                 start,
@@ -130,6 +136,7 @@ pub(super) fn run(
                 bbox: parse_bbox(&bbox)?,
             },
             destination,
+            workspace,
         ),
     };
     let report = acquire_source(
@@ -142,7 +149,14 @@ pub(super) fn run(
         },
         control,
     )?;
-    serde_json::to_writer_pretty(&mut *out, &report)?;
+    let mut value = serde_json::to_value(&report)?;
+    if let Some(workspace) = workspace
+        && report.issues.is_empty()
+    {
+        let ids = mgb_ops::app::register_imerg_acquisition(&workspace, &report.normalized)?;
+        value["registered_objects"] = serde_json::to_value(ids)?;
+    }
+    serde_json::to_writer_pretty(&mut *out, &value)?;
     writeln!(out)?;
     Ok(report.issues.is_empty())
 }

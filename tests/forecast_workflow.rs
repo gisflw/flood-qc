@@ -4,16 +4,15 @@ use mgb_ops::{
 };
 
 fn document() -> String {
-    r#"schema_version = 1
-provider = "ecmwf"
+    r#"provider = "ecmwf"
 model = "ifs"
 product = "fc"
 cycle_utc = "2026-07-20T00:00:00Z"
 operation_timezone = "America/Sao_Paulo"
 source = "missing.grib2"
 crop_bbox = [-60.0,-35.0,-50.0,-25.0]
-catalog = "assets/forecasts"
-artifact_root = "assets/forecasts"
+catalog = "assets/objects/forecasts"
+artifact_root = "assets/objects/forecasts"
 "#
     .into()
 }
@@ -23,7 +22,6 @@ fn invalid_requests_do_not_create_catalog_or_artifacts() {
     let request_file = dir.path().join("normalize.toml");
     for contents in [
         document() + "unexpected = 'secret-value'\n",
-        document().replace("schema_version = 1", "schema_version = 2"),
         document().replace("2026-07-20T00:00:00Z", "2026-07-20T00:00:00-03:00"),
         document().replace("2026-07-20T00:00:00Z", "2026-07-20T00:00:00.001Z"),
         document().replace("America/Sao_Paulo", "Invalid/Zone"),
@@ -127,5 +125,5 @@ fn library_and_cli_normalize_the_same_canonical_values() {
         std::fs::read(&report.retained_source).unwrap(),
         std::fs::read(&fixture).unwrap()
     );
-    assert!(dir.path().join("library/assets/forecasts").is_dir());
+    assert!(dir.path().join("library/assets/objects/forecasts").is_dir());
 }

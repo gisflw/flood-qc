@@ -157,11 +157,11 @@ asset_id = "{}"
         output: "prepared".into(),
     })
     .unwrap();
-    let manifest_path = root.join("prepared/manifest.json");
+    let manifest_path = root.join("prepared/manifest.toml");
     let original_manifest = fs::read(&manifest_path).unwrap();
-    let mut altered: serde_json::Value = serde_json::from_slice(&original_manifest).unwrap();
+    let mut altered: serde_json::Value = mgb_ops::store::read_draft(&manifest_path).unwrap();
     altered["recipe"]["document"]["reference_time"] = "2026-07-21T00:00:00".into();
-    fs::write(&manifest_path, serde_json::to_vec(&altered).unwrap()).unwrap();
+    mgb_ops::store::write_draft(&manifest_path, &altered).unwrap();
     assert!(matches!(
         execute_prepared(ExecutionRequest {
             workspace: root.clone(),

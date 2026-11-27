@@ -65,7 +65,7 @@ pub fn import_workspace_forecast(
         &workspace,
         CanonicalForecastDocument {
             catalog: super::forecast_assets(&workspace),
-            artifact_root: "assets/forecasts".into(),
+            artifact_root: super::workspace::FORECASTS_PATH.into(),
             source,
             metadata,
         },
@@ -108,7 +108,6 @@ pub struct NormalizeForecastReport {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NormalizeForecastDocument {
-    pub schema_version: u32,
     pub provider: ForecastProvider,
     pub model: String,
     pub product: String,
@@ -149,7 +148,6 @@ pub fn normalize_workspace_forecast(
         workspace,
         workspace,
         NormalizeForecastDocument {
-            schema_version: 1,
             provider,
             model,
             product,
@@ -158,7 +156,7 @@ pub fn normalize_workspace_forecast(
             source,
             crop_bbox,
             catalog: super::workspace::FORECASTS_PATH.into(),
-            artifact_root: "assets/forecasts".into(),
+            artifact_root: super::workspace::FORECASTS_PATH.into(),
         },
     )
 }
@@ -194,9 +192,6 @@ pub fn normalize_forecast_document(
             "workspace is not a directory: {}",
             workspace.display()
         )));
-    }
-    if config.schema_version != 1 {
-        return Err(invalid("unsupported schema_version".into()));
     }
     for (name, path) in [
         ("source", &config.source),

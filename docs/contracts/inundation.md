@@ -25,7 +25,7 @@ See the [build prerequisites](../../README.md#development).
 
 ```sh
 mgb-ops inundation process \
-  --run /region/data/cache/run/<generation> --scenario <scenario-id> \
+  --run /region/data/results/<run-id> --scenario <scenario-id> \
   --hand /region/data/source/HAND_Flood.tif \
   --catchments /region/data/source/catchments.tif
 ```

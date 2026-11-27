@@ -68,7 +68,6 @@ fn integer_levels_null_and_atomic_rollback() {
         ]
     );
     assert!(store.replacement_choices().unwrap().is_empty());
-    assert_level_int32(&path, "l");
     let bad = ObservationBatch {
         stations: vec![Station {
             station_id: "new".into(),
@@ -130,7 +129,7 @@ fn fractional_level_and_missing_schema_are_rejected() {
         })
         .unwrap();
     drop(store);
-    corrupt_level(&path, "l", 1.5);
+    corrupt_level(&path, "l", 1.5, true);
     let store = ObservationStore::open_read_only(&path).unwrap();
     assert!(
         store
@@ -151,9 +150,46 @@ fn fractional_level_and_missing_schema_are_rejected() {
             .is_err()
     );
     drop(store);
-    let manifest = current_manifest(&path);
-    std::fs::remove_file(path.join(manifest["tables"]["references"].as_str().unwrap())).unwrap();
+    damage_metadata(&path);
     assert!(ObservationStore::open_read_only(&path).is_err());
+}
+#[test]
+fn changed_valid_sample_payload_fails_checksum() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("observations.sqlite");
+    let mut store = ObservationStore::create(&path, "UTC").unwrap();
+    let at = time("2026-01-01T01:00:00");
+    store
+        .write_batch(&ObservationBatch {
+            stations: vec![station()],
+            series: vec![series("l", "level", "cm", None)],
+            samples: vec![ObservationSample {
+                series_id: "l".into(),
+                observed_at: at,
+                value: Some(ObservationValue::LevelCm(1)),
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+    let revision = store.revision().unwrap();
+    drop(store);
+    corrupt_level(&path, "l", 2.0, false);
+    let pinned = ObservationStore::open_revision(&path, revision).unwrap();
+    let result = pinned.read_selection(
+        &ObservationSelection {
+            provider_codes: vec!["ana".into()],
+            station_ids: vec![],
+        },
+        &IntervalAxis {
+            time_zone: "UTC".into(),
+            bounds: vec![TimeInterval {
+                start: time("2026-01-01T00:00:00"),
+                end: at,
+            }],
+        },
+        &[],
+    );
+    assert!(result.unwrap_err().to_string().contains("checksum"));
 }
 #[test]
 fn invalid_batches_and_existing_destination_preserve_data() {
@@ -332,8 +368,7 @@ fn signed_levels_offsets_and_local_dst_fail_atomically() {
     assert_eq!(read.samples, samples);
     assert_eq!(read.stations.len(), 1);
     drop(store);
-    assert_level_int32(&path, "l");
-    corrupt_level(&path, "l", 2147483648.0);
+    corrupt_level(&path, "l", 2147483648.0, true);
     let store = ObservationStore::open_read_only(&path).unwrap();
     let mut bad = interval;
     bad.bounds[0].end = time("2026-01-01T06:00:00");
@@ -533,63 +568,286 @@ fn fresh_schema_supports_flow_edits_and_references() {
     }
 }
 
-fn partition(path: &std::path::Path, id: &str) -> std::path::PathBuf {
+fn corrupt_level(path: &std::path::Path, id: &str, value: f64, refresh_checksum: bool) {
     use sha2::{Digest, Sha256};
-    let manifest = current_manifest(path);
-    let prefix = format!("{:x}", Sha256::digest(id.as_bytes()));
-    let entry = manifest["partitions"]
-        .as_object()
-        .unwrap()
-        .iter()
-        .find(|(key, _)| key.starts_with(&prefix))
-        .unwrap()
-        .1
-        .as_str()
-        .unwrap();
-    path.join(entry)
+    pollster::block_on(async {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        let level = if value.fract() == 0.0 {
+            serde_json::json!(value as i64)
+        } else {
+            serde_json::json!(value)
+        };
+        let payload = serde_json::json!({
+            "series_id": id,
+            "observed_at": "2026-01-01T01:00:00",
+            "value": {"LevelCm": level},
+        })
+        .to_string();
+        if refresh_checksum {
+            let checksum = format!("{:x}", Sha256::digest(payload.as_bytes()));
+            conn.execute(
+                "UPDATE observation_sample SET payload=?1,payload_sha256=?2 WHERE series_id=?3",
+                (payload, checksum, id),
+            )
+            .await
+            .unwrap();
+        } else {
+            conn.execute(
+                "UPDATE observation_sample SET payload=?1 WHERE series_id=?2",
+                (payload, id),
+            )
+            .await
+            .unwrap();
+        }
+    });
 }
-fn assert_level_int32(path: &std::path::Path, id: &str) {
-    use parquet::{
-        basic::Type,
-        file::reader::{FileReader, SerializedFileReader},
-    };
-    let reader =
-        SerializedFileReader::new(std::fs::File::open(partition(path, id)).unwrap()).unwrap();
-    assert_eq!(
-        reader.metadata().row_group(0).column(4).column_type(),
-        Type::INT32
-    );
-}
-fn corrupt_level(path: &std::path::Path, id: &str, value: f64) {
-    use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-    use parquet::arrow::ArrowWriter;
-    use std::sync::Arc;
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("series_id", DataType::Utf8, true),
-        Field::new("observed_at", DataType::Utf8, true),
-        Field::new("rain", DataType::Float64, true),
-        Field::new("flow", DataType::Float64, true),
-        Field::new("level", DataType::Float64, true),
-    ]));
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from(vec![id])),
-        Arc::new(StringArray::from(vec!["2026-01-01T01:00:00"])),
-        Arc::new(Float64Array::from(vec![None::<f64>])),
-        Arc::new(Float64Array::from(vec![None::<f64>])),
-        Arc::new(Float64Array::from(vec![Some(value)])),
-    ];
-    let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
-    let mut writer = ArrowWriter::try_new(
-        std::fs::File::create(partition(path, id)).unwrap(),
-        schema,
-        None,
-    )
-    .unwrap();
-    writer.write(&batch).unwrap();
-    writer.close().unwrap();
+fn damage_metadata(path: &std::path::Path) {
+    pollster::block_on(async {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute("UPDATE observation_metadata SET payload='{}'", ())
+            .await
+            .unwrap();
+    });
 }
 
-fn current_manifest(root: &std::path::Path) -> serde_json::Value {
-    serde_json::from_slice(&std::fs::read(root.join("current.json")).unwrap()).unwrap()
+#[test]
+fn selected_snapshot_reopens_without_original_or_wal() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("observations.sqlite");
+    let mut store = ObservationStore::create(&path, "UTC").unwrap();
+    let at = time("2026-01-01T01:00:00");
+    let sample = ObservationSample {
+        series_id: "r".into(),
+        observed_at: at,
+        value: Some(ObservationValue::RainMm(0.0)),
+    };
+    store
+        .write_batch(&ObservationBatch {
+            stations: vec![station()],
+            series: vec![series("r", "rain", "mm", Some(3600))],
+            samples: vec![sample.clone()],
+            ..Default::default()
+        })
+        .unwrap();
+    let revision = store.revision().unwrap();
+    let pinned = ObservationStore::open_revision(&path, revision).unwrap();
+    let snapshot = dir.path().join("saved.sqlite");
+    let axis = IntervalAxis {
+        time_zone: "UTC".into(),
+        bounds: vec![TimeInterval {
+            start: time("2026-01-01T00:00:00"),
+            end: at,
+        }],
+    };
+    let selection = ObservationSelection {
+        provider_codes: vec!["ana".into()],
+        station_ids: vec![],
+    };
+    pinned
+        .snapshot_revision(&snapshot, &selection, &axis, &[], &[])
+        .unwrap();
+    assert!(!dir.path().join("saved.sqlite-wal").exists());
+    assert!(!dir.path().join("saved.sqlite-shm").exists());
+    assert!(!dir.path().join("saved.sqlite.lock").exists());
+    drop(pinned);
+    drop(store);
+    std::fs::remove_file(path).unwrap();
+    let independent = ObservationStore::open_revision(&snapshot, revision).unwrap();
+    assert_eq!(
+        independent
+            .read_selection(&selection, &axis, &[])
+            .unwrap()
+            .0
+            .samples,
+        vec![sample]
+    );
+}
+
+#[test]
+#[ignore = "regional legacy import requires runs/legacy-registry-export"]
+fn regional_legacy_interchange_imports_all_samples() {
+    let dir = tempfile::Builder::new()
+        .prefix("sqlite-import-")
+        .tempdir_in("runs")
+        .unwrap();
+    let path = dir.path().join("observations.sqlite");
+    let store = ObservationStore::import_interchange(
+        &path,
+        std::path::Path::new("runs/legacy-registry-export"),
+    )
+    .unwrap();
+    assert_eq!(store.station_locations().unwrap().len(), 440);
+    assert_eq!(store.series_choices().unwrap().len(), 414);
+    assert_eq!(store.replacement_choices().unwrap().len(), 6);
+    drop(store);
+    pollster::block_on(async {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .read_only(true)
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        let mut rows = conn
+            .query("SELECT COUNT(*) FROM observation_sample", ())
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get_value(0).unwrap(),
+            turso::Value::Integer(2_001_960)
+        );
+    });
+}
+
+#[test]
+fn interchange_import_preserves_historical_dst_label_and_rejects_bad_digest() {
+    use sha2::{Digest, Sha256};
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input");
+    std::fs::create_dir(&input).unwrap();
+    let mut tables = serde_json::Map::new();
+    let station = serde_json::json!({"station_id":"s","provider_code":"ana","station_code":"1","name":"station","latitude":null,"longitude":null});
+    let series = serde_json::json!({"series_id":"r","station_id":"s","variable":"rain","state":"raw","unit":"mm","interval_seconds":3600,"created_at":"2016-01-01T00:00:00"});
+    let sample = serde_json::json!({"series_id":"r","observed_at":"2016-02-20T23:00:00","rain":0.0,"flow":null,"level":null});
+    for (name, rows) in [
+        ("stations", vec![station]),
+        ("series", vec![series]),
+        ("samples", vec![sample]),
+        ("replacements", vec![]),
+        ("offsets", vec![]),
+        ("references", vec![]),
+        ("variables", vec![]),
+        ("flags", vec![]),
+        ("coverage", vec![]),
+    ] {
+        let bytes = rows
+            .iter()
+            .map(|row| format!("{}\n", row))
+            .collect::<String>();
+        let filename = format!("{name}.jsonl");
+        std::fs::write(input.join(&filename), &bytes).unwrap();
+        tables.insert(name.into(),serde_json::json!({"file":filename,"count":rows.len(),"sha256":format!("{:x}",Sha256::digest(bytes.as_bytes()))}));
+    }
+    std::fs::write(
+        input.join("manifest.json"),
+        serde_json::to_vec(&serde_json::json!({"time_zone":"America/Sao_Paulo","tables":tables}))
+            .unwrap(),
+    )
+    .unwrap();
+    let path = dir.path().join("observations.sqlite");
+    let store = ObservationStore::import_interchange(&path, &input).unwrap();
+    assert_eq!(store.series_choices().unwrap().len(), 1);
+    pollster::block_on(async {
+        let db = turso::Builder::new_local(path.to_str().unwrap())
+            .read_only(true)
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        let mut rows = conn
+            .query("SELECT observed_at,payload FROM observation_sample", ())
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(
+            row.get_value(0).unwrap(),
+            turso::Value::Text("2016-02-20T23:00:00".into())
+        );
+        let turso::Value::Text(payload) = row.get_value(1).unwrap() else {
+            panic!("sample payload is not text")
+        };
+        let value: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(value["value"]["RainMm"], 0.0);
+    });
+    assert!(path.exists());
+    assert!(!dir.path().join("observations.sqlite-wal").exists());
+    std::fs::write(input.join("samples.jsonl"), b"damaged\n").unwrap();
+    let bad = dir.path().join("bad.sqlite");
+    assert!(ObservationStore::import_interchange(&bad, &input).is_err());
+    assert!(!bad.exists());
+    assert!(ObservationStore::import_interchange(&path, &input).is_err());
+    assert_eq!(store.series_choices().unwrap().len(), 1);
+}
+
+#[test]
+fn sqlite_preserves_float_bits_through_revision_and_portable_snapshot() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("observations.sqlite");
+    let mut store = ObservationStore::create(&path, "UTC").unwrap();
+    let start = time("2026-01-01T00:00:00");
+    let values = [
+        0.0,
+        -0.0,
+        0.1,
+        f64::MIN_POSITIVE,
+        f64::from_bits(1),
+        f64::MAX,
+    ];
+    let samples: Vec<_> = values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| ObservationSample {
+            series_id: "r".into(),
+            observed_at: start + chrono::TimeDelta::hours(index as i64 + 1),
+            value: Some(ObservationValue::RainMm(*value)),
+        })
+        .collect();
+    let mut metadata = station();
+    metadata.latitude = Some(-0.0);
+    metadata.longitude = Some(f64::MIN_POSITIVE);
+    store
+        .write_batch(&ObservationBatch {
+            stations: vec![metadata],
+            series: vec![series("r", "rain", "mm", Some(3600))],
+            samples,
+            ..Default::default()
+        })
+        .unwrap();
+    let revision = store.revision().unwrap();
+    let pinned = ObservationStore::open_revision(&path, revision).unwrap();
+    let axis = IntervalAxis {
+        time_zone: "UTC".into(),
+        bounds: (0..values.len())
+            .map(|index| TimeInterval {
+                start: start + chrono::TimeDelta::hours(index as i64),
+                end: start + chrono::TimeDelta::hours(index as i64 + 1),
+            })
+            .collect(),
+    };
+    let selection = ObservationSelection {
+        provider_codes: vec!["ana".into()],
+        station_ids: vec![],
+    };
+    let snapshot = dir.path().join("portable.sqlite");
+    pinned
+        .snapshot_revision(&snapshot, &selection, &axis, &[], &[])
+        .unwrap();
+    for db in [&path, &snapshot] {
+        let read = ObservationStore::open_revision(db, revision).unwrap();
+        let (data, _) = read.read_selection(&selection, &axis, &[]).unwrap();
+        assert_eq!(
+            data.stations[0].latitude.unwrap().to_bits(),
+            (-0.0f64).to_bits()
+        );
+        assert_eq!(
+            data.stations[0].longitude.unwrap().to_bits(),
+            f64::MIN_POSITIVE.to_bits()
+        );
+        let actual: Vec<_> = data
+            .samples
+            .iter()
+            .map(|sample| match sample.value {
+                Some(ObservationValue::RainMm(v)) => v.to_bits(),
+                _ => panic!("unexpected sample"),
+            })
+            .collect();
+        assert_eq!(actual, values.map(f64::to_bits));
+    }
 }

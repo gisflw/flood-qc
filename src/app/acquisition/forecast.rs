@@ -130,13 +130,8 @@ impl Download<'_> {
                     .load_native(&choice.asset_id)
                     .map_err(|e| e.to_string())?;
                 if complete_grid(&grid, &request, self.config.model_bbox, &leads) {
-                    if matching.is_some() {
-                        return Err(format!(
-                            "multiple matching {code} forecast assets for {}",
-                            cycle_local.format("%Y-%m-%d %H:%M")
-                        ));
-                    }
                     matching = Some((asset, grid));
+                    break;
                 }
             }
             if let Some((asset, grid)) = matching {

@@ -7,7 +7,6 @@ use std::path::{Component, Path};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct BundleManifest {
-    pub version: u32,
     pub run_id: String,
     pub input_set_id: Option<String>,
     pub files: Vec<InputReference>,
@@ -39,7 +38,7 @@ pub(crate) fn payload_index(root: &Path) -> Result<Vec<InputReference>, String> 
         return Err("expected a real bundle directory".into());
     }
     let mut files = collect_inputs(root)?;
-    files.retain(|file| file.path != Path::new("bundle.json"));
+    files.retain(|file| file.path != Path::new("bundle.toml"));
     let mut paths = HashSet::new();
     for file in &mut files {
         let name = portable_name(&file.path)?;
@@ -54,20 +53,19 @@ pub(crate) fn payload_index(root: &Path) -> Result<Vec<InputReference>, String> 
 
 pub(crate) fn validate_bundle(root: &Path) -> Result<BundleManifest, String> {
     let actual = payload_index(root)?;
-    let bundle: BundleManifest = super::read_draft(&root.join("bundle.json"))?;
-    if bundle.version != 2
-        || bundle
-            .run_id
-            .as_bytes()
-            .first()
-            .is_none_or(|b| !b.is_ascii_alphanumeric())
+    let bundle: BundleManifest = super::read_draft(&root.join("bundle.toml"))?;
+    if bundle
+        .run_id
+        .as_bytes()
+        .first()
+        .is_none_or(|b| !b.is_ascii_alphanumeric())
         || bundle.run_id.ends_with('.')
         || !bundle
             .run_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
     {
-        return Err("unsupported bundle version or invalid run ID".into());
+        return Err("invalid run ID".into());
     }
     if bundle.files != actual {
         return Err("bundle file paths, lengths, or digests differ from its index".into());

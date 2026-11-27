@@ -535,37 +535,33 @@ fn reference_json_cli_reports_success_and_operational_failures() {
 }
 
 fn corrupt_references(root: &std::path::Path, invalid_kind: bool) {
-    use arrow_array::{ArrayRef, Float64Array, RecordBatch, StringArray};
-    use arrow_schema::{DataType, Field, Schema};
-    use parquet::arrow::ArrowWriter;
-    use std::sync::Arc;
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("current.json")).unwrap()).unwrap();
-    let path = root.join(manifest["tables"]["references"].as_str().unwrap());
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("station_id", DataType::Utf8, true),
-        Field::new("kind", DataType::Utf8, true),
-        Field::new("date", DataType::Utf8, true),
-        Field::new("level_cm", DataType::Float64, true),
-    ]));
-    let (stations, kinds, dates, levels) = if invalid_kind {
-        (vec!["a"], vec!["historical"], vec![None::<&str>], vec![1.0])
-    } else {
-        (
-            vec!["a", "a"],
-            vec!["alert", "alert"],
-            vec![None, None],
-            vec![1.0, 2.0],
+    use sha2::{Digest, Sha256};
+    pollster::block_on(async {
+        let db = turso::Builder::new_local(root.to_str().unwrap())
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        let mut rows=conn.query("SELECT payload FROM observation_metadata JOIN observation_revision ON observation_metadata.key=observation_revision.metadata_key ORDER BY id DESC LIMIT 1",()).await.unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        let turso::Value::Text(payload) = row.get_value(0).unwrap() else {
+            panic!("metadata text");
+        };
+        drop(rows);
+        let mut metadata: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        metadata["references"] = if invalid_kind {
+            serde_json::json!([{"station_id":"a","kind":"historical","date":null,"level_cm":1.0}])
+        } else {
+            serde_json::json!([{"station_id":"a","kind":"alert","date":null,"level_cm":1.0},{"station_id":"a","kind":"alert","date":null,"level_cm":2.0}])
+        };
+        let payload = serde_json::to_string(&metadata).unwrap();
+        let key = format!("{:x}", Sha256::digest(payload.as_bytes()));
+        conn.execute(
+            "INSERT INTO observation_metadata VALUES (?1,?2)",
+            (key.clone(), payload),
         )
-    };
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from(stations)),
-        Arc::new(StringArray::from(kinds)),
-        Arc::new(StringArray::from(dates)),
-        Arc::new(Float64Array::from(levels)),
-    ];
-    let batch = RecordBatch::try_new(schema.clone(), arrays).unwrap();
-    let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
-    writer.write(&batch).unwrap();
-    writer.close().unwrap();
+        .await
+        .unwrap();
+        conn.execute("UPDATE observation_revision SET metadata_key=?1 WHERE id=(SELECT MAX(id) FROM observation_revision)",[key]).await.unwrap();
+    });
 }
